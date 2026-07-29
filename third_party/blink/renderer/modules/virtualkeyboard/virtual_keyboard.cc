@@ -4,6 +4,11 @@
 
 #include "third_party/blink/renderer/modules/virtualkeyboard/virtual_keyboard.h"
 
+#include <algorithm>
+
+#include "base/trace_event/trace_event.h"
+#include "build/build_config.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
 #include "third_party/blink/renderer/core/css/document_style_environment_variables.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
@@ -21,6 +26,15 @@
 #include "ui/gfx/geometry/rect_f.h"
 
 namespace blink {
+
+namespace {
+
+// Kill switch for allowing `virtualKeyboard.show()` if this page was navigated
+// from a same-site page that had user gesture.
+BASE_FEATURE(kShowKeyboardIfLastPageHadGesture,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+}  // namespace
 
 // static
 const char VirtualKeyboard::kSupplementName[] = "VirtualKeyboard";
@@ -69,7 +83,7 @@ bool VirtualKeyboard::overlaysContent() const {
 }
 
 DOMRect* VirtualKeyboard::boundingRect() const {
-  return bounding_rect_;
+  return bounding_rect_.Get();
 }
 
 void VirtualKeyboard::setOverlaysContent(bool overlays_content) {
@@ -92,39 +106,78 @@ void VirtualKeyboard::setOverlaysContent(bool overlays_content) {
             "Setting overlaysContent is only supported from "
             "the top level browsing context"));
   }
+  if (GetExecutionContext()) {
+    UseCounter::Count(GetExecutionContext(),
+                      WebFeature::kVirtualKeyboardOverlayPolicy);
+  }
 }
 
 void VirtualKeyboard::VirtualKeyboardOverlayChanged(
     const gfx::Rect& keyboard_rect) {
+  TRACE_EVENT0("vk", "VirtualKeyboard::VirtualKeyboardOverlayChanged");
   LocalDOMWindow* window = GetSupplementable()->DomWindow();
   if (!window)
     return;
 
-  bounding_rect_ = DOMRect::FromRectF(gfx::RectF(keyboard_rect));
+  bool use_virtual_keyboard_api_fixes = true;
+#if BUILDFLAG(IS_ANDROID)
+  use_virtual_keyboard_api_fixes =
+      features::IsVirtualKeyboardGeometryAndInsetFixesEnabled();
+#endif
+
+  gfx::Rect visible_keyboard_rect =
+      (use_virtual_keyboard_api_fixes && keyboard_rect.IsEmpty())
+          ? gfx::Rect()
+          : keyboard_rect;
+  bounding_rect_ = DOMRect::FromRect(visible_keyboard_rect);
+
+  int keyboard_inset_right;
+  int keyboard_inset_bottom;
+  if (use_virtual_keyboard_api_fixes && !visible_keyboard_rect.IsEmpty()) {
+    keyboard_inset_right =
+        std::max(0, window->innerWidth() - visible_keyboard_rect.right());
+    keyboard_inset_bottom =
+        std::max(0, window->innerHeight() - visible_keyboard_rect.bottom());
+  } else {
+    keyboard_inset_right = visible_keyboard_rect.right();
+    keyboard_inset_bottom = visible_keyboard_rect.bottom();
+  }
+
   DocumentStyleEnvironmentVariables& vars =
       window->document()->GetStyleEngine().EnsureEnvironmentVariables();
-  vars.SetVariable(UADefinedVariable::kKeyboardInsetTop,
-                   StyleEnvironmentVariables::FormatPx(keyboard_rect.y()));
-  vars.SetVariable(UADefinedVariable::kKeyboardInsetLeft,
-                   StyleEnvironmentVariables::FormatPx(keyboard_rect.x()));
+  vars.SetVariable(
+      UADefinedVariable::kKeyboardInsetTop,
+      StyleEnvironmentVariables::FormatPx(visible_keyboard_rect.y()));
+  vars.SetVariable(
+      UADefinedVariable::kKeyboardInsetLeft,
+      StyleEnvironmentVariables::FormatPx(visible_keyboard_rect.x()));
   vars.SetVariable(UADefinedVariable::kKeyboardInsetBottom,
-                   StyleEnvironmentVariables::FormatPx(keyboard_rect.bottom()));
+                   StyleEnvironmentVariables::FormatPx(keyboard_inset_bottom));
   vars.SetVariable(UADefinedVariable::kKeyboardInsetRight,
-                   StyleEnvironmentVariables::FormatPx(keyboard_rect.right()));
-  vars.SetVariable(UADefinedVariable::kKeyboardInsetWidth,
-                   StyleEnvironmentVariables::FormatPx(keyboard_rect.width()));
-  vars.SetVariable(UADefinedVariable::kKeyboardInsetHeight,
-                   StyleEnvironmentVariables::FormatPx(keyboard_rect.height()));
+                   StyleEnvironmentVariables::FormatPx(keyboard_inset_right));
+  vars.SetVariable(
+      UADefinedVariable::kKeyboardInsetWidth,
+      StyleEnvironmentVariables::FormatPx(visible_keyboard_rect.width()));
+  vars.SetVariable(
+      UADefinedVariable::kKeyboardInsetHeight,
+      StyleEnvironmentVariables::FormatPx(visible_keyboard_rect.height()));
   DispatchEvent(*(MakeGarbageCollected<VirtualKeyboardGeometryChangeEvent>(
       event_type_names::kGeometrychange)));
 }
 
 void VirtualKeyboard::show() {
+  TRACE_EVENT0("vk", "VirtualKeyboard::show");
   LocalDOMWindow* window = GetSupplementable()->DomWindow();
   if (!window)
     return;
 
-  if (window->GetFrame()->HasStickyUserActivation()) {
+  // To show the keyboard, the page needs to have transient user activation.
+  // We also allow showing the keyboard if the page had sticky user activation
+  // that was consumed by a recent cross-origin navigation (which clears the
+  // user activation state).
+  if (window->GetFrame()->HasStickyUserActivation() ||
+      (base::FeatureList::IsEnabled(kShowKeyboardIfLastPageHadGesture) &&
+       window->GetFrame()->HadStickyUserActivationBeforeNavigation())) {
     window->GetInputMethodController().SetVirtualKeyboardVisibilityRequest(
         ui::mojom::VirtualKeyboardVisibilityRequest::SHOW);
   } else {
@@ -138,6 +191,7 @@ void VirtualKeyboard::show() {
 }
 
 void VirtualKeyboard::hide() {
+  TRACE_EVENT0("vk", "VirtualKeyboard::hide");
   LocalDOMWindow* window = GetSupplementable()->DomWindow();
   if (!window)
     return;
@@ -148,7 +202,7 @@ void VirtualKeyboard::hide() {
 
 void VirtualKeyboard::Trace(Visitor* visitor) const {
   visitor->Trace(bounding_rect_);
-  EventTargetWithInlineData::Trace(visitor);
+  EventTarget::Trace(visitor);
   Supplement<Navigator>::Trace(visitor);
 }
 

@@ -8,7 +8,7 @@
 
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "components/translate/core/common/translate_constants.h"
+#include "components/language_detection/core/constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace translate {
@@ -109,12 +109,10 @@ TEST(LanguageDetectionUtilTest, CLDDisagreeWithWrongLanguageCode) {
   std::string language = translate::DeterminePageLanguage(
       std::string("ja"), std::string(), contents, &model_detected_language,
       &is_model_reliable, model_reliability_score);
-  EXPECT_EQ(translate::kUnknownLanguageCode, language);
+  EXPECT_EQ(language_detection::kUnknownLanguageCode, language);
   EXPECT_EQ("en", model_detected_language);
   EXPECT_TRUE(is_model_reliable);
   EXPECT_GT(model_reliability_score, 0.5);
-  histogram_tester.ExpectTotalCount(
-      "Translate.CLD3.TopLanguageEvaluationDuration", 1);
 }
 
 // Tests that the language meta tag providing "en-US" style information is
@@ -136,8 +134,6 @@ TEST(LanguageDetectionUtilTest, CLDAgreeWithLanguageCodeHavingCountryCode) {
   EXPECT_EQ("en", model_detected_language);
   EXPECT_TRUE(is_model_reliable);
   EXPECT_GT(model_reliability_score, 0.5);
-  histogram_tester.ExpectTotalCount(
-      "Translate.CLD3.TopLanguageEvaluationDuration", 1);
 }
 
 // Tests that the language meta tag providing wrong information is ignored and
@@ -160,8 +156,6 @@ TEST(LanguageDetectionUtilTest, InvalidLanguageMetaTagProviding) {
   EXPECT_EQ("en", model_detected_language);
   EXPECT_TRUE(is_model_reliable);
   EXPECT_GT(model_reliability_score, 0.5);
-  histogram_tester.ExpectTotalCount(
-      "Translate.CLD3.TopLanguageEvaluationDuration", 1);
 }
 
 // Tests that the language meta tag providing wrong information is ignored
@@ -183,8 +177,6 @@ TEST(LanguageDetectionUtilTest, AdoptHtmlLang) {
   EXPECT_EQ("en", model_detected_language);
   EXPECT_TRUE(is_model_reliable);
   EXPECT_GT(model_reliability_score, 0.5);
-  histogram_tester.ExpectTotalCount(
-      "Translate.CLD3.TopLanguageEvaluationDuration", 1);
 }
 
 // Tests that languages that often have the wrong server configuration are

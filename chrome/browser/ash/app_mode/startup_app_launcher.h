@@ -8,13 +8,13 @@
 #include <memory>
 #include <string>
 
-#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launcher.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_manager_base.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_manager_observer.h"
+#include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/chromeos/app_mode/chrome_kiosk_app_installer.h"
 #include "chrome/browser/chromeos/app_mode/chrome_kiosk_app_launcher.h"
 
@@ -35,9 +35,6 @@ class StartupAppLauncher : public KioskAppLauncher,
   ~StartupAppLauncher() override;
 
  private:
-  // Class used to watch for app window creation.
-  class AppWindowWatcher;
-
   // Launch state of the kiosk application
   enum class LaunchState {
     kNotStarted,
@@ -58,12 +55,12 @@ class StartupAppLauncher : public KioskAppLauncher,
   void LaunchApp() override;
 
   void BeginInstall();
-  void InstallAppInAsh();
-  void InstallAppInLacros();
-  void OnInstallComplete(ChromeKioskAppInstaller::InstallResult result);
+  void OnInstallComplete(ash::KioskInstallResult result);
   void OnInstallSuccess();
 
-  void OnLaunchComplete(ChromeKioskAppLauncher::LaunchResult result);
+  void HandlePreLaunchError(
+      chromeos::ChromeKioskAppLauncher::PreLaunchError error);
+  void OnLaunchComplete(bool success);
 
   void OnLaunchSuccess();
   void OnLaunchFailure(KioskAppLaunchError::Error error);
@@ -75,7 +72,7 @@ class StartupAppLauncher : public KioskAppLauncher,
   void OnKioskExtensionLoadedInCache(const std::string& app_id) override;
   void OnKioskExtensionDownloadFailed(const std::string& app_id) override;
 
-  const raw_ptr<Profile, ExperimentalAsh> profile_;
+  const raw_ptr<Profile> profile_;
   const std::string app_id_;
   const bool should_skip_install_;
 
@@ -83,8 +80,8 @@ class StartupAppLauncher : public KioskAppLauncher,
   LaunchState state_ = LaunchState::kNotStarted;
 
   KioskAppLauncher::ObserverList observers_;
-  std::unique_ptr<ChromeKioskAppInstaller> installer_;
-  std::unique_ptr<ChromeKioskAppLauncher> launcher_;
+  std::unique_ptr<chromeos::ChromeKioskAppInstaller> installer_;
+  std::unique_ptr<chromeos::ChromeKioskAppLauncher> launcher_;
 
   base::ScopedObservation<KioskAppManagerBase, KioskAppManagerObserver>
       kiosk_app_manager_observation_{this};

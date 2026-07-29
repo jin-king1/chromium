@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "base/android/jni_array.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/no_destructor.h"
 #include "base/time/time.h"
@@ -20,10 +21,8 @@
 // The native part of java UmaSessionStats class. This is a singleton.
 class UmaSessionStats {
  public:
-  void UmaResumeSession(JNIEnv* env,
-                        const base::android::JavaParamRef<jobject>& obj);
-  void UmaEndSession(JNIEnv* env,
-                     const base::android::JavaParamRef<jobject>& obj);
+  void UmaResumeSession(JNIEnv* env);
+  void UmaEndSession(JNIEnv* env);
 
   // Called before an UMA log is completed to record associated metrics.
   void ProvideCurrentSessionData();
@@ -46,15 +45,21 @@ class UmaSessionStats {
 
   static bool IsBackgroundSessionStartForTesting();
 
-  // Reads counters Chrome.UMA.OnPreCreateCounter and Chrome.UMA.OnResumeCounter
-  // that are written to in ChromeTabbedActivity.java. The counters are
-  // encoded in an enum histogram, emitted and reset to 0.
+  // Reads counters Chrome.UMA.OnPostCreateCounter2 and
+  // Chrome.UMA.OnResumeCounter2 that are written to in ChromeActivity.java. The
+  // counters are encoded in an enum histogram, emitted and reset to 0.
   static void EmitAndResetCounters();
 
  private:
   friend class base::NoDestructor<UmaSessionStats>;
   UmaSessionStats() = default;
   ~UmaSessionStats() = default;
+
+  // Registers an external experiment with the synthetic trial registry. Private
+  // as its access control is restricted to the JNI interface.
+  static void RegisterExternalExperiments(
+      const std::vector<int>& experiment_ids,
+      variations::SyntheticTrialAnnotationMode override_mode);
 
   class SessionTimeTracker {
    public:
@@ -93,31 +98,7 @@ class UmaSessionStats {
 
   SessionTimeTracker session_time_tracker_;
   int active_session_count_ = 0;
-
-  // Counter for the number of times onPreCreate and onResume were called
-  // between foreground sessions that reach native code. The code PXRY means:
-  // * onPreCreate was called X times
-  // * onResume was called Y times
-  // * the counters are capped at 3, so that value means "3 or more".
-  enum class ChromeTabbedActivityCounter : int32_t {
-    P0R0 = 0,
-    P0R1 = 1,
-    P0R2 = 2,
-    P0R3 = 3,
-    P1R0 = 4,
-    P1R1 = 5,
-    P1R2 = 6,
-    P1R3 = 7,
-    P2R0 = 8,
-    P2R1 = 9,
-    P2R2 = 10,
-    P2R3 = 11,
-    P3R0 = 12,
-    P3R1 = 13,
-    P3R2 = 14,
-    P3R3 = 15,
-    kMaxValue = 15,
-  };
+  bool closing_active_session_ = false;
 };
 
 #endif  // CHROME_BROWSER_ANDROID_METRICS_UMA_SESSION_STATS_H_

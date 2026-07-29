@@ -4,6 +4,8 @@
 
 #include "ui/gl/angle_platform_impl.h"
 
+#include <string>
+
 #include "base/base64.h"
 #include "base/compiler_specific.h"
 #include "base/functional/bind.h"
@@ -16,16 +18,15 @@
 #include "base/task/thread_pool/thread_pool_instance.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/angle/include/platform/PlatformMethods.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 #include "ui/gl/gl_bindings.h"
 
 namespace angle {
 
 namespace {
 
-ResetDisplayPlatformFunc g_angle_reset_platform = nullptr;
-
 double ANGLEPlatformImpl_currentTime(PlatformMethods* platform) {
-  return base::Time::Now().ToDoubleT();
+  return base::Time::Now().InSecondsFSinceUnixEpoch();
 }
 
 double ANGLEPlatformImpl_monotonicallyIncreasingTime(
@@ -62,27 +63,48 @@ TraceEventHandle ANGLEPlatformImpl_addTraceEvent(
     const unsigned long long* arg_values,
     unsigned char flags) {
   base::TimeTicks timestamp_tt = base::TimeTicks() + base::Seconds(timestamp);
+
+  if (phase == 'C') {
+    // SAFETY: This callback is invoked by ANGLE with `arg_values` and
+    // `arg_names` arrays containing `num_args` elements. We verify `num_args`
+    // before indexing into these arrays, ensuring all accesses are within
+    // bounds.
+    UNSAFE_BUFFERS({
+      if (num_args == 1) {
+        int value = static_cast<int>(arg_values[0]);
+        TRACE_COUNTER("gpu",
+                      perfetto::CounterTrack(perfetto::StaticString(name)),
+                      timestamp_tt, value);
+      } else if (num_args == 2) {
+        int value1 = static_cast<int>(arg_values[0]);
+        int value2 = static_cast<int>(arg_values[1]);
+        std::string track1_name = std::string(name) + "." + arg_names[0];
+        std::string track2_name = std::string(name) + "." + arg_names[1];
+        TRACE_COUNTER(
+            "gpu", perfetto::CounterTrack(perfetto::DynamicString(track1_name)),
+            timestamp_tt, value1);
+        TRACE_COUNTER(
+            "gpu", perfetto::CounterTrack(perfetto::DynamicString(track2_name)),
+            timestamp_tt, value2);
+      }
+    });
+    return 0;
+  }
+
   base::trace_event::TraceArguments args(num_args, arg_names, arg_types,
                                          arg_values);
-  base::trace_event::TraceEventHandle handle =
-      TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_THREAD_ID_AND_TIMESTAMP(
-          phase, category_group_enabled, name,
-          trace_event_internal::kGlobalScope, id, trace_event_internal::kNoId,
-          base::PlatformThread::CurrentId(), timestamp_tt, &args, flags);
-  TraceEventHandle result;
-  memcpy(&result, &handle, sizeof(result));
-  return result;
+  TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_THREAD_ID_AND_TIMESTAMP(
+      phase, category_group_enabled, name, id,
+      base::PlatformThread::CurrentId(), timestamp_tt, &args, flags);
+  return 0;
 }
 
 void ANGLEPlatformImpl_updateTraceEventDuration(
     PlatformMethods* platform,
     const unsigned char* category_group_enabled,
     const char* name,
-    TraceEventHandle handle) {
-  base::trace_event::TraceEventHandle trace_event_handle;
-  memcpy(&trace_event_handle, &handle, sizeof(handle));
-  TRACE_EVENT_API_UPDATE_TRACE_EVENT_DURATION(category_group_enabled, name,
-                                              trace_event_handle);
+    TraceEventHandle) {
+  TRACE_EVENT_API_UPDATE_TRACE_EVENT_DURATION(category_group_enabled, name);
 }
 
 void ANGLEPlatformImpl_histogramCustomCounts(PlatformMethods* platform,
@@ -133,65 +155,25 @@ void ANGLEPlatformImpl_postWorkerTask(PlatformMethods* platform,
                                       PostWorkerTaskCallback callback,
                                       void* user_data) {
   base::ThreadPool::PostTask(
-      FROM_HERE, {base::TaskPriority::USER_VISIBLE},
+      FROM_HERE, {base::TaskPriority::USER_BLOCKING},
       base::BindOnce(&AnglePlatformImpl_runWorkerTask, callback, user_data));
 }
 
-int g_cache_hit_count = 0;
-int g_cache_miss_count = 0;
-
-base::Lock& GetCacheStatsLock() {
-  static base::NoDestructor<base::Lock> lock;
-  return *lock;
-}
-
-void RecordCacheUse() {
-  base::AutoLock lock(GetCacheStatsLock());
-  base::UmaHistogramCounts100("GPU.ANGLE.MetalShader.CacheHitCount",
-                              g_cache_hit_count);
-  base::UmaHistogramCounts100("GPU.ANGLE.MetalShader.CacheMissCount",
-                              g_cache_miss_count);
-}
-
 void ANGLEPlatformImpl_recordShaderCacheUse(bool in_cache) {
-  static bool did_schedule_log = false;
-  bool post_task = false;
-  {
-    base::AutoLock lock(GetCacheStatsLock());
-    if (!did_schedule_log) {
-      did_schedule_log = true;
-      post_task = true;
-    }
-    if (in_cache) {
-      ++g_cache_hit_count;
-    } else {
-      ++g_cache_miss_count;
-    }
-  }
-  if (post_task) {
-    // Record the stats soonish after the first call. Ideally this would be
-    // logged along with startup, but that's rather complex to determine from
-    // here (as well as pluming through to browser side).
-    // The 90 seconds comes from the 99 percentile of startup time on macos.
-    base::ThreadPool::PostDelayedTask(
-        FROM_HERE, {base::TaskPriority::BEST_EFFORT},
-        base::BindOnce(&RecordCacheUse), base::Seconds(90));
-  }
+  // Metrics were no longer required, we can remove once Angle no longer
+  // requires the method.
 }
 
 }  // anonymous namespace
 
 NO_SANITIZE("cfi-icall")
-bool InitializePlatform(EGLDisplay display) {
+bool InitializePlatform(EGLDisplay display,
+                        GLGetProcAddressProc get_proc_address) {
   GetDisplayPlatformFunc angle_get_platform =
       reinterpret_cast<GetDisplayPlatformFunc>(
-          eglGetProcAddress("ANGLEGetDisplayPlatform"));
+          get_proc_address("ANGLEGetDisplayPlatform"));
   if (!angle_get_platform)
     return false;
-
-  // Save the pointer to the destroy function here to avoid crash.
-  g_angle_reset_platform = reinterpret_cast<ResetDisplayPlatformFunc>(
-      eglGetProcAddress("ANGLEResetDisplayPlatform"));
 
   PlatformMethods* platformMethods = nullptr;
   if (!angle_get_platform(static_cast<EGLDisplayType>(display),
@@ -225,10 +207,14 @@ bool InitializePlatform(EGLDisplay display) {
 }
 
 NO_SANITIZE("cfi-icall")
-void ResetPlatform(EGLDisplay display) {
-  if (!g_angle_reset_platform)
+void ResetPlatform(EGLDisplay display, GLGetProcAddressProc get_proc_address) {
+  ResetDisplayPlatformFunc angle_reset_platform =
+      reinterpret_cast<ResetDisplayPlatformFunc>(
+          get_proc_address("ANGLEResetDisplayPlatform"));
+  if (!angle_reset_platform) {
     return;
-  g_angle_reset_platform(static_cast<EGLDisplayType>(display));
+  }
+  angle_reset_platform(static_cast<EGLDisplayType>(display));
 }
 
 }  // namespace angle

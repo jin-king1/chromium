@@ -4,6 +4,8 @@
 
 #include "chromeos/ash/components/network/profile_policies.h"
 
+#include <string_view>
+
 #include "base/containers/flat_set.h"
 #include "base/functional/callback.h"
 #include "base/test/values_test_util.h"
@@ -25,9 +27,9 @@ using ::testing::Pair;
 using ::testing::UnorderedElementsAre;
 
 // Creates a list containing clones of elements passed in the initializer list.
-base::Value::List NetworkConfigsList(
-    std::initializer_list<const base::Value::Dict*> network_configs) {
-  base::Value::List result;
+base::ListValue NetworkConfigsList(
+    std::initializer_list<const base::DictValue*> network_configs) {
+  base::ListValue result;
   for (const auto* network_config : network_configs) {
     result.Append(network_config->Clone());
   }
@@ -38,29 +40,26 @@ base::Value::List NetworkConfigsList(
 // {
 //   "guid": <passed_guid>
 // }
-base::Value::Dict NetworkConfig(base::StringPiece guid) {
-  base::Value::Dict result;
-  result.Set(::onc::network_config::kGUID, guid);
-  return result;
+base::DictValue NetworkConfig(std::string_view guid) {
+  return base::DictValue().Set(::onc::network_config::kGUID, guid);
 }
 
 bool FalseShillPropertiesMatcher(
-    const base::Value::Dict& onc_network_configuration,
-    const base::Value::Dict& shill_properties) {
+    const base::DictValue& onc_network_configuration,
+    const base::DictValue& shill_properties) {
   return false;
 }
 
-bool EqShillPropertiesMatcher(
-    const base::Value::Dict& onc_network_configuration,
-    const base::Value::Dict& shill_properties) {
+bool EqShillPropertiesMatcher(const base::DictValue& onc_network_configuration,
+                              const base::DictValue& shill_properties) {
   return onc_network_configuration == shill_properties;
 }
 
 // A runtime values setter which doesn't change its input ONC dictionary.
 // Useful for emulating that setting runtime values resulted in no change from
 // the "original" ONC dictionary.
-base::Value::Dict NoOp(
-    const base::Value::Dict& onc_network_configuration,
+base::DictValue NoOp(
+    const base::DictValue& onc_network_configuration,
     const base::flat_map<std::string, std::string>& profile_wide_expansions,
     const client_cert::ResolvedCert& resolved_cert) {
   return onc_network_configuration.Clone();
@@ -70,13 +69,13 @@ base::Value::Dict NoOp(
 // dictionary keys. Useful for checking behavior when variable
 // setting runtime values actually changes the ONC dictionary, and for easy
 // verification of the values that have been passed to the RuntimeValuesSetter.
-base::Value::Dict Inject(
-    const base::Value::Dict& onc_network_configuration,
+base::DictValue Inject(
+    const base::DictValue& onc_network_configuration,
     const base::flat_map<std::string, std::string>& profile_wide_expansions,
     const client_cert::ResolvedCert& resolved_cert) {
-  base::Value::Dict result = onc_network_configuration.Clone();
+  base::DictValue result = onc_network_configuration.Clone();
 
-  base::Value::Dict profile_wide_expansions_dict;
+  base::DictValue profile_wide_expansions_dict;
   for (const auto& pair : profile_wide_expansions) {
     profile_wide_expansions_dict.Set(pair.first, pair.second);
   }
@@ -85,17 +84,16 @@ base::Value::Dict Inject(
 
   if (resolved_cert.status() ==
       client_cert::ResolvedCert::Status::kNothingMatched) {
-    base::Value::Dict cert_dict;
-    cert_dict.Set("status", "no cert");
-    result.Set("cert_info", std::move(cert_dict));
+    result.Set("cert_info", base::DictValue().Set("status", "no cert"));
   } else if (resolved_cert.status() ==
              client_cert::ResolvedCert::Status::kCertMatched) {
-    base::Value::Dict cert_dict;
+    auto cert_dict = base::DictValue()
+                         .Set("slot_id", resolved_cert.slot_id())
+                         .Set("pkcs11_id", resolved_cert.pkcs11_id());
     for (const auto& pair : resolved_cert.variable_expansions()) {
       cert_dict.Set(pair.first, pair.second);
     }
-    cert_dict.Set("slot_id", resolved_cert.slot_id());
-    cert_dict.Set("pkcs11_id", resolved_cert.pkcs11_id());
+
     result.Set("cert_info", std::move(cert_dict));
   }
 
@@ -115,11 +113,8 @@ TEST(ProfilePoliciesTest, GlobalNetworkConfigIsEmpty) {
 
 // Sets / retrieves GlobalNetworkConfig.
 TEST(ProfilePoliciesTest, SetAndOverwriteGlobalNetworkConfig) {
-  base::Value::Dict global_network_config_1;
-  global_network_config_1.Set("key1", "value1");
-
-  base::Value::Dict global_network_config_2;
-  global_network_config_2.Set("key2", "value2");
+  auto global_network_config_1 = base::DictValue().Set("key1", "value1");
+  auto global_network_config_2 = base::DictValue().Set("key2", "value2");
 
   ProfilePolicies profile_policies;
   profile_policies.SetGlobalNetworkConfig(global_network_config_1);
@@ -145,7 +140,7 @@ TEST(ProfilePoliciesTest, NoNetworkPolicy) {
 // The original policy (none) had no network configs.
 // The new policy has no network configs.
 TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListZeroToZero) {
-  base::Value::List network_configs;
+  base::ListValue network_configs;
 
   ProfilePolicies profile_policies;
   base::flat_set<std::string> new_or_modified_guids =
@@ -160,8 +155,8 @@ TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListZeroToZero) {
 // The original policy (none) had no network configs.
 // The new policy has one network config.
 TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListZeroToOne) {
-  base::Value::Dict network_config_1 = NetworkConfig("guid1");
-  base::Value::List network_configs = NetworkConfigsList({&network_config_1});
+  base::DictValue network_config_1 = NetworkConfig("guid1");
+  base::ListValue network_configs = NetworkConfigsList({&network_config_1});
 
   ProfilePolicies profile_policies;
   base::flat_set<std::string> new_or_modified_guids =
@@ -180,15 +175,15 @@ TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListZeroToOne) {
 // Goes from no policy (0 networks) -> policy with 1 network -> policy with 0
 // networks.
 TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListOneToZero) {
-  base::Value::Dict network_config_1 = NetworkConfig("guid1");
-  base::Value::List network_configs_orig =
+  base::DictValue network_config_1 = NetworkConfig("guid1");
+  base::ListValue network_configs_orig =
       NetworkConfigsList({&network_config_1});
 
   ProfilePolicies profile_policies;
   profile_policies.ApplyOncNetworkConfigurationList(network_configs_orig);
   EXPECT_THAT(profile_policies.GetAllPolicyGuids(), ElementsAre("guid1"));
 
-  base::Value::List network_configs_new = NetworkConfigsList({});
+  base::ListValue network_configs_new = NetworkConfigsList({});
   base::flat_set<std::string> new_or_modified_guids =
       profile_policies.ApplyOncNetworkConfigurationList(network_configs_new);
   EXPECT_THAT(new_or_modified_guids, IsEmpty());
@@ -200,8 +195,8 @@ TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListOneToZero) {
 // Applies a network policy and checks accessors to per-network policies.
 // Tests re-application of exactly the same policy (no effective change).
 TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListNoChange) {
-  base::Value::Dict network_config_1 = NetworkConfig("guid1");
-  base::Value::List network_configs_orig =
+  base::DictValue network_config_1 = NetworkConfig("guid1");
+  base::ListValue network_configs_orig =
       NetworkConfigsList({&network_config_1});
 
   ProfilePolicies profile_policies;
@@ -220,8 +215,8 @@ TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListNoChange) {
 // Applies another policy where "guid1" has changed contents.
 // Tests that "guid1" is reported as changed and has the new contents.
 TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListChange) {
-  base::Value::Dict network_config_orig = NetworkConfig("guid1");
-  base::Value::List network_configs_orig =
+  base::DictValue network_config_orig = NetworkConfig("guid1");
+  base::ListValue network_configs_orig =
       NetworkConfigsList({&network_config_orig});
 
   ProfilePolicies profile_policies;
@@ -229,9 +224,9 @@ TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListChange) {
   ASSERT_TRUE(profile_policies.GetPolicyByGuid("guid1"));
   EXPECT_EQ(*profile_policies.GetPolicyByGuid("guid1"), network_config_orig);
 
-  base::Value::Dict network_config_changed = network_config_orig.Clone();
+  base::DictValue network_config_changed = network_config_orig.Clone();
   network_config_changed.Set("changed", "changed");
-  base::Value::List network_configs_changed =
+  base::ListValue network_configs_changed =
       NetworkConfigsList({&network_config_changed});
 
   base::flat_set<std::string> new_or_modified_guids =
@@ -248,11 +243,11 @@ TEST(ProfilePoliciesTest, ApplyOncNetworkConfigurationListChange) {
 // Applies a network policy with multiple NetworkConfiguration elements and
 // checks accessors to per-network policies.
 TEST(ProfilePoliciesTest, MultipleElements) {
-  base::Value::Dict network_config_1 = NetworkConfig("guid1");
+  base::DictValue network_config_1 = NetworkConfig("guid1");
   network_config_1.Set("test1", "value1");
-  base::Value::Dict network_config_2 = NetworkConfig("guid2");
+  base::DictValue network_config_2 = NetworkConfig("guid2");
   network_config_2.Set("test2", "value2");
-  base::Value::List network_configs_orig =
+  base::ListValue network_configs_orig =
       NetworkConfigsList({&network_config_1, &network_config_2});
 
   ProfilePolicies profile_policies;
@@ -267,8 +262,8 @@ TEST(ProfilePoliciesTest, MultipleElements) {
 
 // Tests HasPolicyMatchingShillProperties for the case that no policy matches.
 TEST(ProfilePoliciesTest, HasPolicyMatchingShillPropertiesNoMatch) {
-  base::Value::Dict network_config_1 = NetworkConfig("guid1");
-  base::Value::List network_configs_orig =
+  base::DictValue network_config_1 = NetworkConfig("guid1");
+  base::ListValue network_configs_orig =
       NetworkConfigsList({&network_config_1});
 
   ProfilePolicies profile_policies;
@@ -277,15 +272,15 @@ TEST(ProfilePoliciesTest, HasPolicyMatchingShillPropertiesNoMatch) {
   profile_policies.ApplyOncNetworkConfigurationList(network_configs_orig);
 
   EXPECT_FALSE(
-      profile_policies.HasPolicyMatchingShillProperties(base::Value::Dict()));
+      profile_policies.HasPolicyMatchingShillProperties(base::DictValue()));
 }
 
 // Tests HasPolicyMatchingShillProperties for the case that a policy matches.
 TEST(ProfilePoliciesTest, HasPolicyMatchingShillPropertiesMatch) {
-  base::Value::Dict network_config_1 = NetworkConfig("guid1");
-  base::Value::Dict network_config_2 = NetworkConfig("guid2");
+  base::DictValue network_config_1 = NetworkConfig("guid1");
+  base::DictValue network_config_2 = NetworkConfig("guid2");
   network_config_2.Set("marker", "value");
-  base::Value::List network_configs_orig =
+  base::ListValue network_configs_orig =
       NetworkConfigsList({&network_config_1, &network_config_2});
 
   ProfilePolicies profile_policies;
@@ -300,8 +295,8 @@ TEST(ProfilePoliciesTest, HasPolicyMatchingShillPropertiesMatch) {
 // Tests that profile-wide expansions apply if they were configured before the
 // NetworkConfiguration was applied.
 TEST(ProfilePoliciesTest, ProfileWideExpansionsAlreadyExist) {
-  base::Value::Dict network_config = NetworkConfig("guid1");
-  base::Value::List network_configs = NetworkConfigsList({&network_config});
+  base::DictValue network_config = NetworkConfig("guid1");
+  base::ListValue network_configs = NetworkConfigsList({&network_config});
 
   ProfilePolicies profile_policies;
 
@@ -334,8 +329,8 @@ TEST(ProfilePoliciesTest, ProfileWideExpansionsAlreadyExist) {
 // expander (in reality it would happen if no network configuration contains a
 // known expansion).
 TEST(ProfilePoliciesTest, ChangeNoEffect) {
-  base::Value::Dict network_config_1 = NetworkConfig("guid1");
-  base::Value::List network_configs = NetworkConfigsList({&network_config_1});
+  base::DictValue network_config_1 = NetworkConfig("guid1");
+  base::ListValue network_configs = NetworkConfigsList({&network_config_1});
 
   ProfilePolicies profile_policies;
   profile_policies.SetRuntimeValuesSetterForTesting(base::BindRepeating(&NoOp));
@@ -355,9 +350,9 @@ TEST(ProfilePoliciesTest, ChangeNoEffect) {
 // expansions is updated accordingly and the setter for the expansions returns
 // back the set of affected NetworkConfiguration GUIDs to its caller.
 TEST(ProfilePoliciesTest, ExpansionsChangeAffectsNetworkConfiguration) {
-  base::Value::Dict network_config_1 = NetworkConfig("guid1");
-  base::Value::Dict network_config_2 = NetworkConfig("guid2");
-  base::Value::List network_configs =
+  base::DictValue network_config_1 = NetworkConfig("guid1");
+  base::DictValue network_config_2 = NetworkConfig("guid2");
+  base::ListValue network_configs =
       NetworkConfigsList({&network_config_1, &network_config_2});
 
   ProfilePolicies profile_policies;
@@ -485,8 +480,8 @@ TEST(ProfilePoliciesTest, NetworkConfigurationChangeWithExistingExpansions) {
   }
 
   {
-    base::Value::Dict network_config_1 = NetworkConfig("guid1");
-    base::Value::List network_configs = NetworkConfigsList({&network_config_1});
+    base::DictValue network_config_1 = NetworkConfig("guid1");
+    base::ListValue network_configs = NetworkConfigsList({&network_config_1});
     base::flat_set<std::string> modified_guids =
         profile_policies.ApplyOncNetworkConfigurationList(network_configs);
     EXPECT_THAT(modified_guids, UnorderedElementsAre("guid1"));
@@ -512,9 +507,9 @@ TEST(ProfilePoliciesTest, NetworkConfigurationChangeWithExistingExpansions) {
                         }
                       })"))));
   {
-    base::Value::Dict network_config_1 = NetworkConfig("guid1");
+    base::DictValue network_config_1 = NetworkConfig("guid1");
     network_config_1.Set("modified", "yes");
-    base::Value::List network_configs = NetworkConfigsList({&network_config_1});
+    base::ListValue network_configs = NetworkConfigsList({&network_config_1});
     base::flat_set<std::string> modified_guids =
         profile_policies.ApplyOncNetworkConfigurationList(network_configs);
     EXPECT_THAT(modified_guids, UnorderedElementsAre("guid1"));
@@ -538,8 +533,8 @@ TEST(ProfilePoliciesTest, NetworkConfigurationChangeWithExistingExpansions) {
 // Tests that GetOriginalPolicyByGuid returns the policy without
 // variable expansions.
 TEST(ProfilePoliciesTest, GetOriginalPolicyByGuid) {
-  base::Value::Dict network_config_1 = NetworkConfig("guid1");
-  base::Value::List network_configs = NetworkConfigsList({&network_config_1});
+  base::DictValue network_config_1 = NetworkConfig("guid1");
+  base::ListValue network_configs = NetworkConfigsList({&network_config_1});
 
   ProfilePolicies profile_policies;
 
@@ -552,9 +547,9 @@ TEST(ProfilePoliciesTest, GetOriginalPolicyByGuid) {
 
   profile_policies.SetProfileWideExpansions(
       {{"profileWideVar", "profileWideValue"}});
-  const base::Value::Dict* policy_with_expansions =
+  const base::DictValue* policy_with_expansions =
       profile_policies.GetPolicyByGuid("guid1");
-  const base::Value::Dict* policy_without_expansions =
+  const base::DictValue* policy_without_expansions =
       profile_policies.GetOriginalPolicyByGuid("guid1");
   ASSERT_TRUE(policy_with_expansions);
   ASSERT_TRUE(policy_without_expansions);

@@ -10,19 +10,6 @@ DictationMacrosTest = class extends DictationE2ETestBase {
   async setUpDeferred() {
     await super.setUpDeferred();
 
-    await importModule(
-        'MacroError', '/accessibility_common/dictation/macros/macro.js');
-    await importModule(
-        'StopListeningMacro',
-        '/accessibility_common/dictation/macros/stop_listening_macro.js');
-    await importModule(
-        'InputController',
-        '/accessibility_common/dictation/input_controller.js');
-    await importModule(
-        'UnselectTextMacro',
-        '/accessibility_common/dictation/macros/repeatable_key_press_macro.js');
-    await importModule(
-        'Context', '/accessibility_common/dictation/context_checker.js');
     this.mockAccessibilityPrivate.enableFeatureForTest(
         'dictationContextChecking', true);
   }
@@ -30,7 +17,7 @@ DictationMacrosTest = class extends DictationE2ETestBase {
 
 AX_TEST_F('DictationMacrosTest', 'ValidInputTextViewMacro', async function() {
   // Toggle Dictation on so that the Macro will be runnable.
-  this.toggleDictationOn();
+  await this.toggleDictationOn();
   const macro = await this.getInputTextStrategy().parse('Hello world');
   assertEquals('INPUT_TEXT_VIEW', macro.getNameAsString());
   const checkContextResult = macro.checkContext();
@@ -57,7 +44,7 @@ AX_TEST_F('DictationMacrosTest', 'InvalidInputTextViewMacro', async function() {
 AX_TEST_F('DictationMacrosTest', 'RepeatableKeyPressMacro', async function() {
   // DELETE_PREV_CHAR is one of many RepeatableKeyPressMacros.
   // Toggle Dictation on so that the Macro will be runnable.
-  this.toggleDictationOn();
+  await this.toggleDictationOn();
   const macro = await this.getSimpleParseStrategy().parse('delete');
   assertEquals('DELETE_PREV_CHAR', macro.getNameAsString());
   const checkContextResult = macro.checkContext();
@@ -68,24 +55,26 @@ AX_TEST_F('DictationMacrosTest', 'RepeatableKeyPressMacro', async function() {
   assertEquals(undefined, runMacroResult.error);
 });
 
-AX_TEST_F('DictationMacrosTest', 'ListCommandsMacro', async function() {
-  this.toggleDictationOn();
-  const macro = await this.getSimpleParseStrategy().parse('help');
-  assertEquals('LIST_COMMANDS', macro.getNameAsString());
-  const checkContextResult = macro.checkContext();
-  assertTrue(checkContextResult.canTryAction);
-  assertEquals(undefined, checkContextResult.error);
-  const runMacroResult = macro.run();
-  assertTrue(runMacroResult.isSuccess);
-  assertEquals(undefined, runMacroResult.error);
-});
+// TODO(crbug.com/420947900): Test is flaky.
+AX_TEST_F(
+    'DictationMacrosTest', 'DISABLED_ListCommandsMacro', async function() {
+      await this.toggleDictationOn();
+      const macro = await this.getSimpleParseStrategy().parse('help');
+      assertEquals('LIST_COMMANDS', macro.getNameAsString());
+      const checkContextResult = macro.checkContext();
+      assertTrue(checkContextResult.canTryAction);
+      assertEquals(undefined, checkContextResult.error);
+      const runMacroResult = macro.run();
+      assertTrue(runMacroResult.isSuccess);
+      assertEquals(undefined, runMacroResult.error);
+    });
 
 AX_TEST_F('DictationMacrosTest', 'StopListeningMacro', async function() {
-  this.toggleDictationOn();
+  await this.toggleDictationOn();
   assertTrue(this.getDictationActive());
   assertTrue(this.getSpeechRecognitionActive());
-  const macro = new StopListeningMacro();
-  assertEquals('STOP_LISTENING', macro.getNameAsString());
+  const macro = new ToggleDictationMacro();
+  assertEquals('TOGGLE_DICTATION', macro.getNameAsString());
   const checkContextResult = macro.checkContext();
   assertTrue(checkContextResult.canTryAction);
   assertEquals(undefined, checkContextResult.error);
@@ -120,7 +109,7 @@ SYNC_TEST_F('DictationMacrosTest', 'SmartMacros', async function() {
 
 AX_TEST_F(
     'DictationMacrosTest', 'UnselectInactiveInputController', async function() {
-      const macro = new UnselectTextMacro(new InputController());
+      const macro = new UnselectTextMacro(new InputControllerImpl());
       assertEquals('UNSELECT_TEXT', macro.getNameAsString());
       const contextResult = macro.checkContext();
       assertFalse(contextResult.canTryAction);

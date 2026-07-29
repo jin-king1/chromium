@@ -4,11 +4,11 @@
 
 #include "chrome/browser/ash/power/ml/smart_dim/ml_agent_util.h"
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/logging.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace ash {
 namespace power {
@@ -20,7 +20,7 @@ namespace {
 // Both input and output should only contain 1 node id.
 bool PopulateMapFromNamesAndNodes(
     const std::vector<std::string>& names,
-    const base::Value::List& nodes,
+    const base::ListValue& nodes,
     base::flat_map<std::string, int>* name_2_node_map) {
   if (names.size() != 1) {
     DVLOG(1) << "names should contain only 1 string element.";
@@ -51,17 +51,17 @@ bool ParseMetaInfoFromJsonObject(const base::Value& root,
          inputs && outputs);
   DCHECK(root.is_dict());
 
-  const base::Value::Dict& root_dict = root.GetDict();
+  const base::DictValue& root_dict = root.GetDict();
   const std::string* metrics_model_name_value =
       root_dict.FindString("metrics_model_name");
-  const absl::optional<double> dim_threshold_value =
+  const std::optional<double> dim_threshold_value =
       root_dict.FindDouble("threshold");
-  const absl::optional<int> expected_feature_size_value =
+  const std::optional<int> expected_feature_size_value =
       root_dict.FindInt("expected_feature_size");
 
   if (!metrics_model_name_value || *metrics_model_name_value == "" ||
-      dim_threshold_value == absl::nullopt ||
-      expected_feature_size_value == absl::nullopt) {
+      dim_threshold_value == std::nullopt ||
+      expected_feature_size_value == std::nullopt) {
     DVLOG(1) << "metadata_json missing expected field(s).";
     return false;
   }
@@ -71,8 +71,8 @@ bool ParseMetaInfoFromJsonObject(const base::Value& root,
   *expected_feature_size =
       static_cast<size_t>(expected_feature_size_value.value());
 
-  const base::Value::List* input_nodes = root_dict.FindList("input_nodes");
-  const base::Value::List* output_nodes = root_dict.FindList("output_nodes");
+  const base::ListValue* input_nodes = root_dict.FindList("input_nodes");
+  const base::ListValue* output_nodes = root_dict.FindList("output_nodes");
 
   if (!input_nodes || !output_nodes ||
       !PopulateMapFromNamesAndNodes({kSmartDimInputNodeName}, *input_nodes,

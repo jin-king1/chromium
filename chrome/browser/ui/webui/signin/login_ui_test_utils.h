@@ -6,17 +6,18 @@
 #define CHROME_BROWSER_UI_WEBUI_SIGNIN_LOGIN_UI_TEST_UTILS_H_
 
 #include <string>
-#include <vector>
 
 #include "base/time/time.h"
 #include "chrome/browser/ui/webui/signin/signin_email_confirmation_dialog.h"
-#include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/base/consent_level.h"
 
 class Browser;
+class BrowserWindowInterface;
 
 namespace login_ui_test_utils {
 
-constexpr base::TimeDelta kSyncConfirmationDialogTimeout = base::Seconds(30);
+inline constexpr base::TimeDelta kSyncConfirmationDialogTimeout =
+    base::Seconds(30);
 
 // Blocks until the login UI is available and ready for authorization.
 void WaitUntilUIReady(Browser* browser);
@@ -40,21 +41,57 @@ void SigninInOldGaiaFlow(content::WebContents* web_contents,
 
 // A function to sign in a user using Chrome sign-in UI interface.
 // This will block until a signin succeeded or failed notification is observed.
-bool SignInWithUI(Browser* browser,
+bool SignInWithUI(BrowserWindowInterface* browser,
                   const std::string& email,
-                  const std::string& password);
+                  const std::string& password,
+                  signin::ConsentLevel consent_level);
 
 // Waits for sync confirmation dialog to get displayed, then executes javascript
 // to click on confirm button. Returns false if dialog wasn't dismissed before
 // |timeout|.
-bool ConfirmSyncConfirmationDialog(
+[[nodiscard]] bool ConfirmSyncConfirmationDialog(
+    Browser* browser,
+    base::TimeDelta timeout = kSyncConfirmationDialogTimeout);
+
+// Waits for the history sync optin dialog to get displayed, then executes
+// javascript to click on confirm button.
+// When `wait_for_dismiss` is true, the method returns true if dialog is
+// dismissed before `timeout`, false otheriwise.
+// When `wait_for_dismiss` is false, the method returns true if the history
+// sync optin service completes successfully a flow and is reset before `timeout`
+// false otherwise.
+// Note: The case with `wait_for_dismiss` set to false, works only for impressions
+// of the dialog via the corresponding history sync optin service.
+[[nodiscard]] bool ConfirmHistorySyncOptinDialog(
+    Browser* browser,
+    base::TimeDelta timeout = kSyncConfirmationDialogTimeout,
+    bool wait_for_dismiss = true);
+
+// Waits for the history sync optin dialog to get displayed, then executes
+// javascript to click on reject button.
+// When `wait_for_dismiss` is true, the method returns true if dialog is
+// dismissed before `timeout`, false otheriwise.
+// When `wait_for_dismiss` is false, the method returns true if the history
+// sync optin service completes successfully a flow and is reset before `timeout`
+// false otherwise.
+// Note: The case with `wait_for_dismiss` set to false, works only for impressions
+// of the dialog via the corresponding history sync optin service.
+[[nodiscard]] bool RejectHistorySyncOptinDialog(
+    Browser* browser,
+    base::TimeDelta timeout = kSyncConfirmationDialogTimeout,
+    bool wait_for_dismiss = true);
+
+// Waits for sync confirmation dialog to get displayed, then executes javascript
+// to click on settings button. Returns false if dialog wasn't dismissed before
+// |timeout|.
+[[nodiscard]] bool GoToSettingsSyncConfirmationDialog(
     Browser* browser,
     base::TimeDelta timeout = kSyncConfirmationDialogTimeout);
 
 // Waits for sync confirmation dialog to get displayed, then executes javascript
 // to click on cancel button. Returns false if dialog wasn't dismissed before
 // |timeout|.
-bool CancelSyncConfirmationDialog(
+[[nodiscard]] bool CancelSyncConfirmationDialog(
     Browser* browser,
     base::TimeDelta timeout = kSyncConfirmationDialogTimeout);
 
@@ -66,16 +103,6 @@ bool CompleteSigninEmailConfirmationDialog(
     base::TimeDelta timeout,
     SigninEmailConfirmationDialog::Action action);
 
-// Waits for the reauth confirmation dialog to get displayed, then executes
-// javascript to click on confirm button. Returns false if dialog wasn't
-// dismissed before |timeout|.
-bool ConfirmReauthConfirmationDialog(Browser* browser, base::TimeDelta timeout);
-
-// Waits for the reauth confirmation dialog to get displayed, then executes
-// javascript to click on cancel button. Returns false if dialog wasn't
-// dismissed before |timeout|.
-bool CancelReauthConfirmationDialog(Browser* browser, base::TimeDelta timeout);
-
 // Waits for profile customization dialog to get displayed, then executes
 // javascript to click on done button. Returns false if dialog wasn't
 // dismissed before |timeout|.
@@ -83,6 +110,8 @@ bool CompleteProfileCustomizationDialog(
     Browser* browser,
     base::TimeDelta timeout = kSyncConfirmationDialogTimeout);
 
+// Waits for an element from the sign-in page to appear.
+void WaitForSigninPageToLoad(content::WebContents* web_contents);
 }  // namespace login_ui_test_utils
 
 #endif  // CHROME_BROWSER_UI_WEBUI_SIGNIN_LOGIN_UI_TEST_UTILS_H_

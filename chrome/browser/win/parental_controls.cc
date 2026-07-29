@@ -4,8 +4,9 @@
 
 #include "chrome/browser/win/parental_controls.h"
 
-#include <combaseapi.h>
 #include <windows.h>
+
+#include <combaseapi.h>
 #include <winerror.h>
 #include <wpcapi.h>
 #include <wrl/client.h>
@@ -17,7 +18,9 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/singleton.h"
-#include "base/strings/stringprintf.h"
+#include "base/strings/strcat.h"
+#include "base/strings/strcat_win.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/scoped_blocking_call.h"
@@ -65,7 +68,7 @@ class WinParentalControlsValue {
     // Note that this CHECK replaced a previous base::ScopedBlockingCall, which
     // was incorrect because there were no guarantees that
     // InitializeWinParentalControls() would finish executing asynchronously
-    // before the value was needed. See https://crbug.com/1411815#c7.
+    // before the value was needed. See https://crbug.com/40890509#comment8.
     if (!g_has_called_initialize_win_parental_controls_) {
       // This uses CHECK_IS_TEST() to skip verifying that
       // InitializeWinParentalControls() got called in tests because updating
@@ -111,12 +114,10 @@ class WinParentalControlsValue {
     if (!base::win::GetUserSidString(&user_sid))
       return;
 
-    static constexpr wchar_t kWebFilterRegistryPathFormat[] =
-        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Parental "
-        "Controls\\Users\\%ls\\Web";
-
     std::wstring web_filter_key_path =
-        base::StringPrintf(kWebFilterRegistryPathFormat, user_sid.c_str());
+        base::StrCat({L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Parental "
+                      L"Controls\\Users\\",
+                      user_sid, L"\\Web"});
     base::win::RegKey web_filter_key(
         HKEY_LOCAL_MACHINE, web_filter_key_path.c_str(), KEY_QUERY_VALUE);
     if (!web_filter_key.Valid())

@@ -1,4 +1,7 @@
 {
+    "global-allow-text-messages": {
+         "AllowTextMessages": "Invalid"
+    },
     "global-disabled-technologies": {
          "DisableNetworkTypes": ["Cellular"]
     },
@@ -698,5 +701,14 @@
       "AutoConnect": false,
       "SMDPAddress" : "BogusSMDPAddress",
       "SMDSAddress" : "BogusSMDSAddress"
+    },
+    "managed-network-invalid-check-captive-portal": {
+      "GUID": "guid",
+      "Type": "Ethernet",
+      "Name": "name",
+      "Ethernet": {
+          "Authentication": "None"
+      },
+      "CheckCaptivePortal": "abdh"
     }
 }

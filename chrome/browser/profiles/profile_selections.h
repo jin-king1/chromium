@@ -5,9 +5,7 @@
 #ifndef CHROME_BROWSER_PROFILES_PROFILE_SELECTIONS_H_
 #define CHROME_BROWSER_PROFILES_PROFILE_SELECTIONS_H_
 
-#include "base/feature_list.h"
-
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include <memory>
 
 class Profile;
 
@@ -56,21 +54,13 @@ class ProfileSelections {
 
     // Builder setters
     Builder& WithRegular(ProfileSelection selection);
-    // Note: When Guest and Regular are not mutually exclusive on Ash and
-    // Lacros, a Profile can potentially return true for both
-    // `IsRegularProfile()` and `IsGuestSession()`. This is currently not
-    // supported by the API, meaning that extra code might need to be added to
-    // make sure all the cases are properly covered. Using the API, if both
-    // `IsRegularProfile()` and `IsGuestSession()` are true, Regular
-    // ProfileSelection logic will be used.
-    // TODO(crbug.com/1348572): remove this comment once `IsGuestSession()` is
-    // fixed.
     Builder& WithGuest(ProfileSelection selection);
     Builder& WithSystem(ProfileSelection selection);
     // In Ash there are internal profiles that are not user profiles, such as a
     // the signin or the lockscreen profile.
-    // Note: ash internal profiles are regular profiles. If the value is not
-    // set, they will default to the regular profiles behavior.
+    // Note: Even though ash internal profiles are technically regular profiles,
+    // many services do not need to be created for them. By default, no service
+    // is created for ash internal profiles.
     Builder& WithAshInternals(ProfileSelection selection);
 
     // Builds the `ProfileSelections`.
@@ -83,17 +73,13 @@ class ProfileSelections {
   // - Predefined `ProfileSelections` builders:
 
   // Only select the regular profile.
-  // Note: Ash internal profiles are of type Regular. In order to have a
-  // different filter for those profiles, a specific builder should be
-  // constructed with a value for
-  // `ProfileSelections::Builder::WithAshInternals()`.
   // +---------+------------+------------+
   // |         |  Original  |    OTR     |
   // +---------+------------+------------+
   // | Regular | self       | no profile |
   // | Guest   | no profile | no profile |
   // | System  | no profile | no profile |
-  // | Ash Int.| self       | no profile |
+  // | Ash Int.| no profile | no profile |
   // +---------+------------+------------+
   static ProfileSelections BuildForRegularProfile();
 
@@ -110,38 +96,31 @@ class ProfileSelections {
 
   // Only select the regular profile and incognito for regular profiles. No
   // profiles for Guest and System profiles.
-  // Note: Ash internal profiles are of type Regular. In order to have a
-  // different filter for those profiles, a specific builder should be
-  // constructed with a value for
-  // `ProfileSelections::Builder::WithAshInternals()`.
   // +---------+------------+------------+
   // |         |  Original  |    OTR     |
   // +---------+------------+------------+
   // | Regular | self       | self       |
   // | Guest   | no profile | no profile |
   // | System  | no profile | no profile |
-  // | Ash Int.| self       | self       |
+  // | Ash Int.| no profile | no profile |
   // +---------+------------+------------+
   static ProfileSelections BuildForRegularAndIncognito();
 
   // Redirects incognito profiles to their original regular profile. No
   // profiles for Guest and System profiles.
-  // Note: Ash internal profiles are of type Regular. In order to have a
-  // different filter for those profiles, a specific builder should be
-  // constructed with a value for
-  // `ProfileSelections::Builder::WithAshInternals()`.
   // +---------+------------+------------+
   // |         |  Original  |    OTR     |
   // +---------+------------+------------+
   // | Regular | self       | original   |
   // | Guest   | no profile | no profile |
   // | System  | no profile | no profile |
-  // | Ash Int.| self       | original   |
+  // | Ash Int.| no profile | no profile |
   // +---------+------------+------------+
   static ProfileSelections BuildRedirectedInIncognito();
 
   // Given a Profile and a ProfileSelection enum, returns the right profile
   // (can potentially return nullptr).
+  // The `profile` is expected to be non-null.
   Profile* ApplyProfileSelection(Profile* profile) const;
 
  private:
@@ -158,16 +137,15 @@ class ProfileSelections {
 
   // Returns the `ProfileSelection` based on the profile information through the
   // set mapping.
-  ProfileSelection GetProfileSelection(const Profile* profile) const;
+  ProfileSelection GetProfileSelection(Profile* profile) const;
 
   // Default value for the mapping of
   // Regular Profile -> `ProfileSelection::kOriginalOnly`
-  // Not assigning values for Guest and System Profiles defaults to
-  // `ProfileSelection::kNone`.
+  // Other Profile -> `ProfileSelection::kNone`.
   ProfileSelection regular_profile_selection_ = ProfileSelection::kOriginalOnly;
-  absl::optional<ProfileSelection> guest_profile_selection_;
-  absl::optional<ProfileSelection> system_profile_selection_;
-  absl::optional<ProfileSelection> ash_internals_profile_selection_;
+  ProfileSelection guest_profile_selection_ = ProfileSelection::kNone;
+  ProfileSelection system_profile_selection_ = ProfileSelection::kNone;
+  ProfileSelection ash_internals_profile_selection_ = ProfileSelection::kNone;
 };
 
-#endif  // !CHROME_BROWSER_PROFILES_PROFILE_SELECTIONS_H_
+#endif  // CHROME_BROWSER_PROFILES_PROFILE_SELECTIONS_H_

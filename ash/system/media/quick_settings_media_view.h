@@ -10,6 +10,9 @@
 
 #include "ash/ash_export.h"
 #include "ash/public/cpp/pagination/pagination_model.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/view.h"
 
 namespace global_media_controls {
@@ -28,15 +31,20 @@ class QuickSettingsMediaViewController;
 
 // Media view displayed in the quick settings view.
 class ASH_EXPORT QuickSettingsMediaView : public views::View {
+  METADATA_HEADER(QuickSettingsMediaView, views::View)
+
  public:
   explicit QuickSettingsMediaView(QuickSettingsMediaViewController* controller);
   QuickSettingsMediaView(const QuickSettingsMediaView&) = delete;
   QuickSettingsMediaView& operator=(const QuickSettingsMediaView&) = delete;
   ~QuickSettingsMediaView() override;
 
+  void Init();
+
   // views::View:
-  gfx::Size CalculatePreferredSize() const override;
-  void Layout() override;
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override;
+  void Layout(PassKey) override;
   void OnGestureEvent(ui::GestureEvent* event) override;
 
   // Shows the given media item in the media view.
@@ -49,17 +57,20 @@ class ASH_EXPORT QuickSettingsMediaView : public views::View {
   // Updates the media item order given the id order in the list.
   void UpdateItemOrder(std::list<std::string> ids);
 
-  // Helper functions for testing.
-  PaginationModel* pagination_model_for_testing() { return &pagination_model_; }
-  std::map<const std::string, global_media_controls::MediaItemUIView*>
+  // Returns the current desired height of the media view. If there are multiple
+  // media items, the height needs to be larger to display the pagination view.
+  int GetMediaViewHeight() const;
+
+  std::map<const std::string,
+           raw_ptr<global_media_controls::MediaItemUIView, CtnExperimental>>
   items_for_testing() {
     return items_;
   }
 
+  base::WeakPtr<QuickSettingsMediaView> AsWeakPtr();
+
  private:
   raw_ptr<QuickSettingsMediaViewController> controller_ = nullptr;
-
-  PaginationModel pagination_model_{this};
 
   std::unique_ptr<PaginationController> pagination_controller_;
 
@@ -67,7 +78,11 @@ class ASH_EXPORT QuickSettingsMediaView : public views::View {
 
   raw_ptr<PaginationView> pagination_view_ = nullptr;
 
-  std::map<const std::string, global_media_controls::MediaItemUIView*> items_;
+  std::map<const std::string,
+           raw_ptr<global_media_controls::MediaItemUIView, CtnExperimental>>
+      items_;
+
+  base::WeakPtrFactory<QuickSettingsMediaView> weak_factory_{this};
 };
 
 }  // namespace ash

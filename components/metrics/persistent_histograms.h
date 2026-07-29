@@ -6,17 +6,18 @@
 #define COMPONENTS_METRICS_PERSISTENT_HISTOGRAMS_H_
 
 #include <string>
+#include <string_view>
 
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/strings/string_piece_forward.h"
 
 // Feature definition for enabling histogram persistence. Note that this feature
 // (along with its param `kPersistentHistogramsStorage`, declared below) is not
-// used for Chrome on Linux, ChromeOS, Windows, macOS, and Android. Instead,
-// histograms are persisted to a memory-mapped file, and set up before field
-// trial initialization (see //chrome/app/chrome_main_delegate.cc).
+// used for Chrome on any platform (Linux, ChromeOS, Windows, macOS, Android,
+// and Fuchsia). Instead, histograms are persisted to a memory-mapped file, and
+// set up before field trial initialization (see
+// //chrome/app/chrome_main_delegate.cc).
 BASE_DECLARE_FEATURE(kPersistentHistogramsFeature);
 
 // If `kPersistentHistogramsStorage` is set to this, histograms will be
@@ -44,6 +45,11 @@ extern const char kBrowserMetricsName[];
 // future session's metrics instead of independently.
 extern const char kDeferredBrowserMetricsName[];
 
+// Get the path under the given base directory that will be used to create a
+// "spare" file if a mapped file is being used for the allocator.
+base::FilePath GetPersistentHistogramsSpareFilePath(
+    const base::FilePath& metrics_dir);
+
 // Do all the checking and work necessary to enable persistent histograms.
 // `metrics_dir` specifies the root directory where persistent histograms will
 // live. If `persistent_histograms_enabled` is false, this is essentially a
@@ -55,7 +61,7 @@ extern const char kDeferredBrowserMetricsName[];
 // should be made when appropriate.
 void InstantiatePersistentHistograms(const base::FilePath& metrics_dir,
                                      bool persistent_histograms_enabled,
-                                     base::StringPiece storage);
+                                     std::string_view storage);
 
 // Schedule the tasks required to cleanup the persistent metrics files.
 void PersistentHistogramsCleanup(const base::FilePath& metrics_dir);

@@ -12,12 +12,13 @@
 #include "ash/public/cpp/projector/projector_new_screencast_precondition.h"
 #include "ash/webui/projector_app/mojom/untrusted_projector.mojom.h"
 #include "ash/webui/projector_app/projector_app_client.h"
-#include "ash/webui/projector_app/projector_oauth_token_fetcher.h"
 #include "ash/webui/projector_app/projector_xhr_sender.h"
 #include "ash/webui/projector_app/public/mojom/projector_types.mojom.h"
 #include "base/files/safe_base_name.h"
 #include "components/prefs/pref_service.h"
+#include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "url/gurl.h"
 
 namespace ash {
@@ -64,7 +65,7 @@ std::string GetPrefName(projector::mojom::PrefsThatProjectorCanAskFor pref) {
       return ash::prefs::kProjectorGalleryOnboardingShowCount;
   }
 
-  NOTREACHED_NORETURN();
+  NOTREACHED();
 }
 
 }  // namespace
@@ -74,11 +75,14 @@ UntrustedProjectorPageHandlerImpl::UntrustedProjectorPageHandlerImpl(
         receiver,
     mojo::PendingRemote<projector::mojom::UntrustedProjectorPage>
         projector_remote,
-    PrefService* pref_service)
+    PrefService* pref_service,
+    signin::IdentityManager* identity_manager,
+    network::mojom::URLLoaderFactory* url_loader_factory)
     : receiver_(this, std::move(receiver)),
       projector_remote_(std::move(projector_remote)),
       pref_service_(pref_service),
-      xhr_sender_(ProjectorAppClient::Get()->GetUrlLoaderFactory()) {
+      identity_manager_(identity_manager),
+      xhr_sender_(identity_manager, url_loader_factory) {
   ProjectorAppClient::Get()->AddObserver(this);
 }
 
@@ -192,11 +196,11 @@ void UntrustedProjectorPageHandlerImpl::StartProjectorSession(
 void UntrustedProjectorPageHandlerImpl::SendXhr(
     const GURL& url,
     projector::mojom::RequestType method,
-    const absl::optional<std::string>& request_body,
+    const std::optional<std::string>& request_body,
     bool use_credentials,
     bool use_api_key,
-    const absl::optional<base::flat_map<std::string, std::string>>& headers,
-    const absl::optional<std::string>& account_email,
+    const std::optional<base::flat_map<std::string, std::string>>& headers,
+    const std::optional<std::string>& account_email,
     SendXhrCallback callback) {
   CHECK(url.is_valid());
   xhr_sender_.Send(
@@ -209,9 +213,9 @@ void UntrustedProjectorPageHandlerImpl::SendXhr(
 void UntrustedProjectorPageHandlerImpl::GetAccounts(
     GetAccountsCallback callback) {
   const std::vector<AccountInfo> accounts =
-      ProjectorOAuthTokenFetcher::GetAccounts();
+      identity_manager_->GetExtendedAccountInfoForAccountsWithRefreshToken();
   const CoreAccountInfo primary_account =
-      ProjectorOAuthTokenFetcher::GetPrimaryAccountInfo();
+      identity_manager_->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin);
 
   std::vector<projector::mojom::AccountPtr> mojo_accounts;
   mojo_accounts.reserve(accounts.size());
@@ -226,6 +230,22 @@ void UntrustedProjectorPageHandlerImpl::GetAccounts(
   std::move(callback).Run(std::move(mojo_accounts));
 }
 
+void UntrustedProjectorPageHandlerImpl::GetVideo(
+    const std::string& video_file_id,
+    const std::optional<std::string>& resource_key,
+    GetVideoCallback callback) {
+  ProjectorAppClient::Get()->GetVideo(
+      video_file_id, resource_key,
+      base::BindOnce(&UntrustedProjectorPageHandlerImpl::OnVideoLocated,
+                     GetWeakPtr(), std::move(callback)));
+}
+
+void UntrustedProjectorPageHandlerImpl::OnVideoLocated(
+    projector::mojom::UntrustedProjectorPageHandler::GetVideoCallback callback,
+    projector::mojom::GetVideoResultPtr result) {
+  std::move(callback).Run(std::move(result));
+}
+
 base::WeakPtr<UntrustedProjectorPageHandlerImpl>
 UntrustedProjectorPageHandlerImpl::GetWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
@@ -233,19 +253,16 @@ UntrustedProjectorPageHandlerImpl::GetWeakPtr() {
 
 void UntrustedProjectorPageHandlerImpl::OnXhrRequestCompleted(
     SendXhrCallback callback,
-    const std::string& response_body,
-    projector::mojom::XhrResponseCode response_code) {
+    projector::mojom::XhrResponsePtr xhr_responose) {
   // If the request made is an unsupported url, then
   // crash the renderer.
-  if (response_code == projector::mojom::XhrResponseCode::kUnsupportedURL) {
+  if (xhr_responose->response_code ==
+      projector::mojom::XhrResponseCode::kUnsupportedURL) {
     receiver_.ReportBadMessage("Unsupported url requested.");
     return;
   }
 
-  auto response = projector::mojom::XhrResponse::New();
-  response->response = response_body;
-  response->response_code = response_code;
-  std::move(callback).Run(std::move(response));
+  std::move(callback).Run(std::move(xhr_responose));
 }
 
 }  // namespace ash

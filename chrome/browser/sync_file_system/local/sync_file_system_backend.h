@@ -10,6 +10,7 @@
 #include <memory>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/sync_file_system/sync_callbacks.h"
 #include "chrome/browser/sync_file_system/sync_status_code.h"
 #include "components/file_access/scoped_file_access_delegate.h"
@@ -50,6 +51,7 @@ class SyncFileSystemBackend : public storage::FileSystemBackend {
       storage::FileSystemType type,
       base::File::Error* error_code) override;
   std::unique_ptr<storage::FileSystemOperation> CreateFileSystemOperation(
+      storage::OperationType type,
       const storage::FileSystemURL& url,
       storage::FileSystemContext* context,
       base::File::Error* error_code) const override;
@@ -80,8 +82,7 @@ class SyncFileSystemBackend : public storage::FileSystemBackend {
       const storage::FileSystemContext* context);
 
   LocalFileChangeTracker* change_tracker() { return change_tracker_.get(); }
-  void SetLocalFileChangeTracker(
-      std::unique_ptr<LocalFileChangeTracker> tracker);
+  void SetLocalFileChangeTracker(scoped_refptr<LocalFileChangeTracker> tracker);
 
   LocalFileSyncContext* sync_context() { return sync_context_.get(); }
   void set_sync_context(LocalFileSyncContext* sync_context);
@@ -90,12 +91,12 @@ class SyncFileSystemBackend : public storage::FileSystemBackend {
   // Not owned.
   raw_ptr<storage::FileSystemContext, DanglingUntriaged> context_ = nullptr;
 
-  std::unique_ptr<LocalFileChangeTracker> change_tracker_;
+  scoped_refptr<LocalFileChangeTracker> change_tracker_;
   scoped_refptr<LocalFileSyncContext> sync_context_;
 
   // |profile_| will initially be valid but may be destroyed before |this|, so
   // it should be checked before being accessed.
-  raw_ptr<Profile, DanglingUntriaged> profile_;
+  raw_ptr<Profile, AcrossTasksDanglingUntriaged> profile_;
 
   // A flag to skip the initialization sequence of SyncFileSystemService for
   // testing.

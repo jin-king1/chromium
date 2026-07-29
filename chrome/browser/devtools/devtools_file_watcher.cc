@@ -4,18 +4,20 @@
 
 #include "chrome/browser/devtools/devtools_file_watcher.h"
 
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <set>
 #include <unordered_map>
 
+#include "base/check_op.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_path_watcher.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
-#include "base/ranges/algorithm.h"
+#include "base/memory/weak_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/lazy_thread_pool_task_runner.h"
 #include "base/task/sequenced_task_runner.h"
@@ -26,8 +28,12 @@
 
 using content::BrowserThread;
 
-static constexpr int kFirstThrottleTimeout = 10;
-static constexpr int kDefaultThrottleTimeout = 200;
+namespace {
+
+constexpr base::TimeDelta kFirstThrottleTimeout = base::Milliseconds(10);
+constexpr base::TimeDelta kDefaultThrottleTimeout = base::Milliseconds(200);
+
+}  // namespace
 
 // DevToolsFileWatcher::SharedFileWatcher --------------------------------------
 
@@ -56,17 +62,19 @@ class DevToolsFileWatcher::SharedFileWatcher
   void DirectoryChanged(const base::FilePath& path, bool error);
   void DispatchNotifications();
 
-  std::vector<DevToolsFileWatcher*> listeners_;
+  std::vector<raw_ptr<DevToolsFileWatcher, VectorExperimental>> listeners_;
   std::map<base::FilePath, std::unique_ptr<base::FilePathWatcher>> watchers_;
   std::map<base::FilePath, FilePathTimesMap> file_path_times_;
   std::set<base::FilePath> pending_paths_;
   base::Time last_event_time_;
   base::TimeDelta last_dispatch_cost_;
   SEQUENCE_CHECKER(sequence_checker_);
+  base::WeakPtrFactory<SharedFileWatcher> weak_factory_{this};
 };
 
 DevToolsFileWatcher::SharedFileWatcher::SharedFileWatcher()
-    : last_dispatch_cost_(base::Milliseconds(kDefaultThrottleTimeout)) {
+    : last_dispatch_cost_(kDefaultThrottleTimeout) {
+  CHECK(!DevToolsFileWatcher::s_shared_watcher_);
   DevToolsFileWatcher::s_shared_watcher_ = this;
   base::trace_event::MemoryDumpManager::GetInstance()
       ->RegisterDumpProviderWithSequencedTaskRunner(
@@ -76,6 +84,7 @@ DevToolsFileWatcher::SharedFileWatcher::SharedFileWatcher()
 
 DevToolsFileWatcher::SharedFileWatcher::~SharedFileWatcher() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  CHECK_EQ(DevToolsFileWatcher::s_shared_watcher_, this);
   base::trace_event::MemoryDumpManager::GetInstance()->UnregisterDumpProvider(
       this);
   DevToolsFileWatcher::s_shared_watcher_ = nullptr;
@@ -113,7 +122,7 @@ void DevToolsFileWatcher::SharedFileWatcher::AddListener(
 void DevToolsFileWatcher::SharedFileWatcher::RemoveListener(
     DevToolsFileWatcher* watcher) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  auto it = base::ranges::find(listeners_, watcher);
+  auto it = std::ranges::find(listeners_, watcher);
   listeners_.erase(it);
   if (listeners_.empty()) {
     file_path_times_.clear();
@@ -132,7 +141,7 @@ void DevToolsFileWatcher::SharedFileWatcher::AddWatch(
   bool success = watchers_[path]->Watch(
       path, base::FilePathWatcher::Type::kRecursive,
       base::BindRepeating(&SharedFileWatcher::DirectoryChanged,
-                          base::Unretained(this)));
+                          weak_factory_.GetWeakPtr()));
   if (!success)
     return;
 
@@ -170,15 +179,16 @@ void DevToolsFileWatcher::SharedFileWatcher::DirectoryChanged(
 
   base::Time now = base::Time::Now();
   // Quickly dispatch first chunk.
-  base::TimeDelta shedule_for = now - last_event_time_ > last_dispatch_cost_
-                                    ? base::Milliseconds(kFirstThrottleTimeout)
-                                    : last_dispatch_cost_ * 2;
+  base::TimeDelta schedule_for = now - last_event_time_ > last_dispatch_cost_
+                                     ? kFirstThrottleTimeout
+                                     : last_dispatch_cost_ * 2;
 
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(
-          &DevToolsFileWatcher::SharedFileWatcher::DispatchNotifications, this),
-      shedule_for);
+          &DevToolsFileWatcher::SharedFileWatcher::DispatchNotifications,
+          weak_factory_.GetWeakPtr()),
+      schedule_for);
   last_event_time_ = now;
 }
 
@@ -211,7 +221,7 @@ void DevToolsFileWatcher::SharedFileWatcher::DispatchNotifications() {
   }
   pending_paths_.clear();
 
-  for (auto* watcher : listeners_) {
+  for (DevToolsFileWatcher* watcher : listeners_) {
     watcher->client_task_runner_->PostTask(
         FROM_HERE, base::BindOnce(watcher->callback_, changed_paths,
                                   added_paths, removed_paths));
@@ -257,9 +267,11 @@ DevToolsFileWatcher::~DevToolsFileWatcher() {
 }
 
 void DevToolsFileWatcher::InitSharedWatcher() {
-  if (!DevToolsFileWatcher::s_shared_watcher_)
-    new SharedFileWatcher();
-  shared_watcher_ = DevToolsFileWatcher::s_shared_watcher_;
+  if (DevToolsFileWatcher::s_shared_watcher_) {
+    shared_watcher_ = DevToolsFileWatcher::s_shared_watcher_;
+  } else {
+    shared_watcher_ = base::MakeRefCounted<SharedFileWatcher>();
+  }
   shared_watcher_->AddListener(this);
 }
 

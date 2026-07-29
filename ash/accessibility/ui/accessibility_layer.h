@@ -14,10 +14,10 @@
 
 namespace aura {
 class Window;
-}
+}  // namespace aura
 
 namespace ui {
-class Layer;
+class LayerTextured;
 }  // namespace ui
 
 namespace ash {
@@ -59,7 +59,7 @@ class AccessibilityLayer : public ui::LayerDelegate {
   // the bounding box to provide space for any margins or padding.
   virtual int GetInset() const = 0;
 
-  ui::Layer* layer() { return layer_.get(); }
+  ui::LayerTextured* layer() { return layer_.get(); }
   aura::Window* root_window() { return root_window_; }
 
  protected:
@@ -72,10 +72,10 @@ class AccessibilityLayer : public ui::LayerDelegate {
                            bool stack_at_top);
 
   // The current root window containing the focused object.
-  raw_ptr<aura::Window, ExperimentalAsh> root_window_ = nullptr;
+  raw_ptr<aura::Window, DanglingUntriaged> root_window_ = nullptr;
 
   // The current layer.
-  std::unique_ptr<ui::Layer> layer_;
+  std::unique_ptr<ui::LayerTextured> layer_;
 
   // The bounding rectangle of the focused object, in |root_window_|
   // coordinates.
@@ -87,7 +87,7 @@ class AccessibilityLayer : public ui::LayerDelegate {
                                   float new_device_scale_factor) override;
 
   // The object that owns this layer.
-  raw_ptr<AccessibilityLayerDelegate, ExperimentalAsh> delegate_;
+  raw_ptr<AccessibilityLayerDelegate> delegate_;
 };
 
 }  // namespace ash

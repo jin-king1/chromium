@@ -24,16 +24,15 @@ class AdTaggingClusterTelemetry(perf_benchmark.PerfBenchmark):
   @classmethod
   def AddBenchmarkCommandLineArgs(cls, parser):
     ct_benchmarks_util.AddBenchmarkCommandLineArgs(parser)
-    parser.add_option(
+    parser.add_argument(
         '--additional-histograms',
-        action='store',
         help='Comma-separated list of additional UMA histograms to record.')
-    parser.add_option('--verbose-cpu-metrics',
-                      action='store_true',
-                      help='Enables non-UMA CPU metrics.')
-    parser.add_option('--verbose-memory-metrics',
-                      action='store_true',
-                      help='Enables non-UMA memory metrics.')
+    parser.add_argument('--verbose-cpu-metrics',
+                        action='store_true',
+                        help='Enables non-UMA CPU metrics.')
+    parser.add_argument('--verbose-memory-metrics',
+                        action='store_true',
+                        help='Enables non-UMA memory metrics.')
 
   @classmethod
   def ProcessCommandLineArgs(cls, parser, args):
@@ -55,6 +54,8 @@ class AdTaggingClusterTelemetry(perf_benchmark.PerfBenchmark):
 
   def CreateCoreTimelineBasedMeasurementOptions(self):
     category_filter = chrome_trace_category_filter.CreateLowOverheadFilter()
+    category_filter.AddDisabledByDefault(
+        'disabled-by-default-histogram_samples')
     if self.enable_memory_metric:
       tbm_options = memory.CreateCoreTimelineBasedMemoryMeasurementOptions()
 
@@ -68,18 +69,21 @@ class AdTaggingClusterTelemetry(perf_benchmark.PerfBenchmark):
     uma_histograms = [
         'PageLoad.Clients.Ads.AllPages.NonAdNetworkBytes',
         'PageLoad.Clients.Ads.AllPages.PercentNetworkBytesAds',
-        'PageLoad.Clients.Ads.Cpu.AdFrames.Aggregate.TotalUsage',
-        'PageLoad.Clients.Ads.Cpu.FullPage.TotalUsage',
+        'PageLoad.Clients.Ads.Bytes.AdFrames.Aggregate.Total2',
+        'PageLoad.Clients.Ads.Cpu.AdFrames.Aggregate.TotalUsage2',
+        'PageLoad.Clients.Ads.Cpu.FullPage.TotalUsage2',
         'PageLoad.Clients.Ads.FrameCounts.AdFrames.Total',
         'PageLoad.Clients.Ads.Resources.Bytes.Ads2',
         'PageLoad.Cpu.TotalUsage',
         'PageLoad.PaintTiming.NavigationToFirstContentfulPaint',
+        'SubresourceFilter.PageLoad.NumSubresourceLoads.MatchedRules',
     ]
     uma_histograms.extend(self.additional_histograms)
     for histogram in uma_histograms:
       tbm_options.config.chrome_trace_config.EnableUMAHistograms(histogram)
 
     tbm_options.AddTimelineBasedMetric('umaMetric')
+    tbm_options.AddTimelineBasedMetric('tbmv3:uma_metrics')
     if self.enable_limited_cpu_time_metric:
       tbm_options.AddTimelineBasedMetric('limitedCpuTimeMetric')
 

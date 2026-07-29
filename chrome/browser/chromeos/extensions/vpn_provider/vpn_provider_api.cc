@@ -74,7 +74,7 @@ bool CheckIPCIDRSanityList(const std::vector<std::string>& list,
 }
 
 void ConvertParameters(const api_vpn::Parameters& parameters,
-                       base::Value::Dict* parameter_value,
+                       base::DictValue* parameter_value,
                        std::string* error) {
   if (!CheckIPCIDRSanity(parameters.address, true /* CIDR */,
                          false /*IPV4 */)) {
@@ -174,7 +174,7 @@ void VpnThreadExtensionFunction::SignalCallCompletionFailure(
 VpnProviderCreateConfigFunction::~VpnProviderCreateConfigFunction() = default;
 
 ExtensionFunction::ResponseAction VpnProviderCreateConfigFunction::Run() {
-  absl::optional<api_vpn::CreateConfig::Params> params =
+  std::optional<api_vpn::CreateConfig::Params> params =
       api_vpn::CreateConfig::Params::Create(args());
   if (!params) {
     return RespondNow(Error("Invalid arguments."));
@@ -201,7 +201,7 @@ ExtensionFunction::ResponseAction VpnProviderCreateConfigFunction::Run() {
 VpnProviderDestroyConfigFunction::~VpnProviderDestroyConfigFunction() = default;
 
 ExtensionFunction::ResponseAction VpnProviderDestroyConfigFunction::Run() {
-  absl::optional<api_vpn::DestroyConfig::Params> params =
+  std::optional<api_vpn::DestroyConfig::Params> params =
       api_vpn::DestroyConfig::Params::Create(args());
   if (!params) {
     return RespondNow(Error("Invalid arguments."));
@@ -227,7 +227,7 @@ ExtensionFunction::ResponseAction VpnProviderDestroyConfigFunction::Run() {
 VpnProviderSetParametersFunction::~VpnProviderSetParametersFunction() = default;
 
 ExtensionFunction::ResponseAction VpnProviderSetParametersFunction::Run() {
-  absl::optional<api_vpn::SetParameters::Params> params =
+  std::optional<api_vpn::SetParameters::Params> params =
       api_vpn::SetParameters::Params::Create(args());
   if (!params) {
     return RespondNow(Error("Invalid arguments."));
@@ -239,7 +239,7 @@ ExtensionFunction::ResponseAction VpnProviderSetParametersFunction::Run() {
     return RespondNow(Error("Invalid profile."));
   }
 
-  base::Value::Dict parameter_value;
+  base::DictValue parameter_value;
   std::string error;
   ConvertParameters(params->parameters, &parameter_value, &error);
   if (!error.empty()) {
@@ -260,7 +260,7 @@ ExtensionFunction::ResponseAction VpnProviderSetParametersFunction::Run() {
 VpnProviderSendPacketFunction::~VpnProviderSendPacketFunction() = default;
 
 ExtensionFunction::ResponseAction VpnProviderSendPacketFunction::Run() {
-  absl::optional<api_vpn::SendPacket::Params> params =
+  std::optional<api_vpn::SendPacket::Params> params =
       api_vpn::SendPacket::Params::Create(args());
   if (!params) {
     return RespondNow(Error("Invalid arguments."));
@@ -289,7 +289,7 @@ VpnProviderNotifyConnectionStateChangedFunction::
 
 ExtensionFunction::ResponseAction
 VpnProviderNotifyConnectionStateChangedFunction::Run() {
-  absl::optional<api_vpn::NotifyConnectionStateChanged::Params> params =
+  std::optional<api_vpn::NotifyConnectionStateChanged::Params> params =
       api_vpn::NotifyConnectionStateChanged::Params::Create(args());
   if (!params) {
     return RespondNow(Error("Invalid arguments."));
@@ -304,8 +304,7 @@ VpnProviderNotifyConnectionStateChangedFunction::Run() {
   // Cannot be VPN_CONNECTION_STATE_NONE at this point -- see !params guard
   // above.
   bool connection_success =
-      params->state ==
-      api_vpn::VpnConnectionState::VPN_CONNECTION_STATE_CONNECTED;
+      params->state == api_vpn::VpnConnectionState::kConnected;
   service->NotifyConnectionStateChanged(
       extension_id(), connection_success,
       base::BindOnce(&VpnProviderNotifyConnectionStateChangedFunction::

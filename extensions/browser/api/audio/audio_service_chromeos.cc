@@ -7,7 +7,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -65,7 +66,6 @@ api::audio::DeviceType GetAsAudioApiDeviceType(AudioDeviceType type) {
   }
 
   NOTREACHED();
-  return api::audio::DeviceType::kOther;
 }
 
 }  // namespace
@@ -126,9 +126,9 @@ class AudioServiceImpl : public AudioService,
   // List of observers.
   base::ObserverList<AudioService::Observer>::Unchecked observer_list_;
 
-  raw_ptr<CrasAudioHandler, ExperimentalAsh> cras_audio_handler_;
+  raw_ptr<CrasAudioHandler, DanglingUntriaged> cras_audio_handler_;
 
-  raw_ptr<AudioDeviceIdCalculator, ExperimentalAsh> id_calculator_;
+  raw_ptr<AudioDeviceIdCalculator> id_calculator_;
 
   // Note: This should remain the last member so it'll be destroyed and
   // invalidate the weak pointers before any other members are destroyed.
@@ -171,12 +171,12 @@ void AudioServiceImpl::GetDevices(
   ash::AudioDeviceList devices;
   cras_audio_handler_->GetAudioDevices(&devices);
 
-  bool accept_input =
-      !(filter && filter->stream_types) ||
-      base::Contains(*filter->stream_types, api::audio::StreamType::kInput);
-  bool accept_output =
-      !(filter && filter->stream_types) ||
-      base::Contains(*filter->stream_types, api::audio::StreamType::kOutput);
+  bool accept_input = !(filter && filter->stream_types) ||
+                      std::ranges::contains(*filter->stream_types,
+                                            api::audio::StreamType::kInput);
+  bool accept_output = !(filter && filter->stream_types) ||
+                       std::ranges::contains(*filter->stream_types,
+                                             api::audio::StreamType::kOutput);
 
   for (const auto& device : devices) {
     if (filter && filter->is_active && *filter->is_active != device.active)

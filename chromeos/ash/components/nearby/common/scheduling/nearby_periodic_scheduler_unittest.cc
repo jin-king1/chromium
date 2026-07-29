@@ -25,23 +25,22 @@ namespace ash::nearby {
 
 class NearbyPeriodicSchedulerTest : public ::testing::Test {
  protected:
-  NearbyPeriodicSchedulerTest()
-      : network_connection_tracker_(
-            network::TestNetworkConnectionTracker::CreateInstance()) {}
+  NearbyPeriodicSchedulerTest() = default;
 
   ~NearbyPeriodicSchedulerTest() override = default;
 
   void SetUp() override {
+    CHECK(network::TestNetworkConnectionTracker::HasInstance());
     content::SetNetworkConnectionTrackerForTesting(
-        network_connection_tracker_.get());
+        network::TestNetworkConnectionTracker::GetInstance());
     pref_service_.registry()->RegisterDictionaryPref(kTestPrefName);
     network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
-        network::mojom::ConnectionType::CONNECTION_WIFI);
+        net::NetworkChangeNotifier::ConnectionType::CONNECTION_WIFI);
 
     scheduler_ = std::make_unique<NearbyPeriodicScheduler>(
         kTestRequestPeriod, /*retry_failures=*/true,
         /*require_connectivity=*/true, kTestPrefName, &pref_service_,
-        base::DoNothing(), task_environment_.GetMockClock());
+        base::DoNothing(), Feature::NS, task_environment_.GetMockClock());
   }
 
   base::Time Now() const { return task_environment_.GetMockClock()->Now(); }
@@ -56,8 +55,6 @@ class NearbyPeriodicSchedulerTest : public ::testing::Test {
  private:
   base::test::SingleThreadTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  std::unique_ptr<network::TestNetworkConnectionTracker>
-      network_connection_tracker_;
   TestingPrefServiceSimple pref_service_;
   std::unique_ptr<NearbyScheduler> scheduler_;
 };
@@ -68,7 +65,7 @@ TEST_F(NearbyPeriodicSchedulerTest, PeriodicRequest) {
 
   // Immediately runs a first-time periodic request.
   scheduler()->Start();
-  absl::optional<base::TimeDelta> time_until_next_request =
+  std::optional<base::TimeDelta> time_until_next_request =
       scheduler()->GetTimeUntilNextRequest();
   EXPECT_EQ(base::Seconds(0), scheduler()->GetTimeUntilNextRequest());
   FastForward(*time_until_next_request);

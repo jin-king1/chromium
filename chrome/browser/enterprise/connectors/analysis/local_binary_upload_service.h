@@ -17,21 +17,17 @@
 #include "base/timer/timer.h"
 #include "chrome/browser/enterprise/connectors/analysis/content_analysis_sdk_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/cloud_content_scanning/binary_upload_service.h"
 #include "components/device_signals/core/common/mojom/system_signals.mojom.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_service.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
 
 namespace enterprise_connectors {
 
 // This class encapsulates the process of sending a file to local content
 // analysis agents for deep scanning and asynchronously retrieving a verdict.
 // This class runs on the UI thread.
-class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
+class LocalBinaryUploadService : public BinaryUploadService {
  public:
-  // A value that is used as a unique id for a given Request.  Internally this
-  // is just the address of the Request object but the code does not assume
-  // this is the case.
-  using RequestKey = void*;
-
   // the maximum number of concurrently active requests to the local content
   // analysis agent.
   static constexpr size_t kMaxActiveCount = 5;
@@ -56,7 +52,8 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
   // a vector<>, the move ctor is used instead of the copy ctor (which is
   // deleted).
   struct RequestInfo {
-    RequestInfo(std::unique_ptr<Request> request, base::OnceClosure closure);
+    RequestInfo(std::unique_ptr<BinaryUploadRequest> request,
+                base::OnceClosure closure);
     RequestInfo(const RequestInfo& other) = delete;
     RequestInfo(RequestInfo&& other) noexcept;
     RequestInfo& operator=(const RequestInfo& other) = delete;
@@ -64,7 +61,7 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
     ~RequestInfo() noexcept;
 
     base::TimeTicks started_at;
-    std::unique_ptr<Request> request;
+    std::unique_ptr<BinaryUploadRequest> request;
     std::unique_ptr<base::OneShotTimer> timer;
   };
 
@@ -72,9 +69,12 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
   ~LocalBinaryUploadService() override;
 
   // Send the given file contents to local partners for deep scanning.
-  void MaybeUploadForDeepScanning(std::unique_ptr<Request> request) override;
-  void MaybeAcknowledge(std::unique_ptr<Ack> ack) override;
-  void MaybeCancelRequests(std::unique_ptr<CancelRequests> cancel) override;
+  void MaybeUploadForDeepScanning(
+      std::unique_ptr<BinaryUploadRequest> request) override;
+  void MaybeAcknowledge(std::unique_ptr<BinaryUploadAck> ack) override;
+  void MaybeCancelRequests(
+      std::unique_ptr<BinaryUploadCancelRequests> cancel) override;
+  base::WeakPtr<BinaryUploadService> AsWeakPtr() override;
 
   size_t GetActiveRequestCountForTesting() const {
     return active_requests_.size();
@@ -84,7 +84,8 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
     return pending_requests_.size();
   }
 
-  const std::map<RequestKey, RequestInfo>& GetActiveRequestsForTesting() const {
+  const std::map<BinaryUploadRequest::Id, RequestInfo>&
+  GetActiveRequestsForTesting() const {
     return active_requests_;
   }
 
@@ -92,7 +93,7 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
     return pending_requests_;
   }
 
-  void OnTimeoutForTesting(RequestKey key) { OnTimeout(key); }
+  void OnTimeoutForTesting(BinaryUploadRequest::Id id) { OnTimeout(id); }
 
  protected:
   // Map to keep track of whether the agent's authenticity has been
@@ -109,6 +110,11 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
   AgentVerifiedMap& GetAgentVerifiedMapForTesting() {
     return is_agent_verified_;
   }
+
+  // Gets the SystemSignalsService to extract the subject name from the
+  // agent.  This method is virtual to allow overriding in tests.
+  virtual device_signals::mojom::SystemSignalsService*
+  GetSystemSignalsService();
 
   // Starts verification of the agent specified by the given config.  This
   // method virtual so that tests can override the dependency on
@@ -136,30 +142,30 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
   // If an error occurs with a client, reset its state.
   void ResetClient(const content_analysis::sdk::Client::Config& config);
 
-  // Starts a local content analysis for the analysis request given by `key`.
-  void DoLocalContentAnalysis(RequestKey key,
-                              Result result,
-                              Request::Data data);
+  // Starts a local content analysis for the analysis request given by `id`.
+  void DoLocalContentAnalysis(
+      BinaryUploadRequest::Id id,
+      enterprise_connectors::ScanRequestUploadResult result,
+      BinaryUploadRequest::Data data);
 
   // Handles a response from the agent for a given request.
   // `data` is not used directly by this function, but is needed to keep a
   // scoped handle alive.
   void HandleResponse(
       scoped_refptr<ContentAnalysisSdkManager::WrappedClient> wrapped,
-      safe_browsing::BinaryUploadService::Request::Data data,
-      absl::optional<content_analysis::sdk::ContentAnalysisResponse>
+      BinaryUploadRequest::Data data,
+      std::optional<content_analysis::sdk::ContentAnalysisResponse>
           sdk_response);
 
   // Starts a local content analysis ack request.
   void DoSendAck(
       scoped_refptr<ContentAnalysisSdkManager::WrappedClient> wrapped,
-      std::unique_ptr<safe_browsing::BinaryUploadService::Ack> ack);
+      std::unique_ptr<BinaryUploadAck> ack);
 
   // Starts a local content analysis cancel request.
   void DoSendCancel(
       scoped_refptr<ContentAnalysisSdkManager::WrappedClient> wrapped,
-      std::unique_ptr<safe_browsing::BinaryUploadService::CancelRequests>
-          cancel);
+      std::unique_ptr<BinaryUploadCancelRequests> cancel);
 
   // Handles a response from the agent for a given ask or cancel.
   void HandleAckResponse(
@@ -167,40 +173,40 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
       int status);
   void HandleCancelResponse(
       scoped_refptr<ContentAnalysisSdkManager::WrappedClient> wrapped,
-      std::unique_ptr<safe_browsing::BinaryUploadService::CancelRequests>
-          cancel,
+      std::unique_ptr<BinaryUploadCancelRequests> cancel,
       int status);
 
   // In tests, this method can be overridden to know when a cancel request
   // has been sent to the agent.
-  virtual void OnCancelRequestSent(std::unique_ptr<CancelRequests> cancel) {}
+  virtual void OnCancelRequestSent(
+      std::unique_ptr<BinaryUploadCancelRequests> cancel) {}
 
   // Find the request that corresponds to the given response.
-  RequestKey FindRequestByToken(
+  BinaryUploadRequest::Id FindRequestByToken(
       const content_analysis::sdk::ContentAnalysisResponse& sdk_response);
 
   // Move the next request from the pending list, if any, to the active
   // list and process it.
   void ProcessNextPendingRequest();
 
-  // Starts the request given by `key` that is already on the active
+  // Starts the request given by `id` that is already on the active
   // list.  If this function returns true the active request list is still
   // valid.  Otherwise the active request list has been cleared.
-  bool ProcessRequest(RequestKey key);
+  bool ProcessRequest(BinaryUploadRequest::Id id);
 
-  // Finish the request given by `key` and inform caller of the the resulting
+  // Finish the request given by `id` and inform caller of the the resulting
   // verdict.
-  void FinishRequest(RequestKey key,
-                     Result result,
+  void FinishRequest(BinaryUploadRequest::Id id,
+                     enterprise_connectors::ScanRequestUploadResult result,
                      ContentAnalysisResponse response);
 
   // Send a cancel request to the agent if there are no more active requests
   // for the given action.
   void SendCancelRequestsIfNeeded();
 
-  // Handles a timeout for the request given by `key`.  The request could
+  // Handles a timeout for the request given by `id`.  The request could
   // be in either the active or pending lists.
-  void OnTimeout(RequestKey key);
+  void OnTimeout(BinaryUploadRequest::Id id);
 
   // If there haven't been too many retries, moves all requests from the active
   // list to the pending list and queues up a task to reconnect to the agent.
@@ -226,13 +232,15 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
 
   void RecordRequestMetrics(
       const RequestInfo& info,
-      Result result,
+      enterprise_connectors::ScanRequestUploadResult result,
       const enterprise_connectors::ContentAnalysisResponse& response);
 
   raw_ptr<Profile> profile_;
 
+  BinaryUploadRequest::Id::Generator request_id_generator_;
+
   // Keeps track of outstanding requests sent to the agent.
-  std::map<RequestKey, RequestInfo> active_requests_;
+  std::map<BinaryUploadRequest::Id, RequestInfo> active_requests_;
 
   // Keeps track of pending requests not yet sent.
   std::vector<RequestInfo> pending_requests_;
@@ -241,7 +249,8 @@ class LocalBinaryUploadService : public safe_browsing::BinaryUploadService {
   // action are sent, a cancel request can be sent.  This is to ensure that
   // chrome does not send requests for analysis for a given action after a
   // cancel request has been sent.
-  std::set<std::unique_ptr<CancelRequests>> pending_cancel_requests_;
+  std::set<std::unique_ptr<BinaryUploadCancelRequests>>
+      pending_cancel_requests_;
 
   // Timer used to retry connection to agent.
   base::OneShotTimer connection_retry_timer_;

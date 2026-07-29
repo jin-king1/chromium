@@ -6,15 +6,18 @@
 
 #include <memory>
 
+#include "base/test/metrics/histogram_tester.h"
 #include "base/uuid.h"
-#include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
-#include "components/bookmarks/test/test_bookmark_client.h"
+#include "components/bookmarks/browser/bookmark_uuids.h"
+#include "components/sync/base/server_defined_unique_tags.h"
 #include "components/sync/protocol/bookmark_specifics.pb.h"
+#include "components/sync/protocol/data_type_state.pb.h"
 #include "components/sync/protocol/entity_data.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
-#include "components/sync/protocol/model_type_state.pb.h"
+#include "components/sync_bookmarks/bookmark_model_view.h"
 #include "components/sync_bookmarks/synced_bookmark_tracker.h"
+#include "components/sync_bookmarks/test_bookmark_model_view.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -71,20 +74,20 @@ TEST(ParentGuidPreprocessingTest, ShouldReturnGuidForPermanentFolders) {
   syncer::UpdateResponseDataList updates;
   updates.emplace_back();
   updates.back().entity.id = kBookmarkBarId;
-  updates.back().entity.server_defined_unique_tag = "bookmark_bar";
+  updates.back().entity.server_defined_unique_tag = syncer::kBookmarkBarTag;
   updates.emplace_back();
   updates.back().entity.id = kMobileBookmarksId;
-  updates.back().entity.server_defined_unique_tag = "synced_bookmarks";
+  updates.back().entity.server_defined_unique_tag = syncer::kSyncedBookmarksTag;
   updates.emplace_back();
   updates.back().entity.id = kOtherBookmarksId;
-  updates.back().entity.server_defined_unique_tag = "other_bookmarks";
+  updates.back().entity.server_defined_unique_tag = syncer::kOtherBookmarksTag;
 
   EXPECT_THAT(GetGuidForSyncIdInUpdatesForTesting(updates, kBookmarkBarId),
-              Eq(bookmarks::BookmarkNode::kBookmarkBarNodeUuid));
+              Eq(bookmarks::kBookmarkBarNodeUuid));
   EXPECT_THAT(GetGuidForSyncIdInUpdatesForTesting(updates, kMobileBookmarksId),
-              Eq(bookmarks::BookmarkNode::kMobileBookmarksNodeUuid));
+              Eq(bookmarks::kMobileBookmarksNodeUuid));
   EXPECT_THAT(GetGuidForSyncIdInUpdatesForTesting(updates, kOtherBookmarksId),
-              Eq(bookmarks::BookmarkNode::kOtherBookmarksNodeUuid));
+              Eq(bookmarks::kOtherBookmarksNodeUuid));
 }
 
 TEST(ParentGuidPreprocessingTest, ShouldPopulateParentGuidInInitialUpdates) {
@@ -100,7 +103,7 @@ TEST(ParentGuidPreprocessingTest, ShouldPopulateParentGuidInInitialUpdates) {
   syncer::UpdateResponseDataList updates;
   updates.emplace_back();
   updates.back().entity.id = kBookmarkBarId;
-  updates.back().entity.server_defined_unique_tag = "bookmark_bar";
+  updates.back().entity.server_defined_unique_tag = syncer::kBookmarkBarTag;
   updates.emplace_back();
   updates.back().entity.id = kParentFolderId;
   updates.back().entity.legacy_parent_id = kBookmarkBarId;
@@ -114,7 +117,7 @@ TEST(ParentGuidPreprocessingTest, ShouldPopulateParentGuidInInitialUpdates) {
 
   EXPECT_THAT(updates[0].entity.specifics.bookmark().parent_guid(), Eq(""));
   EXPECT_THAT(updates[1].entity.specifics.bookmark().parent_guid(),
-              Eq(bookmarks::BookmarkNode::kBookmarkBarNodeUuid));
+              Eq(bookmarks::kBookmarkBarNodeUuid));
   EXPECT_THAT(updates[2].entity.specifics.bookmark().parent_guid(),
               Eq(kParentFolderUuid));
 }
@@ -136,7 +139,7 @@ TEST(ParentGuidPreprocessingTest,
   syncer::UpdateResponseDataList updates;
   updates.emplace_back();
   updates.back().entity.id = kBookmarkBarId;
-  updates.back().entity.server_defined_unique_tag = "bookmark_bar";
+  updates.back().entity.server_defined_unique_tag = syncer::kBookmarkBarTag;
   updates.emplace_back();
   updates.back().entity.id = kFolderId;
   updates.back().entity.legacy_parent_id = kBookmarkBarId;
@@ -147,7 +150,7 @@ TEST(ParentGuidPreprocessingTest,
   // Although |parent_id| points to bookmarks bar, the |parent_guid| field
   // should prevail.
   ASSERT_THAT(GetGuidForSyncIdInUpdatesForTesting(updates, kBookmarkBarId),
-              Eq(bookmarks::BookmarkNode::kBookmarkBarNodeUuid));
+              Eq(bookmarks::kBookmarkBarNodeUuid));
 
   PopulateParentGuidInSpecifics(/*tracker=*/nullptr, &updates);
 
@@ -161,33 +164,33 @@ TEST(ParentGuidPreprocessingTest,
   const std::string kBookmarkBarId = "bookmark_bar_id";
 
   std::unique_ptr<SyncedBookmarkTracker> tracker =
-      SyncedBookmarkTracker::CreateEmpty(sync_pb::ModelTypeState());
+      SyncedBookmarkTracker::CreateEmpty(sync_pb::DataTypeState());
 
   // Non-empty specifics are needed for SyncedBookmarkTracker::Add(), with
   // unique position populated.
-  sync_pb::EntitySpecifics dummy_specifics;
-  dummy_specifics.mutable_bookmark()->mutable_unique_position();
+  sync_pb::EntitySpecifics fake_specifics;
+  fake_specifics.mutable_bookmark()->mutable_unique_position();
 
-  // BookmarkModel is used here to pass DCHECKs that require that permanent
+  // BookmarkModelView is used here to pass DCHECKs that require that permanent
   // folders are tracked.
-  std::unique_ptr<bookmarks::BookmarkModel> bookmark_model =
-      bookmarks::TestBookmarkClient::CreateModel();
-  tracker->Add(bookmark_model->bookmark_bar_node(), /*sync_id=*/kBookmarkBarId,
-               /*server_version=*/0, /*creation_time=*/base::Time::Now(),
-               /*specifics=*/dummy_specifics);
-  tracker->Add(bookmark_model->other_node(), /*sync_id=*/"other_node_id",
-               /*server_version=*/0, /*creation_time=*/base::Time::Now(),
-               /*specifics=*/dummy_specifics);
-  tracker->Add(bookmark_model->mobile_node(), /*sync_id=*/"mobile_node_id",
-               /*server_version=*/0, /*creation_time=*/base::Time::Now(),
-               /*specifics=*/dummy_specifics);
+  TestBookmarkModelView bookmark_model;
+  tracker->AddRemote(bookmark_model.bookmark_bar_node(),
+                     /*sync_id=*/kBookmarkBarId,
+                     /*server_version=*/0, /*creation_time=*/base::Time::Now(),
+                     /*specifics=*/fake_specifics);
+  tracker->AddRemote(bookmark_model.other_node(), /*sync_id=*/"other_node_id",
+                     /*server_version=*/0, /*creation_time=*/base::Time::Now(),
+                     /*specifics=*/fake_specifics);
+  tracker->AddRemote(bookmark_model.mobile_node(), /*sync_id=*/"mobile_node_id",
+                     /*server_version=*/0, /*creation_time=*/base::Time::Now(),
+                     /*specifics=*/fake_specifics);
 
   // Add one regular (non-permanent) node.
   bookmarks::BookmarkNode tracked_node(/*id=*/1, base::Uuid::GenerateRandomV4(),
                                        GURL());
-  tracker->Add(&tracked_node, kSyncId,
-               /*server_version=*/0, /*creation_time=*/base::Time::Now(),
-               /*specifics=*/dummy_specifics);
+  tracker->AddRemote(&tracked_node, kSyncId,
+                     /*server_version=*/0, /*creation_time=*/base::Time::Now(),
+                     /*specifics=*/fake_specifics);
 
   syncer::UpdateResponseDataList updates;
   updates.emplace_back();
@@ -201,7 +204,7 @@ TEST(ParentGuidPreprocessingTest,
   EXPECT_THAT(updates[0].entity.specifics.bookmark().parent_guid(),
               Eq(tracked_node.uuid().AsLowercaseString()));
   EXPECT_THAT(updates[1].entity.specifics.bookmark().parent_guid(),
-              Eq(bookmarks::BookmarkNode::kBookmarkBarNodeUuid));
+              Eq(bookmarks::kBookmarkBarNodeUuid));
 }
 
 TEST(ParentGuidPreprocessingTest,
@@ -226,6 +229,105 @@ TEST(ParentGuidPreprocessingTest,
 
   EXPECT_THAT(updates[0].entity.specifics.bookmark().parent_guid(),
               Eq(kInvalidParentUuid));
+}
+
+TEST(ParentGuidPreprocessingTest, ShouldLogHistogramForSpecifics) {
+  syncer::UpdateResponseDataList updates;
+  updates.emplace_back();
+  updates.back().entity.specifics.mutable_bookmark()->set_guid("guid1");
+  updates.back().entity.specifics.mutable_bookmark()->set_parent_guid("pguid1");
+
+  base::HistogramTester histogram_tester;
+  PopulateParentGuidInSpecifics(/*tracker=*/nullptr, &updates);
+
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidSource",
+                                      ParentGuidSource::kFoundInSpecifics, 1);
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidFromSpecifics",
+                                      true, 1);
+}
+
+TEST(ParentGuidPreprocessingTest, ShouldLogHistogramForUpdates) {
+  const std::string kBookmarkBarId = "bookmark_bar_id";
+
+  syncer::UpdateResponseDataList updates;
+  updates.emplace_back();
+  updates.back().entity.id = kBookmarkBarId;
+  updates.back().entity.server_defined_unique_tag = syncer::kBookmarkBarTag;
+  updates.emplace_back();
+  updates.back().entity.legacy_parent_id = kBookmarkBarId;
+  updates.back().entity.specifics.mutable_bookmark()->set_guid("guid2");
+
+  base::HistogramTester histogram_tester;
+  PopulateParentGuidInSpecifics(/*tracker=*/nullptr, &updates);
+
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidSource",
+                                      ParentGuidSource::kFallbackFoundInUpdates,
+                                      1);
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidFromSpecifics",
+                                      false, 1);
+}
+
+TEST(ParentGuidPreprocessingTest, ShouldLogHistogramForTracker) {
+  std::unique_ptr<SyncedBookmarkTracker> tracker =
+      SyncedBookmarkTracker::CreateEmpty(sync_pb::DataTypeState());
+  sync_pb::EntitySpecifics fake_specifics;
+  fake_specifics.mutable_bookmark()->mutable_unique_position();
+  TestBookmarkModelView bookmark_model;
+  tracker->AddRemote(bookmark_model.bookmark_bar_node(),
+                     /*sync_id=*/"tracker_pb_id",
+                     /*server_version=*/0, /*creation_time=*/base::Time::Now(),
+                     /*specifics=*/fake_specifics);
+  tracker->AddRemote(bookmark_model.other_node(), /*sync_id=*/"other_node_id",
+                     /*server_version=*/0, /*creation_time=*/base::Time::Now(),
+                     /*specifics=*/fake_specifics);
+  tracker->AddRemote(bookmark_model.mobile_node(), /*sync_id=*/"mobile_node_id",
+                     /*server_version=*/0, /*creation_time=*/base::Time::Now(),
+                     /*specifics=*/fake_specifics);
+
+  syncer::UpdateResponseDataList updates;
+  updates.emplace_back();
+  updates.back().entity.legacy_parent_id = "tracker_pb_id";
+  updates.back().entity.specifics.mutable_bookmark()->set_guid("guid3");
+
+  base::HistogramTester histogram_tester;
+  PopulateParentGuidInSpecifics(tracker.get(), &updates);
+
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidSource",
+                                      ParentGuidSource::kFallbackFoundInTracker,
+                                      1);
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidFromSpecifics",
+                                      false, 1);
+}
+
+TEST(ParentGuidPreprocessingTest, ShouldLogHistogramForUnresolvableParentId) {
+  syncer::UpdateResponseDataList updates;
+  updates.emplace_back();
+  updates.back().entity.legacy_parent_id = "unknown_id";
+  updates.back().entity.specifics.mutable_bookmark()->set_guid("guid4");
+
+  base::HistogramTester histogram_tester;
+  PopulateParentGuidInSpecifics(/*tracker=*/nullptr, &updates);
+
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidSource",
+                                      ParentGuidSource::kFallbackUnresolvable,
+                                      1);
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidFromSpecifics",
+                                      false, 1);
+}
+
+TEST(ParentGuidPreprocessingTest, ShouldLogHistogramForParentIdMissing) {
+  syncer::UpdateResponseDataList updates;
+  updates.emplace_back();
+  updates.back().entity.legacy_parent_id = "";
+  updates.back().entity.specifics.mutable_bookmark()->set_guid("guid5");
+
+  base::HistogramTester histogram_tester;
+  PopulateParentGuidInSpecifics(/*tracker=*/nullptr, &updates);
+
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidSource",
+                                      ParentGuidSource::kMissing, 1);
+  histogram_tester.ExpectUniqueSample("Sync.BookmarkParentGuidFromSpecifics",
+                                      false, 1);
 }
 
 }  // namespace

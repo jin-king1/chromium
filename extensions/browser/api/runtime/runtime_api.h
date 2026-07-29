@@ -6,6 +6,7 @@
 #define EXTENSIONS_BROWSER_API_RUNTIME_RUNTIME_API_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "base/memory/raw_ptr.h"
@@ -13,7 +14,6 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "base/values.h"
-#include "content/public/browser/notification_registrar.h"
 #include "extensions/browser/api/runtime/runtime_api_delegate.h"
 #include "extensions/browser/browser_context_keyed_api_factory.h"
 #include "extensions/browser/events/lazy_event_dispatch_util.h"
@@ -24,8 +24,11 @@
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_manager_observer.h"
 #include "extensions/browser/update_observer.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/runtime.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "extensions/common/extension_id.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace base {
 class Version;
@@ -92,19 +95,24 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
 
   ~RuntimeAPI() override;
 
-  void ReloadExtension(const std::string& extension_id);
-  bool CheckForUpdates(const std::string& extension_id,
+  void ReloadExtension(const ExtensionId& extension_id);
+  bool CheckForUpdates(const ExtensionId& extension_id,
                        RuntimeAPIDelegate::UpdateCheckCallback callback);
   void OpenURL(const GURL& uninstall_url);
   bool GetPlatformInfo(api::runtime::PlatformInfo* info);
   bool RestartDevice(std::string* error_message);
 
   RestartAfterDelayStatus RestartDeviceAfterDelay(
-      const std::string& extension_id,
+      const ExtensionId& extension_id,
       int seconds_from_now);
 
-  bool OpenOptionsPage(const Extension* extension,
-                       content::BrowserContext* browser_context);
+  // Opens the options page for an extension. On Android, this will open the
+  // options page asynchronously. After the option page attempts to open,
+  // the callback will execute with the result of the attempt. Returns true
+  // if the options page could be opened successfully, false otherwise.
+  void OpenOptionsPage(const Extension* extension,
+                       content::BrowserContext* browser_context,
+                       base::OnceCallback<void(bool)> callback);
 
  private:
   friend class BrowserContextKeyedAPIFactory<RuntimeAPI>;
@@ -143,7 +151,7 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
   void Shutdown() override;
 
   // extensions::UpdateObserver overrides:
-  void OnAppUpdateAvailable(const Extension* extension) override;
+  void OnAppUpdateAvailable(const Extension& extension) override;
   void OnChromeUpdateAvailable() override;
 
   // ProcessManagerObserver implementation:
@@ -158,8 +166,6 @@ class RuntimeAPI : public BrowserContextKeyedAPI,
   std::unique_ptr<RuntimeAPIDelegate> delegate_;
 
   raw_ptr<content::BrowserContext> browser_context_;
-
-  content::NotificationRegistrar registrar_;
 
   // Listen to extension notifications.
   base::ScopedObservation<ExtensionRegistry, ExtensionRegistryObserver>
@@ -199,18 +205,24 @@ class RuntimeEventRouter {
  public:
   // Dispatches the onStartup event to all currently-loaded extensions.
   static void DispatchOnStartupEvent(content::BrowserContext* context,
-                                     const std::string& extension_id);
+                                     const ExtensionId& extension_id);
 
   // Dispatches the onInstalled event to the given extension.
-  static void DispatchOnInstalledEvent(content::BrowserContext* context,
-                                       const std::string& extension_id,
+  //
+  // `context_id` is intentionally a `MayBeDangling<void>` opaque handle: the
+  // posted task may outlive the BrowserContext during profile shutdown.
+  // Validity is checked via `ExtensionsBrowserClient::IsValidContext()`
+  // before any dereference. See `base::UnsafeDangling()` in
+  // base/functional/bind.h for the id-then-lookup pattern this implements.
+  static void DispatchOnInstalledEvent(MayBeDangling<void> context_id,
+                                       const ExtensionId& extension_id,
                                        const base::Version& old_version,
                                        bool chrome_updated);
 
   // Dispatches the onUpdateAvailable event to the given extension.
   static void DispatchOnUpdateAvailableEvent(content::BrowserContext* context,
-                                             const std::string& extension_id,
-                                             const base::Value::Dict* manifest);
+                                             const ExtensionId& extension_id,
+                                             const base::DictValue* manifest);
 
   // Dispatches the onBrowserUpdateAvailable event to all extensions.
   static void DispatchOnBrowserUpdateAvailableEvent(
@@ -224,7 +236,7 @@ class RuntimeEventRouter {
 
   // Does any work needed at extension uninstall (e.g. load uninstall url).
   static void OnExtensionUninstalled(content::BrowserContext* context,
-                                     const std::string& extension_id,
+                                     const ExtensionId& extension_id,
                                      UninstallReason reason);
 };
 
@@ -249,6 +261,9 @@ class RuntimeOpenOptionsPageFunction : public ExtensionFunction {
  protected:
   ~RuntimeOpenOptionsPageFunction() override = default;
   ResponseAction Run() override;
+
+ private:
+  void OnOpenOptionsPageResult(bool success);
 };
 
 class RuntimeSetUninstallURLFunction : public ExtensionFunction {
@@ -336,11 +351,17 @@ class RuntimeGetContextsFunction : public ExtensionFunction {
 
   // Returns the context for the extension background service worker, if the
   // worker is active. Otherwise, returns nullopt.
-  absl::optional<api::runtime::ExtensionContext> GetWorkerContext();
+  std::optional<api::runtime::ExtensionContext> GetWorkerContext();
 
   // Returns a collection of all frame-based extension contexts for the
   // extension.
   std::vector<api::runtime::ExtensionContext> GetFrameContexts();
+
+  // Helper methods to return tab id, frame id and window id for a given
+  // context.
+  int GetTabId(content::WebContents& web_contents);
+  int GetFrameId(content::RenderFrameHost& host);
+  int GetWindowId(content::WebContents& web_contents);
 };
 
 }  // namespace extensions

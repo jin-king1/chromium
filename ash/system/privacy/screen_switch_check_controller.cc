@@ -4,18 +4,18 @@
 
 #include "ash/system/privacy/screen_switch_check_controller.h"
 
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/system/tray/system_tray_notifier.h"
 #include "base/functional/bind.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/views/controls/message_box_view.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/window/dialog_delegate.h"
 
 namespace ash {
-
-namespace {
 
 // Dialog that confirms the user wants to stop screen share/cast. Calls a
 // callback with the result.
@@ -23,13 +23,13 @@ class CancelCastingDialog : public views::DialogDelegateView {
  public:
   explicit CancelCastingDialog(base::OnceCallback<void(bool)> callback)
       : callback_(std::move(callback)) {
-    AddChildView(new views::MessageBoxView(
+    AddChildViewRaw(new views::MessageBoxView(
         l10n_util::GetStringUTF16(IDS_DESKTOP_CASTING_ACTIVE_MESSAGE)));
     SetLayoutManager(std::make_unique<views::FillLayout>());
     SetTitle(l10n_util::GetStringUTF16(IDS_DESKTOP_CASTING_ACTIVE_TITLE));
     SetShowCloseButton(false);
     SetButtonLabel(
-        ui::DIALOG_BUTTON_OK,
+        ui::mojom::DialogButton::kOk,
         l10n_util::GetStringUTF16(IDS_DESKTOP_CASTING_ACTIVE_CONTINUE));
     SetAcceptCallback(base::BindOnce(&CancelCastingDialog::OnDialogAccepted,
                                      base::Unretained(this)));
@@ -45,12 +45,6 @@ class CancelCastingDialog : public views::DialogDelegateView {
   void OnDialogCancelled() { std::move(callback_).Run(false); }
 
   void OnDialogAccepted() {
-    // Stop all screen access and sharing. When notified, all screen access and
-    // sharing sessions will be stopped. Currently, the logic is in
-    // ScreenSecurityNotificationController.
-    Shell::Get()->system_tray_notifier()->NotifyScreenAccessStop();
-    Shell::Get()->system_tray_notifier()->NotifyRemotingScreenShareStop();
-
     std::move(callback_).Run(true);
   }
 
@@ -58,14 +52,20 @@ class CancelCastingDialog : public views::DialogDelegateView {
   base::OnceCallback<void(bool)> callback_;
 };
 
-}  // namespace
-
 ScreenSwitchCheckController::ScreenSwitchCheckController() {
+  Shell::Get()->session_controller()->AddObserver(this);
   Shell::Get()->system_tray_notifier()->AddScreenSecurityObserver(this);
 }
 
 ScreenSwitchCheckController::~ScreenSwitchCheckController() {
   Shell::Get()->system_tray_notifier()->RemoveScreenSecurityObserver(this);
+  Shell::Get()->session_controller()->RemoveObserver(this);
+}
+
+void ScreenSwitchCheckController::OnActiveUserSessionChanged(
+    const AccountId& account_id) {
+  Shell::Get()->system_tray_notifier()->NotifyScreenAccessStop();
+  Shell::Get()->system_tray_notifier()->NotifyRemotingScreenShareStop();
 }
 
 void ScreenSwitchCheckController::CanSwitchAwayFromActiveUser(
@@ -73,6 +73,11 @@ void ScreenSwitchCheckController::CanSwitchAwayFromActiveUser(
   // If neither screen sharing nor capturing is going on we can immediately
   // switch users.
   if (!is_screen_accessed_ && !is_remoting_share_) {
+    std::move(callback).Run(true);
+    return;
+  }
+
+  if (skip_cancel_dialog_for_testing_) {
     std::move(callback).Run(true);
     return;
   }

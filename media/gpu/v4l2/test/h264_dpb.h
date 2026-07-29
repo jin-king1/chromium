@@ -4,18 +4,11 @@
 #ifndef MEDIA_GPU_V4L2_TEST_H264_DPB_H_
 #define MEDIA_GPU_V4L2_TEST_H264_DPB_H_
 
-// build_config.h must come before BUILDFLAG()
-#include "build/build_config.h"
-
-// ChromeOS specific header; does not exist upstream
-#if BUILDFLAG(IS_CHROMEOS)
-#include <linux/media/h264-ctrls-upstream.h>
-#endif
-
-#include "media/video/h264_parser.h"
-
 #include <map>
 #include <set>
+
+#include "media/parsers/h264_parser.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace media {
 namespace v4l2_test {
@@ -40,7 +33,8 @@ struct H264SliceMetadata {
   int top_field_order_cnt = 0;
   bool outputted = false;  // Whether this slice has been outputted.
   bool ref = false;        // Whether this slice is a reference element.
-  H264DecRefPicMarking ref_pic_marking[H264SliceHeader::kRefListSize];
+  std::array<H264DecRefPicMarking, H264SliceHeader::kRefListSize>
+      ref_pic_marking;
   bool long_term_reference_flag = false;
   int long_term_frame_idx = 0;
   // Picture number for picture which is marked as long term as defined in
@@ -48,6 +42,7 @@ struct H264SliceMetadata {
   int long_term_pic_num = 0;
   // The CAPTURE queue index this slice is queued in.
   int capture_queue_buffer_id = -1;
+  gfx::Rect visible_rect_;
 };
 
 // H264DPB is a class representing a Decoded Picture Buffer (DPB).
@@ -55,7 +50,7 @@ struct H264SliceMetadata {
 // describe the pictures used in the H.264 decoding process.
 class H264DPB : public std::map<uint64_t, H264SliceMetadata> {
  public:
-  H264DPB() = default;
+  H264DPB();
   ~H264DPB() = default;
 
   H264DPB(const H264DPB&) = delete;

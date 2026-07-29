@@ -35,7 +35,7 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) ProhibitedTechnologiesHandler
   void PoliciesApplied(const std::string& userhash) override;
   // Function for updating the list of technologies that are prohibited during
   // user sessions
-  void SetProhibitedTechnologies(const base::Value::List& prohibited_list);
+  void SetProhibitedTechnologies(const base::ListValue& prohibited_list);
   // Functions for updating the list of technologies that are prohibited
   // everywhere, including login screen
   void AddGloballyProhibitedTechnology(const std::string& technology);
@@ -64,12 +64,10 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) ProhibitedTechnologiesHandler
   // all time.
   std::vector<std::string> globally_prohibited_technologies_;
 
-  raw_ptr<ManagedNetworkConfigurationHandler, ExperimentalAsh>
+  raw_ptr<ManagedNetworkConfigurationHandler>
       managed_network_configuration_handler_ = nullptr;
-  raw_ptr<NetworkStateHandler, ExperimentalAsh> network_state_handler_ =
-      nullptr;
-  raw_ptr<TechnologyStateController, ExperimentalAsh>
-      technology_state_controller_ = nullptr;
+  raw_ptr<NetworkStateHandler> network_state_handler_ = nullptr;
+  raw_ptr<TechnologyStateController> technology_state_controller_ = nullptr;
   bool user_logged_in_ = false;
   bool user_policy_applied_ = false;
 };

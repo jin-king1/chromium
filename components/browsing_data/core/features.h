@@ -1,4 +1,4 @@
-// Copyright 2019 The Chromium Authors
+// Copyright 2024 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -9,18 +9,19 @@
 
 namespace browsing_data::features {
 
-// Enable BrowsingDataLifetimeManager that periodically delete browsing data as
-// defined by the BrowsingDataLifetime policy.
-BASE_DECLARE_FEATURE(kEnableBrowsingDataLifetimeManager);
+// Pipes down the BrowsingDataModel to power site settings on Android.
+#if BUILDFLAG(IS_ANDROID)
+BASE_DECLARE_FEATURE(kBrowsingDataModel);
+BASE_DECLARE_FEATURE(kDbdPasswordRemovalOnAndroid);
+#endif  // BUILDFLAG(IS_ANDROID)
 
-// Deprecate CookiesTReeModel and use BrowsingDataModel as the only browsing
-// data interface.
-BASE_DECLARE_FEATURE(kDeprecateCookiesTreeModel);
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 
-// Enables data retention policies to be applied without the dependency on
-// SyncDisabled by simply disabled sync for the browsing data that is set to be
-// deleted by policy.
-BASE_DECLARE_FEATURE(kDataRetentionPoliciesDisableSyncTypesNeeded);
+// When enabled, calls to browsingData.removePasswords extension API would
+// result in an error response instead of a console warning.
+BASE_DECLARE_FEATURE(kPasswordRemovalExtensionErrorKillSwitch);
+
+#endif  // !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 }  // namespace browsing_data::features
 
 #endif  // COMPONENTS_BROWSING_DATA_CORE_FEATURES_H_

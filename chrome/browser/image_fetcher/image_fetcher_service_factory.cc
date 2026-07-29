@@ -68,7 +68,8 @@ image_fetcher::ImageFetcherService* ImageFetcherServiceFactory::GetForKey(
 
 // static
 ImageFetcherServiceFactory* ImageFetcherServiceFactory::GetInstance() {
-  return base::Singleton<ImageFetcherServiceFactory>::get();
+  static base::NoDestructor<ImageFetcherServiceFactory> instance;
+  return instance.get();
 }
 
 ImageFetcherServiceFactory::ImageFetcherServiceFactory()
@@ -112,7 +113,7 @@ ImageFetcherServiceFactory::BuildServiceInstanceFor(
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory;
   // Network is null for some tests, may be removable after
-  // https://crbug.com/981057.
+  // https://crbug.com/40634772.
   if (SystemNetworkContextManager::GetInstance()) {
     url_loader_factory =
         SystemNetworkContextManager::GetInstance()->GetSharedURLLoaderFactory();

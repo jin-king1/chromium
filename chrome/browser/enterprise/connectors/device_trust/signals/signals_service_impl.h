@@ -11,16 +11,18 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "chrome/browser/enterprise/connectors/device_trust/signals/signals_service.h"
+#include "components/enterprise/device_trust/core/signals/signals_service.h"
 
 namespace enterprise_connectors {
 
 class SignalsDecorator;
+class SignalsFilterer;
 
 class SignalsServiceImpl : public SignalsService {
  public:
-  explicit SignalsServiceImpl(
-      std::vector<std::unique_ptr<SignalsDecorator>> signals_decorators);
+  SignalsServiceImpl(
+      std::vector<std::unique_ptr<SignalsDecorator>> signals_decorators,
+      std::unique_ptr<SignalsFilterer> signals_filterer);
 
   SignalsServiceImpl(const SignalsServiceImpl&) = delete;
   SignalsServiceImpl& operator=(const SignalsServiceImpl&) = delete;
@@ -33,9 +35,10 @@ class SignalsServiceImpl : public SignalsService {
  private:
   void OnSignalsDecorated(CollectSignalsCallback callback,
                           base::TimeTicks start_time,
-                          std::unique_ptr<base::Value::Dict> signals);
+                          std::unique_ptr<base::DictValue> signals);
 
   std::vector<std::unique_ptr<SignalsDecorator>> signals_decorators_;
+  std::unique_ptr<SignalsFilterer> signals_filterer_;
 
   base::WeakPtrFactory<SignalsServiceImpl> weak_ptr_factory_{this};
 };

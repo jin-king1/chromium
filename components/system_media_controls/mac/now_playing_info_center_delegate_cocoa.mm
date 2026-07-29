@@ -6,10 +6,6 @@
 
 #import <MediaPlayer/MediaPlayer.h>
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 @interface NowPlayingInfoCenterDelegateCocoa ()
 
 // Initialize the |nowPlayingInfo_| dictionary with values.
@@ -75,19 +71,41 @@
 }
 
 - (void)setThumbnail:(NSImage*)image {
-  if (@available(macOS 10.13.2, *)) {
-    MPMediaItemArtwork* artwork = [[MPMediaItemArtwork alloc]
-        initWithBoundsSize:image.size
-            requestHandler:^NSImage* _Nonnull(CGSize aSize) {
-              return image;
-            }];
-    [_nowPlayingInfo setObject:artwork forKey:MPMediaItemPropertyArtwork];
+  MPMediaItemArtwork* artwork = [[MPMediaItemArtwork alloc]
+      initWithBoundsSize:image.size
+          requestHandler:^NSImage* _Nonnull(CGSize aSize) {
+            return image;
+          }];
+  [_nowPlayingInfo setObject:artwork forKey:MPMediaItemPropertyArtwork];
+}
+
+- (void)clearPosition {
+  [_nowPlayingInfo
+      removeObjectForKey:MPNowPlayingInfoPropertyCurrentPlaybackDate];
+  [_nowPlayingInfo
+      removeObjectForKey:MPNowPlayingInfoPropertyElapsedPlaybackTime];
+  [_nowPlayingInfo removeObjectForKey:MPNowPlayingInfoPropertyPlaybackRate];
+  [_nowPlayingInfo removeObjectForKey:MPMediaItemPropertyPlaybackDuration];
+
+  // ClearMetadata deliberately publishes nil. Do not replace it with the
+  // default-filled internal dictionary when a null position follows during
+  // media session teardown.
+  if ([MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo) {
+    [self updateNowPlayingInfo];
   }
 }
 
 - (void)clearMetadata {
+  // Reset our internal dictionary to have default values.
   [self initializeNowPlayingInfoValues];
-  [self updateNowPlayingInfo];
+
+  // In some cases, setting defaultCenter to a dictionary of default values
+  // causes the menu bar's media icon to persist with completely blank metadata
+  // after a track ends, or on navigation away from the page that was playing
+  // media. See crbug.com/359628047 for more information.
+  // To avoid this, set defaultCenter to nil as recommended here:
+  // https://developer.apple.com/documentation/mediaplayer/mpnowplayinginfocenter/1615903-nowplayinginfo
+  [MPNowPlayingInfoCenter defaultCenter].nowPlayingInfo = nil;
 }
 
 - (void)initializeNowPlayingInfoValues {
@@ -98,9 +116,7 @@
   [_nowPlayingInfo setObject:@"" forKey:MPMediaItemPropertyTitle];
   [_nowPlayingInfo setObject:@"" forKey:MPMediaItemPropertyArtist];
   [_nowPlayingInfo setObject:@"" forKey:MPMediaItemPropertyAlbumTitle];
-  if (@available(macOS 10.13.2, *)) {
-    [_nowPlayingInfo removeObjectForKey:MPMediaItemPropertyArtwork];
-  }
+  [_nowPlayingInfo removeObjectForKey:MPMediaItemPropertyArtwork];
 }
 
 - (void)updateNowPlayingInfo {

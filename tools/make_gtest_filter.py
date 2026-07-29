@@ -164,6 +164,7 @@ def GetFiltersForTests(tests, class_only):
   # Note: Test names have the following structures:
   #  * FixtureName.TestName
   #  * InstantiationName/FixtureName.TestName/## (for TEST_P)
+  #  * InstantiationName/FixtureName/ParameterId.TestName (for TYPED_TEST_P)
   #  * FixtureName.TestName/##
   #  * FixtureName/##.TestName (for TYPED_TEST)
   # Since this script doesn't parse instantiations, we generate filters to
@@ -172,6 +173,7 @@ def GetFiltersForTests(tests, class_only):
     fixtures = set([t.split('.')[0] for t in tests])
     return [c + '.*' for c in fixtures] + \
           ['*/' + c + '.*/*' for c in fixtures] + \
+          ['*/' + c + '/*.*' for c in fixtures] + \
           [c + '.*/*' for c in fixtures] + \
           [c + '/*.*' for c in fixtures]
   else:
@@ -260,7 +262,11 @@ def main():
         flags=re.DOTALL | re.M)
     tests = []
     for m in rx.finditer(txt):
-      tests.append(m.group(2) + '.' + m.group(3))
+      # Try to include partially disabled tests.
+      fixture, test_name = m.group(2), m.group(3)
+      fixture = fixture.removeprefix('MAYBE_')
+      test_name = test_name.removeprefix('MAYBE_')
+      tests.append(fixture + '.' + test_name)
 
     if args.wildcard_compress:
       test_filters = CompressWithWildcards(tests, args.wildcard_min_depth,

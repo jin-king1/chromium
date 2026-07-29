@@ -5,17 +5,18 @@
 // A library to manage RLZ information for access-points shared
 // across different client applications.
 
-#include "rlz/lib/machine_deal_win.h"
-
 #include <windows.h>
+
 #include <aclapi.h>
 #include <stddef.h>
 #include <winerror.h>
 
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/win/registry.h"
 #include "rlz/lib/assert.h"
+#include "rlz/lib/machine_deal_win.h"
 #include "rlz/lib/rlz_value_store.h"
 #include "rlz/win/lib/machine_deal.h"
 #include "rlz/win/lib/rlz_value_store_registry.h"
@@ -149,13 +150,17 @@ bool CreateMachineState() {
   }
 
   // Add ALL-USERS ALL-ACCESS ACL.
+  // Use BuildExplicitAccessWithName to initialize the EXPLICIT_ACCESS
+  // structure. This is the recommended way by Microsoft to ensure all fields
+  // are correctly initialized and to maintain backward compatibility. Ref:
+  // https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-buildexplicitaccesswithnamew
   EXPLICIT_ACCESS ea;
-  ZeroMemory(&ea, sizeof(EXPLICIT_ACCESS));
-  ea.grfAccessPermissions = GENERIC_ALL | KEY_ALL_ACCESS;
-  ea.grfAccessMode = GRANT_ACCESS;
-  ea.grfInheritance= SUB_CONTAINERS_AND_OBJECTS_INHERIT;
-  ea.Trustee.TrusteeForm = TRUSTEE_IS_NAME;
-  ea.Trustee.ptstrName = const_cast<wchar_t*>(L"Everyone");
+  BuildExplicitAccessWithName(
+      &ea,
+      /*pTrusteeName=*/const_cast<wchar_t*>(L"Everyone"),
+      /*AccessPermissions=*/GENERIC_ALL | KEY_ALL_ACCESS,
+      /*AccessMode=*/GRANT_ACCESS,
+      /*Inheritance=*/SUB_CONTAINERS_AND_OBJECTS_INHERIT);
 
   ACL* new_dacl = NULL;
   result = SetEntriesInAcl(1, &ea, dacl, &new_dacl);

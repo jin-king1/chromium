@@ -4,39 +4,38 @@
 
 #include "components/device_signals/core/system_signals/win/win_platform_delegate.h"
 
-#include <windows.h>
+#include <windows.h>  // Must be in front of other Windows header files.
 
 #include <softpub.h>
 #include <wincrypt.h>
 #include <wintrust.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/files/file.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
-#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/strings/string_util_win.h"
+#include "base/strings/utf_string_conversions.h"
 #include "components/device_signals/core/common/common_types.h"
 #include "components/device_signals/core/common/platform_utils.h"
 #include "crypto/scoped_capi_types.h"
 #include "crypto/sha2.h"
 #include "net/cert/asn1_util.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace device_signals {
 
 namespace {
 
 // Returns the SHA-256 hash for the DER-encoded SPKI and subject from the first
-// signer cert chain's leaf cert. Return absl::nullopt if unable to get to that
+// signer cert chain's leaf cert. Return std::nullopt if unable to get to that
 // certificate.
-std::pair<absl::optional<std::string>, absl::optional<std::string>> GetSPKIHash(
+std::pair<std::optional<std::string>, std::optional<std::string>> GetSPKIHash(
     HANDLE verify_trust_state_data) {
-  std::pair<absl::optional<std::string>, absl::optional<std::string>> ret;
+  std::pair<std::optional<std::string>, std::optional<std::string>> ret;
 
   CRYPT_PROVIDER_DATA* crypt_provider_data =
       WTHelperProvDataFromStateData(verify_trust_state_data);
@@ -68,27 +67,27 @@ std::pair<absl::optional<std::string>, absl::optional<std::string>> GetSPKIHash(
 
   // Get the hash and subject.
   if (cert_context->pbCertEncoded) {
-    base::StringPiece der_bytes(
+    std::string_view der_bytes(
         reinterpret_cast<const char*>(cert_context->pbCertEncoded),
         cert_context->cbCertEncoded);
 
-    base::StringPiece spki;
+    std::string_view spki;
     if (net::asn1::ExtractSPKIFromDERCert(der_bytes, &spki)) {
       ret.first = crypto::SHA256HashString(spki);
     }
 
     // Get the subject. First ask how long the name is, including null
     // terminator.
-    size_t length = CertGetNameStringA(
+    size_t length = CertGetNameStringW(
         cert_context, CERT_NAME_SIMPLE_DISPLAY_TYPE, /*dwFlags=*/0,
         /*pvTypePara=*/nullptr, /*pszNameString=*/nullptr, /*cchNameString=*/0);
     if (length > 0) {
-      std::vector<char> subject(length);
-      CertGetNameStringA(
+      std::vector<wchar_t> subject(length);
+      CertGetNameStringW(
           cert_context, CERT_NAME_SIMPLE_DISPLAY_TYPE, /*dwFlags=*/0,
           /*pvTypePara=*/nullptr, /*pszNameString=*/subject.data(),
           /*cchNameString=*/subject.size());
-      ret.second = subject.data();
+      ret.second = base::WideToUTF8(subject.data());
     }
   }
 
@@ -106,7 +105,7 @@ bool WinPlatformDelegate::ResolveFilePath(const base::FilePath& file_path,
   return ResolvePath(file_path, resolved_file_path);
 }
 
-absl::optional<PlatformDelegate::SigningCertificatesPublicKeys>
+std::optional<PlatformDelegate::SigningCertificatesPublicKeys>
 WinPlatformDelegate::GetSigningCertificatesPublicKeys(
     const base::FilePath& file_path) {
   SigningCertificatesPublicKeys public_keys;

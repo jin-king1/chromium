@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -106,7 +107,7 @@ void CrxDownloaderTest::SetUp() {
           base::MakeRefCounted<NetworkFetcherChromiumFactory>(
               test_shared_url_loader_factory_,
               base::BindRepeating([](const GURL& url) { return false; })))
-          ->MakeCrxDownloader(false);
+          ->MakeCrxDownloader("CrxDownloaderTest", false);
   crx_downloader_->set_progress_callback(progress_callback_);
 
   test_url_loader_factory_.SetInterceptor(base::BindLambdaForTesting(
@@ -118,8 +119,9 @@ void CrxDownloaderTest::TearDown() {
 }
 
 void CrxDownloaderTest::Quit() {
-  if (!quit_closure_.is_null())
+  if (!quit_closure_.is_null()) {
     std::move(quit_closure_).Run();
+  }
 }
 
 void CrxDownloaderTest::DownloadComplete(const CrxDownloader::Result& result) {
@@ -130,8 +132,9 @@ void CrxDownloaderTest::DownloadComplete(const CrxDownloader::Result& result) {
 
 void CrxDownloaderTest::DownloadProgress(int64_t downloaded_bytes,
                                          int64_t total_bytes) {
-  if (downloaded_bytes != -1 && total_bytes != -1)
+  if (downloaded_bytes != -1 && total_bytes != -1) {
     EXPECT_LE(downloaded_bytes, total_bytes);
+  }
   downloaded_bytes_ = downloaded_bytes;
   total_bytes_ = total_bytes;
   ++num_progress_calls_;
@@ -146,7 +149,7 @@ void CrxDownloaderTest::AddResponse(const GURL& url,
     auto head = network::mojom::URLResponseHead::New();
     head->content_length = data.size();
     network::URLLoaderCompletionStatus status(net_error);
-    status.decoded_body_length = data.size();
+    status.decoded_body_length = base::ByteSize(data.size());
     test_url_loader_factory_.AddResponse(url, std::move(head), data, status);
     return;
   }
@@ -169,7 +172,6 @@ void CrxDownloaderTest::RunThreads() {
   RunThreadsUntilIdle();
 }
 
-// TODO(crbug.com/1104691): rewrite the tests to not use RunUntilIdle().
 void CrxDownloaderTest::RunThreadsUntilIdle() {
   task_environment_.RunUntilIdle();
   base::RunLoop().RunUntilIdle();
@@ -185,6 +187,7 @@ TEST_F(CrxDownloaderTest, NoUrl) {
   EXPECT_EQ(1, num_download_complete_calls_);
   EXPECT_EQ(static_cast<int>(CrxDownloaderError::NO_URL),
             download_complete_result_.error);
+  EXPECT_EQ(download_complete_result_.extra_code1, 0);
   EXPECT_TRUE(download_complete_result_.response.empty());
   EXPECT_EQ(0, num_progress_calls_);
 }
@@ -199,6 +202,7 @@ TEST_F(CrxDownloaderTest, NoHash) {
   EXPECT_EQ(1, num_download_complete_calls_);
   EXPECT_EQ(static_cast<int>(CrxDownloaderError::NO_HASH),
             download_complete_result_.error);
+  EXPECT_EQ(download_complete_result_.extra_code1, 0);
   EXPECT_TRUE(download_complete_result_.response.empty());
   EXPECT_EQ(0, num_progress_calls_);
 }
@@ -219,6 +223,7 @@ TEST_F(CrxDownloaderTest, OneUrl) {
 
   EXPECT_EQ(1, num_download_complete_calls_);
   EXPECT_EQ(0, download_complete_result_.error);
+  EXPECT_EQ(0, download_complete_result_.extra_code1);
   EXPECT_TRUE(ContentsEqual(download_complete_result_.response, test_file));
 
   EXPECT_TRUE(
@@ -249,6 +254,7 @@ TEST_F(CrxDownloaderTest, OneUrlBadHash) {
   EXPECT_EQ(1, num_download_complete_calls_);
   EXPECT_EQ(static_cast<int>(CrxDownloaderError::BAD_HASH),
             download_complete_result_.error);
+  EXPECT_EQ(download_complete_result_.extra_code1, 0);
   EXPECT_TRUE(download_complete_result_.response.empty());
 
   EXPECT_LE(1, num_progress_calls_);
@@ -275,6 +281,7 @@ TEST_F(CrxDownloaderTest, TwoUrls) {
 
   EXPECT_EQ(1, num_download_complete_calls_);
   EXPECT_EQ(0, download_complete_result_.error);
+  EXPECT_EQ(0, download_complete_result_.extra_code1);
   EXPECT_TRUE(ContentsEqual(download_complete_result_.response, test_file));
 
   EXPECT_TRUE(
@@ -306,6 +313,7 @@ TEST_F(CrxDownloaderTest, TwoUrls_FirstInvalid) {
 
   EXPECT_EQ(1, num_download_complete_calls_);
   EXPECT_EQ(0, download_complete_result_.error);
+  EXPECT_EQ(0, download_complete_result_.extra_code1);
   EXPECT_TRUE(ContentsEqual(download_complete_result_.response, test_file));
 
   EXPECT_TRUE(
@@ -350,6 +358,7 @@ TEST_F(CrxDownloaderTest, TwoUrls_SecondInvalid) {
 
   EXPECT_EQ(1, num_download_complete_calls_);
   EXPECT_EQ(0, download_complete_result_.error);
+  EXPECT_EQ(0, download_complete_result_.extra_code1);
   EXPECT_TRUE(ContentsEqual(download_complete_result_.response, test_file));
 
   EXPECT_TRUE(
@@ -379,6 +388,7 @@ TEST_F(CrxDownloaderTest, TwoUrls_BothInvalid) {
 
   EXPECT_EQ(1, num_download_complete_calls_);
   EXPECT_NE(0, download_complete_result_.error);
+  EXPECT_EQ(0, download_complete_result_.extra_code1);
   EXPECT_TRUE(download_complete_result_.response.empty());
 
   const auto download_metrics = crx_downloader_->download_metrics();

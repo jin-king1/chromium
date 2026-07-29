@@ -41,20 +41,33 @@ namespace blink {
 
 class SVGImage;
 
-class CORE_EXPORT SVGImageChromeClient final : public EmptyChromeClient {
+class IsolatedSVGChromeClient : public EmptyChromeClient {
+ public:
+  bool IsIsolatedSVGChromeClient() const override;
+
+  // Callback to allow restoring (resuming) animations that was suspended due
+  // to changes in page visibility (see Page::SetVisibilityState).
+  virtual void RestoreAnimationIfNeeded() {}
+
+  // Used to pipe a UMA metric through from parsing stage to when
+  // the embedding document of an SVGImage reports UMA stats.
+  virtual void SetDidEncounterXSL() {}
+};
+
+class CORE_EXPORT SVGImageChromeClient final : public IsolatedSVGChromeClient {
  public:
   explicit SVGImageChromeClient(SVGImage*);
 
   void InitAnimationTimer(
       scoped_refptr<base::SingleThreadTaskRunner> compositor_task_runner);
 
-  bool IsSVGImageChromeClient() const override;
-
   SVGImage* GetImage() const { return image_; }
 
   void SuspendAnimation();
   void ResumeAnimation();
-  void RestoreAnimationIfNeeded();
+  void RestoreAnimationIfNeeded() override;
+
+  void SetDidEncounterXSL() override;
 
   bool IsSuspended() const { return timeline_state_ >= kSuspended; }
 
@@ -64,7 +77,9 @@ class CORE_EXPORT SVGImageChromeClient final : public EmptyChromeClient {
   void ChromeDestroyed() override;
   void InvalidateContainer() override;
   void ScheduleAnimation(const LocalFrameView*,
-                         base::TimeDelta = base::TimeDelta()) override;
+                         cc::BeginMainFrameReason,
+                         base::TimeDelta,
+                         bool urgent) override;
 
   void SetTimerForTesting(
       DisallowNewWrapper<HeapTaskRunnerTimer<SVGImageChromeClient>>*);
@@ -82,15 +97,24 @@ class CORE_EXPORT SVGImageChromeClient final : public EmptyChromeClient {
 
   FRIEND_TEST_ALL_PREFIXES(SVGImageTest, TimelineSuspendAndResume);
   FRIEND_TEST_ALL_PREFIXES(SVGImageTest, ResetAnimation);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageTest,
+                           ResetAnimationRewindsRunningFiniteCssAnimation);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageTest,
+                           ResetAnimationPreservesPausedFiniteCssAnimation);
+  FRIEND_TEST_ALL_PREFIXES(
+      SVGImageTest,
+      ResetAnimationRestoresPlaybackForFinishedFiniteCssAnimation);
   FRIEND_TEST_ALL_PREFIXES(SVGImageSimTest, PageVisibilityHiddenToVisible);
   FRIEND_TEST_ALL_PREFIXES(SVGImageSimTest,
                            AnimationsPausedWhenImageScrolledOutOfView);
+  FRIEND_TEST_ALL_PREFIXES(SVGImageSimTest,
+                           AnimationsResumedWhenImageScrolledIntoView);
 };
 
 template <>
-struct DowncastTraits<SVGImageChromeClient> {
+struct DowncastTraits<IsolatedSVGChromeClient> {
   static bool AllowFrom(const ChromeClient& client) {
-    return client.IsSVGImageChromeClient();
+    return client.IsIsolatedSVGChromeClient();
   }
 };
 

@@ -47,6 +47,7 @@
 #include "absl/base/internal/raw_logging.h"
 #include "absl/base/prefetch.h"
 #include "absl/crc/internal/crc_internal.h"
+#include "absl/numeric/bits.h"
 
 namespace absl {
 ABSL_NAMESPACE_BEGIN
@@ -175,9 +176,6 @@ CRCImpl* CRCImpl::NewInternal() {
 
   return result;
 }
-
-// The CRC of the empty string is always the CRC polynomial itself.
-void CRCImpl::Empty(uint32_t* crc) const { *crc = kCrc32cPoly; }
 
 //  The 32-bit implementation
 
@@ -413,16 +411,13 @@ void CRC32::Scramble(uint32_t* crc) const {
   // Rotate by near half the word size plus 1.  See the scramble comment in
   // crc_internal.h for an explanation.
   constexpr int scramble_rotate = (32 / 2) + 1;
-  *crc = RotateRight<uint32_t>(static_cast<unsigned int>(*crc + kScrambleLo),
-                               32, scramble_rotate) &
-         MaskOfLength<uint32_t>(32);
+  *crc = absl::rotr(static_cast<uint32_t>(*crc + kScrambleLo), scramble_rotate);
 }
 
 void CRC32::Unscramble(uint32_t* crc) const {
   constexpr int scramble_rotate = (32 / 2) + 1;
-  uint64_t rotated = RotateRight<uint32_t>(static_cast<unsigned int>(*crc), 32,
-                                           32 - scramble_rotate);
-  *crc = (rotated - kScrambleLo) & MaskOfLength<uint32_t>(32);
+  uint64_t rotated = absl::rotl(*crc, scramble_rotate);
+  *crc = static_cast<uint32_t>(rotated - kScrambleLo);
 }
 
 // Constructor and destructor for base class CRC.
@@ -433,34 +428,6 @@ CRC::CRC() {}
 CRC* CRC::Crc32c() {
   static CRC* singleton = CRCImpl::NewInternal();
   return singleton;
-}
-
-// This Concat implementation works for arbitrary polynomials.
-void CRC::Concat(uint32_t* px, uint32_t y, size_t ylen) {
-  // https://en.wikipedia.org/wiki/Mathematics_of_cyclic_redundancy_checks
-  // The CRC of a message M is the remainder of polynomial division modulo G,
-  // where the coefficient arithmetic is performed modulo 2 (so +/- are XOR):
-  //   R(x) = M(x) x**n (mod G)
-  // (n is the degree of G)
-  // In practice, we use an initial value A and a bitmask B to get
-  //   R = (A ^ B)x**|M| ^ Mx**n ^ B (mod G)
-  // If M is the concatenation of two strings S and T, and Z is the string of
-  // len(T) 0s, then the remainder CRC(ST) can be expressed as:
-  //   R = (A ^ B)x**|ST| ^ STx**n ^ B
-  //     = (A ^ B)x**|SZ| ^ SZx**n ^ B ^ Tx**n
-  //     = CRC(SZ) ^ Tx**n
-  // CRC(Z) = (A ^ B)x**|T| ^ B
-  // CRC(T) = (A ^ B)x**|T| ^ Tx**n ^ B
-  // So R = CRC(SZ) ^ CRC(Z) ^ CRC(T)
-  //
-  // And further, since CRC(SZ) = Extend(CRC(S), Z),
-  //  CRC(SZ) ^ CRC(Z) = Extend(CRC(S) ^ CRC(''), Z).
-  uint32_t z;
-  uint32_t t;
-  Empty(&z);
-  t = *px ^ z;
-  ExtendByZeroes(&t, ylen);
-  *px = t ^ y;
 }
 
 }  // namespace crc_internal

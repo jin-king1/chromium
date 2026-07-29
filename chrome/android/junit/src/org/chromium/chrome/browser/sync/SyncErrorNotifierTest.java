@@ -25,39 +25,39 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.shadows.ShadowLooper;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Promise;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
+import org.chromium.components.browser_ui.notifications.NotificationFeatureMap;
 import org.chromium.components.browser_ui.notifications.NotificationManagerProxy;
 import org.chromium.components.browser_ui.notifications.NotificationWrapper;
 import org.chromium.components.signin.base.CoreAccountInfo;
+import org.chromium.components.sync.SyncService;
+import org.chromium.components.trusted_vault.TrustedVaultClient;
+import org.chromium.google_apis.gaia.GaiaId;
 
 /** Unit tests for {@link SyncErrorNotifier}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@EnableFeatures({NotificationFeatureMap.CACHE_NOTIIFICATIONS_ENABLED})
 public class SyncErrorNotifierTest {
-    @Rule
-    public final MockitoRule mockitoRule = MockitoJUnit.rule();
+    @Rule public final MockitoRule mockitoRule = MockitoJUnit.rule();
 
     private final Context mContext = ContextUtils.getApplicationContext();
 
-    @Mock
-    private NotificationManagerProxy mNotificationManagerProxy;
-    @Mock
-    private SyncService mSyncService;
-    @Mock
-    private TrustedVaultClient mTrustedVaultClient;
+    @Mock private NotificationManagerProxy mNotificationManagerProxy;
+    @Mock private SyncService mSyncService;
+    @Mock private TrustedVaultClient mTrustedVaultClient;
 
-    @Captor
-    private ArgumentCaptor<NotificationWrapper> mNotificationWrapperCaptor;
+    @Captor private ArgumentCaptor<NotificationWrapper> mNotificationWrapperCaptor;
 
     @Test
     @SmallTest
     public void testNoNotification() {
         when(mSyncService.getAccountInfo()).thenReturn(null);
-        when(mSyncService.isSyncFeatureEnabled()).thenReturn(false);
         when(mSyncService.isEngineInitialized()).thenReturn(false);
         when(mSyncService.isEncryptEverythingEnabled()).thenReturn(false);
         when(mSyncService.isPassphraseRequiredForPreferredDataTypes()).thenReturn(false);
@@ -74,10 +74,54 @@ public class SyncErrorNotifierTest {
 
     @Test
     @SmallTest
-    public void testPassphraseNotification() {
+    public void testPassphraseNotificationMuted() {
         when(mSyncService.getAccountInfo())
-                .thenReturn(CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", "gaiaId"));
-        when(mSyncService.isSyncFeatureEnabled()).thenReturn(true);
+                .thenReturn(
+                        CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", new GaiaId("gaiaId")));
+        when(mSyncService.isEngineInitialized()).thenReturn(true);
+        when(mSyncService.isEncryptEverythingEnabled()).thenReturn(true);
+        when(mSyncService.isPassphraseRequiredForPreferredDataTypes()).thenReturn(true);
+        when(mSyncService.isPassphrasePromptMutedForCurrentProductVersion()).thenReturn(true);
+        when(mSyncService.isTrustedVaultKeyRequiredForPreferredDataTypes()).thenReturn(false);
+
+        SyncErrorNotifier notifier =
+                new SyncErrorNotifier(mNotificationManagerProxy, mSyncService, mTrustedVaultClient);
+        notifier.syncStateChanged();
+
+        verify(mNotificationManagerProxy, Mockito.times(0)).cancel(anyInt());
+        verify(mNotificationManagerProxy, Mockito.times(0)).notify(any());
+    }
+
+    @Test
+    @SmallTest
+    public void testTrustedVaultIntentCreationFails() {
+        when(mSyncService.getAccountInfo())
+                .thenReturn(
+                        CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", new GaiaId("gaiaId")));
+        when(mSyncService.isEngineInitialized()).thenReturn(true);
+        when(mSyncService.isEncryptEverythingEnabled()).thenReturn(true);
+        when(mSyncService.isPassphraseRequiredForPreferredDataTypes()).thenReturn(false);
+        when(mSyncService.isPassphrasePromptMutedForCurrentProductVersion()).thenReturn(false);
+        when(mSyncService.isTrustedVaultKeyRequiredForPreferredDataTypes()).thenReturn(true);
+        when(mTrustedVaultClient.createKeyRetrievalIntent(any())).thenReturn(Promise.rejected());
+
+        SyncErrorNotifier notifier =
+                new SyncErrorNotifier(mNotificationManagerProxy, mSyncService, mTrustedVaultClient);
+        notifier.syncStateChanged();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+
+        // There must've been no notify() calls - because the intent creation failed - and no
+        // cancel() calls either - because there were no ongoing notifications to cancel.
+        verify(mNotificationManagerProxy, Mockito.times(0)).notify(any());
+        verify(mNotificationManagerProxy, Mockito.times(0)).cancel(anyInt());
+    }
+
+    @Test
+    @SmallTest
+    public void testPassphraseNotificationForSignedInUsers() {
+        when(mSyncService.getAccountInfo())
+                .thenReturn(
+                        CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", new GaiaId("gaiaId")));
         when(mSyncService.isEngineInitialized()).thenReturn(true);
         when(mSyncService.isEncryptEverythingEnabled()).thenReturn(true);
         when(mSyncService.isPassphraseRequiredForPreferredDataTypes()).thenReturn(true);
@@ -91,10 +135,12 @@ public class SyncErrorNotifierTest {
         verify(mSyncService).markPassphrasePromptMutedForCurrentProductVersion();
         verify(mNotificationManagerProxy).notify(mNotificationWrapperCaptor.capture());
         Bundle notificationExtras = mNotificationWrapperCaptor.getValue().getNotification().extras;
-        assertEquals(notificationExtras.getCharSequence(Notification.EXTRA_TITLE),
-                mContext.getString(R.string.sync_error_card_title));
-        assertEquals(notificationExtras.getCharSequence(Notification.EXTRA_TEXT),
-                mContext.getString(R.string.hint_passphrase_required));
+        assertEquals(
+                notificationExtras.getCharSequence(Notification.EXTRA_TITLE),
+                mContext.getString(R.string.identity_error_message_title_passphrase_required));
+        assertEquals(
+                notificationExtras.getCharSequence(Notification.EXTRA_TEXT),
+                mContext.getString(R.string.identity_error_message_body));
 
         // Spurious syncStateChanged()...
         notifier.syncStateChanged();
@@ -113,30 +159,10 @@ public class SyncErrorNotifierTest {
 
     @Test
     @SmallTest
-    public void testPassphraseNotificationMuted() {
+    public void testTrustedVaultNotificationForPasswordsForSignedInUsers() {
         when(mSyncService.getAccountInfo())
-                .thenReturn(CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", "gaiaId"));
-        when(mSyncService.isSyncFeatureEnabled()).thenReturn(true);
-        when(mSyncService.isEngineInitialized()).thenReturn(true);
-        when(mSyncService.isEncryptEverythingEnabled()).thenReturn(true);
-        when(mSyncService.isPassphraseRequiredForPreferredDataTypes()).thenReturn(true);
-        when(mSyncService.isPassphrasePromptMutedForCurrentProductVersion()).thenReturn(true);
-        when(mSyncService.isTrustedVaultKeyRequiredForPreferredDataTypes()).thenReturn(false);
-
-        SyncErrorNotifier notifier =
-                new SyncErrorNotifier(mNotificationManagerProxy, mSyncService, mTrustedVaultClient);
-        notifier.syncStateChanged();
-
-        verify(mNotificationManagerProxy, Mockito.times(0)).cancel(anyInt());
-        verify(mNotificationManagerProxy, Mockito.times(0)).notify(any());
-    }
-
-    @Test
-    @SmallTest
-    public void testTrustedVaultNotificationForPasswords() {
-        when(mSyncService.getAccountInfo())
-                .thenReturn(CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", "gaiaId"));
-        when(mSyncService.isSyncFeatureEnabled()).thenReturn(true);
+                .thenReturn(
+                        CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", new GaiaId("gaiaId")));
         when(mSyncService.isEngineInitialized()).thenReturn(true);
         when(mSyncService.isEncryptEverythingEnabled()).thenReturn(false);
         when(mSyncService.isPassphraseRequiredForPreferredDataTypes()).thenReturn(false);
@@ -162,15 +188,18 @@ public class SyncErrorNotifierTest {
 
         // Return the intent (can be null as it's unused by the test).
         intentPromise.fulfill(null);
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
         // Notification must be shown now.
         verify(mNotificationManagerProxy).notify(mNotificationWrapperCaptor.capture());
         Bundle notificationExtras = mNotificationWrapperCaptor.getValue().getNotification().extras;
-        assertEquals(notificationExtras.getCharSequence(Notification.EXTRA_TITLE),
-                mContext.getString(R.string.password_sync_error_summary));
-        assertEquals(notificationExtras.getCharSequence(Notification.EXTRA_TEXT),
-                mContext.getString(R.string.hint_sync_retrieve_keys_for_passwords));
+        assertEquals(
+                notificationExtras.getCharSequence(Notification.EXTRA_TITLE),
+                mContext.getString(R.string.identity_error_card_button_verify));
+        assertEquals(
+                notificationExtras.getCharSequence(Notification.EXTRA_TEXT),
+                mContext.getString(
+                        R.string.identity_error_message_body_sync_retrieve_keys_for_passwords));
 
         // Spurious syncStateChanged()...
         notifier.syncStateChanged();
@@ -190,10 +219,10 @@ public class SyncErrorNotifierTest {
 
     @Test
     @SmallTest
-    public void testTrustedVaultNotificationForEverything() {
+    public void testTrustedVaultNotificationForEverythingForSignedInUsers() {
         when(mSyncService.getAccountInfo())
-                .thenReturn(CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", "gaiaId"));
-        when(mSyncService.isSyncFeatureEnabled()).thenReturn(true);
+                .thenReturn(
+                        CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", new GaiaId("gaiaId")));
         when(mSyncService.isEngineInitialized()).thenReturn(true);
         when(mSyncService.isEncryptEverythingEnabled()).thenReturn(true);
         when(mSyncService.isPassphraseRequiredForPreferredDataTypes()).thenReturn(false);
@@ -205,39 +234,17 @@ public class SyncErrorNotifierTest {
         SyncErrorNotifier notifier =
                 new SyncErrorNotifier(mNotificationManagerProxy, mSyncService, mTrustedVaultClient);
         notifier.syncStateChanged();
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
 
-        // Strings must be different from testTrustedVaultNotificationForPasswords()
+        // Strings must be different from testTrustedVaultNotificationForPasswords().
         verify(mNotificationManagerProxy, Mockito.times(0)).cancel(anyInt());
         verify(mNotificationManagerProxy).notify(mNotificationWrapperCaptor.capture());
         Bundle notificationExtras = mNotificationWrapperCaptor.getValue().getNotification().extras;
-        assertEquals(notificationExtras.getCharSequence(Notification.EXTRA_TITLE),
-                mContext.getString(R.string.sync_error_card_title));
-        assertEquals(notificationExtras.getCharSequence(Notification.EXTRA_TEXT),
-                mContext.getString(R.string.hint_sync_retrieve_keys_for_everything));
-    }
-
-    @Test
-    @SmallTest
-    public void testTrustedVaultIntentCreationFails() {
-        when(mSyncService.getAccountInfo())
-                .thenReturn(CoreAccountInfo.createFromEmailAndGaiaId("a@b.com", "gaiaId"));
-        when(mSyncService.isSyncFeatureEnabled()).thenReturn(true);
-        when(mSyncService.isEngineInitialized()).thenReturn(true);
-        when(mSyncService.isEncryptEverythingEnabled()).thenReturn(true);
-        when(mSyncService.isPassphraseRequiredForPreferredDataTypes()).thenReturn(false);
-        when(mSyncService.isPassphrasePromptMutedForCurrentProductVersion()).thenReturn(false);
-        when(mSyncService.isTrustedVaultKeyRequiredForPreferredDataTypes()).thenReturn(true);
-        when(mTrustedVaultClient.createKeyRetrievalIntent(any())).thenReturn(Promise.rejected());
-
-        SyncErrorNotifier notifier =
-                new SyncErrorNotifier(mNotificationManagerProxy, mSyncService, mTrustedVaultClient);
-        notifier.syncStateChanged();
-        ShadowLooper.runUiThreadTasksIncludingDelayedTasks();
-
-        // There must've been no notify() calls - because the intent creation failed - and no
-        // cancel() calls either - because there were no ongoing notifications to cancel.
-        verify(mNotificationManagerProxy, Mockito.times(0)).notify(any());
-        verify(mNotificationManagerProxy, Mockito.times(0)).cancel(anyInt());
+        assertEquals(
+                notificationExtras.getCharSequence(Notification.EXTRA_TITLE),
+                mContext.getString(R.string.identity_error_card_button_verify));
+        assertEquals(
+                notificationExtras.getCharSequence(Notification.EXTRA_TEXT),
+                mContext.getString(R.string.identity_error_message_body));
     }
 }

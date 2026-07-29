@@ -6,7 +6,6 @@
 #include "base/location.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/renderer_host/render_view_host_impl.h"
@@ -35,9 +34,8 @@ class PageLifecycleStateManagerBrowserTest : public ContentBrowserTest {
   }
 
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    ContentBrowserTest::SetUpCommandLine(command_line);
-    base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
-        switches::kEnableBlinkFeatures, "VisibilityStateEntry");
+    command_line->AppendSwitchASCII(switches::kEnableBlinkFeatures,
+                                    "VisibilityStateEntry");
   }
 
   WebContentsImpl* web_contents() const {
@@ -134,17 +132,15 @@ IN_PROC_BROWSER_TEST_F(PageLifecycleStateManagerBrowserTest, SetVisibility) {
 
   MatchEventList(rfh, ListValueOf("document.visibilitychange"));
 
-  EXPECT_TRUE(
-      EvalJs(
-          rfh,
-          "(async () => { return await window.performanceObserverPromise;})()")
-          .value.GetBool());
+  EXPECT_EQ(true, EvalJs(rfh,
+                         "(async () => { return await "
+                         "window.performanceObserverPromise;})()"));
   EXPECT_EQ(ListValueOf("visible", "hidden"),
             EvalJs(rfh, "window.performanceObserverEntries"));
 }
 
-// TODO(crbug.com/1241814): Test is flaky on Win and Lacros
-#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_CHROMEOS_LACROS)
+// TODO(crbug.com/40786254): Test is flaky on Win
+#if BUILDFLAG(IS_WIN)
 #define MAYBE_CrossProcessIframeHiddenAnFrozen \
   DISABLED_CrossProcessIframeHiddenAnFrozen
 #else
@@ -236,6 +232,37 @@ IN_PROC_BROWSER_TEST_F(PageLifecycleStateManagerBrowserTest,
 
   MatchEventList(popup_frame, ListValueOf("document.visibilitychange",
                                           "document.visibilitychange"));
+}
+
+IN_PROC_BROWSER_TEST_F(PageLifecycleStateManagerBrowserTest,
+                       MicrotaskRunnableDuringResumeEvent) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  GURL test_url = embedded_test_server()->GetURL("/empty.html");
+  ASSERT_TRUE(NavigateToURL(shell(), test_url));
+  RenderFrameHostImpl* rfh = current_frame_host();
+  // 1. Register a resume listener that schedules a microtask (Promise.then).
+  // If the context is frozen during the event, the microtask will be blocked.
+  ASSERT_TRUE(ExecJs(rfh, R"(
+    window.resumeMicrotaskRan = false;
+    document.addEventListener('resume', () => {
+      Promise.resolve().then(() => {
+        window.resumeMicrotaskRan = true;
+      });
+    });
+  )",
+                     EXECUTE_SCRIPT_NO_RESOLVE_PROMISES));
+
+  // 2. Hide and freeze the page.
+  shell()->web_contents()->WasHidden();
+  EXPECT_EQ(PageVisibilityState::kHidden, rfh->GetVisibilityState());
+  shell()->web_contents()->SetPageFrozen(true);
+
+  // 3. Resume the page.
+  shell()->web_contents()->SetPageFrozen(false);
+
+  // 4. Assert that the microtask was allowed to run.
+  // EvalJs will execute and implicitly run the microtask checkpoint if needed.
+  EXPECT_EQ(true, EvalJs(rfh, "window.resumeMicrotaskRan"));
 }
 
 }  // namespace content

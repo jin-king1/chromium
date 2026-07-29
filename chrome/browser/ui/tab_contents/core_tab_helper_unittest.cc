@@ -4,166 +4,176 @@
 
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
 
-#include "base/memory/raw_ptr.h"
 #include "base/test/scoped_feature_list.h"
-#include "chrome/browser/search_engines/template_url_service_factory.h"
-#include "chrome/test/base/browser_with_test_window_test.h"
-#include "chrome/test/base/search_test_utils.h"
+#include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/lens/lens_features.h"
-#include "content/public/browser/navigation_entry.h"
-#include "content/public/test/mock_navigation_handle.h"
+#include "components/lens/lens_metadata.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/libwebp/src/src/webp/decode.h"
+#include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/image/image_unittest_util.h"
 
-// Lens ping URL for tests.
-const char kTestLensPingURL[] = "https://lens-ping.url/";
+namespace {
 
-TEST(CoreTabHelperUnitTest,
-     EncodeImageIntoSearchArgs_OptimizedImageFormatsDisabled_EncodesAsPng) {
-  base::test::ScopedFeatureList features;
-  features.InitAndDisableFeature(lens::features::kLensImageFormatOptimizations);
+class CoreTabHelperImageProcessingTest
+    : public ChromeRenderViewHostTestHarness {
+ public:
+  CoreTabHelperImageProcessingTest() = default;
+  CoreTabHelperImageProcessingTest(const CoreTabHelperImageProcessingTest&) =
+      delete;
+  CoreTabHelperImageProcessingTest& operator=(
+      const CoreTabHelperImageProcessingTest&) = delete;
+
+  ~CoreTabHelperImageProcessingTest() override = default;
+
+  void SetUp() override {
+    ChromeRenderViewHostTestHarness::SetUp();
+
+    CoreTabHelper::CreateForWebContents(web_contents());
+  }
+
+  void DownscaleAndEncodeBitmapAndVerifyResponse(
+      SkBitmap& bitmap,
+      int thumbnail_min_size,
+      int thumbnail_max_width,
+      int thumbnail_max_height,
+      std::string expected_content_type,
+      int expected_downscaled_width,
+      int expected_downscaled_height) {
+    gfx::Size expected_downscaled_size =
+        gfx::Size(expected_downscaled_width, expected_downscaled_height);
+
+    auto callback =
+        [](std::vector<unsigned char>* response_thumbnail_data,
+           std::string* response_content_type,
+           gfx::Size* response_original_size,
+           gfx::Size* response_downscaled_size, int* response_log_data_size,
+           base::OnceClosure quit,
+           const std::vector<unsigned char>& received_thumbnail_data,
+           const std::string& received_content_type,
+           const gfx::Size& received_original_size,
+           const gfx::Size& received_downscaled_size,
+           const std::vector<lens::mojom::LatencyLogPtr> received_log_data) {
+          *response_thumbnail_data = received_thumbnail_data;
+          *response_original_size = received_original_size;
+          *response_downscaled_size = received_downscaled_size;
+          *response_content_type = received_content_type;
+          *response_log_data_size = received_log_data.size();
+          std::move(quit).Run();
+        };
+
+    std::vector<unsigned char> thumbnail_data;
+    std::string content_type;
+    gfx::Size original_size;
+    gfx::Size downscaled_size;
+    int log_data_size;
+    base::RunLoop run_loop;
+    CoreTabHelper::FromWebContents(web_contents())
+        ->DownscaleAndEncodeBitmap(
+            bitmap, thumbnail_min_size, thumbnail_max_width,
+            thumbnail_max_height,
+            base::BindOnce(callback, &thumbnail_data, &content_type,
+                           &original_size, &downscaled_size, &log_data_size,
+                           run_loop.QuitClosure()));
+    run_loop.Run();
+
+    EXPECT_EQ(downscaled_size, expected_downscaled_size);
+    EXPECT_EQ(content_type, expected_content_type);
+
+    if (bitmap.width() == expected_downscaled_width &&
+        bitmap.height() == expected_downscaled_height) {
+      // Only encoding steps start and end steps should be logged.
+      EXPECT_EQ(log_data_size, 2);
+    } else {
+      // Encoding and downscaling start and end steps should be logged.
+      EXPECT_EQ(log_data_size, 4);
+    }
+
+    if (content_type == "image/jpeg") {
+      SkBitmap decoded_bitmap = gfx::JPEGCodec::Decode(thumbnail_data);
+      ASSERT_EQ(expected_downscaled_width, decoded_bitmap.width());
+      ASSERT_EQ(expected_downscaled_height, decoded_bitmap.height());
+    } else if (content_type == "image/webp") {
+      int width;
+      int height;
+      EXPECT_TRUE(WebPGetInfo(&thumbnail_data.front(), thumbnail_data.size(),
+                              &width, &height));
+      ASSERT_EQ(expected_downscaled_width, width);
+      ASSERT_EQ(expected_downscaled_height, height);
+    }
+  }
+};
+
+}  // namespace
+
+TEST_F(CoreTabHelperImageProcessingTest,
+       DownscaleAndEncodeBitmap_EncodesOpaqueAsJpeg) {
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(100, 100, /*isOpaque=*/true);
+  DownscaleAndEncodeBitmapAndVerifyResponse(
+      bitmap, /*thumbnail_min_size=*/1, /*thumbnail_max_width=*/100,
+      /*thumbnail_max_height=*/100, "image/jpeg",
+      /*expected_downscaled_width=*/100, /*expected_downscaled_height=*/100);
+}
+
+TEST_F(CoreTabHelperImageProcessingTest,
+       DownscaleAndEncodeBitmap_EncodesNonOpaqueAsWebp) {
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(100, 100, /*isOpaque=*/false);
+  DownscaleAndEncodeBitmapAndVerifyResponse(
+      bitmap, /*thumbnail_min_size=*/1, /*thumbnail_max_width=*/100,
+      /*thumbnail_max_height=*/100, "image/webp",
+      /*expected_downscaled_width=*/100, /*expected_downscaled_height=*/100);
+}
+
+TEST_F(CoreTabHelperImageProcessingTest,
+       DownscaleAndEncodeBitmap_DownscalesLargeImage) {
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(300, 300, /*isOpaque=*/false);
+  DownscaleAndEncodeBitmapAndVerifyResponse(
+      bitmap, /*thumbnail_min_size=*/1, /*thumbnail_max_width=*/100,
+      /*thumbnail_max_height=*/100, "image/webp",
+      /*expected_downscaled_width=*/100, /*expected_downscaled_height=*/100);
+}
+
+TEST_F(CoreTabHelperImageProcessingTest,
+       DownscaleAndEncodeBitmap_DoesNotDownscaleThinImage) {
+  SkBitmap bitmap;
+  bitmap.allocN32Pixels(1, 300, /*isOpaque=*/false);
+  DownscaleAndEncodeBitmapAndVerifyResponse(
+      bitmap, /*thumbnail_min_size=*/100 * 100, /*thumbnail_max_width=*/100,
+      /*thumbnail_max_height=*/100, "image/webp",
+      /*expected_downscaled_width=*/1, /*expected_downscaled_height=*/300);
+}
+
+TEST(CoreTabHelperUnitTest, EncodeImageIntoSearchArgs_EncodesAsJpeg) {
   gfx::Image image = gfx::test::CreateImage(100, 100);
   TemplateURLRef::SearchTermsArgs search_args =
       TemplateURLRef::SearchTermsArgs(std::u16string());
 
+  size_t encoded_image_size_bytes;
   lens::mojom::ImageFormat image_format =
-      CoreTabHelper::EncodeImageIntoSearchArgs(image, search_args);
-
-  EXPECT_FALSE(search_args.image_thumbnail_content.empty());
-  EXPECT_EQ("image/png", search_args.image_thumbnail_content_type);
-  EXPECT_EQ(lens::mojom::ImageFormat::PNG, image_format);
-}
-
-TEST(CoreTabHelperUnitTest,
-     EncodeImageIntoSearchArgs_WebpEnabledAndEncodingSucceeds_EncodesAsWebp) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeatureWithParameters(
-      lens::features::kLensImageFormatOptimizations,
-      {{"use-webp-region-search", "true"},
-       {"use-jpeg-region-search", "false"}});
-  gfx::Image image = gfx::test::CreateImage(100, 100);
-  TemplateURLRef::SearchTermsArgs search_args =
-      TemplateURLRef::SearchTermsArgs(std::u16string());
-
-  lens::mojom::ImageFormat image_format =
-      CoreTabHelper::EncodeImageIntoSearchArgs(image, search_args);
-
-  EXPECT_FALSE(search_args.image_thumbnail_content.empty());
-  EXPECT_EQ("image/webp", search_args.image_thumbnail_content_type);
-  EXPECT_EQ(lens::mojom::ImageFormat::WEBP, image_format);
-}
-
-TEST(CoreTabHelperUnitTest,
-     EncodeImageIntoSearchArgs_WebpEnabledAndEncodingFails_EncodesAsPng) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeatureWithParameters(
-      lens::features::kLensImageFormatOptimizations,
-      {{"use-webp-region-search", "true"},
-       {"use-jpeg-region-search", "false"}});
-  gfx::Image image = gfx::test::CreateImage(0, 0);  // Encoding 0x0 will fail
-  TemplateURLRef::SearchTermsArgs search_args =
-      TemplateURLRef::SearchTermsArgs(std::u16string());
-
-  lens::mojom::ImageFormat image_format =
-      CoreTabHelper::EncodeImageIntoSearchArgs(image, search_args);
-
-  EXPECT_EQ("image/png", search_args.image_thumbnail_content_type);
-  EXPECT_EQ(lens::mojom::ImageFormat::PNG, image_format);
-}
-
-TEST(CoreTabHelperUnitTest,
-     EncodeImageIntoSearchArgs_JpegEnabledAndEncodingSucceeds_EncodesAsJpeg) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeatureWithParameters(
-      lens::features::kLensImageFormatOptimizations,
-      {{"use-webp-region-search", "false"},
-       {"use-jpeg-region-search", "true"}});
-  gfx::Image image = gfx::test::CreateImage(100, 100);
-  TemplateURLRef::SearchTermsArgs search_args =
-      TemplateURLRef::SearchTermsArgs(std::u16string());
-
-  lens::mojom::ImageFormat image_format =
-      CoreTabHelper::EncodeImageIntoSearchArgs(image, search_args);
+      CoreTabHelper::EncodeImageIntoSearchArgs(image, encoded_image_size_bytes,
+                                               search_args);
 
   EXPECT_FALSE(search_args.image_thumbnail_content.empty());
   EXPECT_EQ("image/jpeg", search_args.image_thumbnail_content_type);
+  EXPECT_EQ(359ul, encoded_image_size_bytes);
   EXPECT_EQ(lens::mojom::ImageFormat::JPEG, image_format);
 }
 
 TEST(CoreTabHelperUnitTest,
-     EncodeImageIntoSearchArgs_JpegEnabledAndEncodingFails_EncodesAsPng) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeatureWithParameters(
-      lens::features::kLensImageFormatOptimizations,
-      {{"use-webp-region-search", "false"},
-       {"use-jpeg-region-search", "true"}});
+     EncodeImageIntoSearchArgs_JpegEncodingFails_EncodesAsPng) {
   gfx::Image image = gfx::test::CreateImage(0, 0);  // Encoding 0x0 will fail
   TemplateURLRef::SearchTermsArgs search_args =
       TemplateURLRef::SearchTermsArgs(std::u16string());
 
+  size_t encoded_image_size_bytes;
   lens::mojom::ImageFormat image_format =
-      CoreTabHelper::EncodeImageIntoSearchArgs(image, search_args);
+      CoreTabHelper::EncodeImageIntoSearchArgs(image, encoded_image_size_bytes,
+                                               search_args);
 
   EXPECT_EQ("image/png", search_args.image_thumbnail_content_type);
+  EXPECT_EQ(0ul, encoded_image_size_bytes);
   EXPECT_EQ(lens::mojom::ImageFormat::PNG, image_format);
-}
-
-class CoreTabHelperWindowUnitTest : public BrowserWithTestWindowTest {
- protected:
-  void SetUp() override {
-    BrowserWithTestWindowTest::SetUp();
-    AddTab(browser(), GURL("http://www.google.com/"));
-
-    CoreTabHelper::CreateForWebContents(web_contents());
-    core_tab_helper_ = CoreTabHelper::FromWebContents(web_contents());
-
-    TemplateURLServiceFactory::GetInstance()->SetTestingFactoryAndUse(
-        profile(),
-        base::BindRepeating(&TemplateURLServiceFactory::BuildInstanceFor));
-    template_url_service_ = TemplateURLServiceFactory::GetForProfile(profile());
-    search_test_utils::WaitForTemplateURLServiceToLoad(template_url_service_);
-  }
-
-  content::WebContents* web_contents() const {
-    return browser()->tab_strip_model()->GetWebContentsAt(0);
-  }
-
-  content::RenderFrameHost* main_rfh() const {
-    return web_contents()->GetPrimaryMainFrame();
-  }
-
-  content::NavigationController* navigation_controller() {
-    return &(web_contents()->GetController());
-  }
-
- private:
-  raw_ptr<CoreTabHelper> core_tab_helper_;
-  raw_ptr<TemplateURLService> template_url_service_;
-};
-
-TEST_F(CoreTabHelperWindowUnitTest,
-       SearchWithLens_LensPingEnabled_TriggersLensPing) {
-  base::test::ScopedFeatureList features;
-  features.InitAndEnableFeatureWithParameters(
-      lens::features::kEnableLensPing, {{"ping-lens-sequentially", "true"},
-                                        {"lens-ping-url", kTestLensPingURL}});
-
-  CoreTabHelper* core_tab_helper =
-      CoreTabHelper::FromWebContents(web_contents());
-  core_tab_helper->SearchWithLens(
-      main_rfh(), GURL(""),
-      lens::EntryPoint::CHROME_SEARCH_WITH_GOOGLE_LENS_CONTEXT_MENU_ITEM,
-      false);
-  EXPECT_TRUE(core_tab_helper->awaiting_lens_ping_response_);
-
-  EXPECT_EQ(kTestLensPingURL,
-            navigation_controller()->GetVisibleEntry()->GetURL().spec());
-
-  // Trigger the DidFinishNavigation callback of WebContentsObserver with a
-  // simulated Lens ping response. Purposely do not set the handle committed
-  // flag, as the Lens ping should have a 204 response code.
-  content::MockNavigationHandle simulated_lens_ping_handle(
-      GURL(kTestLensPingURL), main_rfh());
-  core_tab_helper->DidFinishNavigation(&simulated_lens_ping_handle);
-  EXPECT_FALSE(core_tab_helper->awaiting_lens_ping_response_);
 }

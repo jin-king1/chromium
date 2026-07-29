@@ -31,8 +31,8 @@
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/first_letter_pseudo_element.h"
-#include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/dom/node_traversal.h"
+#include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/editing/ephemeral_range.h"
@@ -41,6 +41,7 @@
 #include "third_party/blink/renderer/core/editing/local_caret_rect.h"
 #include "third_party/blink/renderer/core/editing/position.h"
 #include "third_party/blink/renderer/core/editing/position_iterator.h"
+#include "third_party/blink/renderer/core/editing/position_units.h"
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
 #include "third_party/blink/renderer/core/editing/selection_adjuster.h"
 #include "third_party/blink/renderer/core/editing/selection_template.h"
@@ -50,14 +51,20 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/html/forms/text_control_element.h"
+#include "third_party/blink/renderer/core/html/html_body_element.h"
 #include "third_party/blink/renderer/core/html/html_br_element.h"
+#include "third_party/blink/renderer/core/html/html_marquee_element.h"
+#include "third_party/blink/renderer/core/html/html_table_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
+#include "third_party/blink/renderer/core/layout/hit_test_location.h"
 #include "third_party/blink/renderer/core/layout/hit_test_request.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
+#include "third_party/blink/renderer/core/layout/inline/inline_node_data.h"
 #include "third_party/blink/renderer/core/layout/layout_inline.h"
 #include "third_party/blink/renderer/core/layout/layout_text_fragment.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
-#include "third_party/blink/renderer/core/layout/ng/inline/ng_inline_node_data.h"
+#include "third_party/blink/renderer/core/svg/svg_foreign_object_element.h"
+#include "third_party/blink/renderer/core/svg/svg_text_element.h"
 #include "third_party/blink/renderer/core/svg_element_type_helpers.h"
 #include "third_party/blink/renderer/platform/text/text_boundaries.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -190,8 +197,21 @@ static PositionType CanonicalPosition(const PositionType& position) {
   if (next_is_in_same_editable_element && !prev_is_in_same_editable_element)
     return next;
 
-  if (!next_is_in_same_editable_element && !prev_is_in_same_editable_element)
+  if (!next_is_in_same_editable_element && !prev_is_in_same_editable_element) {
+    // `prev/next_editing_root` is a child node of `editing_root`.
+    if (editing_root) {
+      // If `prev/next_editing_root` is not in the same block as `editing_root`,
+      // but the `position` is editable and visually equivalent position,
+      // directly return the `position`.
+      // See https://issues.chromium.org/issues/40890187 for more details.
+      if (RuntimeEnabledFeatures::
+              UsePositionIfIsVisuallyEquivalentCandidateEnabled() &&
+          IsVisuallyEquivalentCandidate(position)) {
+        return position;
+      }
+    }
     return PositionType();
+  }
 
   // The new position should be in the same block flow element. Favor that.
   const bool next_is_same_original_block = InSameBlock(node, next_node);
@@ -220,10 +240,22 @@ AdjustBackwardPositionToAvoidCrossingEditingBoundariesTemplate(
 
   ContainerNode* highest_root = HighestEditableRoot(anchor);
 
-  // Return empty position if |pos| is not somewhere inside the editable
-  // region containing this position
-  if (highest_root && !pos.AnchorNode()->IsDescendantOf(highest_root))
+  // Return first position in the anchor's text node if |pos| is not somewhere
+  // inside the editable region containing this position.
+  if (highest_root && !highest_root->contains(pos.AnchorNode())) {
+    if (RuntimeEnabledFeatures::
+            ClampWordBoundaryToContentEditableScopeEnabled()) {
+      const Node* first_editable = anchor.ComputeContainerNode();
+      if (first_editable->IsTextNode()) {
+        PositionTemplate<Strategy> first_position =
+            PositionTemplate<Strategy>::FirstPositionInNode(*first_editable);
+        if (anchor != first_position) {
+          return PositionWithAffinityTemplate<Strategy>(first_position);
+        }
+      }
+    }
     return PositionWithAffinityTemplate<Strategy>();
+  }
 
   // Return |pos| itself if the two are from the very same editable region, or
   // both are non-editable
@@ -271,10 +303,19 @@ AdjustForwardPositionToAvoidCrossingEditingBoundariesTemplate(
 
   ContainerNode* highest_root = HighestEditableRoot(anchor);
 
-  // Return empty position if |pos| is not somewhere inside the editable
-  // region containing this position
-  if (highest_root && !pos.AnchorNode()->IsDescendantOf(highest_root))
+  if (highest_root && !pos.AnchorNode()->IsDescendantOf(highest_root)) {
+    // Return last position in node if |pos| is not somewhere inside the
+    // editable region containing this position
+    const Node* last_editable = anchor.ComputeContainerNode();
+    if (last_editable->IsTextNode()) {
+      PositionTemplate<Strategy> last_position =
+          PositionTemplate<Strategy>::LastPositionInNode(*last_editable);
+      if (anchor != last_position) {
+        return PositionWithAffinityTemplate<Strategy>(last_position);
+      }
+    }
     return PositionWithAffinityTemplate<Strategy>();
+  }
 
   // Return |pos| itself if the two are from the very same editable region, or
   // both are non-editable
@@ -346,44 +387,16 @@ static Node* ParentEditingBoundary(const PositionTemplate<Strategy>& position) {
 
 // ---------
 
-template <typename Strategy>
-static PositionTemplate<Strategy> StartOfDocumentAlgorithm(
-    const PositionTemplate<Strategy>& position) {
-  const Node* const node = position.AnchorNode();
-  if (!node || !node->GetDocument().documentElement())
-    return PositionTemplate<Strategy>();
-
-  return PositionTemplate<Strategy>::FirstPositionInNode(
-      *node->GetDocument().documentElement());
-}
-
-Position StartOfDocument(const Position& c) {
-  return StartOfDocumentAlgorithm<EditingStrategy>(c);
-}
-
-PositionInFlatTree StartOfDocument(const PositionInFlatTree& c) {
-  return StartOfDocumentAlgorithm<EditingInFlatTreeStrategy>(c);
-}
-
-template <typename Strategy>
-static VisiblePositionTemplate<Strategy> EndOfDocumentAlgorithm(
-    const VisiblePositionTemplate<Strategy>& visible_position) {
-  DCHECK(visible_position.IsValid()) << visible_position;
-  Node* node = visible_position.DeepEquivalent().AnchorNode();
-  if (!node || !node->GetDocument().documentElement())
-    return VisiblePositionTemplate<Strategy>();
-
-  Element* doc = node->GetDocument().documentElement();
-  return CreateVisiblePosition(
-      PositionTemplate<Strategy>::LastPositionInNode(*doc));
-}
-
 VisiblePosition EndOfDocument(const VisiblePosition& c) {
-  return EndOfDocumentAlgorithm<EditingStrategy>(c);
+  DCHECK(c.IsValid()) << c;
+  return CreateVisiblePosition(
+      EndOfDocument(c.DeepEquivalent()));
 }
 
 VisiblePositionInFlatTree EndOfDocument(const VisiblePositionInFlatTree& c) {
-  return EndOfDocumentAlgorithm<EditingInFlatTreeStrategy>(c);
+  DCHECK(c.IsValid()) << c;
+  return CreateVisiblePosition(
+      EndOfDocument(c.DeepEquivalent()));
 }
 
 bool IsStartOfDocument(const VisiblePosition& p) {
@@ -398,22 +411,6 @@ bool IsEndOfDocument(const VisiblePosition& p) {
 }
 
 // ---------
-
-PositionInFlatTree StartOfEditableContent(const PositionInFlatTree& position) {
-  ContainerNode* highest_root = HighestEditableRoot(position);
-  if (!highest_root)
-    return PositionInFlatTree();
-
-  return PositionInFlatTree::FirstPositionInNode(*highest_root);
-}
-
-PositionInFlatTree EndOfEditableContent(const PositionInFlatTree& position) {
-  ContainerNode* highest_root = HighestEditableRoot(position);
-  if (!highest_root)
-    return PositionInFlatTree();
-
-  return PositionInFlatTree::LastPositionInNode(*highest_root);
-}
 
 bool IsEndOfEditableOrNonEditableContent(const VisiblePosition& position) {
   DCHECK(position.IsValid()) << position;
@@ -457,12 +454,16 @@ bool HasRenderedNonAnonymousDescendantsWithHeight(
     // Note: tests[1][2] require this.
     // [1] editing/style/underline.html
     // [2] editing/inserting/return-with-object-element.html
-    if (block_flow->HasNGInlineNodeData() &&
-        block_flow->GetNGInlineNodeData()
-            ->ItemsData(false)
-            .text_content.empty() &&
-        block_flow->HasLineIfEmpty())
-      return false;
+    if (const InlineNodeData* inline_data = block_flow->GetInlineNodeData()) {
+      if (inline_data->ItemsData(false).text_content.empty() &&
+          // Out-of-flow objects (floating and out-of-flow positioned) used to
+          // represent a U+FFFC Object Replacement Character. Keep the
+          // historical behavior.
+          !inline_data->HasFloatingOrOutOfFlowPositioned() &&
+          block_flow->HasLineIfEmpty()) {
+        return false;
+      }
+    }
   }
   const LayoutObject* stop = layout_object->NextInPreOrderAfterChildren();
   // TODO(editing-dev): Avoid single-character parameter names.
@@ -501,22 +502,21 @@ PositionWithAffinity PositionForContentsPointRespectingEditingBoundary(
 
   if (result.InnerNode()) {
     return PositionRespectingEditingBoundary(
-        frame->Selection().ComputeVisibleSelectionInDOMTreeDeprecated().Start(),
-        result);
+        frame->Selection().ComputeVisibleSelectionInDomTree().Start(), result);
   }
   return PositionWithAffinity();
 }
 
 // TODO(yosin): We should use |AssociatedLayoutObjectOf()| in "visible_units.cc"
 // where it takes |LayoutObject| from |Position|.
-int CaretMinOffset(const Node* node) {
+wtf_size_t CaretMinOffset(const Node* node) {
   const LayoutObject* layout_object = AssociatedLayoutObjectOf(*node, 0);
   if (const LayoutText* layout_text = DynamicTo<LayoutText>(layout_object))
     return layout_text->CaretMinOffset();
   return 0;
 }
 
-int CaretMaxOffset(const Node* n) {
+wtf_size_t CaretMaxOffset(const Node* n) {
   return EditingStrategy::CaretMaxOffset(*n);
 }
 
@@ -526,14 +526,14 @@ static bool InRenderedText(const PositionTemplate<Strategy>& position) {
   if (!anchor_node || !anchor_node->IsTextNode())
     return false;
 
-  const int offset_in_node = position.ComputeEditingOffset();
+  const wtf_size_t offset_in_node = position.ComputeEditingOffset();
   const LayoutObject* layout_object =
       AssociatedLayoutObjectOf(*anchor_node, offset_in_node);
   if (!layout_object)
     return false;
 
   const auto* text_layout_object = To<LayoutText>(layout_object);
-  const int text_offset =
+  const wtf_size_t text_offset =
       offset_in_node - text_layout_object->TextStartOffset();
   if (!text_layout_object->ContainsCaretOffset(text_offset))
     return false;
@@ -582,9 +582,8 @@ bool EndsOfNodeAreVisuallyDistinctPositions(const Node* node) {
     return true;
 
   // There is a VisiblePosition inside an empty inline-block container.
-  return layout_object->IsAtomicInlineLevel() &&
-         CanHaveChildrenForEditing(node) &&
-         !To<LayoutBox>(layout_object)->Size().IsEmpty() &&
+  return layout_object->IsAtomicInline() && CanHaveChildrenForEditing(node) &&
+         !To<LayoutBox>(layout_object)->StitchedSize().IsEmpty() &&
          !HasRenderedNonAnonymousDescendantsWithHeight(layout_object);
 }
 
@@ -621,7 +620,7 @@ static Position MostBackwardOrForwardCaretPosition(
   DCHECK(position.IsValidFor(*position.GetDocument())) << position;
 
   // Find the most backward or forward caret position in the flat tree.
-  const Position& candidate = ToPositionInDOMTree(
+  const Position& candidate = ToPositionInDomTree(
       AlgorithmInFlatTree(ToPositionInFlatTree(position), rule, client));
   Node* candidate_anchor = candidate.AnchorNode();
   if (!candidate_anchor)
@@ -634,16 +633,16 @@ static Position MostBackwardOrForwardCaretPosition(
   }
 
   // Adjust the candidate to avoid crossing shadow boundaries.
-  const SelectionInDOMTree& selection =
-      SelectionInDOMTree::Builder()
+  const SelectionInDomTree& selection =
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(position, candidate)
           .Build();
   if (selection.IsCaret())
     return candidate;
-  const SelectionInDOMTree& shadow_adjusted_selection =
+  const SelectionInDomTree& shadow_adjusted_selection =
       SelectionAdjuster::AdjustSelectionToAvoidCrossingShadowBoundaries(
           selection);
-  const Position& adjusted_candidate = shadow_adjusted_selection.Extent();
+  const Position& adjusted_candidate = shadow_adjusted_selection.Focus();
 
   // The adjusted candidate should be between the candidate and the original
   // position. Otherwise, return the original position.
@@ -654,10 +653,10 @@ static Position MostBackwardOrForwardCaretPosition(
   // crossing editing boundaries if it's not allowed.
   if (rule == kCannotCrossEditingBoundary &&
       selection != shadow_adjusted_selection) {
-    const SelectionInDOMTree& editing_adjusted_selection =
+    const SelectionInDomTree& editing_adjusted_selection =
         SelectionAdjuster::AdjustSelectionToAvoidCrossingEditingBoundaries(
             shadow_adjusted_selection);
-    return editing_adjusted_selection.Extent();
+    return editing_adjusted_selection.Focus();
   }
   return adjusted_candidate;
 }
@@ -717,13 +716,23 @@ static PositionTemplate<Strategy> MostBackwardCaretPosition(
   DCHECK(adjusted_position.IsNotNull()) << position;
 #endif
   PositionIteratorAlgorithm<Strategy> last_visible(adjusted_position);
-  const bool start_editable = IsEditable(*start_node);
-  Node* last_node = start_node;
+  Node* last_node;
+  // If we're snapping the caret to the edges of an inline element rather than
+  // crossing an editing boundary, we want to detect that editable boundary even
+  // if it happens between the position's container and anchor nodes.
+  if (rule == kCannotCrossEditingBoundary &&
+      client == SnapToClient::kLocalCaretRect) {
+    last_node = position.ComputeContainerNode();
+  } else {
+    last_node = start_node;
+  }
+  const bool start_editable = IsEditable(*last_node);
   bool boundary_crossed = false;
-  absl::optional<WritingMode> writing_mode;
+  std::optional<WritingMode> writing_mode;
   for (PositionIteratorAlgorithm<Strategy> current_pos = last_visible;
        !current_pos.AtStart(); current_pos.Decrement()) {
     Node* current_node = current_pos.GetNode();
+    DCHECK(current_node);
     // Don't check for an editability change if we haven't moved to a different
     // node, to avoid the expense of computing IsEditable().
     if (current_node != last_node) {
@@ -757,7 +766,7 @@ static PositionTemplate<Strategy> MostBackwardCaretPosition(
         IsA<Text>(current_node) ? current_pos.OffsetInTextNode() : 0,
         LayoutObjectSide::kFirstLetterIfOnBoundary);
     if (!layout_object ||
-        layout_object->Style()->Visibility() != EVisibility::kVisible) {
+        layout_object->StyleRef().Visibility() != EVisibility::kVisible) {
       if (boundary_crossed && rule == kCannotCrossEditingBoundary)
         break;
       continue;
@@ -770,14 +779,19 @@ static PositionTemplate<Strategy> MostBackwardCaretPosition(
     }
 
     if (!writing_mode.has_value()) {
-      writing_mode.emplace(layout_object->Style()->GetWritingMode());
-    } else if (*writing_mode != layout_object->Style()->GetWritingMode()) {
+      writing_mode.emplace(layout_object->StyleRef().GetWritingMode());
+    } else if (*writing_mode != layout_object->StyleRef().GetWritingMode()) {
       return last_visible.ComputePosition();
     }
 
     if (boundary_crossed) {
-      if (rule == kCannotCrossEditingBoundary)
+      if (rule == kCannotCrossEditingBoundary) {
+        if (current_node == start_node) {
+          DCHECK(position.IsBeforeAnchor() || position.IsAfterAnchor());
+          return position;
+        }
         return PositionTemplate<Strategy>::AfterNode(*current_node);
+      }
       if (rule == kCanCrossEditingBoundary) {
         last_visible = current_pos;
         break;
@@ -886,13 +900,23 @@ PositionTemplate<Strategy> MostForwardCaretPosition(
                 position.AnchorNode(),
                 Strategy::CaretMaxOffset(*position.AnchorNode()))
           : position);
-  const bool start_editable = IsEditable(*start_node);
-  Node* last_node = start_node;
+  Node* last_node;
+  // If we're snapping the caret to the edges of an inline element rather than
+  // crossing an editing boundary, we want to detect that editable boundary even
+  // if it happens between the position's container and anchor nodes.
+  if (rule == kCannotCrossEditingBoundary &&
+      client == SnapToClient::kLocalCaretRect) {
+    last_node = position.ComputeContainerNode();
+  } else {
+    last_node = start_node;
+  }
+  const bool start_editable = IsEditable(*last_node);
   bool boundary_crossed = false;
-  absl::optional<WritingMode> writing_mode;
+  std::optional<WritingMode> writing_mode;
   for (PositionIteratorAlgorithm<Strategy> current_pos = last_visible;
        !current_pos.AtEnd(); current_pos.Increment()) {
     Node* current_node = current_pos.GetNode();
+    DCHECK(current_node);
     // Don't check for an editability change if we haven't moved to a different
     // node, to avoid the expense of computing IsEditable().
     if (current_node != last_node) {
@@ -935,7 +959,7 @@ PositionTemplate<Strategy> MostForwardCaretPosition(
         *current_node,
         IsA<Text>(current_node) ? current_pos.OffsetInTextNode() : 0);
     if (!layout_object ||
-        layout_object->Style()->Visibility() != EVisibility::kVisible) {
+        layout_object->StyleRef().Visibility() != EVisibility::kVisible) {
       if (boundary_crossed && rule == kCannotCrossEditingBoundary)
         break;
       continue;
@@ -948,14 +972,19 @@ PositionTemplate<Strategy> MostForwardCaretPosition(
     }
 
     if (!writing_mode.has_value()) {
-      writing_mode.emplace(layout_object->Style()->GetWritingMode());
-    } else if (*writing_mode != layout_object->Style()->GetWritingMode()) {
+      writing_mode.emplace(layout_object->StyleRef().GetWritingMode());
+    } else if (*writing_mode != layout_object->StyleRef().GetWritingMode()) {
       return last_visible.ComputePosition();
     }
 
     if (boundary_crossed) {
-      if (rule == kCannotCrossEditingBoundary)
+      if (rule == kCannotCrossEditingBoundary) {
+        if (current_node == start_node) {
+          DCHECK(position.IsBeforeAnchor() || position.IsAfterAnchor());
+          return position;
+        }
         return PositionTemplate<Strategy>::BeforeNode(*current_node);
+      }
       if (rule == kCanCrossEditingBoundary)
         return current_pos.DeprecatedComputePosition();
     }
@@ -1052,8 +1081,9 @@ static bool IsVisuallyEquivalentCandidateAlgorithm(
   if (!layout_object)
     return false;
 
-  if (layout_object->Style()->Visibility() != EVisibility::kVisible)
+  if (layout_object->StyleRef().Visibility() != EVisibility::kVisible) {
     return false;
+  }
 
   if (DisplayLockUtilities::LockedAncestorPreventingPaint(*layout_object))
     return false;
@@ -1098,9 +1128,8 @@ static bool IsVisuallyEquivalentCandidateAlgorithm(
   if (!layout_object->IsSelectable())
     return false;
 
-  if (layout_object->IsLayoutBlockFlow() ||
-      layout_object->IsFlexibleBoxIncludingNG() ||
-      layout_object->IsLayoutNGGrid()) {
+  if (layout_object->IsLayoutBlockFlow() || layout_object->IsFlexibleBox() ||
+      layout_object->IsLayoutGridOrGridLanes()) {
     if (To<LayoutBlock>(layout_object)->LogicalHeight() ||
         anchor_node->GetDocument().body() == anchor_node) {
       if (!HasRenderedNonAnonymousDescendantsWithHeight(layout_object))
@@ -1124,34 +1153,6 @@ bool IsVisuallyEquivalentCandidate(const PositionInFlatTree& position) {
 }
 
 template <typename Strategy>
-static PositionTemplate<Strategy> SkipToEndOfEditingBoundary(
-    const PositionTemplate<Strategy>& pos,
-    const PositionTemplate<Strategy>& anchor) {
-  if (pos.IsNull())
-    return pos;
-
-  ContainerNode* highest_root = HighestEditableRoot(anchor);
-  ContainerNode* highest_root_of_pos = HighestEditableRoot(pos);
-
-  // Return |pos| itself if the two are from the very same editable region,
-  // or both are non-editable.
-  if (highest_root_of_pos == highest_root)
-    return pos;
-
-  // If this is not editable but |pos| has an editable root, skip to the end
-  if (!highest_root && highest_root_of_pos) {
-    return PositionTemplate<Strategy>(highest_root_of_pos,
-                                      PositionAnchorType::kAfterAnchor)
-        .ParentAnchoredEquivalent();
-  }
-
-  // That must mean that |pos| is not editable. Return the next position after
-  // |pos| that is in the same editable region as this position
-  DCHECK(highest_root);
-  return FirstEditablePositionAfterPositionInRoot(pos, *highest_root);
-}
-
-template <typename Strategy>
 static UChar32 CharacterAfterAlgorithm(
     const VisiblePositionTemplate<Strategy>& visible_position) {
   DCHECK(visible_position.IsValid()) << visible_position;
@@ -1170,7 +1171,7 @@ static UChar32 CharacterAfterAlgorithm(
   if (offset >= length)
     return 0;
 
-  return text_node->data().CharacterStartingAt(offset);
+  return text_node->data().CodePointAtOrZero(offset);
 }
 
 UChar32 CharacterAfter(const VisiblePosition& visible_position) {
@@ -1201,7 +1202,7 @@ static VisiblePositionTemplate<Strategy> NextPositionOfAlgorithm(
     const PositionWithAffinityTemplate<Strategy>& position,
     EditingBoundaryCrossingRule rule) {
   const VisiblePositionTemplate<Strategy> next = CreateVisiblePosition(
-      NextVisuallyDistinctCandidate(position.GetPosition()),
+      NextVisuallyDistinctCandidate(position.GetPosition(), rule),
       position.Affinity());
 
   switch (rule) {
@@ -1216,14 +1217,6 @@ static VisiblePositionTemplate<Strategy> NextPositionOfAlgorithm(
           next.DeepEquivalent(), position.GetPosition()));
   }
   NOTREACHED();
-  return next;
-}
-
-VisiblePosition NextPositionOf(const Position& position,
-                               EditingBoundaryCrossingRule rule) {
-  DCHECK(position.IsValidFor(*position.GetDocument())) << position;
-  return NextPositionOfAlgorithm<EditingStrategy>(
-      PositionWithAffinityTemplate<EditingStrategy>(position), rule);
 }
 
 VisiblePosition NextPositionOf(const VisiblePosition& visible_position,
@@ -1242,40 +1235,11 @@ VisiblePositionInFlatTree NextPositionOf(
 }
 
 template <typename Strategy>
-static PositionTemplate<Strategy> SkipToStartOfEditingBoundary(
-    const PositionTemplate<Strategy>& pos,
-    const PositionTemplate<Strategy>& anchor) {
-  if (pos.IsNull())
-    return pos;
-
-  ContainerNode* highest_root = HighestEditableRoot(anchor);
-  ContainerNode* highest_root_of_pos = HighestEditableRoot(pos);
-
-  // Return |pos| itself if the two are from the very same editable region, or
-  // both are non-editable.
-  if (highest_root_of_pos == highest_root)
-    return pos;
-
-  // If this is not editable but |pos| has an editable root, skip to the start
-  if (!highest_root && highest_root_of_pos) {
-    return PreviousVisuallyDistinctCandidate(
-        PositionTemplate<Strategy>(highest_root_of_pos,
-                                   PositionAnchorType::kBeforeAnchor)
-            .ParentAnchoredEquivalent());
-  }
-
-  // That must mean that |pos| is not editable. Return the last position
-  // before |pos| that is in the same editable region as this position
-  DCHECK(highest_root);
-  return LastEditablePositionBeforePositionInRoot(pos, *highest_root);
-}
-
-template <typename Strategy>
 static VisiblePositionTemplate<Strategy> PreviousPositionOfAlgorithm(
     const PositionTemplate<Strategy>& position,
     EditingBoundaryCrossingRule rule) {
   const PositionTemplate<Strategy> prev_position =
-      PreviousVisuallyDistinctCandidate(position);
+      PreviousVisuallyDistinctCandidate(position, rule);
 
   // return null visible position if there is no previous visible position
   if (prev_position.AtStartOfTree())
@@ -1303,7 +1267,6 @@ static VisiblePositionTemplate<Strategy> PreviousPositionOfAlgorithm(
   }
 
   NOTREACHED();
-  return prev;
 }
 
 VisiblePosition PreviousPositionOf(const VisiblePosition& visible_position,
@@ -1357,8 +1320,10 @@ static PositionTemplate<Strategy> SkipWhitespaceAlgorithm(
   // it as trailing white space.
   for (; char_it.length(); char_it.Advance(1)) {
     UChar c = char_it.CharacterAt(0);
-    if ((!IsSpaceOrNewline(c) && c != kNoBreakSpaceCharacter) || c == '\n')
+    if ((!unicode::IsSpaceOrNewline(c) && c != uchar::kNoBreakSpace) ||
+        c == '\n') {
       return runner;
+    }
     runner = char_it.EndPosition();
   }
   return runner;
@@ -1373,7 +1338,7 @@ PositionInFlatTree SkipWhitespace(const PositionInFlatTree& position) {
 }
 
 template <typename Strategy>
-static Vector<gfx::QuadF> ComputeTextBounds(
+Vector<gfx::QuadF> ComputeTextBounds(
     const EphemeralRangeTemplate<Strategy>& range) {
   const PositionTemplate<Strategy>& start_position = range.StartPosition();
   const PositionTemplate<Strategy>& end_position = range.EndPosition();
@@ -1425,14 +1390,12 @@ gfx::Rect FirstRectForRange(const EphemeralRange& range) {
   DocumentLifecycle::DisallowTransitionScope disallow_transition(
       range.GetDocument().Lifecycle());
 
-  LayoutUnit extra_width_to_end_of_line;
   DCHECK(range.IsNotNull());
 
   const PositionWithAffinity start_position(
       CreateVisiblePosition(range.StartPosition()).DeepEquivalent(),
       TextAffinity::kDownstream);
-  gfx::Rect start_caret_rect =
-      AbsoluteCaretBoundsOf(start_position, &extra_width_to_end_of_line);
+  gfx::Rect start_caret_rect = AbsoluteCaretBoundsOf(start_position);
   if (start_caret_rect.IsEmpty())
     return gfx::Rect();
 
@@ -1440,56 +1403,34 @@ gfx::Rect FirstRectForRange(const EphemeralRange& range) {
       CreateVisiblePosition(range.EndPosition()).DeepEquivalent(),
       TextAffinity::kUpstream);
 
-  if (RuntimeEnabledFeatures::FirstRectForRangeVerticalEnabled()) {
-    const PositionWithAffinity end_position_in_same_line =
-        InSameLine(start_position, end_position) ? end_position
-                                                 : EndOfLine(start_position);
-    gfx::Rect end_caret_rect = AbsoluteCaretBoundsOf(end_position_in_same_line);
-    if (end_caret_rect.IsEmpty())
-      return gfx::Rect();
-
-    // Some tests expect the resultant rectangles don't include caret widths.
-    // e.g.
-    //  - RenderViewImplTest.GetCompositionCharacterBoundsTest
-    //  - LocalFrameTest.CharacterIndexAtPointWithPinchZoom
-    if (start_position.AnchorNode()
-            ->GetComputedStyle()
-            ->IsHorizontalWritingMode()) {
-      end_caret_rect.set_width(0);
-      start_caret_rect.set_width(0);
-    } else {
-      end_caret_rect.set_height(0);
-      start_caret_rect.set_height(0);
-    }
-
-    const gfx::Point left_top = {
-        std::min(start_caret_rect.x(), end_caret_rect.x()),
-        std::min(start_caret_rect.y(), end_caret_rect.y())};
-    const int right =
-        std::max(start_caret_rect.right(), end_caret_rect.right());
-    const int bottom =
-        std::max(start_caret_rect.bottom(), end_caret_rect.bottom());
-    return gfx::Rect(left_top, {right - left_top.x(), bottom - left_top.y()});
-  }
-
-  const gfx::Rect end_caret_rect = AbsoluteCaretBoundsOf(end_position);
-  if (end_caret_rect.IsEmpty())
+  const PositionWithAffinity end_position_in_same_line =
+      InSameLine(start_position, end_position) ? end_position
+                                               : EndOfLine(start_position);
+  gfx::Rect end_caret_rect = AbsoluteCaretBoundsOf(end_position_in_same_line);
+  if (end_caret_rect.IsEmpty()) {
     return gfx::Rect();
-
-  if (start_caret_rect.y() == end_caret_rect.y()) {
-    // start and end are on the same line
-    return gfx::Rect(
-        std::min(start_caret_rect.x(), end_caret_rect.x()),
-        start_caret_rect.y(), abs(end_caret_rect.x() - start_caret_rect.x()),
-        std::max(start_caret_rect.height(), end_caret_rect.height()));
   }
 
-  // start and end aren't on the same line, so go from start to the end of its
-  // line
-  return gfx::Rect(
-      start_caret_rect.x(), start_caret_rect.y(),
-      (start_caret_rect.width() + extra_width_to_end_of_line).ToInt(),
-      start_caret_rect.height());
+  // Some tests expect the resultant rectangles don't include caret widths.
+  // e.g.
+  //  - RenderViewImplTest.GetCompositionCharacterBoundsTest
+  //  - LocalFrameTest.CharacterIndexAtPointWithPinchZoom
+  if (GetComputedStyleForElementOrLayoutObject(*start_position.AnchorNode())
+          ->IsHorizontalWritingMode()) {
+    end_caret_rect.set_width(0);
+    start_caret_rect.set_width(0);
+  } else {
+    end_caret_rect.set_height(0);
+    start_caret_rect.set_height(0);
+  }
+
+  const gfx::Point left_top = {
+      std::min(start_caret_rect.x(), end_caret_rect.x()),
+      std::min(start_caret_rect.y(), end_caret_rect.y())};
+  const int right = std::max(start_caret_rect.right(), end_caret_rect.right());
+  const int bottom =
+      std::max(start_caret_rect.bottom(), end_caret_rect.bottom());
+  return gfx::Rect(left_top, {right - left_top.x(), bottom - left_top.y()});
 }
 
 }  // namespace blink

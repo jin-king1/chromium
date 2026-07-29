@@ -19,6 +19,8 @@
 
 namespace ash {
 
+// Helper class that augments certain instances of `ClipboardHistoryItem` with
+// asynchronously retrieved metadata.
 class ASH_EXPORT ClipboardHistoryResourceManager
     : public ClipboardHistory::Observer {
  public:
@@ -54,6 +56,10 @@ class ASH_EXPORT ClipboardHistoryResourceManager
     std::vector<base::UnguessableToken> clipboard_history_item_ids;
   };
 
+  // Sets `item`'s rendered HTML preview if one is cached; otherwise, ensures
+  // that `item` is associated with an asynchronous `ImageModelRequest`.
+  void SetOrRequestHtmlPreview(const ClipboardHistoryItem& item);
+
   // Sets the result `image_model` on each `ClipboardHistoryItem` waiting on the
   // `ImageModelRequest` specified by `id`.
   void OnImageModelRendered(const base::UnguessableToken& id,
@@ -73,7 +79,7 @@ class ASH_EXPORT ClipboardHistoryResourceManager
   void OnClipboardHistoryCleared() override;
 
   // Owned by `ClipboardHistoryController`.
-  const raw_ptr<ClipboardHistory, ExperimentalAsh> clipboard_history_;
+  const raw_ptr<ClipboardHistory> clipboard_history_;
 
   // Pending requests for image models to be rendered. Once a request finishes,
   // all of the clipboard history items waiting on that image model will be

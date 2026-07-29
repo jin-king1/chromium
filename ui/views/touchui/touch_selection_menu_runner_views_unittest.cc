@@ -4,8 +4,11 @@
 
 #include "ui/views/touchui/touch_selection_menu_runner_views.h"
 
+#include "base/test/metrics/histogram_tester.h"
 #include "ui/events/event_utils.h"
+#include "ui/events/test/event_generator.h"
 #include "ui/touch_selection/touch_selection_menu_runner.h"
+#include "ui/touch_selection/touch_selection_metrics.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/touchui/touch_selection_menu_views.h"
@@ -41,7 +44,7 @@ class TouchSelectionMenuRunnerViewsTest : public ViewsTestBase,
 
  private:
   // ui::TouchSelectionMenuClient:
-  bool IsCommandIdEnabled(int command_id) const override {
+  bool IsCommandIdEnabled(int command_id, bool can_paste) const override {
     return !no_command_available_;
   }
 
@@ -53,7 +56,7 @@ class TouchSelectionMenuRunnerViewsTest : public ViewsTestBase,
 
   std::u16string GetSelectedText() override { return std::u16string(); }
 
-  bool ShouldShowQuickMenu() override { return false; }
+  bool ShouldShowQuickMenu(bool can_paste) override { return false; }
 
   // When set to true, no command would be available and menu should not be
   // shown.
@@ -74,7 +77,7 @@ TEST_F(TouchSelectionMenuRunnerViewsTest, InstalledAndWorksProperly) {
 
   // Run menu. Since commands are available, this should bring up menus.
   ui::TouchSelectionMenuRunner::GetInstance()->OpenMenu(
-      GetWeakPtr(), menu_anchor, handle_size, GetContext());
+      GetWeakPtr(), menu_anchor, handle_size, GetContext(), /*can_paste=*/true);
   EXPECT_TRUE(ui::TouchSelectionMenuRunner::GetInstance()->IsRunning());
 
   // Close menu.
@@ -85,7 +88,7 @@ TEST_F(TouchSelectionMenuRunnerViewsTest, InstalledAndWorksProperly) {
   // Try running menu when no commands is available. Menu should not be shown.
   set_no_commmand_available(true);
   ui::TouchSelectionMenuRunner::GetInstance()->OpenMenu(
-      GetWeakPtr(), menu_anchor, handle_size, GetContext());
+      GetWeakPtr(), menu_anchor, handle_size, GetContext(), /*can_paste=*/true);
   EXPECT_FALSE(ui::TouchSelectionMenuRunner::GetInstance()->IsRunning());
 }
 
@@ -94,35 +97,41 @@ TEST_F(TouchSelectionMenuRunnerViewsTest, InstalledAndWorksProperly) {
 // menu, the bottom of the anchor rect should be expanded so that the quick menu
 // will not overlap with the handles.
 TEST_F(TouchSelectionMenuRunnerViewsTest, QuickMenuAdjustsAnchorRect) {
-  gfx::Size handle_size(10, 10);
   TouchSelectionMenuRunnerViews::TestApi test_api(
       static_cast<TouchSelectionMenuRunnerViews*>(
           ui::TouchSelectionMenuRunner::GetInstance()));
 
   // When the provided anchor rect has zero width (e.g. when an insertion handle
-  // is visible), the bottom should be adjusted to include the handle height.
-  gfx::Rect anchor_rect(0, 0, 0, 20);
+  // is visible), the anchor rect should be expanded below the bottom of the
+  // handles to prevent the menu and handles from overlapping.
+  gfx::Rect anchor_rect(0, 10);
+  constexpr gfx::Size kHandleSize(15, 15);
   ui::TouchSelectionMenuRunner::GetInstance()->OpenMenu(
-      GetWeakPtr(), anchor_rect, handle_size, GetContext());
-  anchor_rect.Outset(gfx::Outsets::TLBR(0, 0, handle_size.height(), 0));
-  EXPECT_EQ(anchor_rect, test_api.GetAnchorRect());
+      GetWeakPtr(), anchor_rect, kHandleSize, GetContext(), /*can_paste=*/true);
+  EXPECT_GE(test_api.GetAnchorRect().bottom(),
+            anchor_rect.bottom() + kHandleSize.height());
 
-  // When the provided anchor rect's width is slightly greater than the quick
-  // menu width plus the handle width, the anchor rect should not be adjusted.
+  // When the provided anchor rect's width is greater than the quick menu width
+  // plus the handle width, the menu can fit between the selection handles. In
+  // this case the anchor rect is still slightly adjusted to add padding, but
+  // does not need to expand below the handles.
   anchor_rect =
-      gfx::Rect(0, 0, test_api.GetMenuWidth() + handle_size.width() + 10, 20);
+      gfx::Rect(test_api.GetMenuWidth() + kHandleSize.width() + 10, 20);
   ui::TouchSelectionMenuRunner::GetInstance()->OpenMenu(
-      GetWeakPtr(), anchor_rect, handle_size, GetContext());
-  EXPECT_EQ(anchor_rect, test_api.GetAnchorRect());
+      GetWeakPtr(), anchor_rect, kHandleSize, GetContext(), /*can_paste=*/true);
+  EXPECT_GE(test_api.GetAnchorRect().bottom(), anchor_rect.bottom());
+  EXPECT_LE(test_api.GetAnchorRect().bottom(),
+            anchor_rect.bottom() + kHandleSize.height());
 
-  // When the provided anchor rect's width is slightly less than the quick
-  // menu width plus the handle width, the anchor rect should be adjusted.
+  // When the provided anchor rect's width is less than the quick menu width
+  // plus the handle width, the anchor rect should be expanded below the bottom
+  // of the handles to prevent the menu and handles from overlapping.
   anchor_rect =
-      gfx::Rect(0, 0, test_api.GetMenuWidth() + handle_size.width() - 10, 20);
+      gfx::Rect(test_api.GetMenuWidth() + kHandleSize.width() - 10, 20);
   ui::TouchSelectionMenuRunner::GetInstance()->OpenMenu(
-      GetWeakPtr(), anchor_rect, handle_size, GetContext());
-  anchor_rect.Outset(gfx::Outsets::TLBR(0, 0, handle_size.height(), 0));
-  EXPECT_EQ(anchor_rect, test_api.GetAnchorRect());
+      GetWeakPtr(), anchor_rect, kHandleSize, GetContext(), /*can_paste=*/true);
+  EXPECT_GE(test_api.GetAnchorRect().bottom(),
+            anchor_rect.bottom() + kHandleSize.height());
 
   ui::TouchSelectionMenuRunner::GetInstance()->CloseMenu();
   RunPendingMessages();
@@ -141,7 +150,7 @@ TEST_F(TouchSelectionMenuRunnerViewsTest, RunningActionClosesProperly) {
 
   // Run menu. Since commands are available, this should bring up menus.
   ui::TouchSelectionMenuRunner::GetInstance()->OpenMenu(
-      GetWeakPtr(), menu_anchor, handle_size, GetContext());
+      GetWeakPtr(), menu_anchor, handle_size, GetContext(), /*can_paste=*/true);
   EXPECT_TRUE(ui::TouchSelectionMenuRunner::GetInstance()->IsRunning());
 
   // Tap the first action on the menu and check that the menu is closed
@@ -149,7 +158,7 @@ TEST_F(TouchSelectionMenuRunnerViewsTest, RunningActionClosesProperly) {
   LabelButton* button = test_api.GetFirstButton();
   DCHECK(button);
   gfx::Point button_center = button->bounds().CenterPoint();
-  ui::GestureEventDetails details(ui::ET_GESTURE_TAP);
+  ui::GestureEventDetails details(ui::EventType::kGestureTap);
   details.set_tap_count(1);
   ui::GestureEvent tap(button_center.x(), button_center.y(), 0,
                        ui::EventTimeForNow(), details);
@@ -172,7 +181,7 @@ TEST_F(TouchSelectionMenuRunnerViewsTest, ClosingWidgetClosesProperly) {
 
   // Run menu. Since commands are available, this should bring up menus.
   ui::TouchSelectionMenuRunner::GetInstance()->OpenMenu(
-      GetWeakPtr(), menu_anchor, handle_size, GetContext());
+      GetWeakPtr(), menu_anchor, handle_size, GetContext(), /*can_paste=*/true);
   EXPECT_TRUE(ui::TouchSelectionMenuRunner::GetInstance()->IsRunning());
 
   // Close the menu widget and check that menu runner correctly knows that menu
@@ -194,12 +203,14 @@ TEST_F(TouchSelectionMenuRunnerViewsTest, ShowMenuTwiceOpensOneMenu) {
 
   // Call ShowMenu() twice in a row. The menus manage their own lifetimes.
   auto* menu1 =
-      new TouchSelectionMenuViews(menu_runner, GetWeakPtr(), GetContext());
+      new TouchSelectionMenuViews(menu_runner, GetWeakPtr(), GetContext(),
+                                  /*can_paste=*/true);
   test_api.ShowMenu(menu1, menu_anchor, handle_size);
   auto* widget1 = test_api.GetWidget();
 
   auto* menu2 =
-      new TouchSelectionMenuViews(menu_runner, GetWeakPtr(), GetContext());
+      new TouchSelectionMenuViews(menu_runner, GetWeakPtr(), GetContext(),
+                                  /*can_paste=*/true);
   test_api.ShowMenu(menu2, menu_anchor, handle_size);
   auto* widget2 = test_api.GetWidget();
 
@@ -210,6 +221,35 @@ TEST_F(TouchSelectionMenuRunnerViewsTest, ShowMenuTwiceOpensOneMenu) {
   // Closing the second menu does not crash or CHECK.
   widget2->Close();
   RunPendingMessages();
+}
+
+// Tests that pressing a menu button records a histogram entry.
+TEST_F(TouchSelectionMenuRunnerViewsTest, MenuActionMetrics) {
+  base::HistogramTester histogram_tester;
+  TouchSelectionMenuRunnerViews::TestApi test_api(
+      static_cast<TouchSelectionMenuRunnerViews*>(
+          ui::TouchSelectionMenuRunner::GetInstance()));
+
+  // Open the menu.
+  ui::TouchSelectionMenuRunner::GetInstance()->OpenMenu(
+      GetWeakPtr(), /*anchor_rect=*/gfx::Rect(20, 30),
+      /*handle_image_size=*/gfx::Size(10, 10), GetContext(),
+      /*can_paste=*/true);
+
+  EXPECT_TRUE(ui::TouchSelectionMenuRunner::GetInstance()->IsRunning());
+  histogram_tester.ExpectTotalCount(ui::kTouchSelectionMenuActionHistogramName,
+                                    0);
+
+  // Tap the first action on the menu.
+  ui::test::EventGenerator generator(
+      test_api.GetWidget()->GetNativeView()->GetRootWindow());
+  gfx::Point button_center = test_api.GetFirstButton()->bounds().CenterPoint();
+  generator.delegate()->ConvertPointFromTarget(
+      test_api.GetWidget()->GetNativeView(), &button_center);
+  generator.GestureTapAt(button_center);
+
+  histogram_tester.ExpectTotalCount(ui::kTouchSelectionMenuActionHistogramName,
+                                    1);
 }
 
 }  // namespace

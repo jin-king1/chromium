@@ -8,8 +8,8 @@ bundle that need to be signed, as well as providing utilities to sign them.
 
 import os.path
 
-from . import commands, signing
-from .model import CodeSignOptions, CodeSignedProduct, VerifyOptions
+from signing import commands, signing
+from signing.model import CodeSignOptions, CodeSignedProduct, VerifyOptions
 
 _PROVISIONPROFILE_EXT = '.provisionprofile'
 _PROVISIONPROFILE_DEST = 'embedded.provisionprofile'
@@ -89,18 +89,6 @@ def get_parts(config):
                 | CodeSignOptions.HARDENED_RUNTIME,
                 entitlements='helper-gpu-entitlements.plist',
                 verify_options=verify_options),
-        'helper-plugin-app':
-            CodeSignedProduct(
-                '{0.framework_dir}/Helpers/{0.product} Helper (Plugin).app'
-                .format(config),
-                '{}.helper.plugin'.format(uncustomized_bundle_id),
-                # Do not use |CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS|
-                # because library validation is incompatible with the
-                # disable-library-validation entitlement.
-                options=CodeSignOptions.RESTRICT | CodeSignOptions.KILL
-                | CodeSignOptions.HARDENED_RUNTIME,
-                entitlements='helper-plugin-entitlements.plist',
-                verify_options=verify_options),
         'helper-alerts':
             CodeSignedProduct(
                 '{0.framework_dir}/Helpers/{0.product} Helper (Alerts).app'
@@ -115,6 +103,14 @@ def get_parts(config):
                 'app_mode_loader',
                 options=CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS,
                 verify_options=verify_options),
+        'web-app-shortcut-copier':
+            CodeSignedProduct(
+                '{.framework_dir}/Helpers/web_app_shortcut_copier'.format(
+                    config),
+                '{}.web_app_shortcut_copier'.format(uncustomized_bundle_id),
+                options=CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS,
+                sign_with_identifier=True,
+                verify_options=verify_options),
     }
 
     if config.enable_updater:
@@ -127,12 +123,19 @@ def get_parts(config):
             verify_options=verify_options)
 
     dylibs = [
-        'libEGL.dylib',
-        'libGLESv2.dylib',
         'libvk_swiftshader.dylib',
+        'libvulkan.dylib',
     ]
+    if not config.use_static_angle:
+        dylibs.extend([
+            'libEGL.dylib',
+            'libGLESv2.dylib',
+        ])
     if config.is_chrome_branded():
-        dylibs.append('liboptimization_guide_internal.dylib')
+        dylibs.extend((
+            'liboptimization_guide_internal.dylib',
+            'libchromecompaneros.dylib',
+        ))
     for library in dylibs:
         library_basename = os.path.basename(library)
         parts[library_basename] = CodeSignedProduct(
@@ -176,7 +179,7 @@ def get_installer_tools(config):
     return tools
 
 
-def sign_chrome(paths, config, sign_framework=False):
+async def sign_chrome(paths, config, sign_framework=False):
     """Code signs the Chrome application bundle and all of its internal nested
     code parts.
 
@@ -223,12 +226,11 @@ def sign_chrome(paths, config, sign_framework=False):
     # Sign the outer app bundle.
     signing.sign_part(paths, config, parts['app'])
 
-    # Verify all the parts.
-    for part in parts.values():
-        signing.verify_part(paths, part)
-
     # Display the code signature.
-    signing.validate_app(paths, config, parts['app'])
+    await signing.validate_app(paths, config, parts['app'])
+
+    # Validate the app's architecture geometry, if configured.
+    signing.validate_app_geometry(paths, config, parts['app'])
 
 
 def _sanity_check_version_keys(paths, parts):

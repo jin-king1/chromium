@@ -5,29 +5,25 @@
 #include "chrome/browser/ash/arc/policy/managed_configuration_variables.h"
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
-#include "base/strings/string_piece_forward.h"
+#include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
-#include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_attributes.h"
-#include "chrome/browser/ash/policy/core/device_attributes_impl.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/user_manager/user.h"
 #include "third_party/re2/src/re2/re2.h"
-#include "third_party/re2/src/re2/stringpiece.h"
 
 namespace arc {
 
@@ -66,19 +62,6 @@ std::string SignedInUserEmail(const Profile* profile) {
   return info.email;
 }
 
-std::string DeviceDirectoryId(policy::DeviceAttributes* device_attributes) {
-  return device_attributes->GetDirectoryApiID();
-}
-
-std::string DeviceAssetId(policy::DeviceAttributes* device_attributes) {
-  return device_attributes->GetDeviceAssetID();
-}
-
-std::string DeviceAnnotatedLocation(
-    policy::DeviceAttributes* device_attributes) {
-  return device_attributes->GetDeviceAnnotatedLocation();
-}
-
 std::string DeviceSerialNumber() {
   return std::string(
       ash::system::StatisticsProvider::GetInstance()->GetMachineID().value_or(
@@ -96,10 +79,14 @@ bool IsAffiliatedUser(const Profile* profile) {
   return user && user->IsAffiliated();
 }
 
-// Build a |VariableResolver| from all known variables.
+// Builds a `VariableResolver` from all known variables.
+// `attributes` must not be null and must outlive the returned
+// `VariableResolver`.
 const VariableResolver BuildVariableResolver(
     const Profile* profile,
-    policy::DeviceAttributes* attributes) {
+    const policy::DeviceAttributes* attributes) {
+  CHECK(attributes);
+
   // Use |empty_string_getter| for device attributes if user is not affiliated.
   const bool is_affiliated = IsAffiliatedUser(profile);
   const auto empty_string_getter =
@@ -120,37 +107,35 @@ const VariableResolver BuildVariableResolver(
                                return EmailDomain(SignedInUserEmail(profile));
                              },
                              profile)},
-      {kDeviceDirectoryId, is_affiliated
-                               ? base::BindRepeating(
-                                     [](policy::DeviceAttributes* attributes) {
-                                       return DeviceDirectoryId(attributes);
-                                     },
-                                     attributes)
-                               : empty_string_getter},
+      {kDeviceDirectoryId,
+       is_affiliated
+           // The safety of Unretained is upheld by the caller.
+           ? base::BindRepeating(&policy::DeviceAttributes::GetDirectoryApiID,
+                                 base::Unretained(attributes))
+           : empty_string_getter},
       {kDeviceSerialNumber, is_affiliated
                                 ? base::BindRepeating(&DeviceSerialNumber)
                                 : empty_string_getter},
-      {kDeviceAssetId, is_affiliated
-                           ? base::BindRepeating(
-                                 [](policy::DeviceAttributes* attributes) {
-                                   return DeviceAssetId(attributes);
-                                 },
-                                 attributes)
-                           : empty_string_getter},
+      {kDeviceAssetId,
+       is_affiliated
+           // The safety of Unretained is upheld by the caller.
+           ? base::BindRepeating(&policy::DeviceAttributes::GetDeviceAssetID,
+                                 base::Unretained(attributes))
+           : empty_string_getter},
       {kDeviceAnnotatedLocation,
-       is_affiliated ? base::BindRepeating(
-                           [](policy::DeviceAttributes* attributes) {
-                             return DeviceAnnotatedLocation(attributes);
-                           },
-                           attributes)
-                     : empty_string_getter},
+       is_affiliated
+           // The safety of Unretained is upheld by the caller.
+           ? base::BindRepeating(
+                 &policy::DeviceAttributes::GetDeviceAnnotatedLocation,
+                 base::Unretained(attributes))
+           : empty_string_getter},
   };
 }
 
 // Return the value associated to the first item in |variables| that is not
 // empty.
 std::string ResolveVariableChain(const VariableResolver& resolver,
-                                 std::vector<base::StringPiece> variables) {
+                                 std::vector<std::string_view> variables) {
   for (const auto& variable : variables) {
     // Variables should always be valid and have a mapping in |resolver|.
     DCHECK(resolver.find(variable) != resolver.end());
@@ -163,9 +148,8 @@ std::string ResolveVariableChain(const VariableResolver& resolver,
   return "";
 }
 
-std::vector<base::StringPiece> SplitByColon(const re2::StringPiece& input) {
-  return base::SplitStringPiece(base::StringPiece(input.data(), input.size()),
-                                ":", base::TRIM_WHITESPACE,
+std::vector<std::string_view> SplitByColon(std::string_view input) {
+  return base::SplitStringPiece(input, ":", base::TRIM_WHITESPACE,
                                 base::SPLIT_WANT_NONEMPTY);
 }
 
@@ -173,11 +157,10 @@ std::vector<base::StringPiece> SplitByColon(const re2::StringPiece& input) {
 // replaced with the output of |replacement_getter.Run(capture)|.
 std::string SearchAndReplace(
     const re2::RE2& regex,
-    base::RepeatingCallback<std::string(const re2::StringPiece&)>
-        replacement_getter,
-    re2::StringPiece search_input) {
+    base::RepeatingCallback<std::string(std::string_view)> replacement_getter,
+    std::string_view search_input) {
   std::vector<std::string> output;
-  re2::StringPiece capture;
+  std::string_view capture;
 
   // Loop as long as |regex| matches |search_input|.
   while (re2::RE2::PartialMatch(search_input, regex, &capture)) {
@@ -185,7 +168,7 @@ std::string SearchAndReplace(
     // Output the prefix skipped by PartialMatch until |capture| is found.
     DCHECK(capture.begin() >= search_input.begin());
     size_t prefix_size = capture.begin() - search_input.begin();
-    output.emplace_back(search_input.begin(), prefix_size);
+    output.emplace_back(search_input.data(), prefix_size);
     // Output the replacement for |capture|.
     output.emplace_back(replacement_getter.Run(capture));
 
@@ -193,16 +176,17 @@ std::string SearchAndReplace(
     DCHECK(search_input.length() >= prefix_size + capture.length());
     size_t remaining_size =
         search_input.length() - (prefix_size + capture.length());
-    search_input.set(capture.end(), remaining_size);
+    search_input = std::string_view(
+        UNSAFE_TODO(capture.data() + capture.size()), remaining_size);
   }
   // Output the remaining |search_input|.
-  output.emplace_back(search_input.data(), search_input.length());
+  output.emplace_back(search_input);
   return base::JoinString(output, /*separator=*/"");
 }
 
 // Returns a regular expression that matches any one variable in |resolver|.
 std::string ResolverKeyMatcher(const VariableResolver& resolver) {
-  std::vector<base::StringPiece> keys;
+  std::vector<std::string_view> keys;
   for (const auto& item : resolver) {
     keys.emplace_back(item.first);
   }
@@ -231,11 +215,11 @@ void ReplaceVariables(const VariableResolver& resolver,
 
   // Callback to compute values of variable chains matched with |regex|.
   auto chain_resolver = base::BindRepeating(
-      [](const VariableResolver& resolver, const re2::StringPiece& variable) {
+      [](const VariableResolver& resolver, std::string_view variable) {
         // Remove the "${" prefix and the "}" suffix from |variable|.
         DCHECK(variable.starts_with("${") && variable.ends_with("}"));
-        const re2::StringPiece chain = variable.substr(2, variable.size() - 3);
-        const std::vector<base::StringPiece> variables = SplitByColon(chain);
+        const std::string_view chain = variable.substr(2, variable.size() - 3);
+        const std::vector<std::string_view> variables = SplitByColon(chain);
 
         const std::string chain_value =
             ResolveVariableChain(resolver, variables);
@@ -249,16 +233,31 @@ void ReplaceVariables(const VariableResolver& resolver,
   configuration = std::move(replaced_configuration);
 }
 
-void RecursivelySearchAndReplaceVariables(
-    const VariableResolver& resolver,
-    base::Value::Dict& managedConfiguration) {
-  for (auto [key, configuration] : managedConfiguration) {
-    if (configuration.is_dict()) {
-      // Recursive call for dictionary values.
-      RecursivelySearchAndReplaceVariables(resolver, configuration.GetDict());
-    } else if (configuration.is_string()) {
-      ReplaceVariables(resolver, configuration.GetString());
-    }
+void ReplaceVariables(const VariableResolver& resolver,
+                      base::Value& configuration);
+
+void ReplaceVariables(const VariableResolver& resolver,
+                      base::DictValue& configuration) {
+  for (auto entry : configuration) {
+    ReplaceVariables(resolver, entry.second);
+  }
+}
+
+void ReplaceVariables(const VariableResolver& resolver,
+                      base::ListValue& configuration) {
+  for (auto& entry : configuration) {
+    ReplaceVariables(resolver, entry);
+  }
+}
+
+void ReplaceVariables(const VariableResolver& resolver,
+                      base::Value& configuration) {
+  if (configuration.is_dict()) {
+    ReplaceVariables(resolver, configuration.GetDict());
+  } else if (configuration.is_string()) {
+    ReplaceVariables(resolver, configuration.GetString());
+  } else if (configuration.is_list()) {
+    ReplaceVariables(resolver, configuration.GetList());
   }
 }
 
@@ -274,19 +273,11 @@ const char kDeviceAnnotatedLocation[] = "DEVICE_ANNOTATED_LOCATION";
 
 void RecursivelyReplaceManagedConfigurationVariables(
     const Profile* profile,
-    base::Value::Dict& managedConfiguration) {
-  policy::DeviceAttributesImpl device_attributes;
-  RecursivelyReplaceManagedConfigurationVariables(profile, &device_attributes,
-                                                  managedConfiguration);
-}
-
-void RecursivelyReplaceManagedConfigurationVariables(
-    const Profile* profile,
-    policy::DeviceAttributes* device_attributes,
-    base::Value::Dict& managedConfiguration) {
+    const policy::DeviceAttributes& device_attributes,
+    base::DictValue& managedConfiguration) {
   const VariableResolver resolver =
-      BuildVariableResolver(profile, device_attributes);
-  RecursivelySearchAndReplaceVariables(resolver, managedConfiguration);
+      BuildVariableResolver(profile, &device_attributes);
+  ReplaceVariables(resolver, managedConfiguration);
 }
 
 }  // namespace arc

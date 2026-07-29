@@ -60,8 +60,6 @@ class DesksAdminTemplateProviderTest : public testing::Test {
         profile_, &list_controller_);
     provider_ = provider.get();
     search_controller_->AddProvider(std::move(provider));
-
-    Wait();
   }
 
   void TearDown() override {
@@ -78,17 +76,15 @@ class DesksAdminTemplateProviderTest : public testing::Test {
     return search_controller_->last_results();
   }
 
-  void Wait() { task_environment_.RunUntilIdle(); }
-
  protected:
   content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<TestSearchController> search_controller_;
 
  private:
   std::unique_ptr<TestingProfileManager> profile_manager_;
-  raw_ptr<TestingProfile, ExperimentalAsh> profile_;
+  raw_ptr<TestingProfile> profile_;
   ::test::TestAppListControllerDelegate list_controller_;
-  raw_ptr<DesksAdminTemplateProvider, ExperimentalAsh> provider_ = nullptr;
+  raw_ptr<DesksAdminTemplateProvider, DanglingUntriaged> provider_ = nullptr;
 };
 
 // Tests that when there isn't a admin template, the results will be empty.
@@ -99,7 +95,6 @@ TEST_F(DesksAdminTemplateProviderTest, NoResultsWhenNoAdminTemplates) {
   EXPECT_CALL(mock, GetAdminTemplateMetadata()).WillOnce(Return(empty_result));
 
   StartZeroStateSearch();
-  Wait();
 
   EXPECT_TRUE(LastResults().empty());
 }
@@ -118,7 +113,6 @@ TEST_F(DesksAdminTemplateProviderTest, Basic) {
       .WillOnce(Return(true));
 
   StartZeroStateSearch();
-  Wait();
 
   ASSERT_EQ(1u, LastResults().size());
 

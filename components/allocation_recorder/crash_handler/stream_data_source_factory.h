@@ -6,10 +6,14 @@
 #define COMPONENTS_ALLOCATION_RECORDER_CRASH_HANDLER_STREAM_DATA_SOURCE_FACTORY_H_
 
 #include <memory>
+#include <string_view>
 
 #include "base/debug/debugging_buildflags.h"
 #include "base/memory/ref_counted.h"
-#include "base/strings/string_piece.h"
+
+namespace base::debug::tracer {
+class AllocationTraceRecorder;
+}
 
 namespace crashpad {
 class MinidumpUserExtensionStreamDataSource;
@@ -23,11 +27,12 @@ class StreamDataSourceFactory
     : public base::RefCounted<StreamDataSourceFactory> {
  public:
   virtual std::unique_ptr<crashpad::MinidumpUserExtensionStreamDataSource>
-  CreateErrorMessage(base::StringPiece error_message) const;
+  CreateErrorMessage(std::string_view error_message) const;
 
 #if BUILDFLAG(ENABLE_ALLOCATION_STACK_TRACE_RECORDER)
   virtual std::unique_ptr<crashpad::MinidumpUserExtensionStreamDataSource>
-  CreateReportStream() const;
+  CreateReportStream(
+      const base::debug::tracer::AllocationTraceRecorder& recorder) const;
 #endif
 
  protected:

@@ -4,34 +4,42 @@
 
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 
-#import "ios/chrome/common/ui/util/device_util.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+#import "ios/chrome/browser/shared/ui/table_view/table_view_constants.h"
+#import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
+#import "ui/base/device_form_factor.h"
 
 namespace {
-
-// Header height used as a pading between the first cell and the navigation bar.
-const CGFloat kFirstHeaderHeight = 25.0;
 
 // Default header Height when none is set.
 const CGFloat kDefaultHeaderHeight = 10;
 
+// Whether the style used by the TableView should have insets.
+bool HasTableViewInsetStyle() {
+  return ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_PHONE ||
+         !UIContentSizeCategoryIsAccessibilityCategory(
+             UIApplication.sharedApplication.preferredContentSizeCategory);
+}
+
 }  // namespace
 
 UITableViewStyle ChromeTableViewStyle() {
-  if (!IsSmallDevice()) {
+  if (HasTableViewInsetStyle()) {
     return UITableViewStyleInsetGrouped;
   }
-
   return UITableViewStyleGrouped;
 }
 
 CGFloat ChromeTableViewHeightForHeaderInSection(NSInteger section) {
   if (section == 0) {
-    return kFirstHeaderHeight;
+    return kTableViewFirstHeaderHeight;
   }
 
   return kDefaultHeaderHeight;
+}
+
+CGFloat ChromeTableViewHorizontalPadding() {
+  if (HasTableViewInsetStyle()) {
+    return 0;
+  }
+  return kTableViewHorizontalSpacing;
 }

@@ -13,23 +13,24 @@
 // policy values are copied into local state or Profile prefs. They can be used
 // to enable policy during test.
 //
-// Simple policy to prefs mapping can be tested with policy_test_cases.json. If
-// the conversion is complicated and requires custom policy handler, we
-// recommend to test the handler separately.
+// Simple policy to prefs mapping can be tested with
+// chrome/test/data/policy/pref_mapping/[PolicyName].json. If the conversion is
+// complicated and requires custom policy handler, we recommend to test the
+// handler separately.
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/run_loop.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "build/buildflag.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_otr_state.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/search/ntp_test_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/common/pref_names.h"
@@ -62,7 +63,7 @@ namespace policy {
 
 namespace {
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 const int kOneHourInMs = 60 * 60 * 1000;
 const int kThreeHoursInMs = 180 * 60 * 1000;
 #endif
@@ -78,7 +79,7 @@ bool IsWebGLEnabled(content::WebContents* contents) {
 
 }  // namespace
 
-// TODO(crbug.com/1069558): Deflake this test.
+// TODO(crbug.com/40684098): Deflake this test.
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
 #define MAYBE_Disable3DAPIs DISABLED_Disable3DAPIs
 #else
@@ -117,10 +118,9 @@ IN_PROC_BROWSER_TEST_F(PolicyTest, MAYBE_Disable3DAPIs) {
   EXPECT_TRUE(IsWebGLEnabled(contents));
 }
 
-// TODO(crbug.com/1378338): Re-enable this flaky test on Linux
-// and lacros asan builder.
+// TODO(crbug.com/40243891): Re-enable this flaky test.
 #if BUILDFLAG(IS_LINUX) || \
-    BUILDFLAG(IS_CHROMEOS_LACROS) && defined(ADDRESS_SANITIZER)
+    (BUILDFLAG(IS_CHROMEOS) && defined(ADDRESS_SANITIZER))
 #define MAYBE_HomepageLocation DISABLED_HomepageLocation
 #else
 #define MAYBE_HomepageLocation HomepageLocation
@@ -128,12 +128,12 @@ IN_PROC_BROWSER_TEST_F(PolicyTest, MAYBE_Disable3DAPIs) {
 IN_PROC_BROWSER_TEST_F(PolicyTest, MAYBE_HomepageLocation) {
   // Verifies that the homepage can be configured with policies.
   // Set a default, and check that the home button navigates there.
-  browser()->profile()->GetPrefs()->SetString(prefs::kHomePage,
-                                              chrome::kChromeUIPolicyURL);
-  browser()->profile()->GetPrefs()->SetBoolean(prefs::kHomePageIsNewTabPage,
-                                               false);
+  browser()->GetProfile()->GetPrefs()->SetString(prefs::kHomePage,
+                                                 chrome::kChromeUIPolicyURL);
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kHomePageIsNewTabPage,
+                                                  false);
   EXPECT_EQ(GURL(chrome::kChromeUIPolicyURL),
-            browser()->profile()->GetHomePage());
+            browser()->GetProfile()->GetHomePage());
   content::WebContents* contents =
       browser()->tab_strip_model()->GetActiveWebContents();
   EXPECT_EQ(GURL(url::kAboutBlankURL), contents->GetLastCommittedURL());
@@ -156,12 +156,12 @@ IN_PROC_BROWSER_TEST_F(PolicyTest, MAYBE_HomepageLocation) {
   UpdateProviderPolicy(policies);
   EXPECT_TRUE(chrome::ExecuteCommand(browser(), IDC_HOME));
   EXPECT_TRUE(content::WaitForLoadStop(contents));
-  EXPECT_EQ(ntp_test_utils::GetFinalNtpUrl(browser()->profile()),
+  EXPECT_EQ(ntp_test_utils::GetFinalNtpUrl(browser()->GetProfile()),
             contents->GetLastCommittedURL());
 }
 
 #if BUILDFLAG(IS_MAC) && defined(ADDRESS_SANITIZER)
-// Flaky on ASAN on Mac. See https://crbug.com/674497.
+// Flaky on ASAN on Mac. See https://crbug.com/40498261.
 #define MAYBE_IncognitoEnabled DISABLED_IncognitoEnabled
 #else
 #define MAYBE_IncognitoEnabled IncognitoEnabled
@@ -169,20 +169,18 @@ IN_PROC_BROWSER_TEST_F(PolicyTest, MAYBE_HomepageLocation) {
 IN_PROC_BROWSER_TEST_F(PolicyTest, MAYBE_IncognitoEnabled) {
   // Verifies that incognito windows can't be opened when disabled by policy.
 
-  const BrowserList* active_browser_list = BrowserList::GetInstance();
-
   // Disable incognito via policy and verify that incognito windows can't be
   // opened.
-  EXPECT_EQ(1u, active_browser_list->size());
-  EXPECT_FALSE(BrowserList::IsOffTheRecordBrowserActive());
+  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_FALSE(IsOffTheRecordSessionActive());
   PolicyMap policies;
   policies.Set(key::kIncognitoEnabled, POLICY_LEVEL_MANDATORY,
                POLICY_SCOPE_USER, POLICY_SOURCE_CLOUD, base::Value(false),
                nullptr);
   UpdateProviderPolicy(policies);
   EXPECT_FALSE(chrome::ExecuteCommand(browser(), IDC_NEW_INCOGNITO_WINDOW));
-  EXPECT_EQ(1u, active_browser_list->size());
-  EXPECT_FALSE(BrowserList::IsOffTheRecordBrowserActive());
+  EXPECT_EQ(1u, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_FALSE(IsOffTheRecordSessionActive());
 
   // Enable via policy and verify that incognito windows can be opened.
   policies.Set(key::kIncognitoEnabled, POLICY_LEVEL_MANDATORY,
@@ -190,11 +188,11 @@ IN_PROC_BROWSER_TEST_F(PolicyTest, MAYBE_IncognitoEnabled) {
                nullptr);
   UpdateProviderPolicy(policies);
   EXPECT_TRUE(chrome::ExecuteCommand(browser(), IDC_NEW_INCOGNITO_WINDOW));
-  EXPECT_EQ(2u, active_browser_list->size());
-  EXPECT_TRUE(BrowserList::IsOffTheRecordBrowserActive());
+  EXPECT_EQ(2u, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_TRUE(IsOffTheRecordSessionActive());
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 
 // We need to block mouse events in |WaitForInitialUserActivityUnsatisfied| test
 // to avoid flakiness due to unexpected mouse input.
@@ -224,7 +222,7 @@ IN_PROC_BROWSER_TEST_F(BlockMouseEventPolicyTest,
   // Indicate that the session started 2 hours ago and no user activity has
   // occurred yet.
   g_browser_process->local_state()->SetInt64(
-      prefs::kSessionStartTime,
+      ash::prefs::kSessionStartTime,
       (base::Time::Now() - base::Hours(2)).ToInternalValue());
 }
 
@@ -253,10 +251,10 @@ IN_PROC_BROWSER_TEST_F(BlockMouseEventPolicyTest,
 IN_PROC_BROWSER_TEST_F(PolicyTest, PRE_WaitForInitialUserActivitySatisfied) {
   // Indicate that initial user activity in this session occurred 2 hours ago.
   g_browser_process->local_state()->SetInt64(
-      prefs::kSessionStartTime,
+      ash::prefs::kSessionStartTime,
       (base::Time::Now() - base::Hours(2)).ToInternalValue());
-  g_browser_process->local_state()->SetBoolean(prefs::kSessionUserActivitySeen,
-                                               true);
+  g_browser_process->local_state()->SetBoolean(
+      ash::prefs::kSessionUserActivitySeen, true);
 }
 
 IN_PROC_BROWSER_TEST_F(PolicyTest, WaitForInitialUserActivitySatisfied) {
@@ -285,6 +283,6 @@ IN_PROC_BROWSER_TEST_F(PolicyTest, WaitForInitialUserActivitySatisfied) {
   EXPECT_TRUE(observer.WasAppTerminated());
 }
 
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 }  // namespace policy

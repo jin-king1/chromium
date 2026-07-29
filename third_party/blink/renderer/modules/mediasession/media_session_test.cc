@@ -4,11 +4,14 @@
 
 #include "third_party/blink/renderer/modules/mediasession/media_session.h"
 
+#include <limits>
+
 #include "base/test/simple_test_tick_clock.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_media_position_state.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_media_session_playback_state.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
@@ -86,14 +89,28 @@ class MediaSessionTest : public PageTestBase {
     media_session_->setPositionState(position_state, exception_state);
   }
 
+  void SetPositionStateThrowsException(double duration,
+                                       double position,
+                                       double playback_rate) {
+    auto* position_state = MediaPositionState::Create();
+    position_state->setDuration(duration);
+    position_state->setPosition(position);
+    position_state->setPlaybackRate(playback_rate);
+
+    DummyExceptionStateForTesting exception_state;
+    media_session_->setPositionState(position_state, exception_state);
+    EXPECT_TRUE(exception_state.HadException());
+    EXPECT_EQ(ESErrorType::kTypeError, exception_state.CodeAs<ESErrorType>());
+  }
+
   void ClearPositionState() {
     NonThrowableExceptionState exception_state;
     media_session_->setPositionState(MediaPositionState::Create(),
                                      exception_state);
   }
 
-  void SetPlaybackState(const String& state) {
-    media_session_->setPlaybackState(state);
+  void SetPlaybackState(V8MediaSessionPlaybackState::Enum state) {
+    media_session_->setPlaybackState(V8MediaSessionPlaybackState(state));
   }
 
   MockMediaSessionService& service() { return *mock_service_.get(); }
@@ -111,16 +128,16 @@ class MediaSessionTest : public PageTestBase {
 TEST_F(MediaSessionTest, PlaybackPositionState_None) {
   base::RunLoop loop;
   EXPECT_CALL(service(), SetPositionState(_))
-      .WillOnce(testing::Invoke([&](auto position_state) {
+      .WillOnce([&](auto position_state) {
         EXPECT_EQ(base::Seconds(10), position_state->duration);
         EXPECT_EQ(base::Seconds(5), position_state->position);
         EXPECT_EQ(1.0, position_state->playback_rate);
         EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
         loop.Quit();
-      }));
+      });
 
-  SetPlaybackState("none");
+  SetPlaybackState(V8MediaSessionPlaybackState::Enum::kNone);
   SetPositionState(10, 5, 1.0);
   loop.Run();
 }
@@ -128,16 +145,16 @@ TEST_F(MediaSessionTest, PlaybackPositionState_None) {
 TEST_F(MediaSessionTest, PlaybackPositionState_Paused) {
   base::RunLoop loop;
   EXPECT_CALL(service(), SetPositionState(_))
-      .WillOnce(testing::Invoke([&](auto position_state) {
+      .WillOnce([&](auto position_state) {
         EXPECT_EQ(base::Seconds(10), position_state->duration);
         EXPECT_EQ(base::Seconds(5), position_state->position);
         EXPECT_EQ(0.0, position_state->playback_rate);
         EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
         loop.Quit();
-      }));
+      });
 
-  SetPlaybackState("paused");
+  SetPlaybackState(V8MediaSessionPlaybackState::Enum::kPaused);
   SetPositionState(10, 5, 1.0);
   loop.Run();
 }
@@ -145,34 +162,57 @@ TEST_F(MediaSessionTest, PlaybackPositionState_Paused) {
 TEST_F(MediaSessionTest, PlaybackPositionState_Playing) {
   base::RunLoop loop;
   EXPECT_CALL(service(), SetPositionState(_))
-      .WillOnce(testing::Invoke([&](auto position_state) {
+      .WillOnce([&](auto position_state) {
         EXPECT_EQ(base::Seconds(10), position_state->duration);
         EXPECT_EQ(base::Seconds(5), position_state->position);
         EXPECT_EQ(1.0, position_state->playback_rate);
         EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
         loop.Quit();
-      }));
+      });
 
-  SetPlaybackState("playing");
+  SetPlaybackState(V8MediaSessionPlaybackState::Enum::kPlaying);
   SetPositionState(10, 5, 1.0);
   loop.Run();
+}
+
+TEST_F(MediaSessionTest, PlaybackPositionState_InfiniteDuration) {
+  base::RunLoop loop;
+  EXPECT_CALL(service(), SetPositionState(_))
+      .WillOnce([&](auto position_state) {
+        EXPECT_EQ(base::TimeDelta::Max(), position_state->duration);
+        EXPECT_EQ(base::Seconds(5), position_state->position);
+        EXPECT_EQ(1.0, position_state->playback_rate);
+        EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
+
+        loop.Quit();
+      });
+
+  SetPlaybackState(V8MediaSessionPlaybackState::Enum::kNone);
+  SetPositionState(std::numeric_limits<double>::infinity(), 5, 1.0);
+  loop.Run();
+}
+
+TEST_F(MediaSessionTest, PlaybackPositionState_NaNDuration) {
+  SetPlaybackState(V8MediaSessionPlaybackState::Enum::kNone);
+  SetPositionStateThrowsException(std::numeric_limits<double>::quiet_NaN(), 5,
+                                  1.0);
 }
 
 TEST_F(MediaSessionTest, PlaybackPositionState_Paused_Clear) {
   {
     base::RunLoop loop;
     EXPECT_CALL(service(), SetPositionState(_))
-        .WillOnce(testing::Invoke([&](auto position_state) {
+        .WillOnce([&](auto position_state) {
           EXPECT_EQ(base::Seconds(10), position_state->duration);
           EXPECT_EQ(base::Seconds(5), position_state->position);
           EXPECT_EQ(0.0, position_state->playback_rate);
           EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
           loop.Quit();
-        }));
+        });
 
-    SetPlaybackState("paused");
+    SetPlaybackState(V8MediaSessionPlaybackState::Enum::kPaused);
     SetPositionState(10, 5, 1.0);
     loop.Run();
   }
@@ -180,10 +220,10 @@ TEST_F(MediaSessionTest, PlaybackPositionState_Paused_Clear) {
   {
     base::RunLoop loop;
     EXPECT_CALL(service(), SetPositionState(_))
-        .WillOnce(testing::Invoke([&](auto position_state) {
+        .WillOnce([&](auto position_state) {
           EXPECT_FALSE(position_state);
           loop.Quit();
-        }));
+        });
 
     ClearPositionState();
     loop.Run();
@@ -193,17 +233,17 @@ TEST_F(MediaSessionTest, PlaybackPositionState_Paused_Clear) {
 TEST_F(MediaSessionTest, PositionPlaybackState_None) {
   base::RunLoop loop;
   EXPECT_CALL(service(), SetPositionState(_))
-      .WillOnce(testing::Invoke([&](auto position_state) {
+      .WillOnce([&](auto position_state) {
         EXPECT_EQ(base::Seconds(10), position_state->duration);
         EXPECT_EQ(base::Seconds(5), position_state->position);
         EXPECT_EQ(1.0, position_state->playback_rate);
         EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
         loop.Quit();
-      }));
+      });
 
   SetPositionState(10, 5, 1.0);
-  SetPlaybackState("none");
+  SetPlaybackState(V8MediaSessionPlaybackState::Enum::kNone);
   loop.Run();
 }
 
@@ -211,14 +251,14 @@ TEST_F(MediaSessionTest, PositionPlaybackState_Paused_None) {
   {
     base::RunLoop loop;
     EXPECT_CALL(service(), SetPositionState(_))
-        .WillOnce(testing::Invoke([&](auto position_state) {
+        .WillOnce([&](auto position_state) {
           EXPECT_EQ(base::Minutes(10), position_state->duration);
           EXPECT_EQ(base::Minutes(1), position_state->position);
           EXPECT_EQ(1.0, position_state->playback_rate);
           EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
           loop.Quit();
-        }));
+        });
 
     SetPositionState(600, 60, 1.0);
     loop.Run();
@@ -229,16 +269,16 @@ TEST_F(MediaSessionTest, PositionPlaybackState_Paused_None) {
   {
     base::RunLoop loop;
     EXPECT_CALL(service(), SetPositionState(_))
-        .WillOnce(testing::Invoke([&](auto position_state) {
+        .WillOnce([&](auto position_state) {
           EXPECT_EQ(base::Minutes(10), position_state->duration);
           EXPECT_EQ(base::Minutes(2), position_state->position);
           EXPECT_EQ(0.0, position_state->playback_rate);
           EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
           loop.Quit();
-        }));
+        });
 
-    SetPlaybackState("paused");
+    SetPlaybackState(V8MediaSessionPlaybackState::Enum::kPaused);
     loop.Run();
   }
 
@@ -247,16 +287,16 @@ TEST_F(MediaSessionTest, PositionPlaybackState_Paused_None) {
   {
     base::RunLoop loop;
     EXPECT_CALL(service(), SetPositionState(_))
-        .WillOnce(testing::Invoke([&](auto position_state) {
+        .WillOnce([&](auto position_state) {
           EXPECT_EQ(base::Minutes(10), position_state->duration);
           EXPECT_EQ(base::Minutes(2), position_state->position);
           EXPECT_EQ(1.0, position_state->playback_rate);
           EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
           loop.Quit();
-        }));
+        });
 
-    SetPlaybackState("none");
+    SetPlaybackState(V8MediaSessionPlaybackState::Enum::kNone);
     loop.Run();
   }
 }
@@ -265,14 +305,14 @@ TEST_F(MediaSessionTest, PositionPlaybackState_Paused_Playing) {
   {
     base::RunLoop loop;
     EXPECT_CALL(service(), SetPositionState(_))
-        .WillOnce(testing::Invoke([&](auto position_state) {
+        .WillOnce([&](auto position_state) {
           EXPECT_EQ(base::Minutes(10), position_state->duration);
           EXPECT_EQ(base::Minutes(1), position_state->position);
           EXPECT_EQ(1.0, position_state->playback_rate);
           EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
           loop.Quit();
-        }));
+        });
 
     SetPositionState(600, 60, 1.0);
     loop.Run();
@@ -283,16 +323,16 @@ TEST_F(MediaSessionTest, PositionPlaybackState_Paused_Playing) {
   {
     base::RunLoop loop;
     EXPECT_CALL(service(), SetPositionState(_))
-        .WillOnce(testing::Invoke([&](auto position_state) {
+        .WillOnce([&](auto position_state) {
           EXPECT_EQ(base::Minutes(10), position_state->duration);
           EXPECT_EQ(base::Minutes(2), position_state->position);
           EXPECT_EQ(0.0, position_state->playback_rate);
           EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
           loop.Quit();
-        }));
+        });
 
-    SetPlaybackState("paused");
+    SetPlaybackState(V8MediaSessionPlaybackState::Enum::kPaused);
     loop.Run();
   }
 
@@ -301,16 +341,16 @@ TEST_F(MediaSessionTest, PositionPlaybackState_Paused_Playing) {
   {
     base::RunLoop loop;
     EXPECT_CALL(service(), SetPositionState(_))
-        .WillOnce(testing::Invoke([&](auto position_state) {
+        .WillOnce([&](auto position_state) {
           EXPECT_EQ(base::Minutes(10), position_state->duration);
           EXPECT_EQ(base::Minutes(2), position_state->position);
           EXPECT_EQ(1.0, position_state->playback_rate);
           EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
           loop.Quit();
-        }));
+        });
 
-    SetPlaybackState("playing");
+    SetPlaybackState(V8MediaSessionPlaybackState::Enum::kPlaying);
     loop.Run();
   }
 }
@@ -318,18 +358,35 @@ TEST_F(MediaSessionTest, PositionPlaybackState_Paused_Playing) {
 TEST_F(MediaSessionTest, PositionPlaybackState_Playing) {
   base::RunLoop loop;
   EXPECT_CALL(service(), SetPositionState(_))
-      .WillOnce(testing::Invoke([&](auto position_state) {
+      .WillOnce([&](auto position_state) {
         EXPECT_EQ(base::Seconds(10), position_state->duration);
         EXPECT_EQ(base::Seconds(5), position_state->position);
         EXPECT_EQ(1.0, position_state->playback_rate);
         EXPECT_EQ(clock().NowTicks(), position_state->last_updated_time);
 
         loop.Quit();
-      }));
+      });
 
   SetPositionState(10, 5, 1.0);
-  SetPlaybackState("playing");
+  SetPlaybackState(V8MediaSessionPlaybackState::Enum::kPlaying);
   loop.Run();
+}
+
+// Regression test for https://crbug.com/510589916.
+TEST_F(MediaSessionTest, PlaybackPositionState_HugeValuesNoCrash) {
+  base::RunLoop loop;
+  EXPECT_CALL(service(), SetPositionState(_))
+      .WillOnce([&](auto position_state) {
+        EXPECT_EQ(base::TimeDelta::Max(), position_state->duration);
+        loop.Quit();
+      });
+
+  SetPlaybackState(V8MediaSessionPlaybackState::Enum::kNone);
+  SetPositionState(1e308, 1e300, -1e200);
+  loop.Run();
+
+  clock().Advance(base::Seconds(1));
+  SetPlaybackState(V8MediaSessionPlaybackState::Enum::kPaused);
 }
 
 }  // namespace blink

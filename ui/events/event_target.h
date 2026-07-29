@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/raw_ptr_exclusion.h"
 #include "base/scoped_observation_traits.h"
 #include "ui/events/event_handler.h"
 #include "ui/events/events_export.h"
@@ -114,9 +113,11 @@ class EVENTS_EXPORT EventTarget {
 
   // A handler with a priority.
   struct PrioritizedHandler {
-    // `handler` is not a raw_ptr<> for performance reasons: based on this
-    // sampling profiler result on ChromeOS. go/brp-cros-prof-diff-20230403
-    RAW_PTR_EXCLUSION EventHandler* handler = nullptr;
+    // Uses UnprotectedInRelease | DanglingUntriaged: Performance reasons: based
+    // on this sampling profiler result on ChromeOS.
+    // go/brp-cros-prof-diff-20230403
+    raw_ptr<EventHandler, UnprotectedInRelease | DanglingUntriaged> handler =
+        nullptr;
     Priority priority = Priority::kDefault;
 
     bool operator<(const PrioritizedHandler& ph) const {
@@ -137,7 +138,7 @@ class EVENTS_EXPORT EventTarget {
 
   EventHandlerPriorityList pre_target_list_;
   EventHandlerList post_target_list_;
-  raw_ptr<EventHandler> target_handler_ = nullptr;
+  raw_ptr<EventHandler, DanglingUntriaged> target_handler_ = nullptr;
 };
 
 }  // namespace ui

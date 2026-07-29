@@ -7,7 +7,7 @@
 
 #include "ash/ash_export.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chromeos/ash/components/dbus/services/cros_dbus_service.h"
 #include "dbus/exported_object.h"
@@ -72,8 +72,8 @@ class ASH_EXPORT GesturePropertiesServiceProvider
   ui::ozone::mojom::GesturePropertiesService* GetService();
 
   mojo::Remote<ui::ozone::mojom::GesturePropertiesService> service_;
-  raw_ptr<ui::ozone::mojom::GesturePropertiesService, ExperimentalAsh>
-      service_for_test_ = nullptr;
+  raw_ptr<ui::ozone::mojom::GesturePropertiesService> service_for_test_ =
+      nullptr;
 
   base::WeakPtrFactory<GesturePropertiesServiceProvider> weak_ptr_factory_;
 };

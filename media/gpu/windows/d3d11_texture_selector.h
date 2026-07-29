@@ -7,9 +7,11 @@
 
 #include <d3d11.h>
 #include <wrl.h>
+
 #include <memory>
 #include <vector>
 
+#include "components/viz/common/resources/shared_image_format.h"
 #include "media/gpu/media_gpu_export.h"
 #include "media/gpu/windows/d3d11_picture_buffer.h"
 #include "media/gpu/windows/d3d11_video_processor_proxy.h"
@@ -25,13 +27,8 @@ class FormatSupportChecker;
 // GUID support.
 class MEDIA_GPU_EXPORT TextureSelector {
  public:
-  enum class HDRMode {
-    kSDROnly = 0,
-    kSDROrHDR = 1,
-  };
-
   TextureSelector(VideoPixelFormat pixfmt,
-                  DXGI_FORMAT output_dxgifmt,
+                  viz::SharedImageFormat output_si_format,
                   ComD3D11VideoDevice video_device,
                   ComD3D11DeviceContext d3d11_device_context,
                   bool use_shared_handle);
@@ -41,7 +38,6 @@ class MEDIA_GPU_EXPORT TextureSelector {
       const gpu::GpuPreferences& gpu_preferences,
       const gpu::GpuDriverBugWorkarounds& workarounds,
       DXGI_FORMAT decoder_output_format,
-      HDRMode hdr_output_mode,
       const FormatSupportChecker* format_checker,
       ComD3D11VideoDevice video_device,
       ComD3D11DeviceContext device_context,
@@ -51,12 +47,15 @@ class MEDIA_GPU_EXPORT TextureSelector {
 
   virtual std::unique_ptr<Texture2DWrapper> CreateTextureWrapper(
       ComD3D11Device device,
+      gfx::ColorSpace color_space,
       gfx::Size size);
 
   virtual bool DoesDecoderOutputUseSharedHandle() const;
 
   VideoPixelFormat PixelFormat() const { return pixel_format_; }
-  DXGI_FORMAT OutputDXGIFormat() const { return output_dxgifmt_; }
+  viz::SharedImageFormat OutputSharedImageFormat() const {
+    return output_si_format_;
+  }
   bool DoesSharedImageUseSharedHandle() const {
     return shared_image_use_shared_handle_;
   }
@@ -74,7 +73,7 @@ class MEDIA_GPU_EXPORT TextureSelector {
   friend class CopyTextureSelector;
 
   const VideoPixelFormat pixel_format_;
-  const DXGI_FORMAT output_dxgifmt_;
+  const viz::SharedImageFormat output_si_format_;
 
   ComD3D11VideoDevice video_device_;
   ComD3D11DeviceContext device_context_;
@@ -84,11 +83,8 @@ class MEDIA_GPU_EXPORT TextureSelector {
 
 class MEDIA_GPU_EXPORT CopyTextureSelector : public TextureSelector {
  public:
-  // TODO(liberato): do we need |input_dxgifmt| here?
   CopyTextureSelector(VideoPixelFormat pixfmt,
-                      DXGI_FORMAT input_dxgifmt,
-                      DXGI_FORMAT output_dxgifmt,
-                      absl::optional<gfx::ColorSpace> output_color_space,
+                      viz::SharedImageFormat output_si_format,
                       ComD3D11VideoDevice video_device,
                       ComD3D11DeviceContext d3d11_device_context,
                       bool use_shared_handle);
@@ -96,6 +92,7 @@ class MEDIA_GPU_EXPORT CopyTextureSelector : public TextureSelector {
 
   std::unique_ptr<Texture2DWrapper> CreateTextureWrapper(
       ComD3D11Device device,
+      gfx::ColorSpace color_space,
       gfx::Size size) override;
 
   bool DoesDecoderOutputUseSharedHandle() const override;
@@ -103,7 +100,6 @@ class MEDIA_GPU_EXPORT CopyTextureSelector : public TextureSelector {
   bool WillCopyForTesting() const override;
 
  private:
-  absl::optional<gfx::ColorSpace> output_color_space_;
   scoped_refptr<VideoProcessorProxy> video_processor_proxy_;
 };
 

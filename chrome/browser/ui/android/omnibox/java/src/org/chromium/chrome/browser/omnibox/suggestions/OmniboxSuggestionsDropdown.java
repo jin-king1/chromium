@@ -4,85 +4,81 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
-import android.content.res.Resources;
-import android.graphics.Color;
-import android.graphics.Rect;
-import android.graphics.drawable.ColorDrawable;
-import android.view.InputDevice;
+import android.os.Handler;
+import android.os.Looper;
+import android.util.AttributeSet;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityEvent;
 
-import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
 import androidx.annotation.VisibleForTesting;
-import androidx.core.view.ViewCompat;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import org.chromium.base.Callback;
+import org.chromium.base.ThreadUtils;
+import org.chromium.base.TimeUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.TimingMetric;
-import org.chromium.base.task.PostTask;
-import org.chromium.base.task.TaskTraits;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.omnibox.OmniboxFeatures;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.omnibox.OmniboxMetrics;
 import org.chromium.chrome.browser.omnibox.R;
-import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestionsDropdownEmbedder.OmniboxAlignment;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
-import org.chromium.chrome.browser.util.KeyNavigationUtil;
-import org.chromium.components.browser_ui.styles.ChromeColors;
-import org.chromium.ui.base.ViewUtils;
-
-import java.lang.annotation.Retention;
-import java.lang.annotation.RetentionPolicy;
+import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.ui.base.KeyNavigationUtil;
+import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
+import org.chromium.ui.util.MotionEventUtils;
 
 /** A widget for showing a list of omnibox suggestions. */
+@NullMarked
 public class OmniboxSuggestionsDropdown extends RecyclerView {
-    private static final long DEFERRED_INITIAL_SHRINKING_LAYOUT_FROM_IME_DURATION_MS = 300;
+    /** Used to tag and cancel the Accessibility focus events. */
+    private static final Object TOKEN_ACCESSIBILITY_FOCUS = new Object();
+
     /**
-     * Used to defer the accessibility announcement for list content.
-     * This makes core difference when the list is first shown up, when the interaction with the
-     * Omnibox and presence of virtual keyboard may actually cause throttling of the Accessibility
-     * events.
+     * Used to defer the accessibility announcement for list content. This makes core difference
+     * when the list is first shown up, when the interaction with the Omnibox and presence of
+     * virtual keyboard may actually cause throttling of the Accessibility events.
+     *
+     * <p>Note that this delay aims to strike a compromise between multiple directly competing
+     * components for a11y time:
+     *
+     * <ul>
+     *   <li>UrlBar: "facebook.com",
+     *   <li>Soft Keyboard: "f. foxtrot. showing us english q w e r t y", and
+     *   <li>Omnibox Suggestions: "15 suggested items in list below".
+     * </ul>
+     *
+     * The Suggestions list can be announced after a slight pause, as it's best that it's announced
+     * last.
      */
-    private static final long LIST_COMPOSITION_ACCESSIBILITY_ANNOUNCEMENT_DELAY_MS = 300;
+    private static final long LIST_COMPOSITION_ACCESSIBILITY_ANNOUNCEMENT_DELAY_MS = 1500;
 
-    private final int mStandardBgColor;
-    private final int mIncognitoBgColor;
-
-    private final Rect mTempRect = new Rect();
     private final SuggestionLayoutScrollListener mLayoutScrollListener;
+    private final RecyclerViewSelectionController mSelectionController;
+    private final Handler mHandler;
+    private final OmniboxResourceProvider mResourceProvider;
+    private final OmniboxViewHolderFactory mViewHolderFactory;
+    private @Nullable PreWarmingRecycledViewPool mRecycledViewPool;
 
     private @Nullable OmniboxSuggestionsDropdownAdapter mAdapter;
-    private @Nullable OmniboxSuggestionsDropdownEmbedder mEmbedder;
     private @Nullable GestureObserver mGestureObserver;
-    private @Nullable Callback<Integer> mHeightChangeListener;
-    private @Nullable Runnable mSuggestionDropdownScrollListener;
-    private @Nullable Runnable mSuggestionDropdownOverscrolledToTopListener;
-    private @NonNull OmniboxAlignment mOmniboxAlignment = OmniboxAlignment.UNSPECIFIED;
+    private @Nullable NavigationListener mNavigationListener;
+    private float mChildVerticalTranslation;
+    private float mChildAlpha = 1.0f;
 
-    private int mListViewMaxHeight;
-    private int mLastBroadcastedListViewMaxHeight;
-    private @Nullable Callback<OmniboxAlignment> mOmniboxAlignmentObserver;
-
-    @IntDef({InitialResizeState.WAITING_FOR_FIRST_MEASURE, InitialResizeState.WAITING_FOR_SHRINKING,
-            InitialResizeState.IGNORING_SHRINKING, InitialResizeState.HANDLED_INITIAL_SIZING})
-    @Retention(RetentionPolicy.SOURCE)
-    public @interface InitialResizeState {
-        int WAITING_FOR_FIRST_MEASURE = 0;
-        int WAITING_FOR_SHRINKING = 1;
-        int IGNORING_SHRINKING = 2;
-        int HANDLED_INITIAL_SIZING = 3;
-    }
-
-    @InitialResizeState
-    private int mInitialResizeState = InitialResizeState.WAITING_FOR_FIRST_MEASURE;
-    private int mWidthMeasureSpec;
-    private int mHeightMeasureSpec;
+    private final int mBaseBottomPadding;
+    private final int mBaseTopPadding;
+    private @SelectionController.Mode int mSelectionMode;
 
     /**
      * Interface that will receive notifications when the user is interacting with an item on the
@@ -93,53 +89,104 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
          * Notify that the user is interacting with an item on the Suggestions list.
          *
          * @param isGestureUp Whether user pressed (false) or depressed (true) the element on the
-         *         list.
+         *     list.
          * @param timestamp The timestamp associated with the event.
          */
         void onGesture(boolean isGestureUp, long timestamp);
     }
 
+    /**
+     * Interface that will receive notifications when the user navigates the Suggestions list
+     * using tab or arrow keys.
+     */
+    public interface NavigationListener {
+        /**
+         * Called when the suggestion list navigation state changes.
+         *
+         * @param isParkedAtSentinel Whether the keyboard selection is parked at the sentinel.
+         */
+        void onNavigationStateChange(boolean isParkedAtSentinel);
+    }
+
     /** Scroll manager that propagates scroll event notification to registered observers. */
     @VisibleForTesting
-    /* package */ class SuggestionLayoutScrollListener extends LinearLayoutManager {
-        private boolean mLastKeyboardShownState;
+    /* package */ static class SuggestionLayoutScrollListener extends LinearLayoutManager {
+        private boolean mIsScrolledToTop;
+        private boolean mCurrentGestureAffectedKeyboardState;
+        private @Nullable Runnable mSuggestionDropdownScrollListener;
+        private @Nullable Runnable mSuggestionDropdownOverscrolledToTopListener;
+        private @Nullable Callback<Integer> mScrollOffsetListener;
 
         public SuggestionLayoutScrollListener(Context context) {
             super(context);
-            mLastKeyboardShownState = true;
+            mIsScrolledToTop = true;
+        }
+
+        @Override
+        public void onInitializeAccessibilityNodeInfoForItem(
+                RecyclerView.Recycler recycler,
+                RecyclerView.State state,
+                View host,
+                AccessibilityNodeInfoCompat info) {
+            super.onInitializeAccessibilityNodeInfoForItem(recycler, state, host, info);
+            // Suppress the default "X of Y" announcement for the entire list for TalkBack to
+            // avoid verbosity. Announcement of position within its group is already provided.
+            info.setCollectionItemInfo(null);
+        }
+
+        @Override
+        @VisibleForTesting
+        public void onLayoutChildren(RecyclerView.Recycler recycler, RecyclerView.State state) {
+            if (OmniboxFeatures.sResetSuggestionsScroll.isEnabled()) {
+                scrollToPositionWithOffset(0, 0);
+            }
+            super.onLayoutChildren(recycler, state);
         }
 
         @Override
         public int scrollVerticallyBy(
                 int requestedDeltaY, RecyclerView.Recycler recycler, RecyclerView.State state) {
             int resultingDeltaY = super.scrollVerticallyBy(requestedDeltaY, recycler, state);
+            if (mScrollOffsetListener != null) {
+                mScrollOffsetListener.onResult(computeVerticalScrollOffset(state));
+            }
             return updateKeyboardVisibilityAndScroll(resultingDeltaY, requestedDeltaY);
         }
 
         /**
          * Respond to scroll event.
-         * - Upon scroll down from the top, if the distance scrolled is same as distance requested
-         *   (= the list has enough content to respond to the request), hide the keyboard and
-         *   suppress the scroll action by reporting 0 as the resulting scroll distance.
-         * - Upon scroll up to the top, if the distance scrolled is shorter than the distance
-         *   requested (= the list has reached the top), show the keyboard.
-         * - In all other cases, take no action.
          *
-         * The code reports 0 if and only if the keyboard state transitions from "shown" to
+         * <ul>
+         *   <li>Upon scroll down from the top, if the distance scrolled is same as distance
+         *       requested (= the list has enough content to respond to the request), hide the
+         *       keyboard and suppress the scroll action by reporting 0 as the resulting scroll
+         *       distance.
+         *   <li>Upon scroll up to the top, if the distance scrolled is shorter than the distance
+         *       requested (= the list has reached the top), show the keyboard.
+         *   <li>In all other cases, take no action.
+         * </ul>
+         *
+         * <p>The code reports 0 if and only if the keyboard state transitions from "shown" to
          * "hidden".
          *
-         * The logic remembers the last requested keyboard state, so that the keyboard is not
+         * <p>The logic remembers the last requested keyboard state, so that the keyboard is not
          * repeatedly called up or requested to be hidden.
          *
          * @param resultingDeltaY The scroll distance by which the LayoutManager intends to scroll.
-         *         Negative values indicate scroll up, positive values indicate scroll down.
-         * @param requestedDeltaY The scroll distance requested by the user via gesture.
-         *         Negative values indicate scroll up, positive values indicate scroll down.
+         *     Negative values indicate scroll up, positive values indicate scroll down.
+         * @param requestedDeltaY The scroll distance requested by the user via gesture. Negative
+         *     values indicate scroll up, positive values indicate scroll down.
          * @return Value of resultingDeltaY, if scroll is permitted, or 0 when it is suppressed.
          */
         @VisibleForTesting
         /* package */ int updateKeyboardVisibilityAndScroll(
                 int resultingDeltaY, int requestedDeltaY) {
+            // Change keyboard visibility only once per gesture.
+            // This helps in situations where the user interacts with the horizontal caoursel (e.g.
+            // the Most Visited Sites), where a horizontal finger swipe could result in a series of
+            // keyboard show/hide events.
+            if (mCurrentGestureAffectedKeyboardState) return resultingDeltaY;
+
             // If the effective scroll distance is:
             // - same as the desired one, we have enough content to scroll in a given direction
             //   (negative values = up, positive values = down).
@@ -159,8 +206,9 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
             //    visibility), or
             // 2. the list is too short, and almost entirely fits on the screen, leaving at most
             //    just a few pixels of content hiding under the keyboard.
-            // There's no need to dismiss the keyboard in any of these cases.
-            if (resultingDeltaY < requestedDeltaY) return resultingDeltaY;
+            // Note that the list may extend below the keyboard and still be non-scrollable:
+            // http://crbug.com/40071508
+
             // Otherwise decide whether keyboard should be shown or not.
             // We want to call keyboard up only when we know we reached the top of the list.
             // Note: the condition below evaluates `true` only if the scroll direction is "up",
@@ -168,12 +216,13 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
             // - resultingDeltaY <= 0
             // - requestedDeltaY <= 0
             // - Math.abs(resultingDeltaY) < Math.abs(requestedDeltaY)
-            boolean keyboardShouldShow = (resultingDeltaY > requestedDeltaY);
+            boolean newIsScrolledToTop = resultingDeltaY > requestedDeltaY;
 
-            if (mLastKeyboardShownState == keyboardShouldShow) return resultingDeltaY;
-            mLastKeyboardShownState = keyboardShouldShow;
+            if (mIsScrolledToTop == newIsScrolledToTop) return resultingDeltaY;
+            mIsScrolledToTop = newIsScrolledToTop;
+            mCurrentGestureAffectedKeyboardState = true;
 
-            if (keyboardShouldShow) {
+            if (mIsScrolledToTop) {
                 if (mSuggestionDropdownOverscrolledToTopListener != null) {
                     mSuggestionDropdownOverscrolledToTopListener.run();
                 }
@@ -194,270 +243,303 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
         }
 
         /**
-         * Reset the internal keyboard state.
-         * This needs to be called either when the SuggestionsDropdown is hidden or shown again
-         * to reflect either the end of the current or beginning of the next interaction
-         * session.
+         * Reset the internal scroll tracker. This needs to be called either when the
+         * SuggestionsDropdown is hidden or shown again to reflect either the end of the current or
+         * beginning of the next interaction session.
          */
         @VisibleForTesting
-        /* package */ void resetKeyboardShownState() {
-            mLastKeyboardShownState = true;
+        /* package */ void resetScrollState() {
+            mIsScrolledToTop = true;
+            mCurrentGestureAffectedKeyboardState = false;
+            updateVisualScrollState();
+        }
+
+        /* package */ void updateVisualScrollState() {
+            if (!mIsScrolledToTop) return;
+            postOnAnimation(() -> scrollToPositionWithOffset(0, 0));
+        }
+
+        /**
+         * Reset internal state, preparing to handle a new gesture. Note: currently invoked both
+         * when a gesture begins and ends.
+         */
+        /* package */ void onNewGesture() {
+            mCurrentGestureAffectedKeyboardState = false;
+        }
+
+        /**
+         * @param listener A listener will be invoked whenever the User scrolls the list.
+         */
+        public void setSuggestionDropdownScrollListener(Runnable listener) {
+            mSuggestionDropdownScrollListener = listener;
+        }
+
+        /**
+         * @param listener A listener will be invoked whenever the User scrolls the list to the top.
+         */
+        public void setSuggestionDropdownOverscrolledToTopListener(Runnable listener) {
+            mSuggestionDropdownOverscrolledToTopListener = listener;
+        }
+
+        public void setScrollOffsetListener(Callback<Integer> listener) {
+            mScrollOffsetListener = listener;
         }
     }
 
     /**
      * Constructs a new list designed for containing omnibox suggestions.
+     *
      * @param context Context used for contained views.
      */
-    public OmniboxSuggestionsDropdown(@NonNull Context context, RecycledViewPool recycledViewPool) {
-        super(context, null, android.R.attr.dropDownListViewStyle);
-        setFocusable(true);
-        setFocusableInTouchMode(true);
-        setRecycledViewPool(recycledViewPool);
+    public OmniboxSuggestionsDropdown(Context context, AttributeSet attrs) {
+        this(context, attrs, new SuggestionLayoutScrollListener(context));
+    }
 
-        // By default RecyclerViews come with item animators.
-        setItemAnimator(null);
+    @VisibleForTesting
+    OmniboxSuggestionsDropdown(
+            Context context,
+            AttributeSet attrs,
+            SuggestionLayoutScrollListener suggestionLayoutScrollListener) {
+        super(context, attrs, android.R.attr.dropDownListViewStyle);
 
-        mLayoutScrollListener = new SuggestionLayoutScrollListener(context);
-        setLayoutManager(mLayoutScrollListener);
+        try (TimingMetric metric = OmniboxMetrics.recordSuggestionsDropdownInflationThreadTime();
+                TimingMetric metric2 = OmniboxMetrics.recordSuggestionsDropdownInflationWallTime();
+                TraceEvent tracing = TraceEvent.scoped("OmniboxSuggestionsDropdown.Constructor")) {
+            boolean runsOnExpectedThread =
+                    OmniboxFeatures.sAsyncViewInflation.isEnabled()
+                            ? !ThreadUtils.runningOnUiThread()
+                            : ThreadUtils.runningOnUiThread();
+            OmniboxMetrics.recordSuggestionsDropdownInflationThreadMatchesExpectedThread(
+                    runsOnExpectedThread);
+            mHandler = new Handler(Looper.getMainLooper());
 
-        boolean shouldShowModernizeVisualUpdate =
-                OmniboxFeatures.shouldShowModernizeVisualUpdate(context);
-        final Resources resources = context.getResources();
-        int paddingBottom =
-                resources.getDimensionPixelOffset(R.dimen.omnibox_suggestion_list_padding_bottom);
-        ViewCompat.setPaddingRelative(this, 0, 0, 0, paddingBottom);
+            setFocusable(true);
+            setFocusableInTouchMode(true);
+            setId(R.id.omnibox_suggestions_dropdown);
 
-        mStandardBgColor = shouldShowModernizeVisualUpdate
-                ? ChromeColors.getSurfaceColor(
-                        context, R.dimen.omnibox_suggestion_dropdown_bg_elevation)
-                : ChromeColors.getDefaultThemeColor(context, false);
-        int incognitoBgColorRes = ChromeFeatureList.sBaselineGm3SurfaceColors.isEnabled()
-                ? R.color.default_bg_color_dark_elev_1_gm3_baseline
-                : R.color.omnibox_dropdown_bg_incognito;
-        mIncognitoBgColor = shouldShowModernizeVisualUpdate
-                ? context.getColor(incognitoBgColorRes)
-                : ChromeColors.getDefaultThemeColor(context, true);
+            // By default RecyclerViews come with item animators.
+            setItemAnimator(null);
+            addItemDecoration(new SuggestionHorizontalDivider(context));
+
+            addItemDecoration(new GroupSeparatorDecoration(context));
+            addItemDecoration(new HeaderDecoration(context));
+
+            mLayoutScrollListener = suggestionLayoutScrollListener;
+            setLayoutManager(mLayoutScrollListener);
+
+            mSelectionMode = SelectionController.Mode.WRAPPING_WITH_SENTINEL;
+            mSelectionController =
+                    new RecyclerViewSelectionController(mLayoutScrollListener, mSelectionMode);
+            addOnChildAttachStateChangeListener(mSelectionController);
+            mResourceProvider =
+                    new OmniboxResourceProvider(context, BrandedColorScheme.APP_DEFAULT);
+
+            mBaseBottomPadding = mResourceProvider.getDropdownBottomPadding();
+            mBaseTopPadding = mResourceProvider.getDropdownTopPadding();
+            this.setPaddingRelative(0, mBaseTopPadding, 0, mBaseBottomPadding);
+
+            // Disable the scrollbar since it causes the hover events happening near the
+            // scrollbar not dispatched to the underlying views.
+            setVerticalScrollBarEnabled(false);
+
+            mViewHolderFactory = new OmniboxViewHolderFactory(mResourceProvider);
+            if (OmniboxFeatures.sAsyncViewInflation.isEnabled()) {
+                mRecycledViewPool = new PreWarmingRecycledViewPool(mViewHolderFactory, context);
+            }
+        }
+    }
+
+    /**
+     * Sets the branded color scheme for the dropdown.
+     *
+     * @param scheme The {@link BrandedColorScheme} to use.
+     */
+    public void setBrandedColorScheme(@BrandedColorScheme int scheme) {
+        mResourceProvider.setBrandedColorScheme(scheme);
+    }
+
+    /**
+     * Initializes the suggestion list with the data model list.
+     *
+     * @param listItems The list of suggestion items to be displayed.
+     */
+    public void setModelList(ModelList listItems) {
+        setAdapter(new OmniboxSuggestionsDropdownAdapter(listItems, mViewHolderFactory));
+
+        // Set the recycled view pool AFTER the adapter is set. Otherwise,
+        // RecyclerView.setAdapter() will clear the pre-warmed pool.
+        if (mRecycledViewPool != null) {
+            setRecycledViewPool(mRecycledViewPool);
+        }
+    }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int oldW, int oldH) {
+        mLayoutScrollListener.updateVisualScrollState();
     }
 
     /** Get the Android View implementing suggestion list. */
-    public @NonNull ViewGroup getViewGroup() {
+    public ViewGroup getViewGroup() {
         return this;
     }
 
     /** Clean up resources and remove observers installed by this class. */
     public void destroy() {
-        getRecycledViewPool().clear();
+        if (mRecycledViewPool != null) {
+            mRecycledViewPool.destroy();
+        }
         mGestureObserver = null;
-        mHeightChangeListener = null;
-        mSuggestionDropdownScrollListener = null;
-        mSuggestionDropdownOverscrolledToTopListener = null;
     }
 
     /**
      * Sets the observer for that the user is interacting with an item on the Suggestions list..
+     *
      * @param observer an observer of this gesture.
      */
-    public void setGestureObserver(@NonNull OmniboxSuggestionsDropdown.GestureObserver observer) {
+    public void setGestureObserver(OmniboxSuggestionsDropdown.GestureObserver observer) {
         mGestureObserver = observer;
     }
 
     /**
-     * Sets the listener for changes of the suggestion list's height.
-     * The height may change as a result of eg. soft keyboard popping up.
+     * Sets the listener for when the user navigates the Suggestions list using tab or arrow keys.
      *
-     * @param listener A listener will receive the new height of the suggestion list in pixels.
+     * @param listener a listener of this navigation.
      */
-    public void setHeightChangeListener(@NonNull Callback<Integer> listener) {
-        mHeightChangeListener = listener;
+    public void setNavigationListener(@Nullable NavigationListener listener) {
+        mNavigationListener = listener;
     }
 
     /**
-     * @param listener A listener will be invoked whenever the User scrolls the list.
+     * Whether the first item of the suggestions list is currently keyboard selected. False if
+     * parked at the sentinel.
      */
-    public void setSuggestionDropdownScrollListener(@NonNull Runnable listener) {
-        mSuggestionDropdownScrollListener = listener;
+    public boolean isFirstItemSelected() {
+        return mSelectionController.getPosition() != null
+                && mSelectionController.getPosition() == 0;
     }
 
     /**
-     * @param listener A listener will be invoked whenever the User scrolls the list to the top.
+     * Whether the last item of the suggestions list is currently keyboard selected. False if parked
+     * at the sentinel.
      */
-    public void setSuggestionDropdownOverscrolledToTopListener(@NonNull Runnable listener) {
-        mSuggestionDropdownOverscrolledToTopListener = listener;
+    public boolean isLastItemSelected() {
+        return mSelectionController.getPosition() != null
+                && mSelectionController.getPosition() == mSelectionController.getItemCount() - 1;
     }
 
     /** Resets selection typically in response to changes to the list. */
     public void resetSelection() {
-        if (mAdapter == null) return;
-        mAdapter.resetSelection();
+        mLayoutScrollListener.scrollToPositionWithOffset(0, 0);
+        mSelectionController.reset();
+    }
+
+    /** Keyboard select the first item in the suggestions list. */
+    public void selectFirstItem() {
+        if (mSelectionController.getItemCount() == 0) return;
+        mSelectionController.setPosition(0);
+    }
+
+    /** Keyboard select the last item in the suggestions list. */
+    public void selectLastItem() {
+        if (mSelectionController.getItemCount() == 0) return;
+        mSelectionController.setPosition(mSelectionController.getItemCount() - 1);
+    }
+
+    /**
+     * Get the index of the currently keyboard-selected view, if any. Null if the sentinel is
+     * currently selected.
+     */
+    public @Nullable Integer getSelectedIndex() {
+        return mSelectionController.getPosition();
+    }
+
+    /**
+     * Sets whether parking at sentinel is allowed.
+     *
+     * @param allow Whether parking at sentinel is allowed.
+     */
+    public void setAllowParkingAtSentinel(boolean allow) {
+        mSelectionMode =
+                allow
+                        ? SelectionController.Mode.WRAPPING_WITH_SENTINEL
+                        : SelectionController.Mode.WRAPPING;
+        mSelectionController.setSelectionMode(mSelectionMode);
+        mSelectionController.reset();
+    }
+
+    /**
+     * Translates all children by {@code translation}. This translation is applied to newly-added
+     * added children as well.
+     */
+    public void translateChildrenVertical(float translation) {
+        mChildVerticalTranslation = translation;
+        final int childCount = getChildCount();
+        for (int i = 0; i < childCount; i++) {
+            getChildAt(i).setTranslationY(translation);
+        }
+        invalidateItemDecorations();
+    }
+
+    /**
+     * Sets the alpha of all child views. This alpha is applied to newly-added added children as
+     * well.
+     */
+    public void setChildAlpha(float alpha) {
+        mChildAlpha = alpha;
+        final int childCount = getChildCount();
+        for (int i = 0; i < childCount; i++) {
+            getChildAt(i).setAlpha(alpha);
+        }
+        invalidateItemDecorations();
+    }
+
+    @Override
+    public void onChildAttachedToWindow(View child) {
+        child.setAlpha(mChildAlpha);
+        if (mChildVerticalTranslation != 0.0f) {
+            child.setTranslationY(mChildVerticalTranslation);
+        }
+    }
+
+    @Override
+    public void onChildDetachedFromWindow(View child) {
+        child.setTranslationY(0.0f);
+        child.setAlpha(1.0f);
     }
 
     /** Resests the tracked keyboard shown state to properly respond to scroll events. */
-    void resetKeyboardShownState() {
-        mLayoutScrollListener.resetKeyboardShownState();
+    void resetScrollState() {
+        mLayoutScrollListener.resetScrollState();
     }
 
-    /** @return The number of items in the list. */
+    /**
+     * @return The number of items in the list.
+     */
     public int getDropdownItemViewCountForTest() {
         if (mAdapter == null) return 0;
         return mAdapter.getItemCount();
     }
 
-    /** @return The Suggestion view at specific index. */
+    /**
+     * @return The Suggestion view at specific index.
+     */
     public @Nullable View getDropdownItemViewForTest(int index) {
-        final LayoutManager manager = getLayoutManager();
+        final LayoutManager manager = assumeNonNull(getLayoutManager());
         manager.scrollToPosition(index);
         return manager.findViewByPosition(index);
     }
 
-    /**
-     * Update the suggestion popup background to reflect the current state.
-     * @param brandedColorScheme The {@link @BrandedColorScheme}.
-     */
-    public void refreshPopupBackground(@BrandedColorScheme int brandedColorScheme) {
-        int color = brandedColorScheme == BrandedColorScheme.INCOGNITO ? mIncognitoBgColor
-                                                                       : mStandardBgColor;
-        if (!isHardwareAccelerated()) {
-            // When HW acceleration is disabled, changing mSuggestionList' items somehow erases
-            // mOmniboxResultsContainer' background from the area not covered by
-            // mSuggestionList. To make sure mOmniboxResultsContainer is always redrawn, we make
-            // list background color slightly transparent. This makes mSuggestionList.isOpaque()
-            // to return false, and forces redraw of the parent view (mOmniboxResultsContainer).
-            if (Color.alpha(color) == 255) {
-                color = Color.argb(254, Color.red(color), Color.green(color), Color.blue(color));
-            }
-        }
-        setBackground(new ColorDrawable(color));
-    }
-
     @Override
-    public void setAdapter(@NonNull Adapter adapter) {
+    public void setAdapter(@Nullable Adapter adapter) {
         mAdapter = (OmniboxSuggestionsDropdownAdapter) adapter;
         super.setAdapter(mAdapter);
     }
 
     @Override
-    public void onAttachedToWindow() {
-        super.onAttachedToWindow();
-        mEmbedder.onAttachedToWindow();
-        mInitialResizeState = InitialResizeState.WAITING_FOR_FIRST_MEASURE;
-        mOmniboxAlignmentObserver = this::onOmniboxAlignmentChanged;
-        mOmniboxAlignment = mEmbedder.addAlignmentObserver(mOmniboxAlignmentObserver);
-        resetSelection();
-    }
-
-    @Override
-    protected void onDetachedFromWindow() {
-        super.onDetachedFromWindow();
-        mEmbedder.onDetachedFromWindow();
-        mOmniboxAlignment = OmniboxAlignment.UNSPECIFIED;
-        if (!OmniboxFeatures.shouldPreWarmRecyclerViewPool()) {
-            getRecycledViewPool().clear();
-        }
-        mAdapter.recordSessionMetrics();
-        mEmbedder.removeAlignmentObserver(mOmniboxAlignmentObserver);
-    }
-
-    @Override
-    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
-        try (TraceEvent tracing = TraceEvent.scoped("OmniboxSuggestionsList.Measure");
-                TimingMetric metric = SuggestionsMetrics.recordSuggestionListMeasureTime()) {
-            OmniboxAlignment omniboxAlignment = mEmbedder.getCurrentAlignment();
-            maybeUpdateLayoutParams(omniboxAlignment.top);
-            boolean useAlignmentSpecifiedHeight = OmniboxFeatures.omniboxConsumesImeInsets();
-            int availableViewportHeight = useAlignmentSpecifiedHeight
-                    ? omniboxAlignment.height
-                    : calculateAvailableViewportHeight() - omniboxAlignment.top;
-            int desiredWidth = omniboxAlignment.width;
-            adjustHorizontalPosition();
-            // Suppress the initial requests to shrink the viewport of the omnibox suggestion
-            // dropdown. The viewport will decrease when the keyboard is triggered, but the request
-            // to resize happens when the keyboard starts showing before it has had the chance to
-            // animate in. Because the resizing is triggered early, the dropdown shrinks earlier
-            // then the keyboard is fully visible, which leaves a hole in the UI showing the content
-            // where the keyboard will eventually go.
-            //
-            // The work around is to suppress these initial shrinking layout requests and defer them
-            // for enough time for the keyboard to hopefully be visible.
-            //
-            // This does not use getMeasuredHeight() as a means of comparison against the available
-            // viewport because on tablets the measured height can be smaller than the viewport as
-            // tablets use AT_MOST for the measure spec vs EXACTLY on phones.
-            // This logic is moot when we use alignment-specified height; the deferral of keyboard
-            // height changes is handled for us in that case.
-            if (!useAlignmentSpecifiedHeight) {
-                if ((mInitialResizeState == InitialResizeState.WAITING_FOR_SHRINKING
-                            || mInitialResizeState == InitialResizeState.IGNORING_SHRINKING)
-                        && availableViewportHeight < mListViewMaxHeight
-                        && getMeasuredWidth() == desiredWidth) {
-                    super.onMeasure(mWidthMeasureSpec, mHeightMeasureSpec);
-                    if (mInitialResizeState == InitialResizeState.IGNORING_SHRINKING) return;
-
-                    mInitialResizeState = InitialResizeState.IGNORING_SHRINKING;
-                    PostTask.postDelayedTask(TaskTraits.UI_USER_BLOCKING, () -> {
-                        if (mInitialResizeState != InitialResizeState.IGNORING_SHRINKING) return;
-                        ViewUtils.requestLayout(this, "OmniboxSuggestionsDropdown.onMeasure");
-                        mInitialResizeState = InitialResizeState.HANDLED_INITIAL_SIZING;
-                    }, DEFERRED_INITIAL_SHRINKING_LAYOUT_FROM_IME_DURATION_MS);
-                    return;
-                } else if (mInitialResizeState == InitialResizeState.IGNORING_SHRINKING) {
-                    // The dimensions changed in an unexpected way (either by increasing height or
-                    // a change in width), so just mark the initial sizing as completed and accept
-                    // the new measurements and suppress the pending posted layout request.
-                    mInitialResizeState = InitialResizeState.HANDLED_INITIAL_SIZING;
-                }
-            }
-            notifyObserversIfViewportHeightChanged(availableViewportHeight);
-
-            mWidthMeasureSpec = MeasureSpec.makeMeasureSpec(desiredWidth, MeasureSpec.EXACTLY);
-            mHeightMeasureSpec = MeasureSpec.makeMeasureSpec(availableViewportHeight,
-                    mEmbedder.isTablet() ? MeasureSpec.AT_MOST : MeasureSpec.EXACTLY);
-            super.onMeasure(mWidthMeasureSpec, mHeightMeasureSpec);
-            if (mInitialResizeState == InitialResizeState.WAITING_FOR_FIRST_MEASURE) {
-                mInitialResizeState = InitialResizeState.WAITING_FOR_SHRINKING;
-            }
-        }
-    }
-
-    private void maybeUpdateLayoutParams(int topMargin) {
-        // Update the layout params to ensure the parent correctly positions the suggestions
-        // under the anchor view.
-        ViewGroup.LayoutParams layoutParams = getLayoutParams();
-        if (layoutParams != null && layoutParams instanceof ViewGroup.MarginLayoutParams) {
-            ((ViewGroup.MarginLayoutParams) layoutParams).topMargin = topMargin;
-        }
-    }
-
-    private int calculateAvailableViewportHeight() {
-        mEmbedder.getWindowDelegate().getWindowVisibleDisplayFrame(mTempRect);
-        return mTempRect.height();
-    }
-
-    private void notifyObserversIfViewportHeightChanged(int availableViewportHeight) {
-        if (availableViewportHeight == mListViewMaxHeight) return;
-
-        mListViewMaxHeight = availableViewportHeight;
-        if (mHeightChangeListener != null) {
-            PostTask.postTask(TaskTraits.UI_DEFAULT, () -> {
-                // Detect if there was another change since this task posted.
-                // This indicates a subsequent task being posted too.
-                if (mListViewMaxHeight != availableViewportHeight) return;
-                // Detect if the new height is the same as previously broadcasted.
-                // The two checks (one above and one below) allow us to detect quick
-                // A->B->A transitions and suppress the broadcasts.
-                if (mLastBroadcastedListViewMaxHeight == availableViewportHeight) return;
-                if (mHeightChangeListener == null) return;
-
-                mHeightChangeListener.onResult(availableViewportHeight);
-                mLastBroadcastedListViewMaxHeight = availableViewportHeight;
-            });
-        }
-    }
-
-    @Override
     protected void onLayout(boolean changed, int l, int t, int r, int b) {
         try (TraceEvent tracing = TraceEvent.scoped("OmniboxSuggestionsList.Layout");
-                TimingMetric metric = SuggestionsMetrics.recordSuggestionListLayoutTime()) {
+                TimingMetric metric = OmniboxMetrics.recordSuggestionListLayoutTime();
+                TimingMetric metric2 = OmniboxMetrics.recordSuggestionListLayoutWallTime()) {
             super.onLayout(changed, l, t, r, b);
         }
     }
@@ -466,114 +548,136 @@ public class OmniboxSuggestionsDropdown extends RecyclerView {
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (!isShown()) return false;
 
-        View selectedView = mAdapter.getSelectedView();
-        if (selectedView != null && selectedView.onKeyDown(keyCode, event)) {
-            return true;
+        View selectedView = mSelectionController.getSelectedView();
+        boolean hasAdditionalModifiers = event.isAltPressed() || event.isShiftPressed();
+        if (selectedView != null) {
+            boolean isModifiedEnter = KeyNavigationUtil.isEnter(event) && hasAdditionalModifiers;
+            if (isModifiedEnter) {
+                // Fall through for modified Enter keys so that AutocompleteCoordinator can handle
+                // them!
+            } else if (selectedView.onKeyDown(keyCode, event)) {
+                return true;
+            }
         }
 
-        int selectedPosition = mAdapter.getSelectedViewIndex();
-        if (KeyNavigationUtil.isGoDown(event)) {
-            return mAdapter.setSelectedViewIndex(selectedPosition + 1);
-        } else if (KeyNavigationUtil.isGoUp(event)) {
-            return mAdapter.setSelectedViewIndex(selectedPosition - 1);
+        if (KeyNavigationUtil.isTabNavigation(event)) {
+            boolean maybeProcessed = super.onKeyDown(keyCode, event);
+            if (maybeProcessed) return true;
+            boolean ret =
+                    event.isShiftPressed()
+                            ? mSelectionController.selectPreviousItem()
+                            : mSelectionController.selectNextItem();
+            handleSelectionChange();
+            return ret;
+        }
+
+        boolean isGoDownKey = KeyNavigationUtil.isGoDown(event);
+        boolean isGoUpKey = KeyNavigationUtil.isGoUp(event);
+
+        if (isGoDownKey) {
+            mSelectionController.selectNextItem();
+            handleSelectionChange();
+            return true;
+        } else if (isGoUpKey) {
+            mSelectionController.selectPreviousItem();
+            handleSelectionChange();
+            return true;
         } else if (KeyNavigationUtil.isEnter(event)) {
-            if (selectedView != null) return selectedView.performClick();
+            if (selectedView != null) {
+                if (selectedView instanceof ActivatableSuggestionView) {
+                    return ((ActivatableSuggestionView) selectedView)
+                            .activate(event.getMetaState());
+                }
+                return selectedView.performClick();
+            }
         }
         return super.onKeyDown(keyCode, event);
     }
 
+    private void handleSelectionChange() {
+        boolean isParked = mSelectionController.isParkedAtSentinel();
+        if (isParked) {
+            mLayoutScrollListener.scrollToPositionWithOffset(0, 0);
+        }
+        if (mNavigationListener != null) {
+            mNavigationListener.onNavigationStateChange(isParked);
+        }
+    }
+
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
-        // Consume mouse events to ensure clicks do not bleed through to sibling views that
-        // are obscured by the list.  crbug.com/968414
+        // For some reason, RecyclerView.onGenericMotionEvent() always returns false even after
+        // handling events. Consume mouse/trackpad events to ensure clicks and scroll do not
+        // bleed through to sibling views that are obscured by the list.  crbug.com/40629803
         int action = event.getActionMasked();
-        boolean shouldIgnoreGenericMotionEvent =
-                (event.getSource() & InputDevice.SOURCE_CLASS_POINTER) != 0
-                && event.getToolType(0) == MotionEvent.TOOL_TYPE_MOUSE
-                && (action == MotionEvent.ACTION_BUTTON_PRESS
-                        || action == MotionEvent.ACTION_BUTTON_RELEASE);
-        return shouldIgnoreGenericMotionEvent || super.onGenericMotionEvent(event);
+        boolean shouldConsumeGenericMotionEvent =
+                (MotionEventUtils.isPointerEvent(event)
+                        && (action == MotionEvent.ACTION_BUTTON_PRESS
+                                || action == MotionEvent.ACTION_BUTTON_RELEASE
+                                || action == MotionEvent.ACTION_SCROLL));
+        return super.onGenericMotionEvent(event) || shouldConsumeGenericMotionEvent;
     }
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent ev) {
         final int eventType = ev.getActionMasked();
-        if ((eventType == MotionEvent.ACTION_UP || eventType == MotionEvent.ACTION_DOWN)
-                && mGestureObserver != null) {
-            mGestureObserver.onGesture(eventType == MotionEvent.ACTION_UP, ev.getEventTime());
+        if (eventType == MotionEvent.ACTION_UP || eventType == MotionEvent.ACTION_DOWN) {
+            mLayoutScrollListener.onNewGesture();
+            if (mGestureObserver != null) {
+                mGestureObserver.onGesture(eventType == MotionEvent.ACTION_UP, ev.getEventTime());
+            }
         }
         return super.dispatchTouchEvent(ev);
     }
 
-    /**
-     * Sets the embedder for the list view.
-     * @param embedder the embedder of this list.
-     */
-    public void setEmbedder(@NonNull OmniboxSuggestionsDropdownEmbedder embedder) {
-        assert mEmbedder == null;
-        mEmbedder = embedder;
-        mOmniboxAlignment = mEmbedder.getCurrentAlignment();
+    public void emitWindowContentChangedAnnouncement() {
+        cancelWindowContentChangedAnnouncement();
+
+        @StringRes
+        int announcedStringRes = R.string.accessibility_omnibox_suggested_items;
+
+        // Note: can't use postDelayed until minSdk is 28.
+        mHandler.postAtTime(
+                () -> {
+                    setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_POLITE);
+                    setContentDescription(
+                            getContext()
+                                    .getString(
+                                            announcedStringRes,
+                                            mAdapter == null ? 0 : mAdapter.getItemCount()));
+                    sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED);
+                    setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_NONE);
+                },
+                TOKEN_ACCESSIBILITY_FOCUS,
+                TimeUtils.uptimeMillis() + LIST_COMPOSITION_ACCESSIBILITY_ANNOUNCEMENT_DELAY_MS);
     }
 
-    private void onOmniboxAlignmentChanged(@NonNull OmniboxAlignment omniboxAlignment) {
-        boolean isOnlyHorizontalDifference =
-                omniboxAlignment.isOnlyHorizontalDifference(mOmniboxAlignment);
-        boolean isWidthDifference = omniboxAlignment.doesWidthDiffer(mOmniboxAlignment);
-        mOmniboxAlignment = omniboxAlignment;
-        if (isOnlyHorizontalDifference) {
-            adjustHorizontalPosition();
-            return;
-        } else if (isWidthDifference) {
-            // If our width has changed, we may have views in our pool that are now the wrong width.
-            // Recycle them by calling swapAdapter() to avoid showing views of the wrong size.
-            swapAdapter(mAdapter, true);
-        }
-        if (isInLayout()) {
-            // requestLayout doesn't behave predictably in the middle of a layout pass. Even if it
-            // does trigger a second layout pass, measurement caches aren't properly reset,
-            // resulting in stale sizing. Absent a way to abort the current pass and start over the
-            // simplest solution is to wait until the current pass is over to request relayout.
-            PostTask.postTask(TaskTraits.UI_USER_VISIBLE, () -> {
-                ViewUtils.requestLayout(OmniboxSuggestionsDropdown.this,
-                        "OmniboxSuggestionsDropdown.onOmniboxAlignmentChanged");
-            });
-        } else {
-            ViewUtils.requestLayout((View) OmniboxSuggestionsDropdown.this,
-                    "OmniboxSuggestionsDropdown.onOmniboxAlignmentChanged");
-        }
-    }
-
-    private void adjustHorizontalPosition() {
-        if (OmniboxFeatures.shouldShowModernizeVisualUpdate(getContext())) {
-            // Set our left edge using translation x. This avoids needing to relayout (like setting
-            // a left margin would) and is less risky than calling View#setLeft(), which is intended
-            // for use by the layout system.
-            setTranslationX(mOmniboxAlignment.left);
-        } else {
-            setPadding(mOmniboxAlignment.paddingLeft, getPaddingTop(),
-                    mOmniboxAlignment.paddingRight, getPaddingBottom());
-        }
-    }
-
-    public void emitWindowContentChanged() {
-        PostTask.postDelayedTask(TaskTraits.UI_DEFAULT, () -> {
-            announceForAccessibility(getContext().getString(
-                    R.string.accessibility_omnibox_suggested_items, mAdapter.getItemCount()));
-        }, LIST_COMPOSITION_ACCESSIBILITY_ANNOUNCEMENT_DELAY_MS);
-    }
-
-    @VisibleForTesting
-    public int getStandardBgColor() {
-        return mStandardBgColor;
-    }
-
-    @VisibleForTesting
-    public int getIncognitoBgColor() {
-        return mIncognitoBgColor;
+    /* package */ void cancelWindowContentChangedAnnouncement() {
+        mHandler.removeCallbacksAndMessages(TOKEN_ACCESSIBILITY_FOCUS);
     }
 
     @VisibleForTesting
     SuggestionLayoutScrollListener getLayoutScrollListener() {
         return mLayoutScrollListener;
+    }
+
+    @VisibleForTesting
+    int getBaseBottomPadding() {
+        return mBaseBottomPadding;
+    }
+
+    @VisibleForTesting
+    int getBaseTopPadding() {
+        return mBaseTopPadding;
+    }
+
+    @VisibleForTesting
+    @Override
+    public @Nullable OmniboxSuggestionsDropdownAdapter getAdapter() {
+        return mAdapter;
+    }
+
+    SelectionController getSelectionControllerForTesting() {
+        return mSelectionController;
     }
 }

@@ -7,10 +7,10 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback.h"
 #include "build/blink_buildflags.h"
 #include "build/build_config.h"
 #include "mojo/core/test/multiprocess_test_helper.h"
@@ -145,12 +145,12 @@ class MojoTestBase : public testing::Test {
   // Maps a buffer, writes some data into it, and unmaps it.
   static void WriteToBuffer(MojoHandle h,
                             size_t offset,
-                            const base::StringPiece& s);
+                            const std::string_view& s);
 
   // Maps a buffer, tests the value of some of its contents, and unmaps it.
   static void ExpectBufferContents(MojoHandle h,
                                    size_t offset,
-                                   const base::StringPiece& s);
+                                   const std::string_view& s);
 
   //////// Data pipe test utilities /////////
 

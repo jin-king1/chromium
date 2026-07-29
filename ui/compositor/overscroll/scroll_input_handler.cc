@@ -72,9 +72,9 @@ bool ScrollInputHandler::OnScrollEvent(const ScrollEvent& event,
   // ElementId is provided.
   DCHECK(!result.main_thread_hit_test_reasons);
 
-  cc::ScrollState scroll_state = CreateScrollState(event, false);
-  input_handler_weak_ptr_->ScrollUpdate(&scroll_state, base::TimeDelta());
-  input_handler_weak_ptr_->ScrollEnd(/*should_snap=*/false);
+  input_handler_weak_ptr_->ScrollUpdate(CreateScrollState(event, false),
+                                        base::TimeDelta());
+  input_handler_weak_ptr_->ScrollEnd(/*should_snap=*/false, std::nullopt);
 
   return true;
 }
@@ -101,5 +101,13 @@ void ScrollInputHandler::UpdateRootLayerStateForSynchronousInputHandler(
 void ScrollInputHandler::DeliverInputForBeginFrame(
     const viz::BeginFrameArgs& args) {}
 void ScrollInputHandler::DeliverInputForHighLatencyMode() {}
+void ScrollInputHandler::DeliverInputForDeadline() {}
+void ScrollInputHandler::DidFinishImplFrame() {}
+bool ScrollInputHandler::HasQueuedInput() const {
+  return false;
+}
+void ScrollInputHandler::SetScrollEventDispatchMode(
+    cc::InputHandlerClient::ScrollEventDispatchMode mode,
+    double scroll_deadline_ratio) {}
 
 }  // namespace ui

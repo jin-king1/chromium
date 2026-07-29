@@ -15,14 +15,9 @@ struct Options {
   bool check_blink_data_member_type = false;
   bool check_ipc = false;
   bool check_layout_object_methods = false;
-  bool raw_ref_template_as_trivial_member = false;
-  bool check_bad_raw_ptr_cast = false;
-  bool check_raw_ptr_fields = false;
   bool check_stack_allocated = false;
-  bool check_raw_ref_fields = false;
-  bool check_raw_ptr_to_stack_allocated = false;
+  bool enable_match_profiling = false;
   std::string exclude_fields_file;
-  std::vector<std::string> raw_ptr_paths_to_exclude_lines;
 };
 
 }  // namespace chrome_checker

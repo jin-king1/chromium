@@ -18,17 +18,16 @@ source_set("telemetry") {
 
   deps = [
     "//base",
-    "//build:chromeos_buildflags",
     "//chrome/browser/chromeos/extensions/telemetry/api/common",
-    "//chrome/browser/chromeos/extensions/telemetry/api/common:remote_probe_strategy",
     "//chrome/browser/extensions",
     "//chrome/common/chromeos/extensions/api",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/components/dbus/debug_daemon",
+    "//chromeos/ash/services/cros_healthd/public/cpp",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
     "//chromeos/services/network_config/public/mojom:network_types",
     "//chromeos/services/network_health/public/mojom:types",
     "//extensions/browser",
     "//extensions/common",
-    "//mojo/public/cpp/bindings",
     "//third_party/abseil-cpp:absl",
   ]
 }
@@ -36,40 +35,23 @@ source_set("telemetry") {
 source_set("browser_tests") {
   testonly = true
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
-  sources = [
-    "fake_probe_service.cc",
-    "fake_probe_service.h",
-    "telemetry_api_browsertest.cc",
-  ]
+  sources = [ "telemetry_api_browsertest.cc" ]
 
   deps = [
     ":telemetry",
     "//base",
-    "//build:chromeos_buildflags",
     "//chrome/browser/chromeos/extensions/telemetry/api/common:test_support",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/components/dbus/debug_daemon",
+    "//chromeos/ash/services/cros_healthd/public/cpp:test_support",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
     "//chromeos/services/network_config/public/mojom:network_types",
     "//chromeos/services/network_health/public/mojom:types",
     "//content/test:test_support",
     "//extensions/common",
-    "//mojo/public/cpp/bindings",
     "//testing/gtest",
   ]
 
   data = [ "//chrome/test/data" ]
-
-  if (is_chromeos_ash) {
-    sources += [
-      "fake_probe_service_factory.cc",
-      "fake_probe_service_factory.h",
-    ]
-
-    deps += [ "//chrome/browser/ash/telemetry_extension/telemetry" ]
-  }
-
-  if (is_chromeos_lacros) {
-    deps += [ "//chromeos/lacros" ]
-  }
 }
 
 source_set("unit_tests") {
@@ -79,7 +61,7 @@ source_set("unit_tests") {
   deps = [
     ":telemetry",
     "//chrome/common/chromeos/extensions/api",
-    "//chromeos/crosapi/mojom",
+    "//chromeos/ash/services/cros_healthd/public/mojom",
     "//chromeos/services/network_config/public/mojom:network_types",
     "//chromeos/services/network_health/public/mojom:types",
     "//testing/gtest",

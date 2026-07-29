@@ -4,39 +4,41 @@
 
 #import "content/browser/speech/tts_mac.h"
 
+#import <AppKit/AppKit.h>
+
 #include "base/strings/sys_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace content {
 
-TEST(TtsMacTest, CachedVoiceData) {
+// TODO(crbug.com/438118294): Re-enable this test.
+TEST(TtsMacTest, DISABLED_CachedVoiceData) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(
+      TtsPlatformImplMac::GetInstance()->sequence_checker_);
   std::vector<VoiceData> voices;
   TtsPlatformImplMac::GetInstance()->GetVoices(&voices);
 
-  EXPECT_EQ(voices.size(), NSSpeechSynthesizer.availableVoices.count);
+  EXPECT_EQ(voices.size(), AVSpeechSynthesisVoice.speechVoices.count);
 
-  NSString* defaultVoice = NSSpeechSynthesizer.defaultVoice;
+  AVSpeechSynthesisVoice* defaultVoice =
+      [AVSpeechSynthesisVoice voiceWithLanguage:nil];
   if (defaultVoice) {
-    NSDictionary* attributes =
-        [NSSpeechSynthesizer attributesForVoice:defaultVoice];
-    NSString* name = attributes[NSVoiceName];
-
-    EXPECT_EQ(voices[0].name, base::SysNSStringToUTF8(name));
+    EXPECT_EQ(voices[0].name, base::SysNSStringToUTF8(defaultVoice.name));
   }
 
   // Simulate the app becoming active, as if the user switched away and back.
-  [[NSNotificationCenter defaultCenter]
+  [NSNotificationCenter.defaultCenter
       postNotificationName:NSApplicationWillBecomeActiveNotification
                     object:nil];
 
   // Switching away should have emptied the cache.
-  EXPECT_TRUE(TtsPlatformImplMac::VoicesRefForTesting().empty());
+  EXPECT_TRUE(TtsPlatformImplMac::GetInstance()->voices_.empty());
 
   // Reload.
   voices.clear();
   TtsPlatformImplMac::GetInstance()->GetVoices(&voices);
 
-  EXPECT_EQ(voices.size(), NSSpeechSynthesizer.availableVoices.count);
+  EXPECT_EQ(voices.size(), AVSpeechSynthesisVoice.speechVoices.count);
 }
 
 }  // namespace content

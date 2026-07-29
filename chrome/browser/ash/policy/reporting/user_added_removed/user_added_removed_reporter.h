@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_ASH_POLICY_REPORTING_USER_ADDED_REMOVED_USER_ADDED_REMOVED_REPORTER_H_
 
 #include <memory>
+#include <string_view>
 
 #include "base/containers/flat_map.h"
 #include "base/scoped_observation.h"
@@ -13,10 +14,6 @@
 #include "chrome/browser/ash/policy/status_collector/managed_session_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/reporting/client/report_queue_provider.h"
-
-namespace policy {
-class ReportingUserTracker;
-}  // namespace policy
 
 namespace reporting {
 
@@ -30,14 +27,12 @@ class UserAddedRemovedReporter
   // For prod. Uses the default implementation of UserEventReporterHelper.
   static std::unique_ptr<UserAddedRemovedReporter> Create(
       base::flat_map<AccountId, bool> users_to_be_removed,
-      policy::ReportingUserTracker* reporting_user_tracker,
       policy::ManagedSessionService* managed_session_service);
 
   // For use in testing only. Allows user to pass in a test helper.
   static std::unique_ptr<UserAddedRemovedReporter> CreateForTesting(
       std::unique_ptr<UserEventReporterHelper> helper,
       base::flat_map<AccountId, bool> users_to_be_removed,
-      policy::ReportingUserTracker* reporting_user_tracker,
       policy::ManagedSessionService* managed_session_service);
 
   UserAddedRemovedReporter(const UserAddedRemovedReporter& other) = delete;
@@ -46,12 +41,12 @@ class UserAddedRemovedReporter
 
   ~UserAddedRemovedReporter() override;
 
-  // Check the ChromeUserManager removed user cache for users removed before
+  // Check the UserManager removed user cache for users removed before
   // the reporter is created.
   void ProcessRemoveUserCache();
 
   // Processes the removed user.
-  void ProcessRemovedUser(base::StringPiece user_email,
+  void ProcessRemovedUser(std::string_view user_email,
                           user_manager::UserRemovalReason reason);
 
   // ManagedSessionService::Observer overrides.
@@ -68,7 +63,6 @@ class UserAddedRemovedReporter
   UserAddedRemovedReporter(
       std::unique_ptr<UserEventReporterHelper> helper,
       base::flat_map<AccountId, bool> users_to_be_removed,
-      policy::ReportingUserTracker* reporting_user_tracker,
       policy::ManagedSessionService* managed_session_service);
 
   std::unique_ptr<UserEventReporterHelper> helper_;
@@ -76,9 +70,6 @@ class UserAddedRemovedReporter
   // Maps a user's email to if they are affiliated. This is needed to determine
   // if their email may be reported.
   base::flat_map<AccountId, bool> users_to_be_removed_;
-
-  const base::raw_ptr<policy::ReportingUserTracker, ExperimentalAsh>
-      reporting_user_tracker_;
 
   base::ScopedObservation<policy::ManagedSessionService,
                           policy::ManagedSessionService::Observer>

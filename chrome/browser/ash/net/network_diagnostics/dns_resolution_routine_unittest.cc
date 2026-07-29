@@ -13,6 +13,7 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -65,7 +66,8 @@ class DnsResolutionRoutineTest : public ::testing::Test {
   }
 
   void SetUpDnsResolutionRoutine() {
-    dns_resolution_routine_ = std::make_unique<DnsResolutionRoutine>();
+    dns_resolution_routine_ = std::make_unique<DnsResolutionRoutine>(
+        mojom::RoutineCallSource::kDiagnosticsUI);
     dns_resolution_routine_->set_network_context_for_testing(
         fake_network_context_.get());
     dns_resolution_routine_->set_profile_for_testing(test_profile_);
@@ -90,10 +92,11 @@ class DnsResolutionRoutineTest : public ::testing::Test {
 
  private:
   content::BrowserTaskEnvironment task_environment_;
-  session_manager::SessionManager session_manager_;
+  session_manager::SessionManager session_manager_{
+      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
   std::unique_ptr<FakeNetworkContext> fake_network_context_;
   // Unowned
-  raw_ptr<Profile, ExperimentalAsh> test_profile_;
+  raw_ptr<Profile, DanglingUntriaged> test_profile_;
   TestingProfileManager profile_manager_;
   std::unique_ptr<DnsResolutionRoutine> dns_resolution_routine_;
   base::WeakPtrFactory<DnsResolutionRoutineTest> weak_factory_{this};
@@ -106,8 +109,7 @@ TEST_F(DnsResolutionRoutineTest, TestSuccessfulResolution) {
       fake_dns_results;
   auto successful_resolution = std::make_unique<FakeNetworkContext::DnsResult>(
       net::OK, net::ResolveErrorInfo(net::OK),
-      net::AddressList(FakeIPAddress()),
-      /*endpoint_results_with_metadata=*/absl::nullopt);
+      net::AddressList(FakeIPAddress()), net::HostResolverEndpointResults());
   fake_dns_results.push_back(std::move(successful_resolution));
   SetUpAndRunRoutine(std::move(fake_dns_results),
                      mojom::RoutineVerdict::kNoProblem, {});
@@ -120,9 +122,8 @@ TEST_F(DnsResolutionRoutineTest, TestResolutionFailure) {
       fake_dns_results;
   auto failed_resolution = std::make_unique<FakeNetworkContext::DnsResult>(
       net::ERR_NAME_NOT_RESOLVED,
-      net::ResolveErrorInfo(net::ERR_NAME_NOT_RESOLVED),
-      /*resolved_addresses=*/absl::nullopt,
-      /*endpoint_results_with_metadata=*/absl::nullopt);
+      net::ResolveErrorInfo(net::ERR_NAME_NOT_RESOLVED), net::AddressList(),
+      net::HostResolverEndpointResults());
   fake_dns_results.push_back(std::move(failed_resolution));
   SetUpAndRunRoutine(std::move(fake_dns_results),
                      mojom::RoutineVerdict::kProblem,
@@ -137,13 +138,11 @@ TEST_F(DnsResolutionRoutineTest, TestSuccessOnRetry) {
       fake_dns_results;
   auto timed_out_resolution = std::make_unique<FakeNetworkContext::DnsResult>(
       net::ERR_DNS_TIMED_OUT, net::ResolveErrorInfo(net::ERR_DNS_TIMED_OUT),
-      /*resolved_addresses=*/absl::nullopt,
-      /*endpoint_results_with_metadata=*/absl::nullopt);
+      net::AddressList(), net::HostResolverEndpointResults());
   fake_dns_results.push_back(std::move(timed_out_resolution));
   auto successful_resolution = std::make_unique<FakeNetworkContext::DnsResult>(
       net::OK, net::ResolveErrorInfo(net::OK),
-      net::AddressList(FakeIPAddress()),
-      /*endpoint_results_with_metadata=*/absl::nullopt);
+      net::AddressList(FakeIPAddress()), net::HostResolverEndpointResults());
   fake_dns_results.push_back(std::move(successful_resolution));
 
   fake_dns_results.push_back(std::move(successful_resolution));

@@ -4,8 +4,6 @@
 
 source_set("content_relationship_verification") {
   sources = [
-    "content_relationship_verification_constants.cc",
-    "content_relationship_verification_constants.h",
     "digital_asset_links_handler.cc",
     "digital_asset_links_handler.h",
     "response_header_verifier.cc",
@@ -17,7 +15,6 @@ source_set("content_relationship_verification") {
     "//content/public/browser",
     "//content/public/common",
     "//net",
-    "//services/data_decoder/public/cpp",
     "//services/network/public/cpp",
     "//url",
   ]
@@ -44,10 +41,13 @@ source_set("unit_tests") {
     "//base",
     "//content/test:test_support",
     "//net",
-    "//services/data_decoder/public/cpp:test_support",
     "//services/network:test_support",
     "//testing/gtest",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 if (is_android) {

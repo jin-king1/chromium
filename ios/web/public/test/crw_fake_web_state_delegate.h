@@ -23,13 +23,26 @@
 // Whether `webState:runRepostFormDialogWithCompletionHandler:` has been called
 // or not.
 @property(nonatomic, readonly) BOOL repostFormWarningRequested;
+// Whether `webState:shouldAllowCopyWithDecisionHandler:` has been called or
+// not.
+@property(nonatomic, readonly) BOOL copyAllowedRequested;
+// Whether `webState:shouldAllowPasteWithDecisionHandler:` has been called or
+// not.
+@property(nonatomic, readonly) BOOL pasteAllowedRequested;
+// Whether `webState:shouldAllowCutWithDecisionHandler:` has been called or not.
+@property(nonatomic, readonly) BOOL cutAllowedRequested;
+// Whether `webState:webStateDidFinishClipboardRead:` has been called or not.
+@property(nonatomic, readonly) BOOL didFinishClipboardReadRequested;
 // Whether `javaScriptDialogPresenterForWebState:` has been called or not.
 @property(nonatomic, readonly) BOOL javaScriptDialogPresenterRequested;
 // Whether `webState:handlePermissions:decisionHandler` has been called or not.
 @property(nonatomic, readonly) BOOL permissionsRequestHandled;
-// Whether `webState:didRequestHTTPAuthForProtectionSpace:...| has been called
+// Whether `webState:didRequestHTTPAuthForProtectionSpace:...` has been called
 // or not.
-@property(nonatomic, readonly) BOOL authenticationRequested;
+@property(nonatomic, readonly) BOOL httpAuthenticationRequested;
+// Whether `webState:didRequestClientCertAuthForProtectionSpace:...` has been
+// called or not.
+@property(nonatomic, readonly) BOOL clientCertAuthenticationRequested;
 // Specifies the return value of `isAppLaunchingAllowedForWebState:`.
 @property(nonatomic) BOOL isAppLaunchingAllowedForWebStateReturnValue;
 

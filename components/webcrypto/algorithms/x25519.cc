@@ -4,12 +4,16 @@
 
 #include "components/webcrypto/algorithms/x25519.h"
 
+#include <string_view>
+
+#include "base/compiler_specific.h"
 #include "components/webcrypto/algorithms/asymmetric_key_util.h"
 #include "components/webcrypto/algorithms/util.h"
 #include "components/webcrypto/blink_key_handle.h"
 #include "components/webcrypto/generate_key_result.h"
 #include "components/webcrypto/jwk.h"
 #include "components/webcrypto/status.h"
+#include "crypto/evp.h"
 #include "crypto/openssl_util.h"
 #include "third_party/blink/public/platform/web_crypto_algorithm_params.h"
 #include "third_party/blink/public/platform/web_crypto_key_algorithm.h"
@@ -27,44 +31,40 @@ blink::WebCryptoAlgorithm SynthesizeImportAlgorithmForClone(
                                                          nullptr);
 }
 
+// This function accepts only the RFC 8032 format.
 Status CreateWebCryptoX25519PrivateKey(
-    base::span<const uint8_t> raw_key,
+    base::span<const uint8_t, 32u> raw_key,
     const blink::WebCryptoKeyAlgorithm& algorithm,
     bool extractable,
     blink::WebCryptoKeyUsageMask usages,
     blink::WebCryptoKey* key) {
-  DCHECK(raw_key.size() == 32u);
-  // This function accepts only the RFC 8032 format.
   bssl::UniquePtr<EVP_PKEY> pkey(EVP_PKEY_new_raw_private_key(
       EVP_PKEY_X25519, /* engine */ nullptr, raw_key.data(), raw_key.size()));
   if (!pkey) {
     return Status::OperationError();
   }
-
   return webcrypto::CreateWebCryptoPrivateKey(std::move(pkey), algorithm,
                                               extractable, usages, key);
 }
 
 Status CreateWebCryptoX25519PublicKey(
-    base::span<const uint8_t> raw_key,
+    base::span<const uint8_t, 32u> raw_key,
     const blink::WebCryptoKeyAlgorithm& algorithm,
     bool extractable,
     blink::WebCryptoKeyUsageMask usages,
     blink::WebCryptoKey* key) {
-  DCHECK(raw_key.size() == 32);
   bssl::UniquePtr<EVP_PKEY> pkey(EVP_PKEY_new_raw_public_key(
       EVP_PKEY_X25519, /* engine */ nullptr, raw_key.data(), raw_key.size()));
   if (!pkey) {
     return Status::OperationError();
   }
-
   return webcrypto::CreateWebCryptoPublicKey(std::move(pkey), algorithm,
                                              extractable, usages, key);
 }
 
 // Reads a fixed length base64url-decoded bytes from a JWK.
 Status ReadBytes(const JwkReader& jwk,
-                 base::StringPiece member_name,
+                 std::string_view member_name,
                  size_t expected_length,
                  std::vector<uint8_t>* out) {
   std::vector<uint8_t> bytes;
@@ -121,9 +121,9 @@ Status X25519Implementation::GenerateKey(
   }
 
   blink::WebCryptoKey private_key;
-  status = CreateWebCryptoX25519PrivateKey(base::make_span(privkey),
-                                           key_algorithm, extractable,
-                                           private_usages, &private_key);
+  status = CreateWebCryptoX25519PrivateKey(base::span(privkey), key_algorithm,
+                                           extractable, private_usages,
+                                           &private_key);
   if (status.IsError()) {
     return status;
   }
@@ -141,6 +141,7 @@ Status X25519Implementation::ImportKey(
     blink::WebCryptoKey* key) const {
   switch (format) {
     case blink::kWebCryptoKeyFormatRaw:
+    case blink::kWebCryptoKeyFormatRawPublic:
       return ImportKeyRaw(key_data, algorithm, extractable, usages, key);
     case blink::kWebCryptoKeyFormatPkcs8:
       return ImportKeyPkcs8(key_data, algorithm, extractable, usages, key);
@@ -158,6 +159,7 @@ Status X25519Implementation::ExportKey(blink::WebCryptoKeyFormat format,
                                        std::vector<uint8_t>* buffer) const {
   switch (format) {
     case blink::kWebCryptoKeyFormatRaw:
+    case blink::kWebCryptoKeyFormatRawPublic:
       return ExportKeyRaw(key, buffer);
     case blink::kWebCryptoKeyFormatPkcs8:
       return ExportKeyPkcs8(key, buffer);
@@ -170,10 +172,28 @@ Status X25519Implementation::ExportKey(blink::WebCryptoKeyFormat format,
   }
 }
 
+Status X25519Implementation::GetPublicKey(
+    const blink::WebCryptoKey& key,
+    blink::WebCryptoKeyUsageMask usages,
+    blink::WebCryptoKey* public_key) const {
+  Status status = CheckKeyCreationUsages(all_public_key_usages_, usages);
+  if (status.IsError()) {
+    return status;
+  }
+
+  bssl::UniquePtr<EVP_PKEY> pub_pkey(EVP_PKEY_copy_public(GetEVP_PKEY(key)));
+  if (!pub_pkey) {
+    return Status::OperationError();
+  }
+
+  return CreateWebCryptoPublicKey(std::move(pub_pkey), key.Algorithm(), true,
+                                  usages, public_key);
+}
+
 Status X25519Implementation::DeriveBits(
     const blink::WebCryptoAlgorithm& algorithm,
     const blink::WebCryptoKey& base_key,
-    absl::optional<unsigned int> length_bits,
+    std::optional<unsigned int> length_bits,
     std::vector<uint8_t>* derived_bytes) const {
   DCHECK(derived_bytes);
 
@@ -208,18 +228,17 @@ Status X25519Implementation::DeriveBits(
   }
   DCHECK_EQ(derived_bytes->size(), derived_len);
 
-  // TODO(crbug.com/1402835): There are WPT tests to ensure small-order keys are
-  // rejected when they are used for the derive operation. However, the spec
+  // TODO(crbug.com/40251305): There are WPT tests to ensure small-order keys
+  // are rejected when they are used for the derive operation. However, the spec
   // editors are discussing the possibility of performing the checks during the
   // key import operation instead.
 
-  // TODO(crbug.com/1433707): The second condition conflates zero and null, and
-  // does not match the spec.
-  if (!length_bits.has_value() || *length_bits == 0) {
+  if (!length_bits.has_value()) {
     return Status::Success();
   }
 
-  if (8 * derived_len < *length_bits) {
+  size_t derived_len_bits = 8 * derived_len;
+  if (derived_len_bits < *length_bits) {
     return Status::ErrorX25519LengthTooLong();
   }
 
@@ -228,7 +247,8 @@ Status X25519Implementation::DeriveBits(
   // Truncation isn't safe!
   TruncateToBitLength(*length_bits, derived_bytes);
 
-  return Status::Success();
+  return *length_bits < derived_len_bits ? Status::SuccessDeriveBitsTruncation()
+                                         : Status::Success();
 }
 
 Status X25519Implementation::ImportKeyRaw(
@@ -245,12 +265,13 @@ Status X25519Implementation::ImportKeyRaw(
     return status;
   }
 
-  if (key_data.size() != 32) {
+  auto fixed_data = key_data.to_fixed_extent<32u>();
+  if (!fixed_data) {
     return Status::ErrorImportX25519KeyLength();
   }
 
   return CreateWebCryptoX25519PublicKey(
-      key_data, blink::WebCryptoKeyAlgorithm::CreateX25519(algorithm.Id()),
+      *fixed_data, blink::WebCryptoKeyAlgorithm::CreateX25519(algorithm.Id()),
       extractable, usages, key);
 }
 
@@ -359,6 +380,7 @@ Status X25519Implementation::ImportKeyJwk(
   if (status.IsError()) {
     return status;
   }
+  auto fixed_public_key = base::span(raw_public_key).to_fixed_extent<32u>();
 
   // 9.2 Let key be a new CryptoKey object that represents the Ed25519
   // private/public key. 9.3. Set the [[type]] internal slot of Key to "private"
@@ -366,7 +388,7 @@ Status X25519Implementation::ImportKeyJwk(
   blink::WebCryptoKeyAlgorithm key_algorithm =
       blink::WebCryptoKeyAlgorithm::CreateX25519(algorithm.Id());
   if (!is_private_key) {
-    return CreateWebCryptoX25519PublicKey(raw_public_key, key_algorithm,
+    return CreateWebCryptoX25519PublicKey(*fixed_public_key, key_algorithm,
                                           extractable, usages, key);
   }
 
@@ -375,8 +397,10 @@ Status X25519Implementation::ImportKeyJwk(
   if (status.IsError()) {
     return status;
   }
+  auto fixed_private_key = base::span(raw_private_key).to_fixed_extent<32u>();
+
   blink::WebCryptoKey private_key;
-  status = CreateWebCryptoX25519PrivateKey(raw_private_key, key_algorithm,
+  status = CreateWebCryptoX25519PrivateKey(*fixed_private_key, key_algorithm,
                                            extractable, usages, &private_key);
   if (status.IsError()) {
     return status;
@@ -384,12 +408,13 @@ Status X25519Implementation::ImportKeyJwk(
 
   // Check the public key matches the private key.
   size_t len = 32;
-  uint8_t raw_key[32];
-  if (!EVP_PKEY_get_raw_public_key(GetEVP_PKEY(private_key), raw_key, &len)) {
+  std::array<uint8_t, 32> raw_key;
+  if (!EVP_PKEY_get_raw_public_key(GetEVP_PKEY(private_key), raw_key.data(),
+                                   &len)) {
     return Status::OperationError();
   }
   DCHECK_EQ(len, 32u);
-  if (memcmp(raw_public_key.data(), raw_key, 32) != 0) {
+  if (fixed_public_key != raw_key) {
     return Status::DataError();
   }
 
@@ -422,7 +447,8 @@ Status X25519Implementation::ExportKeyPkcs8(
     return Status::ErrorUnexpectedKeyType();
   }
 
-  return ExportPKeyPkcs8(GetEVP_PKEY(key), buffer);
+  *buffer = crypto::evp::PrivateKeyToBytes(GetEVP_PKEY(key));
+  return Status::Success();
 }
 
 Status X25519Implementation::ExportKeySpki(const blink::WebCryptoKey& key,
@@ -431,7 +457,8 @@ Status X25519Implementation::ExportKeySpki(const blink::WebCryptoKey& key,
     return Status::ErrorUnexpectedKeyType();
   }
 
-  return ExportPKeySpki(GetEVP_PKEY(key), buffer);
+  *buffer = crypto::evp::PublicKeyToBytes(GetEVP_PKEY(key));
+  return Status::Success();
 }
 
 Status X25519Implementation::ExportKeyJwk(const blink::WebCryptoKey& key,
@@ -465,6 +492,21 @@ Status X25519Implementation::ExportKeyJwk(const blink::WebCryptoKey& key,
 
   jwk.ToJson(buffer);
   return Status::Success();
+}
+
+bool X25519Implementation::Supports(
+    blink::WebCryptoOperation op,
+    const blink::WebCryptoAlgorithm& algorithm,
+    std::optional<unsigned int> length_bits) const {
+  if (op == blink::kWebCryptoOperationDeriveBits) {
+    if (length_bits) {
+      // Max of 32 bytes.
+      return *length_bits <= (32 * 8);
+    } else {
+      return true;
+    }
+  }
+  return true;
 }
 
 Status X25519Implementation::DeserializeKeyForClone(

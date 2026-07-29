@@ -13,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/scoped_feature_list.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/common/content_client.h"
@@ -21,11 +22,17 @@
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/test_browser_context.h"
+#include "content/public/test/test_content_browser_client.h"
 #include "content/public/test/test_renderer_host.h"
 #include "content/public/test/web_contents_tester.h"
-#include "content/test/test_content_browser_client.h"
+#include "ui/accessibility/accessibility_features.h"
+#include "ui/accessibility/ax_mode.h"
+#include "ui/accessibility/platform/ax_platform.h"
 #include "ui/events/event.h"
 #include "ui/events/event_utils.h"
+#include "ui/gfx/native_ui_types.h"
+#include "ui/views/accessibility/tree/widget_ax_manager.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_test.h"
@@ -53,8 +60,9 @@ class WebViewTestWebContentsObserver : public content::WebContentsObserver {
       const WebViewTestWebContentsObserver&) = delete;
 
   ~WebViewTestWebContentsObserver() override {
-    if (web_contents_)
+    if (web_contents_) {
       content::WebContentsObserver::Observe(nullptr);
+    }
   }
 
   void WebContentsDestroyed() override {
@@ -127,11 +135,27 @@ class WebViewTestWebContentsDelegate : public content::WebContentsDelegate {
   bool is_fullscreened_ = false;
 };
 
+void SimulateRendererCrash(content::WebContents* contents, WebView* view) {
+  auto* tester = content::WebContentsTester::For(contents);
+
+  // Normally when a renderer crashes, the WebView will learn about it
+  // automatically via WebContentsObserver. Since this is a test
+  // WebContents, simulate that by calling SetIsCrashed and then
+  // explicitly calling RenderFrameDeleted on the WebView to trigger it
+  // to swap in the crashed overlay view.
+  tester->SetIsCrashed(base::TERMINATION_STATUS_PROCESS_CRASHED, -1);
+  EXPECT_TRUE(contents->IsCrashed());
+  static_cast<content::WebContentsObserver*>(view)->RenderFrameDeleted(
+      contents->GetPrimaryMainFrame());
+}
+
 }  // namespace
 
 // Provides functionality to test a WebView.
 class WebViewUnitTest : public views::test::WidgetTest {
  public:
+  static constexpr int kWebViewID = 123;
+
   WebViewUnitTest()
       : views::test::WidgetTest(std::unique_ptr<base::test::TaskEnvironment>(
             std::make_unique<content::BrowserTaskEnvironment>())) {}
@@ -148,6 +172,10 @@ class WebViewUnitTest : public views::test::WidgetTest {
   }
 
   void SetUp() override {
+    // Set the test content browser client to avoid pulling in needless
+    // dependencies from content.
+    SetBrowserClientForTesting(&test_browser_client_);
+
     rvh_enabler_ = std::make_unique<content::RenderViewHostTestEnabler>();
 
     views::WebView::WebContentsCreator creator = base::BindRepeating(
@@ -157,9 +185,6 @@ class WebViewUnitTest : public views::test::WidgetTest {
             creator);
     browser_context_ = std::make_unique<content::TestBrowserContext>();
     WidgetTest::SetUp();
-    // Set the test content browser client to avoid pulling in needless
-    // dependencies from content.
-    SetBrowserClientForTesting(&test_browser_client_);
 
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
         switches::kDisableBackgroundingOccludedWindowsForTesting);
@@ -170,16 +195,18 @@ class WebViewUnitTest : public views::test::WidgetTest {
     top_level_widget_->SetBounds(gfx::Rect(0, 10, 100, 100));
     View* const contents_view =
         top_level_widget_->SetContentsView(std::make_unique<View>());
-    auto web_view = std::make_unique<WebView>(browser_context_.get());
-    web_view->SetBoundsRect(gfx::Rect(contents_view->size()));
-    web_view_ = contents_view->AddChildView(std::move(web_view));
+    auto view = std::make_unique<WebView>(browser_context_.get());
+    view->SetID(kWebViewID);
+    view->SetBoundsRect(gfx::Rect(contents_view->size()));
+    contents_view->AddChildView(std::move(view));
     top_level_widget_->Show();
-    ASSERT_EQ(gfx::Rect(0, 0, 100, 100), web_view_->bounds());
+    ASSERT_EQ(gfx::Rect(0, 0, 100, 100), web_view()->bounds());
   }
 
   void TearDown() override {
     scoped_web_contents_creator_.reset();
-    top_level_widget_->Close();  // Deletes all children and itself.
+    top_level_widget_.ExtractAsDangling()
+        ->Close();  // Deletes all children and itself.
     RunPendingMessages();
 
     browser_context_.reset(nullptr);
@@ -191,8 +218,11 @@ class WebViewUnitTest : public views::test::WidgetTest {
 
  protected:
   Widget* top_level_widget() const { return top_level_widget_; }
-  WebView* web_view() const { return web_view_; }
-  NativeViewHost* holder() const { return web_view_->holder_; }
+  WebView* web_view() const {
+    return static_cast<WebView*>(
+        top_level_widget()->GetContentsView()->GetViewByID(kWebViewID));
+  }
+  NativeViewHost* holder() const { return web_view()->holder_; }
 
   std::unique_ptr<content::WebContents> CreateWebContents() const {
     return content::WebContents::Create(
@@ -204,7 +234,17 @@ class WebViewUnitTest : public views::test::WidgetTest {
         browser_context_.get(), /*instance=*/nullptr);
   }
 
-  void SetAXMode(ui::AXMode mode) { web_view()->OnAXModeAdded(mode); }
+  void SetAXModeForView(WebView* view, ui::AXMode mode) {
+    view->OnAXModeAdded(mode);
+  }
+
+  bool HasAXModeObservation() const {
+    return web_view()->IsObservingAXModeForTesting();
+  }
+
+  bool IsObservingWidgetAXManager() const {
+    return web_view()->IsObservingWidgetAXManagerForTesting();
+  }
 
  private:
   std::unique_ptr<content::RenderViewHostTestEnabler> rvh_enabler_;
@@ -214,7 +254,12 @@ class WebViewUnitTest : public views::test::WidgetTest {
       scoped_web_contents_creator_;
 
   raw_ptr<Widget> top_level_widget_ = nullptr;
-  raw_ptr<WebView> web_view_ = nullptr;
+};
+
+class WebViewAXTreeEnabledTest : public WebViewUnitTest {
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      ::features::kAccessibilityTreeForViews};
 };
 
 // Tests that attaching and detaching a WebContents to a WebView makes the
@@ -312,85 +357,173 @@ TEST_F(WebViewUnitTest, TestWebViewAttachDetachWebContents) {
   parent2->Close();
 }
 
+// Tests that the WebView correctly toggles its focus behavior and accessibility
+// tree properties when the ScopedAxDisconnectLock is acquired and released.
+TEST_F(WebViewUnitTest, AccessibilityDisconnectsFocusAndAXTree) {
+  const std::unique_ptr<content::WebContents> web_contents =
+      CreateWebContents();
+  WebView* test_web_view = web_view();
+  test_web_view->SetWebContents(web_contents.get());
+
+  View* contents_view = top_level_widget()->GetContentsView();
+  // Add a focusable view before the WebView.
+  auto* view1 = contents_view->AddChildViewAt(std::make_unique<views::View>(),
+                                              /*index=*/0);
+  view1->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+  // Add a focusable view after the WebView.
+  auto* view2 = contents_view->AddChildView(std::make_unique<views::View>());
+  view2->SetFocusBehavior(View::FocusBehavior::ALWAYS);
+
+  // Wait for drawn state so IsFocusable() can return true.
+  views::test::RunScheduledLayout(test_web_view);
+
+  // By default, WebView is focusable
+  EXPECT_EQ(View::FocusBehavior::ALWAYS, test_web_view->GetFocusBehavior());
+  EXPECT_TRUE(test_web_view->IsFocusable());
+  EXPECT_FALSE(test_web_view->GetViewAccessibility().GetIsIgnored());
+
+  FocusManager* focus_manager = top_level_widget()->GetFocusManager();
+
+  // Test default tab traversal: view1 -> test_web_view
+  view1->RequestFocus();
+  EXPECT_EQ(view1, focus_manager->GetFocusedView());
+  focus_manager->AdvanceFocus(/*reverse=*/false);
+  EXPECT_EQ(test_web_view, focus_manager->GetFocusedView());
+
+  // Acquire the accessibility disconnect lock.
+  std::unique_ptr<WebView::ScopedAxDisconnectLock> lock =
+      test_web_view->DisconnectWebContentsAccessibility();
+  EXPECT_TRUE(lock);
+
+  // Focus behavior and AX node should be disabled/ignored.
+  EXPECT_EQ(View::FocusBehavior::NEVER, test_web_view->GetFocusBehavior());
+  EXPECT_FALSE(test_web_view->IsFocusable());
+  EXPECT_TRUE(test_web_view->GetViewAccessibility().GetIsIgnored());
+
+  // Test disconnected tab traversal: view1 -> view2 (skips WebView).
+  view1->RequestFocus();
+  EXPECT_EQ(view1, focus_manager->GetFocusedView());
+  focus_manager->AdvanceFocus(/*reverse=*/false);
+  // test_web_view should be completely skipped, jumping straight to view2.
+  EXPECT_EQ(view2, focus_manager->GetFocusedView());
+
+  // Destroy the lock to restore the state.
+  lock.reset();
+
+  // Normal state should be restored.
+  EXPECT_EQ(View::FocusBehavior::ALWAYS, test_web_view->GetFocusBehavior());
+  EXPECT_TRUE(test_web_view->IsFocusable());
+  EXPECT_FALSE(test_web_view->GetViewAccessibility().GetIsIgnored());
+
+  // Test restored tab traversal: view1 -> test_web_view.
+  view1->RequestFocus();
+  EXPECT_EQ(view1, focus_manager->GetFocusedView());
+  focus_manager->AdvanceFocus(/*reverse=*/false);
+  EXPECT_EQ(test_web_view, focus_manager->GetFocusedView());
+}
+
 // Verifies that there is no crash in WebView destructor
 // if WebView is already removed from Widget.
 TEST_F(WebViewUnitTest, DetachedWebViewDestructor) {
   // Init WebView with attached NativeView.
   const std::unique_ptr<content::WebContents> web_contents =
       CreateWebContents();
-  std::unique_ptr<WebView> webview(
-      new WebView(web_contents->GetBrowserContext()));
   View* contents_view = top_level_widget()->GetContentsView();
-  contents_view->AddChildView(webview.get());
-  webview->SetWebContents(web_contents.get());
+  auto* web_view = contents_view->AddChildView(
+      std::make_unique<WebView>(web_contents->GetBrowserContext()));
 
   // Remove WebView from views hierarchy. NativeView should be detached
-  // from Widget.
-  contents_view->RemoveChildView(webview.get());
-  // Destroy WebView. NativeView should be detached secondary.
-  // There should be no crash.
-  webview.reset();
+  // from Widget, and the WebView should be subsequently destroyed with no
+  // crash.
+  contents_view->RemoveChildViewT(web_view);
 }
 
 // Test that the specified crashed overlay view is shown when a WebContents
-// is in a crashed state.
-TEST_F(WebViewUnitTest, CrashedOverlayView) {
+// is in a crashed state, using TakeCrashedOverlayView.
+TEST_F(WebViewUnitTest, TakeCrashedOverlayView) {
   const std::unique_ptr<content::WebContents> web_contents =
       CreateTestWebContents();
-  content::WebContentsTester* tester =
-      content::WebContentsTester::For(web_contents.get());
 
-  std::unique_ptr<WebView> web_view(
-      new WebView(web_contents->GetBrowserContext()));
   View* contents_view = top_level_widget()->GetContentsView();
-  contents_view->AddChildView(web_view.get());
+  auto* web_view = contents_view->AddChildView(
+      std::make_unique<WebView>(web_contents->GetBrowserContext()));
   web_view->SetWebContents(web_contents.get());
 
-  View* crashed_overlay_view = new View();
-  web_view->SetCrashedOverlayView(crashed_overlay_view);
+  View* crashed_overlay_view =
+      web_view->TakeCrashedOverlayView(std::make_unique<View>());
   EXPECT_FALSE(crashed_overlay_view->IsDrawn());
 
-  // Normally when a renderer crashes, the WebView will learn about it
-  // automatically via WebContentsObserver. Since this is a test
-  // WebContents, simulate that by calling SetIsCrashed and then
-  // explicitly calling RenderFrameDeleted on the WebView to trigger it
-  // to swap in the crashed overlay view.
-  tester->SetIsCrashed(base::TERMINATION_STATUS_PROCESS_CRASHED, -1);
-  EXPECT_TRUE(web_contents->IsCrashed());
-  static_cast<content::WebContentsObserver*>(web_view.get())
-      ->RenderFrameDeleted(web_contents->GetPrimaryMainFrame());
+  SimulateRendererCrash(web_contents.get(), web_view);
   EXPECT_TRUE(crashed_overlay_view->IsDrawn());
+
+  web_view->DetachCrashedOverlayView();
 }
 
-// Test that a crashed overlay view isn't deleted if it's owned by client.
-TEST_F(WebViewUnitTest, CrashedOverlayViewOwnedbyClient) {
+// Tests crashed overlay ownership return upon setting the crash overlay view to
+// null.
+TEST_F(WebViewUnitTest, TakeCrashedOverlayViewSetNull) {
   const std::unique_ptr<content::WebContents> web_contents =
       CreateTestWebContents();
-  content::WebContentsTester* tester =
-      content::WebContentsTester::For(web_contents.get());
-  std::unique_ptr<WebView> web_view(
-      new WebView(web_contents->GetBrowserContext()));
+
   View* contents_view = top_level_widget()->GetContentsView();
-  contents_view->AddChildView(web_view.get());
+  auto* web_view = contents_view->AddChildView(
+      std::make_unique<WebView>(web_contents->GetBrowserContext()));
   web_view->SetWebContents(web_contents.get());
 
-  View* crashed_overlay_view = new View();
-  crashed_overlay_view->set_owned_by_client();
-  web_view->SetCrashedOverlayView(crashed_overlay_view);
-  EXPECT_FALSE(crashed_overlay_view->IsDrawn());
+  std::unique_ptr<View> owner_after_new_webcontents;
+  View* crashed_overlay_view = web_view->TakeCrashedOverlayView(
+      std::make_unique<View>(),
+      base::BindOnce(
+          [](std::unique_ptr<View>* receiver, std::unique_ptr<View> view) {
+            *receiver = std::move(view);
+          },
+          &owner_after_new_webcontents));
+  ASSERT_FALSE(owner_after_new_webcontents.get());
+  web_view->TakeCrashedOverlayView(nullptr);
+  EXPECT_EQ(crashed_overlay_view, owner_after_new_webcontents.get());
+}
 
-  // Simulate a renderer crash (see above).
-  tester->SetIsCrashed(base::TERMINATION_STATUS_PROCESS_CRASHED, -1);
-  EXPECT_TRUE(web_contents->IsCrashed());
-  static_cast<content::WebContentsObserver*>(web_view.get())
-      ->RenderFrameDeleted(web_contents->GetPrimaryMainFrame());
-  EXPECT_TRUE(crashed_overlay_view->IsDrawn());
+// Tests crashed overlay ownership return upon clearing the WebContents
+TEST_F(WebViewUnitTest, TakeCrashedOverlayViewReturnOwnership) {
+  const std::unique_ptr<content::WebContents> web_contents =
+      CreateTestWebContents();
 
-  web_view->SetCrashedOverlayView(nullptr);
-  web_view.reset();
+  View* contents_view = top_level_widget()->GetContentsView();
+  auto* web_view = contents_view->AddChildView(
+      std::make_unique<WebView>(web_contents->GetBrowserContext()));
+  web_view->SetWebContents(web_contents.get());
 
-  // This shouldn't crash, we still own this.
-  delete crashed_overlay_view;
+  std::unique_ptr<View> owner_after_new_webcontents;
+  View* crashed_overlay_view = web_view->TakeCrashedOverlayView(
+      std::make_unique<View>(),
+      base::BindOnce(
+          [](std::unique_ptr<View>* receiver, std::unique_ptr<View> view) {
+            *receiver = std::move(view);
+          },
+          &owner_after_new_webcontents));
+  ASSERT_FALSE(owner_after_new_webcontents.get());
+  const std::unique_ptr<content::WebContents> web_contents_new =
+      CreateTestWebContents();
+  web_view->SetWebContents(web_contents_new.get());
+  EXPECT_EQ(crashed_overlay_view, owner_after_new_webcontents.get());
+}
+
+// Tests that DetachCrashedOverlayView() correctly clears the tracker.
+TEST_F(WebViewUnitTest, DetachCrashedOverlayViewClearsViewTracker) {
+  const std::unique_ptr<content::WebContents> web_contents =
+      CreateTestWebContents();
+
+  View* contents_view = top_level_widget()->GetContentsView();
+  auto* web_view = contents_view->AddChildView(
+      std::make_unique<WebView>(web_contents->GetBrowserContext()));
+  web_view->SetWebContents(web_contents.get());
+
+  web_view->TakeCrashedOverlayView(std::make_unique<View>());
+  std::unique_ptr<View> detached_view = web_view->DetachCrashedOverlayView();
+
+  // If the tracker is not cleared, this will attempt to detach it again and
+  // DCHECK when attempting to remove the view again from the view tree.
+  web_view->TakeCrashedOverlayView(std::make_unique<View>());
 }
 
 // Tests to make sure we can default construct the WebView class and set the
@@ -433,9 +566,13 @@ TEST_F(WebViewUnitTest, ReparentingUpdatesParentAccessible) {
   WidgetAutoclosePtr widget_2(CreateTopLevelPlatformWidget());
   View* contents_view_2 = widget_2->GetContentsView();
 
-  // Reparent the web view.
-  added_web_view = contents_view_2->AddChildView(
-      contents_view_1->RemoveChildViewT(added_web_view));
+  // Reparent the web view. During reparenting, the holder should not return
+  // a reference to the old parent's accessible object.
+  std::unique_ptr<WebView> removed_view =
+      contents_view_1->RemoveChildViewT(added_web_view);
+  EXPECT_EQ(gfx::NativeViewAccessible(),
+            added_web_view->holder()->GetParentAccessible());
+  added_web_view = contents_view_2->AddChildView(std::move(removed_view));
 
   // After reparenting the holder's NativeViewAccessible should match that of
   // the web view's new parent view.
@@ -445,19 +582,24 @@ TEST_F(WebViewUnitTest, ReparentingUpdatesParentAccessible) {
 
 // This tests that we don't crash if WebView doesn't have a Widget or a
 // Webcontents. https://crbug.com/1191999
-TEST_F(WebViewUnitTest, ChangeAXMode) {
+// TODO(crbug.com/40923654): Re-enable this test
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_ChangeAXMode DISABLED_ChangeAXMode
+#else
+#define MAYBE_ChangeAXMode ChangeAXMode
+#endif
+TEST_F(WebViewUnitTest, MAYBE_ChangeAXMode) {
   // Case 1: WebView has a Widget and no WebContents.
-  SetAXMode(ui::AXMode::kFirstModeFlag);
+  SetAXModeForView(web_view(), ui::AXMode::kFirstModeFlag);
 
   // Case 2: WebView has no Widget and a WebContents.
   View* contents_view = top_level_widget()->GetContentsView();
-  contents_view->RemoveChildView(web_view());
+  // Remove the view but make sure to delete it at the end of the test.
+  auto scoped_view = contents_view->RemoveChildViewT(web_view());
   const std::unique_ptr<content::WebContents> web_contents =
       CreateWebContents();
-  web_view()->SetWebContents(web_contents.get());
-
-  SetAXMode(ui::AXMode::kFirstModeFlag);
-
+  scoped_view->SetWebContents(web_contents.get());
+  SetAXModeForView(scoped_view.get(), ui::AXMode::kFirstModeFlag);
   // No crash.
 }
 
@@ -469,6 +611,90 @@ TEST_F(WebViewUnitTest, WebViewClearsWebContentsOnDestruction) {
   EXPECT_EQ(web_contents.get(), web_view()->web_contents());
   web_contents.reset();
   EXPECT_EQ(nullptr, web_view()->web_contents());
+}
+
+TEST_F(WebViewUnitTest, AccessibleProperties) {
+  const std::unique_ptr<content::WebContents> web_contents =
+      CreateWebContents();
+  auto web_view = std::make_unique<WebView>(web_contents->GetBrowserContext());
+  web_view->SetWebContents(web_contents.get());
+
+  ui::AXNodeData data;
+  web_view->GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(data.role, ax::mojom::Role::kWebView);
+}
+
+TEST_F(WebViewAXTreeEnabledTest, ObservesManagerUntilEnableCompletes) {
+  if (!ViewAccessibility::IsViewsAccessibilityTreeEnabled()) {
+    // Not all platforms support ViewsAX, e.g. ChromeOS.
+    return;
+  }
+
+  auto web_contents = CreateWebContents();
+  web_view()->SetWebContents(web_contents.get());
+
+  ASSERT_TRUE(HasAXModeObservation());
+
+  Widget* widget = top_level_widget();
+  ASSERT_TRUE(widget->ax_manager());
+  EXPECT_FALSE(widget->ax_manager()->is_enabled());
+  EXPECT_TRUE(IsObservingWidgetAXManager());
+
+  ui::AXPlatform::GetInstance().NotifyModeAdded(ui::AXMode::kNativeAPIs);
+
+  EXPECT_TRUE(widget->ax_manager()->is_enabled());
+  EXPECT_FALSE(IsObservingWidgetAXManager());
+}
+
+TEST_F(WebViewAXTreeEnabledTest, AlreadyEnabledManagerSkipsObservation) {
+  if (!ViewAccessibility::IsViewsAccessibilityTreeEnabled()) {
+    // Not all platforms support ViewsAX, e.g. ChromeOS.
+    return;
+  }
+
+  Widget* widget = top_level_widget();
+  ASSERT_TRUE(widget->ax_manager());
+
+  ui::AXPlatform::GetInstance().NotifyModeAdded(ui::AXMode::kNativeAPIs);
+
+  auto web_contents = CreateWebContents();
+  web_view()->SetWebContents(web_contents.get());
+
+  EXPECT_TRUE(widget->ax_manager()->is_enabled());
+  EXPECT_TRUE(HasAXModeObservation());
+  EXPECT_FALSE(IsObservingWidgetAXManager());
+}
+
+TEST_F(WebViewAXTreeEnabledTest, ReparentingUpdatesParentAccessible) {
+  const std::unique_ptr<content::WebContents> web_contents =
+      CreateWebContents();
+  auto web_view = std::make_unique<WebView>(web_contents->GetBrowserContext());
+  web_view->SetWebContents(web_contents.get());
+
+  WidgetAutoclosePtr widget_1(CreateTopLevelPlatformWidget());
+  View* contents_view_1 = widget_1->GetContentsView();
+  WebView* added_web_view = contents_view_1->AddChildView(std::move(web_view));
+
+  // After being added to the widget hierarchy the holder's NativeViewAccessible
+  // should match that of the web view.
+  EXPECT_EQ(static_cast<View*>(added_web_view)->GetNativeViewAccessible(),
+            added_web_view->holder()->GetParentAccessible());
+
+  WidgetAutoclosePtr widget_2(CreateTopLevelPlatformWidget());
+  View* contents_view_2 = widget_2->GetContentsView();
+
+  // Reparent the web view. During reparenting, the holder should not return
+  // a reference to the old parent's accessible object.
+  std::unique_ptr<WebView> removed_view =
+      contents_view_1->RemoveChildViewT(added_web_view);
+  EXPECT_EQ(gfx::NativeViewAccessible(),
+            added_web_view->holder()->GetParentAccessible());
+  added_web_view = contents_view_2->AddChildView(std::move(removed_view));
+
+  // After reparenting the holder's NativeViewAccessible should match that of
+  // the web view's.
+  EXPECT_EQ(static_cast<View*>(added_web_view)->GetNativeViewAccessible(),
+            added_web_view->holder()->GetParentAccessible());
 }
 
 }  // namespace views

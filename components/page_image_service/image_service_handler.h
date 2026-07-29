@@ -7,7 +7,6 @@
 
 #include "base/memory/weak_ptr.h"
 #include "components/page_image_service/mojom/page_image_service.mojom.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 
 namespace page_image_service {
@@ -47,4 +46,4 @@ class ImageServiceHandler : public mojom::PageImageServiceHandler {
 
 }  // namespace page_image_service
 
-#endif  // CHROME_BROWSER_COMPONENTS_PAGE_IMAGE_SERVICE_IMAGE_SERVICE_HANDLER_H_
+#endif  // COMPONENTS_PAGE_IMAGE_SERVICE_IMAGE_SERVICE_HANDLER_H_

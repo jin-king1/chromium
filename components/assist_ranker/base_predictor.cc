@@ -4,8 +4,9 @@
 
 #include "components/assist_ranker/base_predictor.h"
 
-#include "base/containers/contains.h"
+#include "base/check.h"
 #include "base/feature_list.h"
+#include "base/logging.h"
 #include "components/assist_ranker/proto/ranker_example.pb.h"
 #include "components/assist_ranker/proto/ranker_model.pb.h"
 #include "components/assist_ranker/ranker_example_util.h"
@@ -25,7 +26,7 @@ BasePredictor::BasePredictor(const PredictorConfig& config) : config_(config) {
   }
 }
 
-BasePredictor::~BasePredictor() {}
+BasePredictor::~BasePredictor() = default;
 
 void BasePredictor::LoadModel(std::unique_ptr<RankerModelLoader> model_loader) {
   if (!is_query_enabled_)
@@ -59,7 +60,7 @@ void BasePredictor::LogFeatureToUkm(const std::string& feature_name,
                                     ukm::UkmEntryBuilder* ukm_builder) {
   DCHECK(ukm_builder);
 
-  if (!base::Contains(*config_.feature_allowlist, feature_name)) {
+  if (!config_.feature_allowlist->contains(feature_name)) {
     DVLOG(1) << "Feature not allowed: " << feature_name;
     return;
   }

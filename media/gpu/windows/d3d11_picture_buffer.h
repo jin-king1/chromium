@@ -5,17 +5,15 @@
 #ifndef MEDIA_GPU_WINDOWS_D3D11_PICTURE_BUFFER_H_
 #define MEDIA_GPU_WINDOWS_D3D11_PICTURE_BUFFER_H_
 
-#include <d3d11.h>
-#include <wrl/client.h>
-
 #include <memory>
 #include <vector>
 
+#include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/task/thread_pool.h"
 #include "base/time/time.h"
-#include "gpu/command_buffer/service/mailbox_manager.h"
 #include "gpu/command_buffer/service/texture_manager.h"
 #include "gpu/ipc/service/command_buffer_stub.h"
 #include "media/base/media_log.h"
@@ -24,9 +22,8 @@
 #include "media/gpu/media_gpu_export.h"
 #include "media/gpu/windows/d3d11_status.h"
 #include "media/gpu/windows/d3d11_texture_wrapper.h"
-#include "media/video/picture.h"
-#include "third_party/angle/include/EGL/egl.h"
-#include "third_party/angle/include/EGL/eglext.h"
+#include "media/gpu/windows/d3d12_fence.h"
+#include "media/gpu/windows/d3d_com_defs.h"
 
 namespace media {
 
@@ -62,7 +59,6 @@ class MEDIA_GPU_EXPORT D3D11PictureBuffer
       ComD3D11Texture2D texture,
       size_t array_slice,
       std::unique_ptr<Texture2DWrapper> texture_wrapper,
-      gfx::Size size,
       size_t picture_index);
 
   D3D11Status Init(scoped_refptr<base::SingleThreadTaskRunner> gpu_task_runner,
@@ -76,17 +72,19 @@ class MEDIA_GPU_EXPORT D3D11PictureBuffer
   D3D11PictureBuffer(const D3D11PictureBuffer&) = delete;
   D3D11PictureBuffer& operator=(const D3D11PictureBuffer&) = delete;
 
-  // Set the contents of a mailbox holder array, return true if successful.
-  // |input_color_space| is the color space of our input texture, and
-  // |output_color_space| will be set, on success, to the color space that the
-  // processed texture has.
-  D3D11Status ProcessTexture(const gfx::ColorSpace& input_color_space,
-                             MailboxHolderArray* mailbox_dest,
-                             gfx::ColorSpace* output_color_space);
+  // Initialize |shared_image_dest|; return true if successful.
+  // |input_color_space| is the color space of our input texture.
+  D3D11Status ProcessTexture(
+      scoped_refptr<gpu::ClientSharedImage>& shared_image_dest);
   ComD3D11Texture2D Texture() const;
   D3D11Status::Or<ID3D11VideoDecoderOutputView*> AcquireOutputView() const;
 
-  const gfx::Size& size() const { return size_; }
+  // Get the D3D12Resource by device->OpenSharedHandle or return the opened one.
+  D3D11Status::Or<ID3D12Resource*> ToD3D12Resource(ID3D12Device* device);
+
+  void SetFenceAndValue(scoped_refptr<D3D12Fence> fence, uint64_t value);
+  D3D11Status WaitForDecodeCompleteGPU(ID3D11DeviceContext* context);
+
   size_t picture_index() const { return picture_index_; }
 
   // Is this PictureBuffer backing a VideoFrame right now?
@@ -122,12 +120,17 @@ class MEDIA_GPU_EXPORT D3D11PictureBuffer
 
   std::unique_ptr<MediaLog> media_log_;
   std::unique_ptr<Texture2DWrapper> texture_wrapper_;
-  gfx::Size size_;
+
   bool in_picture_use_ = false;
   int in_client_use_ = 0;
   size_t picture_index_;
 
   ComD3D11VideoDecoderOutputView output_view_;
+
+  // The cached pointer of D3D12 version of texture, if ToD3D12Resource() has
+  // been called.
+  ComD3D12Resource d3d12_resource_;
+  std::pair<scoped_refptr<D3D12Fence>, uint64_t> fence_and_value_;
 };
 
 }  // namespace media

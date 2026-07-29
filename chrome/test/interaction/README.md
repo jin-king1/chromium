@@ -1,50 +1,60 @@
 # Interactive Testing API: "Kombucha"
 
-**[go/kombucha-api](goto.google.com/kombucha-api)**
+**[go/kombucha-api](https://goto.google.com/kombucha-api)**
 
 **Kombucha** is a group of powerful test mix-ins that let you easily and
 concisely write interactive tests.
 
-The current API version is 2.0. All future 2.x versions are guaranteed to
-either be backwards-compatible with existing tests, or the authors will update
-the API calls for you.
-
-This page provides technical documentation. For a cookbook/FAQ/troubleshooting
-guide, see our [Kombucha Playbook](goto.google.com/kombucha-playbook).
-
- - [Changelog](#changelog)
- - [Known Issues](#known-issues-and-incompatibilities)
+**This page provides a technical summary only. For a detailed guide, including cookbook, FAQ, and troubleshooting, see the
+[Kombucha Playbook](https://goto.google.com/kombucha-playbook).**
 
 [TOC]
 
 ## Getting Started
 
-There are two ways to write a Kombucha-based interaction test:
-1. Alias or inherit from one of our pre-configured test fixtures (preferred):
-    - [InteractiveTest](/ui/base/interaction/interactive_test.h)
-    - [InteractiveViewsTest](/ui/views/interaction/interactive_views_test.h)
+There are three ways to write a Kombucha-based interaction test, in descending
+order of preference:
+1. Alias or inherit from our pre-configured test fixture (preferred):
+    - [InteractiveBrowserWindowTest](/chrome/test/interaction/interactive_browser_window_test.h)
     - [InteractiveBrowserTest](/chrome/test/interaction/interactive_browser_test.h)
-2. Have your test fixture inherit the appropriate Kombucha API class:
+2. Add a test mixin to an existing test class:
+    - [InteractiveTestMixin](/ui/base/interaction/interactive_test.h)
+    - [InteractiveViewsTestMixin](/ui/views/interaction/interactive_views_test.h)
+    - [InteractiveBrowserWindowTestMixin](/chrome/test/interaction/interactive_browser_window_test.h)
+    - [InteractiveBrowserTestMixin](/chrome/test/interaction/interactive_browser_test.h)
+3. Have your test fixture inherit the appropriate Kombucha API class and set it
+   up manually:
     - [InteractiveTestApi](/ui/base/interaction/interactive_test.h)
     - [InteractiveViewsTestApi](/ui/views/interaction/interactive_views_test.h)
+    - [InteractiveBrowserWindowTestApi](/chrome/test/interaction/interactive_browser_window_test.h)
     - [InteractiveBrowserTestApi](/chrome/test/interaction/interactive_browser_test.h)
 
-If you go the latter route, please see
+If you go one of the latter routes, please see
 [Custom Test Fixtures](#custom-test-fixtures) below.
+
+### InteractiveBrowserTest vs. InteractiveBrowserWindowTest
+
+If you do not need (or want) direct Views support, you may use
+`InteractiveBrowserWindowTest`. If you need Views, use `InteractiveBrowserTest`.
+`InteractiveBrowserWindowTest` is designed to support more cross-platform
+testing as it only requires `ElementTracker`, `WebContents`, and
+`BrowserWindowInterface`.
 
 ## Using the Kombucha API
 
-***Note:** Throughout this section, unless otherwise specified, all methods are
-present in `InteractiveTestApi`. If a method is introduced in
-`InteractiveViewsTestApi`, it will have **[Views]** next to it; if it's
-introduced in `InteractiveBrowserTestApi`, it will have **[Browser]** next to it
-instead.*
+**Note** While Kombucha tests can run in `browser_tests`, tests which do any of
+the following must be in `interactive_ui_tests` instead:
+ - Any attempt to activate a window.
+ - Any attempt to directly control the mouse.
+
+Using these methods in an invalid test binary will result in a `CHECK()`
+failure.
 
 ### Test Sequences
 
-The primary entry point for any test is `RunTestSequence()` [Views] or
-`RunTestSequenceInContext()`. (For more information on `ElementContext`, see the
-[Interaction Library Documentation](/ui/base/interaction/README.md).)
+The primary entry point for any test is `RunTestSequence()` or
+`RunTestSequenceInContext()`. For more information on `ElementContext`, see the
+[Interaction Library Documentation](/ui/base/interaction/README.md).
 
 `RunTestSequence()` is designed to accept any number of steps. You will use the
 provided palette of test verbs and checks that the API provides, or [create your
@@ -81,110 +91,45 @@ verbs, like `Check()` and `Do()` don't care about specific elements.
 Verbs fall into a number of different categories:
 - **Do** performs an action you specify.
 - **Log** prints its arguments to the output at log level `INFO`.
-  See [Logging](#logging) below.
+  See [Logging](#logging) below. **DumpElements** and **DumpElementsInContext**
+  are also covered in that section.
 - **Check** verbs ensure that some condition is true; if it is not, the test
-  fails. Some *Check* verbs use `Matcher`s, some use callbacks, etc. Examples
-  include:
-    - `Check()`
-    - `CheckResult()`
-    - `CheckElement()`
-    - `CheckView()` [Views]
-    - `CheckViewProperty()` [Views]
-    - `Screenshot` [Browser] - compares the target against Skia Gold in pixel
-      tests. See [Handling Incompatibilities](#handling-incompatibilities) for
-      how to handle this in non-pixel tests.
+  fails. Some *Check* verbs use `Matcher`s, some use callbacks, etc.
 - **WaitFor** verbs ensure that the given UI event happens or condition becomes
-  true before proceeding. Examples:
-    - `WaitForShow()`
-    - `WaitForHide()`
-    - `WaitForActivated()`
-    - `WaitForEvent()`
+  true before proceeding.
 - **After** verbs allow you to take some action when a given event takes place
-  or condition becomes true. The action can be a full
-  `InteractionSequence::StepStartCallback` or it can omit any number of leading
-  arguments; try to be as concise as possible. Examples:
-    - `AfterShow()`
-    - `AfterHide()`
-    - `AfterActivated()`
-    - `AfterEvent()`
+  or condition becomes true.
 - **With** verbs get the specified element and perform the specified action.
   Unlike the above verbs, they will not wait; the element must exist when the step
   triggers or the test will fail.
-    - `WithElement()`
-    - `WithView()` [Views]
 - **Ensure** verbs check the presence or absence of an element after allowing
-  all pending events to settle. They are not compatible with `InAnyContext()`
-  for technical reasons, and therefore, take an `in_any_context` parameter.
-  There are also versions that look for a DOM element in an
-  [instrumented WebContents](#webcontents-instrumentation) [Browser].
-    - `EnsurePresent()`
-    - `EnsureNotPresent()`
-- **Action** verbs simulate input to specific UI elements. You can often specify
-  the type of input you want to simulate (keyboard, mouse, etc.) but you don't
-  have to. Some of these (`ActivateSurface()`, `SendAccelerator()`) may flake in
-  environments where the test fixture is not running as the only process, so
-  prefer to use those in interactive_ui_tests. Examples:
-    - `PressButton()`
-    - `SelectMenuItem()`
-    - `SelectTab()`
-    - `SelectDropdownItem()`
-    - `EnterText()`
-    - `SendAccelerator()`
-    - `Confirm()`
-    - `DoDefaultAction()`
-    - `ActivateSurface()`
-      - ActivateSurface is not always reliable on Linux with the Wayland window
-        manager; see [Handling Incompatibilities](#handling-incompatibilities)
-        for how to correctly deal with this.
-    - `ScrollToVisible()` [Views, Browser]
-      - Recommended before doing anything that needs the screen coordinates of
-        a UI or DOM element that is in a scrollable container.
-- **Mouse** verbs simulate mouse input to the entire application, and are
-  therefore only reliable in test fixtures that run as exclusive processes (e.g.
-  interactive_browser_tests). Examples include:
-    - `MoveMouseTo()` [Views]
-    - `DragMouseTo()` [Views]
-    - `ClickMouse()` [Views]
-    - `ReleaseMouseButton()` [Views]
+  all pending events to settle. There are also versions that look for a DOM
+  element in an [instrumented WebContents](#webcontents-instrumentation)
+  [Browser].
+- **Action** (Press/Enter/Select/Focus/etc.) verbs simulate input to specific UI
+  elements. You can often specify the type of input you want to simulate
+  (keyboard, mouse, etc.) but you don't have to.
+- **Mouse** verbs simulate mouse input to the entire application.
 - **Name** verbs assign a string name to some UI element which may not be known
-  ahead of time, so that it can be referenced later in the test. Examples
-  include:
-    - `NameView()` [Views]
-    - `NameChildView()` [Views]
-    - `NameChildViewByType()` [Views]
-    - `NameDescendantView()` [Views]
-    - `NameDescendantViewByType()` [Views]
-    - `NameViewRelative()` [Views]
-- **WebContents** verbs either dynamically
+  or present ahead of time, so that it can be referenced later in the test.
+- **Tab** and **WebContents** verbs either dynamically
   [instrument WebContents](#webcontents-instrumentation), navigate them, or wait
   for them to navigate or change state.
-    - `InstrumentTab()` [Browser]
-    - `InstrumentNextTab()` [Browser]
-    - `AddInstrumentedTab()` [Browser]
-    - `InstrumentNonTabWebView()` [Browser]
-    - `NavigateWebContents()` [Browser]
-    - `WaitForWebContentsReady()` [Browser]
-    - `WaitForWebContentsNavigation()` [Browser]
-    - `WaitForStateChange()` [Browser]
-- **Javascript** verbs execute javascript in an
+- **Js** verbs execute javascript in an
   [instrumented WebContents](#webcontents-instrumentation), or verify a result
   from calling a javascript function. The `*At()` methods take a
   [DeepQuery](#specifying-dom-elements) and operate on a specific DOM element
   (possibly in a Shadow DOM), while the non-at methods operate at global scope.
   If you are not sure if the target element exists or the condition is true yet,
-  use `WaitForStateChange()` instead. Examples:
-   - `ExecuteJs()` [Browser]
-   - `ExecuteJsAt()` [Browser]
-   - `CheckJsResult()` [Browser]
-   - `CheckJsResultAt()` [Browser]
-- **Utility** verbs modify how the test sequence is executed.
-   - `FlushEvents()` - ensures that the next step happens on a fresh
-     message loop rather than being able to chain successive steps.
-   - `SetOnIncompatibleAction()` changes what the sequence will do when faced
-     with an action that cannot be executed on the current
-     build, environment, or platform. See
-     [Handling Incompatibilities](#handling-incompatibilities) for more
-     information and best practices.
+  use `WaitForStateChange()` instead.
+- **State**, **Observe** and **Poll** verbs let you observe state that isn't
+   tied to a UI element, and to wait for it to achieve specific values. See
+  [Waiting for Asynchronous Events](#waiting-for-asynchronous-events) for more
+  information.
+- **Log** spits out debug logging information.
+- **Dump** verbs spit out part or all of the current UI element and/or DOM tree.
+- **Temporary** verbs store or retrieve computed values that can be set in one
+  step and retrieved in later steps.
 
 Example with mouse input:
 ```cpp
@@ -275,31 +220,33 @@ RunTestSequence(
       " square of current value: ", [&x](){ return x*x; }));
 ```
 
+#### Dumping the UI Element Tree
+
+Another way to inspect test state is with `DumpElements` and
+`DumpElementsInContext` which emit a tree of all UI elements or all elements
+within the current context (respectively) for debugging purposes.
+
+You can also dump part of all of a DOM with `DumpWebContents[At]`.
+
+Note: this dump automatically happens when a test fails.
+
 ### Modifiers
 
 A modifier wraps around a step or steps and change their behavior.
 
 - **InAnyContext** allows the modified verb to find an element outside the test's default
-  `ElementContext`. Unlike the other modifiers, there are a number of limitations on its use:
-  - It should not be used with `FlushEvents`, most `Ensure`, or any `Activate`,
-    `Event`, or `Mouse` verbs.
-    - This is a shortcoming in the underlying framework that will be fixed in the future.
-  - It should not be used with named elements, which can already be found in any context.
-  - For unsupported verbs, it is best to either use `InSameContext()` or `InContext()` instead.
-  - Example:
+  `ElementContext`. Note that the order of contexts searched may be non-deterministic,
+  but is generally stable. To ensure that you are tracking the same context across steps,
+  consider following up with `InSameContext()` (see below).
 
 ```cpp
 RunTestSequence(
     // This button might be in a different window!
-    InAnyContext(PressButton(kMyButton)),
-    InAnyContext(CheckView(kMyButton, ensure_pressed)));
+    InAnyContext(PressButton(kMyButton)));
 ```
 
 - **InSameContext** allows the modified verb (or verbs) to find an element in the same context
-  as the previous step.
-  - Has no effect on `EnsurePresent()` or `EnsureNotPresent()` when the `in_any_context`
-    parameter is set to true.
-  - Example:
+  as the previous step. Example:
 ```cpp
 RunTestSequence(
     InAnyContext(WaitForShow(kMyButton)),
@@ -307,19 +254,25 @@ RunTestSequence(
 ```
 
 - **InContext** allows the modified verb (or verbs) to execute in the specified context instead of
-  the default context for the sequence.
-  - Has no effect on `EnsurePresent()` or `EnsureNotPresent()` when the `in_any_context` parameter
-    is set to true.
-  - Example:
+  the default context for the sequence. Example:
+
+- **InSameContextAs** allows the modified verb (or verbs) to find an element in the same context
+  as an element you specify, either by name, or by identifier. The element will be located in any
+  context and should be unique. Example:
+```cpp
+RunTestSequence(
+    InAnyContext(NameElementRelative(kBaseElementId, kNamedElement, &FindMyDialog)),
+    InSameContextAs(kNamedElement, PressButton(kMyButton)));
+```
 
 ```cpp
 Browser* const incognito = CreateIncognitoBrowser();
 RunTestSequence(
   /* Do stuff in primary browser context here */
   /* ... */
-  InContext(incognito->window()->GetElementContext(), Steps(
+  InContext(incognito->window()->GetElementContext(),
     PressButton(kAppMenuButton),
-    WaitForShow(kDownloadsMenuItemElementId))));
+    WaitForShow(kDownloadsMenuItemElementId)));
 ```
 
 ### Control Flow
@@ -333,11 +286,12 @@ Kombucha now provides two options for control flow:
 In some cases, you may want to execute part of a test only if, for example, a
 particular flag is set. In order to do this, we provide the various `If()`
 control-flow statements:
- - `If(condition, then_steps[, else_steps])` - executes `then_steps`, which can
-   be a single step or a `MultiStep`, if `condition` returns true. If
-   `else_steps` is present, it will be executed if `condition` returns false.
- - `IfMatches(function, matcher, then_steps[, else_steps])` - same as above
-   but `then_steps` executes if the result of `function` matches `matcher`.
+ - `If(condition, Then(then_steps)[, Else(else_steps)])` - executes
+   `Then()`, which can be a single step or a `MultiStep`, if `condition` returns
+   true. If `Else()` is present, it will be executed if `condition` returns
+   false.
+ - `IfMatches(function, matcher, Then(then_steps)[, Else(else_steps)])` - same
+   as above but `Then()` executes if the result of `function` matches `matcher`.
  - `IfElement()`, `IfElementMatches()` - same as above, but the `condition` or
    `function` receives a const pointer to the specified element as an argument.
    If the element is not visible, the condition receives `nullptr` (it does not
@@ -356,8 +310,8 @@ RunTestSequence(
   // If MyFeature is enabled, it may interfere with the rest of this test, so
   // toggle its UI off:
   If(base::Bind(&base::FeatureList::IsEnabled, kMyFeature)),
-     Steps(PressButton(kFeatureToggleButtonElementId),
-           WaitForHide(kMyFeatureUiElementId)),
+     Then(PressButton(kFeatureToggleButtonElementId),
+          WaitForHide(kMyFeatureUiElementId)),
   /* Proceed with test... */
 )
 ```
@@ -372,10 +326,10 @@ RunTestSequence(
          // If the side panel is visible...
          [](const SidePanel* side_panel) { return side_panel != nullptr; },
          // Then press the side panel button to close the side panel.
-         Steps(PressButton(kSidePanelButtonElementId),
+         Then(PressButton(kToolbarSidePanelButtonElementId),
                WaitForHide(kSidePanelElementId)),
          // Else note that it was not open.
-         Log("Side panel was already closed.")),
+         Else(Log("Side panel was already closed."))),
   /* ... */
 )
 ```
@@ -390,7 +344,7 @@ RunTestSequence(
       [this]() { return browser()->tab_strip_model()->count(); },
       testing::Lt(2),
       // Then open a new tab:
-      PressButton(kNewTabButtonElementId)),
+      Then(PressButton(kNewTabButtonElementId))),
   /* ... */
 )
 ```
@@ -404,11 +358,12 @@ non-deterministic timing, you need to be able to execute multiple steps in
 parallel.
 
 For this, we provide `InParallel()` and `AnyOf()`:
- - `InParallel(step[s], step[s], ...)` - Executes each of `step[s]` in parallel
-   with each other. All must complete before the main test sequence can proceed.
- - `AnyOf(step[s], step[s], ...)` - Executes each of `step[s]` in parallel with
-   each other. Only one must complete, at which point the main test sequence
-   proceeds and the other sequences are scuttled.
+ - `InParallel(RunSubsequence(...), RunSubsequence(...), ...)` - Executes each
+   subsequence in parallel with each other. All must complete before the main
+   test sequence can proceed.
+ - `AnyOf(RunSubsequence(...), RunSubsequence(...), ...)` - Executes each
+   subsequence in parallel with each other. Only one must complete, at which
+   point the main test sequence proceeds and the other sequences are aborted.
 
 Example:
 ```cpp
@@ -417,8 +372,8 @@ RunTestSequence(
   // This button press will cause two asynchronous processes to spawn.
   PressButton(kStartBackgroundProcessesButtonElementId),
   InParallel(
-    WaitForEvent(kMyFeatureUiElementID, kUserDataUpdatedEvent),
-    WaitForEvent(kMyFeatureUiElementId, kUiUpdated)),
+    RunSubsequence(WaitForEvent(kMyFeatureUiElementID, kUserDataUpdatedEvent)),
+    RunSubsequence(WaitForEvent(kMyFeatureUiElementId, kUiUpdated))),
   // It's now safe to proceed.
   /* ... */
 )
@@ -440,8 +395,8 @@ RunTestSequence(
   AnyOf(
     // WARNING: One or both of these buttons will be pressed, but which is not
     // deterministic!
-    Steps(WaitForShow(kMyElementId1), PressButton(kMyButtonId1)),
-    Steps(WaitForShow(kMyElementId2), PressButton(kMyButtonId2)))
+    RunSubsequence(WaitForShow(kMyElementId1), PressButton(kMyButtonId1)),
+    RunSubsequence(WaitForShow(kMyElementId2), PressButton(kMyButtonId2)))
 )
 ```
 
@@ -458,9 +413,9 @@ RunTestSequence(
   InParallel(
     // This is okay, since the first step of a subsequence can trigger during
     // the previous step.
-    WaitForActivate(kButtonElementId),
-    Steps(WaitForEvent(kButtonElementId, kBackgroundProcessEvent),
-          PressButton(kOtherButtonElementId))),
+    RunSubsequence(WaitForActivate(kButtonElementId)),
+    RunSubsequence(WaitForEvent(kButtonElementId, kBackgroundProcessEvent),
+                   PressButton(kOtherButtonElementId))),
   // WARNING: This is unsafe as the PressButton() above occurs in a subsequence,
   // but this action is in the main sequence.
   WaitForActivate(kOtherButtonElementId)
@@ -509,7 +464,7 @@ will be printed out as part of the warning that is produced if the step fails.
 ### WebContents Instrumentation
 
 A feature of `InteractiveBrowserTestApi` that it borrows from
-[WebContentsInteractoinTestUtil](/chrome/test/interaction/webcontents_interaction_test_util.h)
+[WebContentsInteractionTestUtil](/chrome/test/interaction/webcontents_interaction_test_util.h)
 is the ability to *instrument* a `WebContents`. This does the following:
 - Assigns the entire `WebContents` a unique `ElementIdentifier`.
 - Enables a number of page navigation verbs, such as `NavigateWebContents()`
@@ -526,6 +481,10 @@ You may call **Instrument** verbs during a test sequence.
 - `InstrumentNonTabWebContents()` instruments a piece of primary or secondary UI
   that uses a `WebView` and is not a tab (e.g. the tablet tabstrip or Tab Search
   dialog).
+
+By default, _most_ instrument methods will wait for the current/next page to
+load before they will proceed, so a subsequent `WaitForWebContentsReady()` is
+not required.
 
 #### Specifying DOM Elements
 
@@ -561,7 +520,8 @@ The following convenience methods are provided to convert a `TrackedElement*` to
 a more specific object, primarily used in functions supplied to `WithElement()`
 or one of the **After** verbs:
 - `AsView<T>()` - converts the element to a view of the specific type; fails if
-  it is not
+  it is not; if you know something will always be a View, you can also just use
+  `WithView()` instead.
 - `AsInstrumentedWebContents()` - converts the element to an instrumented
   `WebContents`; fails if it is not
 
@@ -573,6 +533,170 @@ Example:
   }),
 ```
 
+### Waiting for Asynchronous Events
+
+There are a number of ways to wait for some asynchronous browser event or state:
+ - If you are waiting for WebContents state, use `WaitForStateChange()`
+ - If you are waiting for a discrete event, have your code or a test-specific
+   listener emit a custom event, then use `WaitForEvent()` or `AfterEvent()`.
+    - **Note:** the event must be emitted while you are waiting, or during the
+      callback of the step before, or you may miss it.
+ - If you are waiting for a stateful change, consider creating an appropriate
+   `StateObserver`-derived class, and use `ObserveState()` and `WaitForState()`
+   to check for your state change.
+
+`ObserveState()` is powerful but kind of tricky, as you have to declare a helper
+class that actually tracks the state.
+
+For state that can be observed using an observer pattern (i.e. you could use
+`base::ScopedObservation`), derive from `ObservationStateObserver`, which will
+handle subscribing and unsubscribing; you need only override 1-3 methods.
+
+Otherwise you will need to derive directly from `StateObserver` and manage the
+process yourself.
+
+Here is an example that waits for a property to achieve a specific value using
+an observer pattern:
+
+```cpp
+class FooStateObserver
+  : public ObservationStateObserver<int, Foo, FooObserver> {
+ public:
+  FooStateObserver(Foo* foo)
+    : ObservationStateObserver<int>(foo) {}
+  ~FooStateObserver() override = default;
+
+  // ObservationStateObserver:
+  int GetStateObserverInitialState() const override {
+    return source()->value();
+  }
+
+  // FooObserver:
+  void OnFooValueChanged(Foo*, int value) override {
+    OnStateObserverStateChanged(value);
+  }
+  void OnFooDestroyed(Foo*) override {
+    OnObservationStateObserverSourceDestroyed();
+  }
+}
+```
+
+Here is an example that derives directly from `StateObserver`:
+
+```cpp
+class SubscriptionObserver : public StateObserver {
+ public:
+  SubscriptionObserver(SubscribableObject* object)
+    : subscription_(
+          object->AddValueChangedCallback(
+              base::BindRepeating(&SubscriptionObserver::OnValueChanged,
+                                  base::Unretained(this)))),
+      object_(sub_obj) {}
+
+  // ObservationStateObserver:
+  int GetStateObserverInitialState() const override {
+    return object_->value();
+  }
+
+ private:
+  void OnValueChanged() {
+    OnStateObserverStateChanged(object_->value());
+  }
+
+  base::CallbackListSubscription subscription_;
+  raw_ptr<SubscribableObject> object_;
+};
+```
+
+The next step is to declare your state identifier and call `ObserveState()`.
+`StateIdentifier`s are like `ElementIdentifier`s except that they also encode
+the type of the observer, which allows you to be a little more lax when passing
+in values to the corresponding verbs:
+
+```cpp
+DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(FooStateObserver, kFooState);
+```
+
+The `ObserveState()` verb has two versions:
+ - One lets you pre-construct an observer and pass it in as a `unique_ptr`.
+ - The other lets you pass in the constructor arguments, which allows you
+   to have some of them evaluate when the step is executed:
+    - Any argument that is a function will be executed to get its return value.
+    - Any `std::reference_wrapper` will be unwrapped to get its value.
+    - This behavior is identical to the how the `Log()` verb works.
+    - This does mean that if you need to pass a callback to the constructor, you
+      can't use this version.
+
+Examples:
+```cpp
+  // These have parameters evaluated when the sequence is built:
+  ObserveState(kFooState, std::make_unique<FooStateObserver>(&foo))
+  ObserveState(kFooState, foo.get())
+  // These have a parameter evaluated at runtime:
+  ObserveState(kFooState, std::ref(foo_ptr))
+  ObserveState(kFooState, base::BindOnce(&FooTest::GetCurrentFoo,
+                                         base::Unretained(this)))
+```
+
+Waiting for the state to change is as simple as calling `WaitForState()`; again
+you may pass a callback or reference to have the target evaluated at runtime, or
+a matcher to look for a range of values:
+```cpp
+  WaitForState(kFooState, 3),
+  WaitForState(kFooState, std::ref(expected_foo_value)),
+  WaitForState(kFooState, &GetExpectedFooValue),
+  WaitForState(kFooState, testing::Ne(3)),
+```
+
+#### Observing State Via Polling
+
+The `PollState()`, `PollElement()`, and `PollView()` verbs can be used when you
+want to observe a state but there's no established callback or observer pattern
+established for that state.
+
+For example, if a system only has a `MySystem::GetCurrentState()` property but
+has neither `MySystem::AddObserver(MySystemObserver)` or
+`MySystem::AddStateChangeCallback(MySystem::StateChangeCallback)`, you can use
+`PollState()` to monitor the state:
+
+```cpp
+DEFINE_LOCAL_STATE_IDENTIFIER_VALUE(
+    ui::test::PollingStateObserver<MySystem::State>,
+    kMySystemState);
+
+RunTestSequence(
+  // Do setup that would cause your system to initialize.
+  PollState(kMySystemState, [](){
+    return MySystem::GetInstance()->GetCurrentState();
+  }),
+  WaitForState(kMySystemState, MySystem::State::kReady)
+  // System will be ready now, continue with your test.
+);
+```
+
+For `PollElement()` and `PollView()`, the state value is an `std::optional` and
+if the element or view is not present in the target context the value will be
+`std::nullopt`.
+
+Be aware that for transient or short-lived states, the correct value might be
+missed between polls, so polling should only be used for states that should
+eventually "settle" on the expected value.
+
+#### Avoiding UAF and Stopping State Observation
+
+By default, a state observer will persist until the end of the test body, and
+lasts across multiple calls to `RunTestSequence()`.
+
+You should ideally write your state observers (polling or otherwise) to handle
+freeing of resources or underlying objects, e.g. by unregistering an observer on
+destruction, or by using `base::CallbackSubscription` which is safe with respect
+to  destruction of the subscribed object. Polling an element or view is also
+safe, with the caveat that you might get a different element each time.
+
+However, in some cases it is easier to simply remove the observer than to try to
+harden it against changes in the underlying object. The `StopObservingState()`
+verb allows you to do this.
+
 ### Custom Verbs
 
 Sometimes you will have some common step or check (or set of steps and checks)
@@ -582,6 +706,11 @@ fixture. You can create a custom verb, which is just a method that returns a
 you create yourself, in any combination. To combine multiple steps, use the
 `Steps()` method.
 
+Best practices:
+ - When possible, custom verbs should return `auto`.
+ - All custom verbs should use `SetDescription()` or `SetDescriptionPrefix()` to
+   ensure that each sub-step is identifiable in the debug log.
+
 Here's an example of a very common custom verb pattern:
 
 ```cpp
@@ -590,7 +719,7 @@ class MyHistoryTest : public InteractiveBrowserTest {
 
   // This custom verb will be used across multiple test cases.
   auto OpenHistoryPageInNewTab() {
-    return Steps(
+    auto steps = Steps(
         InstrumentNextTab(kHistoryPageTabId),
         PressButton(kNewTabButton),
         PressButton(kAppMenuButton),
@@ -598,6 +727,8 @@ class MyHistoryTest : public InteractiveBrowserTest {
         SelectMenuItem(kOpenHistoryPageMenuItem),
         WaitForWebContentsNavigation(kHistoryPageTabId,
                                      chrome::kHistoryPageUrl));
+    AddDescriptionPrefix(steps, "OpenHistoryPageInNewTab()");
+    return steps;
   }
 };
 
@@ -614,6 +745,29 @@ IN_PROC_BROWSER_TEST_F(MyHistoryTest, NavigateTwoPagesAndCheckHistory) {
     WaitForStateChange(kHistoryPageTabId,
                        HistoryEntriesPopulated(kUrl1, kUrl2)));
 }
+```
+
+You can also add to an existing sequence created by `Steps()` using the `+=`
+operator:
+
+```cpp
+  auto OpenHistoryPageInNewTab() {
+    auto steps = Steps(
+        InstrumentNextTab(kHistoryPageTabId),
+        PressButton(kNewTabButton),
+        PressButton(kAppMenuButton));
+    if (use_new_history_menu_) {
+      steps += SelectMenuItem(kNewHistoryMenuItem),
+    } else {
+      steps += SelectMenuItem(kHistoryMenuItem),
+    }
+    steps += Steps(
+        SelectMenuItem(kOpenHistoryPageMenuItem),
+        WaitForWebContentsNavigation(kHistoryPageTabId,
+                                     chrome::kHistoryPageUrl));
+    AddDescriptionPrefix(steps, "OpenHistoryPageInNewTab()");
+    return steps;
+  }
 ```
 
 ### Custom Callbacks and Checks
@@ -651,18 +805,18 @@ Most Kombucha tests will derive directly from either `InteractiveViewsTest` or
 `InteractiveBrowserTest`.
 
 If your test needs to derive from a different/custom test fixture class but you
-would still like access to the Kombucha API, use `InteractiveViewsTestT<T>` or
-`InteractiveBrowserTestT<T>` instead.
+would still like access to the Kombucha API, use `InteractiveViewsTestMixin<T>` or
+`InteractiveBrowserTestMixin<T>` instead.
 
 Example:
 ```cpp
 // Want Kombucha functionality, but already have an existing test
 // `MyCustomBrowserTest` with logic we need.
-using MyTestFixture = InteractiveBrowserTestT<MyCustomBrowserTest>;
+using MyTestFixture = InteractiveBrowserTestMixin<MyCustomBrowserTest>;
 
 // Here's another way to do the same thing, if we want to further extend the
 // test class.
-class MyTestFixture2 : public InteractiveBrowserTestT<MyCustomBrowserTest> {
+class MyTestFixture2 : public InteractiveBrowserTestMixin<MyCustomBrowserTest> {
  public:
   MyTestFixture2();
   ~MyTestFixture2() override;
@@ -674,68 +828,22 @@ class MyTestFixture2 : public InteractiveBrowserTestT<MyCustomBrowserTest> {
 ## Helper Classes
 
 Kombucha helper classes are older, lower-level APIs that have been repurposed
-to support interactive testing:
-- `InteractionTestUtil`, `InteractionTestUtilView`,
-  `InteractionTestUtilBrowser` - provide common UI functionality like pressing
-  buttons, selecting menu items, and taking screenshots.
-- `InteractionTestUtilMouse` - provides a way to inject mouse input, including
-  clicking and dragging, into interactive tests.
-- `WebContentsInteractionTestUtil` - provides a way to gain control of a
-  WebContents, inject code, trigger and wait for navigation, and check and wait
-  for changes in the DOM.
+to support interactive testing. These are all named `InteractionTestUtil*`.
 
 You should only rarely have to use these classes directly; if you do, it's
 likely that Kombucha is missing some common verb that would cover your use case.
 Please reach out to us!
 
-## Changelog
-
-### March 2023
-
-Quality of life improvements:
- - You can now add Kombucha API to existing test fixtures using the following
-   template mix-ins.
-    - This removes the need for a lot of boilerplate when adding
-      `InteractiveBrowserTestApi`.
-    - See [Custom Test Fixtures](#custom-test-fixtures) for more info.
- - `base::BindOnce()` and `base::BindLambdaForTesting()` are no longer required
-    in many cases.
-     - This makes many steps less verbose - and less highly-indented - than they
-       were previously.
-     - See [Test Functions and Callbacks](#test-functions-and-callbacks) for
-       more info.
-
-New control-flow features (see [Control Flow](#control-flow) for more info):
- - `InParallel` runs several subsequences at once.
- - `If`, `IfMatches`, `IfView`, etc. conditionally run a subsequence.
-    - Also added the ability to specify an optional "else" clause.
-
-Bugfixes:
- - Slightly improved drag-handling on ChromeOS.
-
 ## Known Issues and Incompatibilities
 
 The following will generate an error unless
 [explicitly handled](#handling-incompatibilities):
- - `ActivateSurface()` does not work on the `linux-wayland` buildbot unless the
-   surface is already active, due to vanilla Wayland not supporting programmatic
-   window activation.
+ - `ActivateSurface()` may not work on buildbots unless the surface is already
+   active, depending on the reference implementation of Wayland being used.
  - `Screenshot()` currently only works in specific pixel test jobs on the
    `win-rel` buildbot.
 
 The following may produce unexpected or inconsistent behavior:
- - When `ClickMouse()` is used on Mac with right mouse button, events are sent
-   asynchronously to avoid getting caught in a context menu run loop.
-    - Most tests should still function normally, but be aware of the behavioral
-      difference.
- - `DragMouse()` or `MoveMouseTo()` on Windows may result in Windows entering a
-   drag loop that may hang or otherwise impact the test.
-    - Tab dragging works as expected but other drag tests may be flaky or fail
-      on the platform.
-
-## Upcoming Features
-
-To be supported in the near-future:
- - Touch input on ChromeOS
- - Touch input on Windows
- - More reliable drag-drop on Windows
+ - `DragMouse()` or `MoveMouseTo()` on some platforms may result in a drag loop
+   that may hang or otherwise impact the test.
+    - Tab dragging works as expected but other drag tests may be flaky or fail.

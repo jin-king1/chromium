@@ -12,8 +12,10 @@
 #include "ash/controls/rounded_scroll_bar.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
+#include "ash/style/ash_color_id.h"
 #include "ash/style/ash_color_provider.h"
 #include "ash/style/style_util.h"
+#include "ash/style/typography.h"
 #include "ash/system/phonehub/app_stream_launcher_item.h"
 #include "ash/system/phonehub/app_stream_launcher_list_item.h"
 #include "ash/system/phonehub/app_stream_launcher_view.h"
@@ -24,8 +26,8 @@
 #include "chromeos/ash/components/phonehub/notification.h"
 #include "chromeos/ash/components/phonehub/phone_hub_manager.h"
 #include "chromeos/ash/components/phonehub/user_action_recorder.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_id.h"
@@ -50,7 +52,6 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/layout_types.h"
-#include "ui/views/layout/table_layout.h"
 #include "ui/views/view.h"
 
 namespace ash {
@@ -64,18 +65,7 @@ constexpr auto kHeaderDefaultSpacing = gfx::Insets::VH(0, 0);
 
 constexpr gfx::Size kDefaultAppListScrollViewSize = gfx::Size(400, 400);
 
-// The horizontal interior margin for the apps page container - i.e. the margin
-// between the apps page bounds and the page content.
-constexpr int kHorizontalInteriorMargin = 25;
-
-// Number of columns of apps in the grid
-constexpr int kColumns = 4;
-
-constexpr int kRowHeight = 70;
-
 constexpr auto kHeaderViewInsets = gfx::Insets::TLBR(25, 15, 15, 15);
-
-constexpr int kAppViewWidth = 50;
 
 constexpr int kHeaderChildrenSpacing = 20;
 
@@ -142,7 +132,7 @@ std::unique_ptr<views::View> AppStreamLauncherView::CreateAppListView() {
   scroll_view->ClipHeightTo(0, std::numeric_limits<int>::max());
   scroll_view->SetDrawOverflowIndicator(false);
   // Don't paint a background. The bubble already has one.
-  scroll_view->SetBackgroundColor(absl::nullopt);
+  scroll_view->SetBackgroundColor(std::nullopt);
   // Arrow keys are used to select app icons.
   scroll_view->SetAllowKeyboardScrolling(false);
 
@@ -152,8 +142,8 @@ std::unique_ptr<views::View> AppStreamLauncherView::CreateAppListView() {
   // Set up scroll bars.
   scroll_view->SetHorizontalScrollBarMode(
       views::ScrollView::ScrollBarMode::kDisabled);
-  auto vertical_scroll =
-      std::make_unique<RoundedScrollBar>(/*horizontal=*/false);
+  auto vertical_scroll = std::make_unique<RoundedScrollBar>(
+      views::ScrollBar::Orientation::kVertical);
   vertical_scroll->SetInsets(kVerticalScrollInsets);
   vertical_scroll->SetSnapBackOnDragOutside(false);
   scroll_view->SetVerticalScrollBar(std::move(vertical_scroll));
@@ -171,14 +161,8 @@ std::unique_ptr<views::View> AppStreamLauncherView::CreateAppListView() {
   layout->SetOrientation(views::LayoutOrientation::kVertical)
       .SetCrossAxisAlignment(views::LayoutAlignment::kStretch);
 
-  if (features::IsEcheLauncherListViewEnabled()) {
-    layout->SetInteriorMargin(gfx::Insets::VH(kVerticalPaddingBetweenSections,
-                                              kAppListItemHorizontalMargin));
-  } else {
-    layout->SetInteriorMargin(gfx::Insets::VH(kVerticalPaddingBetweenSections,
-                                              kHorizontalInteriorMargin));
-  }
-
+  layout->SetInteriorMargin(gfx::Insets::VH(kVerticalPaddingBetweenSections,
+                                            kAppListItemHorizontalMargin));
   // All apps section.
   items_container_ =
       scroll_contents->AddChildView(std::make_unique<views::View>());
@@ -190,8 +174,7 @@ std::unique_ptr<views::View> AppStreamLauncherView::CreateAppListView() {
 }
 
 void AppStreamLauncherView::AppIconActivated(
-    phonehub::Notification::AppMetadata app,
-    const ui::Event& event) {
+    phonehub::Notification::AppMetadata app) {
   auto* interaction_handler_ =
       phone_hub_manager_->GetRecentAppsInteractionHandler();
   if (!interaction_handler_)
@@ -210,19 +193,7 @@ void AppStreamLauncherView::UpdateFromDataModel() {
       phone_hub_manager_->GetAppStreamLauncherDataModel()
           ->GetAppsListSortedByName();
 
-  if (features::IsEcheLauncherListViewEnabled()) {
     CreateListView(apps_list);
-  } else {
-    CreateGridView(apps_list);
-  }
-}
-
-std::unique_ptr<views::View> AppStreamLauncherView::CreateItemView(
-    const phonehub::Notification::AppMetadata& app) {
-  return std::make_unique<AppStreamLauncherItem>(
-      base::BindRepeating(&AppStreamLauncherView::AppIconActivated,
-                          base::Unretained(this), app),
-      app);
 }
 
 std::unique_ptr<views::View> AppStreamLauncherView::CreateListItemView(
@@ -239,10 +210,8 @@ std::unique_ptr<views::View> AppStreamLauncherView::CreateHeaderView() {
       views::BoxLayout::Orientation::kHorizontal, kHeaderViewInsets,
       kHeaderChildrenSpacing));
 
-  header->SetBackground(views::CreateSolidBackground(
-      AshColorProvider::Get()->GetControlsLayerColor(
-          AshColorProvider::ControlsLayerType::
-              kControlBackgroundColorInactive)));
+  header->SetBackground(
+      views::CreateSolidBackground(kColorAshControlBackgroundColorInactive));
 
   // Add arrowback button
   arrow_back_button_ = header->AddChildView(CreateButton(
@@ -256,15 +225,14 @@ std::unique_ptr<views::View> AppStreamLauncherView::CreateHeaderView() {
       gfx::DirectionalityMode::DIRECTIONALITY_AS_URL));
   title->SetMultiLine(true);
   title->SetAllowCharacterBreak(true);
-  title->SetProperty(
-      views::kFlexBehaviorKey,
-      views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
-                               views::MaximumFlexSizeRule::kUnbounded,
-                               /*adjust_height_for_width =*/true)
-          .WithWeight(1));
+  title->SetProperty(views::kBoxLayoutFlexKey,
+                     views::BoxLayoutFlexSpecification());
   title->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   title->SetText(
       l10n_util::GetStringUTF16(IDS_ASH_PHONE_HUB_APP_STREAM_LAUNCHER_TITLE));
+
+  TypographyProvider::Get()->StyleLabel(ash::TypographyToken::kCrosHeadline1,
+                                        *title);
 
   return header;
 }
@@ -275,20 +243,18 @@ std::unique_ptr<views::Button> AppStreamLauncherView::CreateButton(
     views::Button::PressedCallback callback,
     const gfx::VectorIcon& icon,
     int message_id) {
-  SkColor color = AshColorProvider::Get()->GetContentLayerColor(
-      AshColorProvider::ContentLayerType::kIconColorPrimary);
+  SkColor color =
+      AshColorProvider::Get()->GetColor(cros_tokens::kIconColorPrimary);
   SkColor disabled_color = SkColorSetA(color, gfx::kDisabledControlAlpha);
   auto button = views::CreateVectorImageButton(std::move(callback));
-  views::SetImageFromVectorIconWithColor(button.get(), icon, color,
-                                         disabled_color);
+  views::SetImageFromVectorIconWithColor(button.get(), icon,
+                                         {color, disabled_color});
 
-  if (chromeos::features::IsJellyrollEnabled()) {
-    ash::StyleUtil::SetUpInkDropForButton(button.get(), gfx::Insets(),
-                                          /*highlight_on_hover=*/false,
-                                          /*highlight_on_focus=*/true);
-    views::FocusRing::Get(button.get())
-        ->SetColorId(static_cast<ui::ColorId>(cros_tokens::kCrosSysFocusRing));
-  }
+  ash::StyleUtil::SetUpInkDropForButton(button.get(), gfx::Insets(),
+                                        /*highlight_on_hover=*/false,
+                                        /*highlight_on_focus=*/true);
+  views::FocusRing::Get(button.get())
+      ->SetColorId(static_cast<ui::ColorId>(cros_tokens::kCrosSysFocusRing));
 
   button->SetTooltipText(l10n_util::GetStringUTF16(message_id));
   button->SizeToPreferredSize();
@@ -313,10 +279,6 @@ void AppStreamLauncherView::ChildVisibilityChanged(View* child) {
   PreferredSizeChanged();
 }
 
-const char* AppStreamLauncherView::GetClassName() const {
-  return "AppStreamLauncherView";
-}
-
 phone_hub_metrics::Screen AppStreamLauncherView::GetScreenForMetrics() const {
   return phone_hub_metrics::Screen::kMiniLauncher;
 }
@@ -326,9 +288,9 @@ void AppStreamLauncherView::OnBubbleClose() {
 }
 
 void AppStreamLauncherView::OnAppListChanged() {
-  if (!features::IsEcheSWAEnabled() || !features::IsEcheLauncherEnabled())
-    return;
-  UpdateFromDataModel();
+  if (features::IsEcheSWAEnabled()) {
+    UpdateFromDataModel();
+  }
 }
 
 void AppStreamLauncherView::CreateListView(
@@ -341,27 +303,7 @@ void AppStreamLauncherView::CreateListView(
   }
 }
 
-void AppStreamLauncherView::CreateGridView(
-    const std::vector<phonehub::Notification::AppMetadata>* apps_list) {
-  auto* table_layout = items_container_->SetLayoutManager(
-      std::make_unique<views::TableLayout>());
-  int spacing = (kTrayMenuWidth - kHorizontalInteriorMargin * 2 -
-                 kAppViewWidth * kColumns) /
-                (kColumns - 1);
-  for (int i = 0; i < kColumns; i++) {
-    table_layout->AddColumn(
-        views::LayoutAlignment::kStretch, views::LayoutAlignment::kStretch, 1.0,
-        views::TableLayout::ColumnSize::kUsePreferred, 0, 0);
-    if (i != kColumns - 1) {
-      table_layout->AddPaddingColumn(1.0, spacing);
-    }
-  }
-  table_layout->AddRows(ceil((double)apps_list->size() / kColumns),
-                        views::TableLayout::kFixedSize, kRowHeight);
-
-  for (auto& app : *apps_list) {
-    items_container_->AddChildView(CreateItemView(app));
-  }
-}
+BEGIN_METADATA(AppStreamLauncherView)
+END_METADATA
 
 }  // namespace ash

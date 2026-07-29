@@ -7,21 +7,24 @@
 #include "chrome/browser/extensions/api/downloads/downloads_api.h"
 #include "chrome/common/extensions/api/downloads.h"
 #include "chrome/common/extensions/api/downloads_internal.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
 DownloadsInternalDetermineFilenameFunction::
-    DownloadsInternalDetermineFilenameFunction() {}
+    DownloadsInternalDetermineFilenameFunction() = default;
 
 DownloadsInternalDetermineFilenameFunction::
-    ~DownloadsInternalDetermineFilenameFunction() {}
+    ~DownloadsInternalDetermineFilenameFunction() = default;
 
 typedef extensions::api::downloads_internal::DetermineFilename::Params
     DetermineFilenameParams;
 
 ExtensionFunction::ResponseAction
 DownloadsInternalDetermineFilenameFunction::Run() {
-  absl::optional<DetermineFilenameParams> params =
+  std::optional<DetermineFilenameParams> params =
       DetermineFilenameParams::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
   EXTENSION_FUNCTION_VALIDATE(args().size() >= 2);

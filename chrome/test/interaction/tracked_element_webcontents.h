@@ -8,7 +8,7 @@
 #include "base/memory/raw_ptr.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
-#include "ui/base/interaction/framework_specific_implementation.h"
+#include "ui/base/interaction/safe_castable.h"
 
 class WebContentsInteractionTestUtil;
 
@@ -23,13 +23,17 @@ class TrackedElementWebContents : public ui::TrackedElement {
                             WebContentsInteractionTestUtil* owner);
   ~TrackedElementWebContents() override;
 
-  DECLARE_FRAMEWORK_SPECIFIC_METADATA()
+  DECLARE_SAFE_CAST_TARGET()
+
+  // Event generated when the WebContents receives its first non-empty paint.
+  DECLARE_CLASS_CUSTOM_ELEMENT_EVENT_TYPE(kFirstNonEmptyPaint);
 
   // TrackedElement:
   gfx::Rect GetScreenBounds() const override;
   std::string ToString() const override;
 
   WebContentsInteractionTestUtil* owner() { return owner_; }
+  const WebContentsInteractionTestUtil* owner() const { return owner_; }
 
  private:
   friend WebContentsInteractionTestUtil;

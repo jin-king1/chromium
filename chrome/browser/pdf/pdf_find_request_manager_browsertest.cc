@@ -2,10 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <string_view>
+
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -65,7 +68,7 @@ class PdfFindRequestManagerTest : public InProcessBrowserTest {
             blink::mojom::FindOptionsPtr options) {
     delegate()->UpdateLastRequest(++last_request_id_);
     contents()->Find(last_request_id_, base::UTF8ToUTF16(search_text),
-                     std::move(options));
+                     std::move(options), /*skip_delay=*/false);
   }
 
   WebContents* contents() const {
@@ -101,7 +104,7 @@ class PdfFindRequestManagerTestWithPdfPartialLoading
 };
 
 // Tests searching in a full-page PDF.
-// Flaky on Windows ASAN: crbug.com/1030368.
+// Flaky on Windows ASAN: crbug.com/40109961.
 #if BUILDFLAG(IS_WIN) && defined(ADDRESS_SANITIZER)
 #define MAYBE_FindInPDF DISABLED_FindInPDF
 #else
@@ -138,8 +141,8 @@ void SendRangeResponse(net::test_server::ControllableHttpResponse* response,
   {
     auto it = response->http_request()->headers.find("Range");
     ASSERT_NE(response->http_request()->headers.end(), it);
-    base::StringPiece range_header = it->second;
-    base::StringPiece kBytesPrefix = "bytes=";
+    std::string_view range_header = it->second;
+    std::string_view kBytesPrefix = "bytes=";
     ASSERT_TRUE(base::StartsWith(range_header, kBytesPrefix));
     range_header.remove_prefix(kBytesPrefix.size());
     auto dash_pos = range_header.find('-');
@@ -166,9 +169,15 @@ void SendRangeResponse(net::test_server::ControllableHttpResponse* response,
 }
 
 // Tests searching in a PDF received in chunks via range-requests.  See also
-// https://crbug.com/1027173.
+// https://crbug.com/40108622.
+// TODO(crbug.com/40926030): flaky on Linux debug.
+#if BUILDFLAG(IS_LINUX) && !defined(NDEBUG)
+#define MAYBE_FindInChunkedPDF DISABLED_FindInChunkedPDF
+#else
+#define MAYBE_FindInChunkedPDF FindInChunkedPDF
+#endif
 IN_PROC_BROWSER_TEST_F(PdfFindRequestManagerTestWithPdfPartialLoading,
-                       FindInChunkedPDF) {
+                       MAYBE_FindInChunkedPDF) {
   constexpr uint32_t kStalledResponseSize =
       chrome_pdf::DocumentLoaderImpl::kDefaultRequestSize + 123;
 
@@ -353,7 +362,7 @@ IN_PROC_BROWSER_TEST_F(PdfFindRequestManagerTest, DoesNotSearchPdfViewerUi) {
   EXPECT_EQ(1, results.number_of_matches);
 }
 
-// Regression test for crbug.com/1352097.
+// Regression test for crbug.com/40857563.
 IN_PROC_BROWSER_TEST_F(PdfFindRequestManagerTest, SingleResultFindNext) {
   ASSERT_TRUE(embedded_test_server()->Start());
   LoadAndWait("/find_in_pdf_page.pdf");

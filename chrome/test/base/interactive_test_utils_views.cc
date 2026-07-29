@@ -8,12 +8,15 @@
 #include "build/buildflag.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/buildflags.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animator.h"
+#include "ui/gfx/geometry/point.h"
+#include "ui/gfx/geometry/vector2d.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/view.h"
 #include "ui/views/view_observer.h"
@@ -59,10 +62,8 @@ class ViewFocusWaiter : public views::ViewObserver {
 
 }  // namespace
 
-bool IsViewFocused(const Browser* browser, ViewID vid) {
-  BrowserWindow* browser_window = browser->window();
-  DCHECK(browser_window);
-  gfx::NativeWindow window = browser_window->GetNativeWindow();
+bool IsViewFocused(const BrowserWindowInterface* browser, ViewID vid) {
+  gfx::NativeWindow window = browser->GetWindow()->GetNativeWindow();
   DCHECK(window);
   const views::Widget* widget = views::Widget::GetWidgetForNativeWindow(window);
   DCHECK(widget);
@@ -75,7 +76,7 @@ bool IsViewFocused(const Browser* browser, ViewID vid) {
 void ClickOnView(views::View* view) {
   DCHECK(view);
   base::RunLoop loop;
-  MoveMouseToCenterAndPress(view, ui_controls::LEFT,
+  MoveMouseToCenterAndClick(view, ui_controls::LEFT,
                             ui_controls::DOWN | ui_controls::UP,
                             loop.QuitClosure());
   loop.Run();
@@ -92,11 +93,21 @@ void FocusView(const Browser* browser, ViewID vid) {
   view->RequestFocus();
 }
 
-void MoveMouseToCenterAndPress(views::View* view,
+void MoveMouseToCenterAndClick(views::View* view,
                                ui_controls::MouseButton button,
                                int button_state,
                                base::OnceClosure closure,
                                int accelerator_state) {
+  MoveMouseToCenterWithOffsetAndClick(view, /*offset=*/{}, button, button_state,
+                                      std::move(closure), accelerator_state);
+}
+
+void MoveMouseToCenterWithOffsetAndClick(views::View* view,
+                                         const gfx::Vector2d& offset,
+                                         ui_controls::MouseButton button,
+                                         int button_state,
+                                         base::OnceClosure closure,
+                                         int accelerator_state) {
   DCHECK(view);
   DCHECK(view->GetWidget());
   // Complete any in-progress animation before sending the events so that the
@@ -110,6 +121,7 @@ void MoveMouseToCenterAndPress(views::View* view,
   }
 
   gfx::Point view_center = GetCenterInScreenCoordinates(view);
+  view_center += offset;
   ui_controls::SendMouseMoveNotifyWhenDone(
       view_center.x(), view_center.y(),
       base::BindOnce(&internal::ClickTask, button, button_state,
@@ -124,7 +136,7 @@ gfx::Point GetCenterInScreenCoordinates(const views::View* view) {
 
 void WaitForViewFocus(Browser* browser, ViewID vid, bool focused) {
   views::View* view = views::Widget::GetWidgetForNativeWindow(
-                          browser->window()->GetNativeWindow())
+                          browser->GetWindow()->GetNativeWindow())
                           ->GetContentsView()
                           ->GetViewByID(vid);
   WaitForViewFocus(browser, view, focused);

@@ -27,7 +27,7 @@ ReloadPluginInfoBarDelegate::ReloadPluginInfoBarDelegate(
     const std::u16string& message)
     : controller_(controller), message_(message) {}
 
-ReloadPluginInfoBarDelegate::~ReloadPluginInfoBarDelegate() {}
+ReloadPluginInfoBarDelegate::~ReloadPluginInfoBarDelegate() = default;
 
 infobars::InfoBarDelegate::InfoBarIdentifier
 ReloadPluginInfoBarDelegate::GetIdentifier() const {
@@ -35,7 +35,7 @@ ReloadPluginInfoBarDelegate::GetIdentifier() const {
 }
 
 const gfx::VectorIcon& ReloadPluginInfoBarDelegate::GetVectorIcon() const {
-  return kExtensionCrashedIcon;
+  return kExtensionCrashedCustomIcon;
 }
 
 std::u16string ReloadPluginInfoBarDelegate::GetMessageText() const {

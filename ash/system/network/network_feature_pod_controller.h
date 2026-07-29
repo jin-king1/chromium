@@ -8,7 +8,6 @@
 #include <string>
 
 #include "ash/constants/quick_settings_catalogs.h"
-#include "ash/system/network/network_feature_pod_button.h"
 #include "ash/system/network/network_feature_tile.h"
 #include "ash/system/network/network_icon_animation_observer.h"
 #include "ash/system/network/tray_network_state_observer.h"
@@ -19,16 +18,14 @@
 
 namespace ash {
 
-class FeaturePodButton;
 class UnifiedSystemTrayController;
 
-// Controller of the feature pod button that allows users to toggle whether
-// certain network technologies are enabled or disabled, and that allows users
-// to navigate to a more detailed page with a network list.
+// Controller of the feature tile that allows users to toggle whether certain
+// network technologies are enabled or disabled, and that allows users to
+// navigate to a more detailed page with a network list.
 class ASH_EXPORT NetworkFeaturePodController
     : public network_icon::AnimationObserver,
       public FeaturePodControllerBase,
-      public NetworkFeaturePodButton::Delegate,
       public NetworkFeatureTile::Delegate,
       public TrayNetworkStateObserver {
  public:
@@ -40,7 +37,6 @@ class ASH_EXPORT NetworkFeaturePodController
   ~NetworkFeaturePodController() override;
 
   // FeaturePodControllerBase:
-  FeaturePodButton* CreateButton() override;
   std::unique_ptr<FeatureTile> CreateTile(bool compact = false) override;
   QsFeatureCatalogName GetCatalogName() override;
   void OnIconPressed() override;
@@ -49,9 +45,6 @@ class ASH_EXPORT NetworkFeaturePodController
  private:
   // network_icon::AnimationObserver:
   void NetworkIconChanged() override;
-
-  // NetworkFeaturePodButton::Delegate:
-  void OnFeaturePodButtonThemeChanged() override;
 
   // NetworkFeatureTile::Delegate:
   void OnFeatureTileThemeChanged() override;
@@ -69,13 +62,12 @@ class ASH_EXPORT NetworkFeaturePodController
   // Purges network icon cache and updates the button state.
   void PropagateThemeChanged();
 
-  // Updates |button_| state to reflect the current state of networks.
-  void UpdateButtonStateIfExists();
+  // Updates `tile_` state to reflect the current state of networks.
+  void UpdateTileStateIfExists();
 
   // Owned by the views hierarchy.
-  raw_ptr<FeaturePodButton, ExperimentalAsh> button_ = nullptr;
-  raw_ptr<FeatureTile, ExperimentalAsh> tile_ = nullptr;
-  raw_ptr<UnifiedSystemTrayController, ExperimentalAsh> tray_controller_;
+  raw_ptr<FeatureTile, DanglingUntriaged> tile_ = nullptr;
+  raw_ptr<UnifiedSystemTrayController, DanglingUntriaged> tray_controller_;
 
   base::WeakPtrFactory<NetworkFeaturePodController> weak_ptr_factory_{this};
 };

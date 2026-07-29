@@ -10,15 +10,21 @@ namespace background_task {
 // This enum lists all the unique task IDs used around in Chromium. These are
 // listed here to ensure that there is no overlap of task IDs between different
 // users of the BackgroundTaskScheduler.
-// When adding your job id to the list below, remember to make a corresponding
-// update to the BackgroundTaskSchedulerExternalUma for metrics.
-// Also, if the new task id is related to a BackgroundTask class in
-// //chrome, remember to update
-// ChromeBackgroundTaskFactory#createBackgroundTaskFromTaskId in java.
-// If the task is a native task, also update
-// ChromeBackgroundTaskFactory::GetNativeBackgroundTaskFromTaskId. Id from
-// 111000000 to 111999999 are reserved for internal usage. A Java counterpart
-// will be generated for this enum.
+// When adding your job id to the list below, update:
+// 1. BackgroundTaskSchedulerExternalUma for metrics, specifically:
+// toUmaEnumValueFromTaskId() and getHistogramPatternForTaskId().
+// 2. Enum BackgroundTaskId in
+// tools/metrics/histograms/metadata/android/enums.xml.
+// 3. Variant TaskType in
+// tools/metrics/histograms/metadata/android/histograms.xml.
+// 4. ChromeBackgroundTaskFactory#createBackgroundTaskFromTaskId in java.
+// 5. BackgroundTaskSchedulerUmaTest#testToUmaEnumValueFromTaskId for
+// updated BACKGROUND_TASK_COUNT.
+// 6. If the task is a native task, also update
+// ChromeBackgroundTaskFactory::GetNativeBackgroundTaskFromTaskId.
+
+// Id from 111000000 to 111999999 are reserved for internal usage. A Java
+// counterpart will be generated for this enum.
 // GENERATED_JAVA_ENUM_PACKAGE: (
 // org.chromium.components.background_task_scheduler)
 enum class TaskIds {
@@ -28,7 +34,7 @@ enum class TaskIds {
   TEST = 0x00008378,
   // component: Internals>Installer
   // team_email: chrome-updates-dev@chromium.org
-  // owner: waffles@chromium.org
+  // owner: sorin@chromium.org
   OMAHA_JOB_ID = 0x00011684,
   // component: Services>CloudMessaging
   // team_email:
@@ -38,6 +44,10 @@ enum class TaskIds {
   // team_email: platform-capabilities@chromium.org
   // owner: peter@chromium.org
   NOTIFICATION_SERVICE_JOB_ID = 21,
+  // component: UI>Notifications
+  // team_email: platform-capabilities@chromium.org
+  // owner: engedy@chromium.org
+  NOTIFICATION_SERVICE_PRE_UNSUBSCRIBE_JOB_ID = 221,
   // component: Mobile>WebView
   // team_email: android-webview-dev@chromium.org
   // owner: boliu@chromium.org
@@ -78,13 +88,21 @@ enum class TaskIds {
   // team_email:
   // owner: qinmin@chromium.org
   DOWNLOAD_LATER_JOB_ID = 57,
+  // component: UI>Browser>Downloads
+  // team_email:
+  // owner: qinmin@chromium.org
+  DOWNLOAD_AUTO_RESUMPTION_UNMETERED_JOB_ID = 58,
+  // component: UI>Browser>Downloads
+  // team_email:
+  // owner: qinmin@chromium.org
+  DOWNLOAD_AUTO_RESUMPTION_ANY_NETWORK_JOB_ID = 59,
   // component: UI>Browser>ContentSuggestions>Feed
   // team_email: feed@chromium.org
   // owner: dewittj@chromium.org
   FEED_REFRESH_JOB_ID = 22,
   // component: Internals>Installer>Components
   // team_email: chrome-updates-dev@chromium.org
-  // owner: waffles@chromium.org
+  // owner: sorin@chromium.org
   COMPONENT_UPDATE_JOB_ID = 2,
   // component: Blink>BackgroundSync
   // team_email: platform-capabilities@chromium.org
@@ -113,15 +131,31 @@ enum class TaskIds {
   // component: UI>Browser>ContentSuggestions>Feed
   // team_email: feed@chromium.org
   // owner: dewittj@chromium.org
-  WEBFEEDS_REFRESH_JOB_ID = 109,
+  //  WEBFEEDS_REFRESH_JOB_ID = 109,
   // component: Mobile>WebView
   // team_email: android-webview-dev@chromium.org
   // owner: ntfschr@chromium.org, torne@chromium.org
   WEBVIEW_COMPONENT_UPDATE_JOB_ID = 110,
-  // component: Internals>AttributionReporting
-  // team_email: privacy-sandbox-dev@chromium.org
-  // owner: csharrison@chromium.org
-  ATTRIBUTION_PROVIDER_FLUSH_JOB_ID = 111,
+  // component: UI>Settings>Privacy
+  // team_email: chrome-privacy-controls@google.com
+  // owner: zalmashni@google.com, rubindl@chromium.org
+  SAFETY_HUB_JOB_ID = 112,
+  // component: UI>Browser>Mobile>Start
+  // team_email: clank-start@google.com
+  // owner:hanxi@chromium.org
+  AUXILIARY_SEARCH_DONATE_JOB_ID = 113,
+  // component: Enterprise
+  // team_email: cbe-device-trust-eng@google.com
+  // owner:xzonghan@chromium.org
+  CHROME_SIGNALS_REPORTING_JOB_ID = 114,
+  // component: Internals>Metrics
+  // team_email: chrome-metrics-team@google.com
+  // owner: asvitkine@google.com, rkaplow@google.com, lucnguyen@google.com
+  UMA_UPLOAD_JOB_ID = 115,
+  UKM_UPLOAD_JOB_ID = 116,
+  DWA_UPLOAD_JOB_ID = 117,
+  PUMA_UPLOAD_JOB_ID = 118,
+  STRUCTURED_METRICS_UPLOAD_JOB_ID = 119,
 };
 
 }  // namespace background_task

@@ -5,54 +5,48 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_EXTENSIONS_EXTENSIONS_MENU_SITE_PERMISSIONS_PAGE_VIEW_H_
 #define CHROME_BROWSER_UI_VIEWS_EXTENSIONS_EXTENSIONS_MENU_SITE_PERMISSIONS_PAGE_VIEW_H_
 
+#include "base/memory/raw_ptr.h"
+#include "chrome/browser/ui/extensions/extensions_menu_view_model.h"
 #include "extensions/browser/permissions_manager.h"
 #include "extensions/common/extension_id.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
-
-namespace ui {
-class ImageModel;
-}  // namespace ui
+#include "url/origin.h"
 
 namespace views {
 class ImageView;
 class Label;
 class RadioButton;
 class ToggleButton;
-class RadioButton;
 }  // namespace views
 
-class Browser;
+class BrowserWindowInterface;
 class ExtensionsMenuHandler;
 
 class ExtensionsMenuSitePermissionsPageView : public views::View {
- public:
-  METADATA_HEADER(ExtensionsMenuSitePermissionsPageView);
+  METADATA_HEADER(ExtensionsMenuSitePermissionsPageView, views::View)
 
+ public:
   explicit ExtensionsMenuSitePermissionsPageView(
-      Browser* browser,
+      BrowserWindowInterface* browser,
       extensions::ExtensionId extension_id,
-      ExtensionsMenuHandler* navigation_handler);
+      ExtensionsMenuHandler* menu_handler);
   ExtensionsMenuSitePermissionsPageView(
       const ExtensionsMenuSitePermissionsPageView&) = delete;
   const ExtensionsMenuSitePermissionsPageView& operator=(
       const ExtensionsMenuSitePermissionsPageView&) = delete;
   ~ExtensionsMenuSitePermissionsPageView() override = default;
 
-  // Updates the page contents with the given parameters.
-  void Update(const std::u16string& extension_name,
-              const ui::ImageModel& extension_icon,
-              const std::u16string& current_site,
-              extensions::PermissionsManager::UserSiteAccess user_site_access,
-              bool is_show_requests_toggle_on);
+  // Updates the page contents with the given `site_permissions_state`.
+  void Update(ExtensionsMenuViewModel::ExtensionSitePermissionsState
+                  site_permissions_state);
 
-  // Updates `show_requests_toggle_` state to `is_on`.
-  void UpdateShowRequestsToggle(bool is_on);
-
-  // Sets whether the extension pointed by `extension_id_` can request access
-  // the toolbar.
-  void OnShowRequestsTogglePressed();
+  // Updates `show_requests_toggle_` with the given toggle state.
+  void UpdateShowRequestsToggle(
+      ExtensionsMenuViewModel::ControlState toggle_state);
 
   extensions::ExtensionId extension_id() { return extension_id_; }
+  const url::Origin& origin() const { return origin_; }
 
   // Accessors used by tests:
   views::ToggleButton* GetShowRequestsToggleForTesting() {
@@ -60,10 +54,12 @@ class ExtensionsMenuSitePermissionsPageView : public views::View {
   }
   views::RadioButton* GetSiteAccessButtonForTesting(
       extensions::PermissionsManager::UserSiteAccess site_access);
+  views::Label* GetExtensionNameForTesting();
 
  private:
-  const raw_ptr<Browser> browser_;
+  const raw_ptr<BrowserWindowInterface> browser_;
   extensions::ExtensionId extension_id_;
+  url::Origin origin_;
 
   raw_ptr<views::ImageView> extension_icon_;
   raw_ptr<views::Label> extension_name_;

@@ -9,10 +9,6 @@
 #import "base/numerics/safe_conversions.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_item.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 NSString* const kListModelCollapsedKey = @"ChromeListModelCollapsedSections";
 
 namespace {
@@ -183,12 +179,14 @@ typedef NSMutableArray<ListItem*> SectionItems;
 
 - (ListItem*)itemAtIndexPath:(NSIndexPath*)indexPath {
   DCHECK(indexPath);
-  DCHECK_LT(base::checked_cast<NSUInteger>(indexPath.section),
-            [_sections count]);
-  SectionItems* items = [_sections objectAtIndex:indexPath.section];
+  NSUInteger sectionIndex = base::checked_cast<NSUInteger>(indexPath.section);
+  NSUInteger itemIndex = base::checked_cast<NSUInteger>(indexPath.item);
 
-  DCHECK_LT(base::checked_cast<NSUInteger>(indexPath.item), [items count]);
-  return [items objectAtIndex:indexPath.item];
+  DCHECK_LT(sectionIndex, [_sections count]) << itemIndex;
+  SectionItems* items = [_sections objectAtIndex:sectionIndex];
+
+  DCHECK_LT(itemIndex, [items count]) << sectionIndex;
+  return [items objectAtIndex:itemIndex];
 }
 
 - (ListItem*)headerForSectionIndex:(NSInteger)sectionIndex {
@@ -332,7 +330,6 @@ typedef NSMutableArray<ListItem*> SectionItems;
     }
   }
   NOTREACHED();
-  return nil;
 }
 
 #pragma mark Data sourcing
@@ -444,7 +441,7 @@ typedef NSMutableArray<ListItem*> SectionItems;
 
 @end
 
-// TODO(crbug.com/419346): Store in the browser state preference or in
+// TODO(crbug.com/41134911): Store in the profile preference or in
 // UISceneSession.unserInfo instead of NSUserDefaults.
 @implementation ListModelCollapsedMediator
 
@@ -454,8 +451,7 @@ typedef NSMutableArray<ListItem*> SectionItems;
       [defaults dictionaryForKey:kListModelCollapsedKey];
   NSMutableDictionary* newCollapsedSection =
       [NSMutableDictionary dictionaryWithDictionary:collapsedSections];
-  NSNumber* value = [NSNumber numberWithBool:collapsed];
-  [newCollapsedSection setValue:value forKey:sectionKey];
+  newCollapsedSection[sectionKey] = @(collapsed);
   [defaults setObject:newCollapsedSection forKey:kListModelCollapsedKey];
 }
 
@@ -463,7 +459,7 @@ typedef NSMutableArray<ListItem*> SectionItems;
   NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
   NSDictionary* collapsedSections =
       [defaults dictionaryForKey:kListModelCollapsedKey];
-  NSNumber* value = (NSNumber*)[collapsedSections valueForKey:sectionKey];
+  NSNumber* value = (NSNumber*)collapsedSections[sectionKey];
   return [value boolValue];
 }
 

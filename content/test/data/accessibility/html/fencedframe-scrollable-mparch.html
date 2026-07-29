@@ -7,8 +7,10 @@
   <fencedframe style="width:200px; height: 200px;" aria-label="Scrollable iframe">
   </fencedframe>
   <script>
-    const url = new URL("frame/visible_text.html", location.href);
-    document.querySelector("fencedframe").config = new FencedFrameConfig(url);
+    window.onload = () => {
+      const url = new URL("frame/visible_text.html", location.href);
+      document.querySelector("fencedframe").config = new FencedFrameConfig(url);
+    }
   </script>
 </body>
 </html>

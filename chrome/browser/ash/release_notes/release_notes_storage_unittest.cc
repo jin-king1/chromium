@@ -9,19 +9,23 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
-#include "base/memory/raw_ptr.h"
+#include "ash/constants/ash_pref_names.h"
+#include "ash/webui/help_app_ui/help_app_prefs.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/version.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chromeos/ash/components/install_attributes/stub_install_attributes.h"
 #include "chromeos/ash/components/login/login_state/login_state.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "components/version_info/version_info.h"
 #include "content/public/test/browser_task_environment.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace {
@@ -41,25 +45,23 @@ class ReleaseNotesStorageTest : public testing::Test,
   ReleaseNotesStorageTest& operator=(const ReleaseNotesStorageTest&) = delete;
 
  protected:
-  ReleaseNotesStorageTest()
-      : user_manager_(new FakeChromeUserManager()),
-        scoped_user_manager_(
-            std::unique_ptr<FakeChromeUserManager>(user_manager_)) {}
-  ~ReleaseNotesStorageTest() override {}
+  ReleaseNotesStorageTest() = default;
+  ~ReleaseNotesStorageTest() override = default;
 
   void SetUpProfile() {
     TestingProfile::Builder builder;
     if (is_guest_) {
       builder.SetGuestSession();
     } else {
-      AccountId account_id_ = AccountId::FromUserEmailGaiaId(email_, "12345");
+      AccountId account_id_ =
+          AccountId::FromUserEmailGaiaId(email_, GaiaId("12345"));
       user_manager_->AddUser(account_id_);
       builder.SetProfileName(email_);
 
       builder.OverridePolicyConnectorIsManagedForTesting(is_managed_);
       if (is_ephemeral_) {
         // Enabling ephemeral users passes the |IsEphemeralUserProfile| check.
-        user_manager_->set_ephemeral_mode_config(
+        user_manager_->SetEphemeralModeConfig(
             user_manager::UserManager::EphemeralModeConfig(
                 /* included_by_default= */ true,
                 /* include_list= */ std::vector<AccountId>{},
@@ -75,17 +77,15 @@ class ReleaseNotesStorageTest : public testing::Test,
   }
 
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kReleaseNotesNotificationAllChannels,
-                              features::kReleaseNotesSuggestionChip},
-        /*disabled_features=*/{});
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kReleaseNotesNotificationAllChannels);
   }
 
-  raw_ptr<FakeChromeUserManager, ExperimentalAsh> user_manager_;
-  user_manager::ScopedUserManager scoped_user_manager_;
+  user_manager::TypedScopedUserManager<FakeChromeUserManager> user_manager_{
+      std::make_unique<FakeChromeUserManager>()};
   content::BrowserTaskEnvironment task_environment_;
   base::test::ScopedFeatureList scoped_feature_list_;
-  std::unique_ptr<Profile> profile_;
+  std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<ReleaseNotesStorage> release_notes_storage_;
 
   // Data members for SetUpProfile().
@@ -100,7 +100,7 @@ class ReleaseNotesStorageTest : public testing::Test,
 // milestone.
 TEST_F(ReleaseNotesStorageTest, ShouldNotShowReleaseNotesOOBE) {
   SetUpProfile();
-  profile_.get()->GetPrefs()->SetString(prefs::kProfileCreatedByVersion,
+  profile_.get()->GetPrefs()->SetString(::prefs::kProfileCreatedByVersion,
                                         version_info::GetVersion().GetString());
 
   EXPECT_EQ(false, release_notes_storage_->ShouldNotify());
@@ -110,7 +110,7 @@ TEST_F(ReleaseNotesStorageTest, ShouldNotShowReleaseNotesOOBE) {
 // version of chrome.
 TEST_F(ReleaseNotesStorageTest, ShouldShowReleaseNotesOldProfile) {
   SetUpProfile();
-  profile_.get()->GetPrefs()->SetString(prefs::kProfileCreatedByVersion,
+  profile_.get()->GetPrefs()->SetString(::prefs::kProfileCreatedByVersion,
                                         "20.0.0.0");
 
   EXPECT_EQ(true, release_notes_storage_->ShouldNotify());
@@ -121,7 +121,7 @@ TEST_F(ReleaseNotesStorageTest, ShouldShowReleaseNotesOldProfile) {
 TEST_F(ReleaseNotesStorageTest, ShouldShowReleaseNotes) {
   SetUpProfile();
   profile_.get()->GetPrefs()->SetInteger(
-      prefs::kHelpAppNotificationLastShownMilestone, 20);
+      ash::help_app::prefs::kHelpAppNotificationLastShownMilestone, 20);
 
   EXPECT_EQ(true, release_notes_storage_->ShouldNotify());
 }
@@ -131,7 +131,8 @@ TEST_F(ReleaseNotesStorageTest,
        ShouldNotShowReleaseNotesIfShownInCurrentChromeVersion) {
   SetUpProfile();
   profile_.get()->GetPrefs()->SetInteger(
-      prefs::kHelpAppNotificationLastShownMilestone, CurrentMilestone());
+      ash::help_app::prefs::kHelpAppNotificationLastShownMilestone,
+      CurrentMilestone());
 
   EXPECT_EQ(false, release_notes_storage_->ShouldNotify());
 }
@@ -144,14 +145,18 @@ TEST_F(ReleaseNotesStorageTest, ReleaseNotesShouldOnlyBeNotifiedOnce) {
 
   release_notes_storage_->MarkNotificationShown();
 
-  EXPECT_NE(20, profile_.get()->GetPrefs()->GetInteger(
-                    prefs::kHelpAppNotificationLastShownMilestone));
+  EXPECT_NE(20,
+            profile_.get()->GetPrefs()->GetInteger(
+                ash::help_app::prefs::kHelpAppNotificationLastShownMilestone));
   EXPECT_EQ(false, release_notes_storage_->ShouldNotify());
 }
 
 TEST_F(ReleaseNotesStorageTest, ShouldNotShowReleaseNotesForEphemeralProfile) {
   is_ephemeral_ = true;
   SetUpProfile();
+  profile_->ScopedCrosSettingsTestHelper()
+      ->InstallAttributes()
+      ->SetCloudManaged("test_domain", "FAKE_DEVICE_ID");
 
   EXPECT_EQ(false, release_notes_storage_->ShouldNotify());
 }
@@ -191,7 +196,7 @@ TEST_F(ReleaseNotesStorageTest, ShouldShowReleaseNotesForUnicornProfile) {
 TEST_F(ReleaseNotesStorageTest, DoesNotShowReleaseNotesSuggestionChip) {
   SetUpProfile();
   profile_.get()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 0);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 0);
 
   EXPECT_EQ(false, release_notes_storage_->ShouldShowSuggestionChip());
 }
@@ -202,27 +207,15 @@ TEST_F(ReleaseNotesStorageTest, DoesNotShowReleaseNotesSuggestionChip) {
 TEST_F(ReleaseNotesStorageTest, ShowReleaseNotesSuggestionChip) {
   SetUpProfile();
   profile_.get()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 1);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 1);
 
   ASSERT_EQ(true, release_notes_storage_->ShouldShowSuggestionChip());
 
   release_notes_storage_->DecreaseTimesLeftToShowSuggestionChip();
 
   EXPECT_EQ(0, profile_.get()->GetPrefs()->GetInteger(
-                   prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
+                   ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
   EXPECT_EQ(false, release_notes_storage_->ShouldShowSuggestionChip());
-}
-
-// Tests that when we mark a notification as shown, we also show the suggestion
-// chip.
-TEST_F(ReleaseNotesStorageTest, ShowSuggestionChipWhenNotificationShown) {
-  SetUpProfile();
-
-  release_notes_storage_->MarkNotificationShown();
-
-  EXPECT_EQ(3, profile_.get()->GetPrefs()->GetInteger(
-                   prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
-  EXPECT_EQ(true, release_notes_storage_->ShouldShowSuggestionChip());
 }
 
 }  // namespace ash

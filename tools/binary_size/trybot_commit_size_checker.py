@@ -33,7 +33,12 @@ import pathlib
 import re
 import sys
 
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+
 sys.path.append(str(pathlib.Path(__file__).parent / 'libsupersize'))
+sys.path.append(str(_REPO_ROOT / 'testing/variations/presubmit'))
+import find_features
+import functools
 import archive
 import diagnose_bloat
 import diff
@@ -44,14 +49,14 @@ import models
 import native_disassembly
 
 _RESOURCE_SIZES_LOG = 'resource_sizes_log'
+_RESOURCE_SIZES_64_LOG = 'resource_sizes_64_log'
+_MAIN_LOG_NAMES = (_RESOURCE_SIZES_LOG, _RESOURCE_SIZES_64_LOG)
 _BASE_RESOURCE_SIZES_LOG = 'base_resource_sizes_log'
 _MUTABLE_CONSTANTS_LOG = 'mutable_contstants_log'
 _FOR_TESTING_LOG = 'for_test_log'
 _DEX_SYMBOLS_LOG = 'dex_symbols_log'
-_SIZEDIFF_FILENAME = 'supersize_diff.sizediff'
-_HTML_REPORT_URL = (
-    'https://chrome-supersize.firebaseapp.com/viewer.html?load_url={{' +
-    _SIZEDIFF_FILENAME + '}}')
+_HTML_REPORT_URL_TEMPLATE = (
+    'https://chrome-supersize.firebaseapp.com/viewer.html?load_url={{%s}}')
 _MAX_PAK_INCREASE = 1024
 _TRYBOT_MD_URL = ('https://chromium.googlesource.com/chromium/src/+/main/docs/'
                   'speed/binary_size/android_binary_size_trybot.md')
@@ -98,9 +103,9 @@ class _SizeDelta(collections.namedtuple(
 
 # See https://crbug.com/1426694
 def _MaxSizeIncrease(author, subject):
-  if 'AFDO' in subject:
+  if 'AFDO' in subject or 'PGO Profile' in subject:
     return 1024 * 1024
-  if 'Update V8' in subject:
+  if 'Update V8' in subject or 'Roll V8' in subject:
     return 100 * 1024
   if 'autoroll' in author:
     return 50 * 1024
@@ -128,10 +133,75 @@ def _SymbolDiffHelper(title_fragment, symbols):
   return lines, len(added) - len(removed)
 
 
-def _CreateMutableConstantsDelta(symbols):
-  symbols = (
-      symbols.WhereInSection('d').WhereNameMatches(r'\bk[A-Z]|\b[A-Z_]+$').
-      WhereFullNameMatches('abi:logically_const').Inverted())
+@functools.lru_cache(maxsize=None)
+def _GetFeatureSymbolNamesCached(full_source_path):
+  raw_symbols = find_features.FindFeatureSymbolNamesInFile(
+      str(full_source_path))
+  # Strip any C++ namespaces so the returned set contains pure feature basenames
+  # (e.g. {'kMyFeature'}).
+  return {sym.split('::')[-1] for sym in raw_symbols}
+
+
+def _IsFeatureSymbol(symbol, out_directory=None):
+  """Checks if the symbol is a C++ Feature defined via BASE_FEATURE
+  in its source file."""
+  underlying_symbol = symbol.after_symbol or symbol.before_symbol
+  assert underlying_symbol, (
+      'Impossible: underlying_symbol has neither after_symbol nor '
+      'before_symbol')
+
+  source_path = underlying_symbol.source_path
+  if not source_path:
+    return False
+
+  # Resolve the source path relative to the repo root
+  repo_root = _REPO_ROOT
+  if underlying_symbol.generated_source:
+    if out_directory:
+      full_source_path = repo_root / out_directory / 'gen' / source_path
+    else:
+      # Local test or fallback paths
+      possible_paths = [
+          repo_root / 'out/Release/gen' / source_path,
+          repo_root / 'out/Debug/gen' / source_path,
+          repo_root / 'out/Default/gen' / source_path,
+      ]
+      full_source_path = None
+      for p in possible_paths:
+        if p.exists():
+          full_source_path = p
+          break
+      if not full_source_path:
+        return False
+  else:
+    full_source_path = repo_root / source_path
+
+  if not full_source_path.exists():
+    return False
+
+  feature_symbols = _GetFeatureSymbolNamesCached(full_source_path)
+  symbol_name = underlying_symbol.name
+  # Strip any C++ namespace if present (though extern "C" symbols don't
+  # have them)
+  symbol_basename = symbol_name.split('::')[-1]
+
+  if symbol_basename in feature_symbols:
+    return True
+
+  return False
+
+
+def _CreateMutableConstantsDelta(symbols, out_directory=None):
+  # Exclude Rust symbols. Path filtering (.rs) is preferred, but some Rust
+  # symbols (like lazy_static/once_cell internals) lack path info in SuperSize
+  # (showing as {no path}), so we also filter by name patterns.
+  symbols = symbols \
+      .WhereInSection('d') \
+      .WhereNameMatches(r'\bk[A-Z]|\b[A-Z_]+$') \
+      .WhereFullNameMatches('abi:logically_const').Inverted() \
+      .WhereSourcePathMatches(r'\.rs$').Inverted() \
+      .WhereFullNameMatches(r'::.*LAZY$|once_cell|lazy_static').Inverted() \
+      .Filter(lambda s: not _IsFeatureSymbol(s, out_directory))
   lines, net_added = _SymbolDiffHelper('Mutable Constants', symbols)
 
   return lines, _SizeDelta('Mutable Constants', 'symbols', 0, net_added)
@@ -141,8 +211,8 @@ def _CreateMethodCountDelta(symbols, max_increase):
   symbols = symbols.WhereIsOnDemand(False)
   method_symbols = symbols.WhereInSection(models.SECTION_DEX_METHOD)
   method_lines, net_method_added = _SymbolDiffHelper('Methods', method_symbols)
-  class_symbols = symbols.WhereInSection(
-      models.SECTION_DEX).WhereNameMatches('#').Inverted()
+  class_symbols = symbols.WhereInSection(models.SECTION_DEX).Filter(
+      lambda s: not s.IsStringLiteral() and '#' not in s.name)
   class_lines, _ = _SymbolDiffHelper('Classes', class_symbols)
   lines = []
   if class_lines:
@@ -156,7 +226,8 @@ def _CreateMethodCountDelta(symbols, max_increase):
 
 
 def _CreateResourceSizesDelta(before_dir, after_dir, max_increase):
-  sizes_diff = diagnose_bloat.ResourceSizesDiff()
+  sizes_diff = diagnose_bloat.ResourceSizesDiff(
+      filename='resource_sizes_32.json')
   sizes_diff.ProduceDiff(before_dir, after_dir)
 
   return sizes_diff.Summary(), _SizeDelta('Normalized APK Size', 'bytes',
@@ -165,12 +236,25 @@ def _CreateResourceSizesDelta(before_dir, after_dir, max_increase):
 
 
 def _CreateBaseModuleResourceSizesDelta(before_dir, after_dir, max_increase):
-  sizes_diff = diagnose_bloat.ResourceSizesDiff(include_sections=['base'])
+  sizes_diff = diagnose_bloat.ResourceSizesDiff(
+      filename='resource_sizes_32.json', include_sections=['base'])
   sizes_diff.ProduceDiff(before_dir, after_dir)
 
   return sizes_diff.DetailedResults(), _SizeDelta(
       'Base Module Size', 'bytes', max_increase,
       sizes_diff.CombinedSizeChangeForSection('base'))
+
+
+def _CreateResourceSizes64Delta(before_dir, after_dir, max_increase):
+  sizes_diff = diagnose_bloat.ResourceSizesDiff(
+      filename='resource_sizes_64.json')
+  sizes_diff.ProduceDiff(before_dir, after_dir)
+
+  # Allow 4x growth of arm64 before blocking CLs.
+  # TODO(crbug.com/399103933): Return this to * 4 once bot is not noisy.
+  return sizes_diff.Summary(), _SizeDelta('Normalized APK Size (arm64)',
+                                          'bytes', max_increase * 400,
+                                          sizes_diff.summary_stat.value)
 
 
 def _CreateSupersizeDiff(before_size_path, after_size_path, review_subject,
@@ -199,41 +283,116 @@ def _CreateUncompressedPakSizeDeltas(symbols):
   ]
 
 
-def _ExtractForTestingSymbolsFromSingleMapping(mapping_path):
-  with open(mapping_path) as f:
-    proguard_mapping_lines = f.readlines()
-    current_class_orig = None
-    for line in proguard_mapping_lines:
-      if line.isspace() or '#' in line:
-        continue
-      if not line.startswith(' '):
-        match = _PROGUARD_CLASS_MAPPING_RE.search(line)
-        if match is None:
-          raise Exception('Malformed class mapping')
-        current_class_orig = match.group('original_name')
-        continue
-      assert current_class_orig is not None
-      line = line.strip()
-      match = _PROGUARD_METHOD_MAPPING_RE.search(line)
-      if (match is not None
-          and match.group('original_method_name').find('ForTest') > -1):
-        method_symbol = '{}#{}'.format(
-            match.group('original_method_class') or current_class_orig,
-            match.group('original_method_name'))
-        yield method_symbol
+def _ParseUnusedResources(unused_resources_path):
+  with open(unused_resources_path, 'rt') as contents:
+    return set(line.split('#')[0] for line in contents)
 
-      match = _PROGUARD_FIELD_MAPPING_RE.search(line)
-      if (match is not None
-          and match.group('original_name').find('ForTest') > -1):
-        field_symbol = '{}#{}'.format(current_class_orig,
-                                      match.group('original_name'))
-        yield field_symbol
+
+def _ParseRTxtResources(path):
+  ret = set()
+  with open(path, 'rt') as f:
+    for line in f:
+      # Ignore comments
+      if line.strip().startswith('--'):
+        continue
+      m = re.match(r'(?:int(?:\[\])?) (\w+) (\w+) (?:.+)$', line)
+      if not m:
+        raise Exception('Unexpected line in R.txt: %s' % line)
+      resource_type, name = m.groups()
+      ret.add(f'{resource_type}/{name}')
+  return ret
+
+
+def _CreateResourceDiffLines(unused_resources_before_paths, r_txt_before_paths,
+                             unused_resources_after_paths, r_txt_after_paths):
+  unused_resources_before = set()
+  for path in unused_resources_before_paths:
+    unused_resources_before.update(_ParseUnusedResources(path))
+
+  unused_resources_after = set()
+  for path in unused_resources_after_paths:
+    unused_resources_after.update(_ParseUnusedResources(path))
+
+  all_resources_before = set()
+  for path in r_txt_before_paths:
+    all_resources_before.update(_ParseRTxtResources(path))
+
+  all_resources_after = set()
+  for path in r_txt_after_paths:
+    all_resources_after.update(_ParseRTxtResources(path))
+
+  new_resources = all_resources_after - all_resources_before
+  existing_resources = all_resources_before & all_resources_after
+  removed_resources = all_resources_before - all_resources_after
+
+  new_used_resources = new_resources - unused_resources_after
+  new_unused_resources = new_resources & unused_resources_after
+
+  existing_now_used_resources = (
+      (existing_resources & unused_resources_before) - unused_resources_after)
+  existing_now_unused_resources = (
+      (existing_resources - unused_resources_before) & unused_resources_after)
+
+  removed_resources_previously_used = (removed_resources -
+                                       unused_resources_before)
+  removed_resources_previously_unused = (removed_resources
+                                         & unused_resources_before)
+
+  lines = ['===== New resources that are used: =====']
+  lines += [f'+{r}' for r in sorted(new_used_resources)]
+  lines += ['===== New resources that are unused: =====']
+  lines += [f'+{r}' for r in sorted(new_unused_resources)]
+  lines = ['===== Existing resources that have become used: =====']
+  lines += [f'~{r}' for r in sorted(existing_now_used_resources)]
+  lines += ['===== Existing resources that have become unused: =====']
+  lines += [f'~{r}' for r in sorted(existing_now_unused_resources)]
+  lines += ['===== Removed resources that were previously used: =====']
+  lines += [f'-{r}' for r in sorted(removed_resources_previously_used)]
+  lines += ['===== Removed resources that were previously unused: =====']
+  lines += [f'-{r}' for r in sorted(removed_resources_previously_unused)]
+  return lines
+
+
+def _IsForTestSymbol(value):
+  return 'ForTest' in value or 'FOR_TEST' in value
+
+
+def IterForTestingSymbolsFromMapping(contents):
+  current_class_orig = None
+  for line in contents.splitlines(keepends=True):
+    if line.isspace() or '#' in line:
+      continue
+    if not line.startswith(' '):
+      match = _PROGUARD_CLASS_MAPPING_RE.search(line)
+      if match is None:
+        raise Exception('Malformed class mapping')
+      current_class_orig = match.group('original_name')
+      if _IsForTestSymbol(current_class_orig):
+        yield current_class_orig
+      continue
+
+    assert current_class_orig is not None
+    line = line.strip()
+    match = _PROGUARD_METHOD_MAPPING_RE.search(line)
+    if match:
+      method_name = match.group('original_method_name')
+      class_name = match.group('original_method_class') or current_class_orig
+      if _IsForTestSymbol(method_name) or _IsForTestSymbol(class_name):
+        yield f'{class_name}#{method_name}'
+      continue
+
+    match = _PROGUARD_FIELD_MAPPING_RE.search(line)
+    if match:
+      field_name = match.group('original_name')
+      if _IsForTestSymbol(field_name) or _IsForTestSymbol(current_class_orig):
+        yield f'{current_class_orig}#{field_name}'
 
 
 def _ExtractForTestingSymbolsFromMappings(mapping_paths):
   symbols = set()
   for mapping_path in mapping_paths:
-    symbols.update(_ExtractForTestingSymbolsFromSingleMapping(mapping_path))
+    with open(mapping_path) as f:
+      symbols.update(IterForTestingSymbolsFromMapping(f.read()))
   return symbols
 
 
@@ -255,34 +414,33 @@ def _CreateTestingSymbolsDeltas(before_mapping_paths, after_mapping_paths):
                            len(added_symbols) - len(removed_symbols))
 
 
-def _GenerateBinarySizePluginDetails(metrics):
+def _GenerateBinarySizePluginDetails(metrics, sizediff_filename):
   binary_size_listings = []
   for delta, log_name in metrics:
-    # Only show the base module delta if it is significant.
-    if (log_name == _BASE_RESOURCE_SIZES_LOG and delta.IsAllowable()
-        and not delta.IsLargeImprovement()):
-      continue
+    # Give more friendly names to Normalized APK Size metrics.
+    name = delta.name
+    if log_name == _RESOURCE_SIZES_LOG:
+      # The Gerrit plugin looks for this name to put it in the summary.
+      name = 'Android Binary Size'
+    elif log_name == _RESOURCE_SIZES_64_LOG:
+      name = 'Android Binary Size (arm64 high end) (TrichromeLibrary64.apk)'
     listing = {
-        'name': delta.name,
+        'name': name,
         'delta': '{} {}'.format(_FormatNumber(delta.actual), delta.units),
         'limit': '{} {}'.format(_FormatNumber(delta.expected), delta.units),
         'log_name': log_name,
         'allowed': delta.IsAllowable(),
         'large_improvement': delta.IsLargeImprovement(),
     }
-    if log_name == _RESOURCE_SIZES_LOG:
-      listing['name'] = 'Android Binary Size'
-      binary_size_listings.insert(0, listing)
-      continue
-    # The main 'binary size' delta is always shown even if unchanged.
-    if delta.actual == 0:
-      continue
-    binary_size_listings.append(listing)
+    # Always show the Normalized APK Size.
+    if log_name in _MAIN_LOG_NAMES or delta.actual != 0:
+      binary_size_listings.append(listing)
+  binary_size_listings.sort(key=lambda x: x['name'])
 
   binary_size_extras = [
       {
           'text': 'APK Breakdown',
-          'url': _HTML_REPORT_URL
+          'url': _HTML_REPORT_URL_TEMPLATE % sizediff_filename
       },
   ]
 
@@ -295,6 +453,17 @@ def _GenerateBinarySizePluginDetails(metrics):
 def _FormatNumber(number):
   # Adds a sign for positive numbers and puts commas in large numbers
   return '{:+,}'.format(number)
+
+
+# TODO(crbug.com/40256106): If missing and file is x32y, return xy; else
+# return original filename. Basically allows comparing x_32 targets with x
+# targets built under 32bit target_cpu without failing the script due to
+# different file names. Remove once migration is complete.
+def _UseAlterantiveIfMissing(path):
+  if not os.path.isfile(path):
+    parent, name = os.path.split(path)
+    path = os.path.join(parent, name.replace('32', '', 1))
+  return path
 
 
 def main():
@@ -326,6 +495,10 @@ def main():
       '--local-test',
       action='store_true',
       help='Allow input directories to be diagnose_bloat.py ones.')
+  parser.add_argument('--changed-file',
+                      action='append',
+                      dest='changed_files',
+                      help='List of changed files in the commit')
   args = parser.parse_args()
 
   logging.basicConfig(level=logging.INFO,
@@ -346,15 +519,17 @@ def main():
     config = json.load(fh)
 
   if args.local_test:
-    size_filename = 'Trichrome.minimal.apks.size'
+    size_filename = 'Trichrome32.minimal.apks.size'
   else:
     size_filename = config['supersize_input_file'] + '.size'
 
   before_mapping_paths = [
-      before_path_resolver(f) for f in config['mapping_files']
+      _UseAlterantiveIfMissing(before_path_resolver(f))
+      for f in config['mapping_files']
   ]
   after_mapping_paths = [
-      after_path_resolver(f) for f in config['mapping_files']
+      _UseAlterantiveIfMissing(after_path_resolver(f))
+      for f in config['mapping_files']
   ]
 
   max_size_increase = _MaxSizeIncrease(args.author, args.review_subject)
@@ -364,7 +539,8 @@ def main():
 
   logging.info('Creating Supersize diff')
   supersize_diff_lines, delta_size_info = _CreateSupersizeDiff(
-      before_path_resolver(size_filename), after_path_resolver(size_filename),
+      _UseAlterantiveIfMissing(before_path_resolver(size_filename)),
+      _UseAlterantiveIfMissing(after_path_resolver(size_filename)),
       args.review_subject, args.review_url)
 
   changed_symbols = delta_size_info.raw_symbols.WhereDiffStatusIs(
@@ -380,10 +556,39 @@ def main():
   # C++ syntax makes this an easy mistake, and having symbols in .data uses more
   # RAM than symbols in .rodata (at least for multi-process apps).
   logging.info('Checking for mutable constants in native symbols')
+  out_directory = delta_size_info.after.build_config.get('out_directory')
   mutable_constants_lines, mutable_constants_delta = (
-      _CreateMutableConstantsDelta(changed_symbols))
+      _CreateMutableConstantsDelta(changed_symbols, out_directory))
   size_deltas.add(mutable_constants_delta)
   metrics.add((mutable_constants_delta, _MUTABLE_CONSTANTS_LOG))
+
+  logging.info('Calculating android resources diff')
+  unused_resources_paths = []
+  r_txt_paths = []
+  for f in config['archive_files']:
+    if f.endswith('.unused_resources'):
+      unused_resources_paths.append(f)
+    if f.endswith('.R.txt'):
+      r_txt_paths.append(f)
+  resources_diff_lines = []
+  if unused_resources_paths and r_txt_paths:
+    unused_resources_before_paths = [
+        _UseAlterantiveIfMissing(before_path_resolver(p))
+        for p in unused_resources_paths
+    ]
+    unused_resources_after_paths = [
+        _UseAlterantiveIfMissing(after_path_resolver(p))
+        for p in unused_resources_paths
+    ]
+    r_txt_before_paths = [
+        _UseAlterantiveIfMissing(before_path_resolver(p)) for p in r_txt_paths
+    ]
+    r_txt_after_paths = [
+        _UseAlterantiveIfMissing(after_path_resolver(p)) for p in r_txt_paths
+    ]
+    resources_diff_lines = _CreateResourceDiffLines(
+        unused_resources_before_paths, r_txt_before_paths,
+        unused_resources_after_paths, r_txt_after_paths)
 
   # Look for symbols with 'ForTest' in their name.
   logging.info('Checking for DEX symbols named "ForTest"')
@@ -398,29 +603,47 @@ def main():
   size_deltas.update(_CreateUncompressedPakSizeDeltas(changed_symbols))
 
   # Normalized APK Size is the main metric we use to monitor binary size.
-  logging.info('Creating sizes diff')
-  resource_sizes_lines, resource_sizes_delta = (_CreateResourceSizesDelta(
-      args.before_dir, args.after_dir, max_size_increase))
-  size_deltas.add(resource_sizes_delta)
-  metrics.add((resource_sizes_delta, _RESOURCE_SIZES_LOG))
+  config_32 = config.get('to_resource_sizes_py')
+  if config_32:
+    logging.info('Creating sizes diff')
+    resource_sizes_lines, resource_sizes_delta = (_CreateResourceSizesDelta(
+        args.before_dir, args.after_dir, max_size_increase))
+    size_deltas.add(resource_sizes_delta)
+    metrics.add((resource_sizes_delta, _RESOURCE_SIZES_LOG))
 
-  logging.info('Creating base module sizes diff')
-  base_resource_sizes_lines, base_resource_sizes_delta = (
-      _CreateBaseModuleResourceSizesDelta(args.before_dir, args.after_dir,
-                                          max_size_increase))
-  size_deltas.add(base_resource_sizes_delta)
-  metrics.add((base_resource_sizes_delta, _BASE_RESOURCE_SIZES_LOG))
+    logging.info('Creating base module sizes diff')
+    base_resource_sizes_lines, base_resource_sizes_delta = (
+        _CreateBaseModuleResourceSizesDelta(args.before_dir, args.after_dir,
+                                            max_size_increase))
+    size_deltas.add(base_resource_sizes_delta)
+    metrics.add((base_resource_sizes_delta, _BASE_RESOURCE_SIZES_LOG))
+
+  config_64 = config.get('to_resource_sizes_py_64')
+  if config_64:
+    logging.info('Creating 64-bit sizes diff')
+    resource_sizes_64_lines, resource_sizes_64_delta = (
+        _CreateResourceSizes64Delta(args.before_dir, args.after_dir,
+                                    max_size_increase))
+    size_deltas.add(resource_sizes_64_delta)
+    metrics.add((resource_sizes_64_delta, _RESOURCE_SIZES_64_LOG))
 
   logging.info('Adding disassembly to dex symbols')
-  dex_disassembly.AddDisassembly(delta_size_info, before_path_resolver,
-                                 after_path_resolver)
+  dex_disassembly.AddDisassembly(delta_size_info,
+                                 before_path_resolver,
+                                 after_path_resolver,
+                                 normalize=True,
+                                 changed_files=args.changed_files)
   logging.info('Adding disassembly to native symbols')
-  native_disassembly.AddDisassembly(delta_size_info, before_path_resolver,
-                                    after_path_resolver)
+  native_disassembly.AddDisassembly(delta_size_info,
+                                    before_path_resolver,
+                                    after_path_resolver,
+                                    normalize=True,
+                                    changed_files=args.changed_files)
 
   # .sizediff can be consumed by the html viewer.
   logging.info('Creating HTML Report')
-  sizediff_path = os.path.join(args.staging_dir, _SIZEDIFF_FILENAME)
+  sizediff_filename = os.path.basename(size_filename) + 'diff'
+  sizediff_path = os.path.join(args.staging_dir, sizediff_filename)
   file_format.SaveDeltaSizeInfo(delta_size_info, sizediff_path)
 
   passing_deltas = set(d for d in size_deltas if d.IsAllowable())
@@ -446,16 +669,6 @@ To understand what those checks are and how to pass them, see:
   summary = '<br>' + checks_text.replace('\n', '<br>')
   links_json = [
       {
-          'name': 'Binary Size Details',
-          'lines': resource_sizes_lines + see_docs_lines,
-          'log_name': _RESOURCE_SIZES_LOG,
-      },
-      {
-          'name': 'Base Module Binary Size Details',
-          'lines': base_resource_sizes_lines + see_docs_lines,
-          'log_name': _BASE_RESOURCE_SIZES_LOG,
-      },
-      {
           'name': 'Mutable Constants Diff',
           'lines': mutable_constants_lines + see_docs_lines,
           'log_name': _MUTABLE_CONSTANTS_LOG,
@@ -471,23 +684,50 @@ To understand what those checks are and how to pass them, see:
           'log_name': _DEX_SYMBOLS_LOG,
       },
       {
+          'name': 'Android Resources Diff',
+          'lines': resources_diff_lines,
+      },
+      {
           'name': 'SuperSize Text Diff',
           'lines': supersize_diff_lines,
       },
       {
           'name': 'SuperSize HTML Diff',
-          'url': _HTML_REPORT_URL,
+          'url': _HTML_REPORT_URL_TEMPLATE % sizediff_filename,
       },
   ]
+  if config_32:
+    links_json[0:0] = [
+        {
+            'name': 'Binary Size Details (arm32)',
+            'lines': resource_sizes_lines + see_docs_lines,
+            'log_name': _RESOURCE_SIZES_LOG,
+        },
+        {
+            'name': 'Base Module Binary Size Details',
+            'lines': base_resource_sizes_lines + see_docs_lines,
+            'log_name': _BASE_RESOURCE_SIZES_LOG,
+        },
+    ]
+
+  if config_64:
+    links_json[2:2] = [
+        {
+            'name': 'Binary Size Details (arm64)',
+            'lines': resource_sizes_64_lines + see_docs_lines,
+            'log_name': _RESOURCE_SIZES_64_LOG,
+        },
+    ]
   # Remove empty diffs (Mutable Constants, Dex Method, ...).
   links_json = [o for o in links_json if o.get('lines') or o.get('url')]
 
-  binary_size_plugin_json = _GenerateBinarySizePluginDetails(metrics)
+  binary_size_plugin_json = _GenerateBinarySizePluginDetails(
+      metrics, sizediff_filename)
 
   results_json = {
       'status_code': status_code,
       'summary': summary,
-      'archive_filenames': [_SIZEDIFF_FILENAME],
+      'archive_filenames': [sizediff_filename],
       'links': links_json,
       'gerrit_plugin_details': binary_size_plugin_json,
   }

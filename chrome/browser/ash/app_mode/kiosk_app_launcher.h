@@ -4,11 +4,13 @@
 #ifndef CHROME_BROWSER_ASH_APP_MODE_KIOSK_APP_LAUNCHER_H_
 #define CHROME_BROWSER_ASH_APP_MODE_KIOSK_APP_LAUNCHER_H_
 
+#include <optional>
+#include <string>
+
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_launch_error.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace ash {
 
@@ -50,9 +52,10 @@ class KioskAppLauncher {
     virtual void OnAppDataUpdated() {}
     virtual void OnAppInstalling() {}
     virtual void OnAppPrepared() {}
+    virtual void OnAppLaunching() {}
     virtual void OnAppLaunched() {}
     virtual void OnAppWindowCreated(
-        const absl::optional<std::string>& app_name) {}
+        const std::optional<std::string>& app_name) {}
     virtual void OnLaunchFailed(KioskAppLaunchError::Error error) {}
   };
 
@@ -69,13 +72,19 @@ class KioskAppLauncher {
     void NotifyAppDataUpdated();
     void NotifyAppInstalling();
     void NotifyAppPrepared();
+    void NotifyAppLaunching();
     void NotifyAppLaunched();
     void NotifyAppWindowCreated(
-        const absl::optional<std::string>& app_id = absl::nullopt);
+        const std::optional<std::string>& app_id = std::nullopt);
     void NotifyLaunchFailed(KioskAppLaunchError::Error error);
 
    private:
-    base::ObserverList<Observer> observers_;
+    // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+    base::ObserverList<
+        Observer,
+        /*check_empty=*/false,
+        base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+        observers_;
   };
 
   KioskAppLauncher();

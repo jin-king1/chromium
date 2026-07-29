@@ -7,21 +7,33 @@
 
 #import <Foundation/Foundation.h>
 
-namespace web {
-class WebState;
-}
-
 // Commands for the popup menu.
 @protocol PopupMenuCommands
+
+// Called to present the Level Up Password Checkup walkthrough IPH step.
+- (void)showLevelUpPasswordCheckupWalkthroughIPH;
+
+// Called to present the Level Up Payment Methods walkthrough IPH step.
+- (void)showLevelUpPaymentMethodsWalkthroughIPH;
+
+// Called to present the Level Up Quick Delete walkthrough IPH step.
+- (void)showLevelUpQuickDeleteWalkthroughIPH;
 
 // Shows the tools menu.
 - (void)showToolsMenuPopup;
 // Dismisses the currently presented popup.
 - (void)dismissPopupMenuAnimated:(BOOL)animated;
-// Shows a snackbar that allows the user to UNDO its pin/unpin action.
-- (void)showSnackbarForPinnedState:(BOOL)pinnedState
-                          webState:(web::WebState*)webState;
-
+// Adjusts the popup's size when the containing view's size changes.
+- (void)adjustPopupSize;
+// Updates the blue dot state for tools menu button on toolbar.
+- (void)updateToolsMenuBlueDotVisibility;
+// Notifies that IPH bubble will be presenting on tools menu button.
+- (void)notifyIPHBubblePresenting;
+// Returns whether overflow menu button (e.g tools menu button) has blue dot.
+- (BOOL)hasBlueDotForOverflowMenu;
+// Displays an IPH bubble on the tools menu button to guide users in scheduling
+// reminder notifications for the current tab.
+- (void)displayPopupMenuTabRemindersIPH;
 @end
 
 #endif  // IOS_CHROME_BROWSER_SHARED_PUBLIC_COMMANDS_POPUP_MENU_COMMANDS_H_

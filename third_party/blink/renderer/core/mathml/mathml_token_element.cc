@@ -5,7 +5,7 @@
 #include "third_party/blink/renderer/core/mathml/mathml_token_element.h"
 
 #include "third_party/blink/renderer/core/dom/character_data.h"
-#include "third_party/blink/renderer/core/layout/ng/mathml/layout_ng_mathml_block_flow.h"
+#include "third_party/blink/renderer/core/layout/mathml/layout_mathml_block_flow.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -13,7 +13,7 @@ namespace blink {
 MathMLTokenElement::MathMLTokenElement(const QualifiedName& tagName,
                                        Document& document)
     : MathMLElement(tagName, document) {
-  token_content_ = absl::nullopt;
+  token_content_ = std::nullopt;
 }
 
 namespace {
@@ -26,7 +26,7 @@ UChar32 TokenCodePoint(const String& text_content) {
   if ((content_length > 2) || (content_length == 0) ||
       (content_length == 1 && !U16_IS_SINGLE(text_content[0])) ||
       (content_length == 2 && !U16_IS_LEAD(text_content[0])))
-    return kNonCharacter;
+    return uchar::kNonCharacter;
 
   UChar32 character;
   unsigned offset = 0;
@@ -48,9 +48,9 @@ bool MathMLTokenElement::IsPresentationAttribute(
 void MathMLTokenElement::CollectStyleForPresentationAttribute(
     const QualifiedName& name,
     const AtomicString& value,
-    MutableCSSPropertyValueSet* style) {
+    HeapVector<CSSPropertyValue, 8>& style) {
   if (name == mathml_names::kMathvariantAttr &&
-      EqualIgnoringASCIICase(value, "normal")) {
+      EqualIgnoringAsciiCase(value, "normal")) {
     AddPropertyToPresentationAttributeStyle(
         style, CSSPropertyID::kTextTransform, CSSValueID::kNone);
   } else {
@@ -85,17 +85,15 @@ const MathMLTokenElement::TokenContent& MathMLTokenElement::GetTokenContent() {
 
 void MathMLTokenElement::ChildrenChanged(
     const ChildrenChange& children_change) {
-  token_content_ = absl::nullopt;
+  token_content_ = std::nullopt;
   MathMLElement::ChildrenChanged(children_change);
 }
 
 LayoutObject* MathMLTokenElement::CreateLayoutObject(
     const ComputedStyle& style) {
-  if (!RuntimeEnabledFeatures::MathMLCoreEnabled() ||
-      !style.IsDisplayMathType()) {
-    return MathMLElement::CreateLayoutObject(style);
-  }
-  return MakeGarbageCollected<LayoutNGMathMLBlockFlow>(this);
+  return style.IsDisplayMath()
+             ? MakeGarbageCollected<LayoutMathMLBlockFlow>(this)
+             : MathMLElement::CreateLayoutObject(style);
 }
 
 }  // namespace blink

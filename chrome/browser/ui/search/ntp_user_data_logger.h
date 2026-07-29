@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #include <array>
+#include <optional>
 
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
@@ -16,19 +17,48 @@
 #include "chrome/common/search/ntp_logging_events.h"
 #include "components/ntp_tiles/constants.h"
 #include "components/ntp_tiles/ntp_tile_impression.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
-#if BUILDFLAG(IS_ANDROID)
-#error "Instant is only used on desktop";
-#endif
+// This enum must match the numbering for NewTabPageLogoShown in enums.xml.
+// Do not reorder or remove items, and only add new items before
+// LOGO_IMPRESSION_TYPE_MAX.
+// LINT.IfChange(LogoImpressionType)
+enum LogoImpressionType {
+  // Static Doodle image.
+  LOGO_IMPRESSION_TYPE_STATIC = 0,
+  // (Deprecated) Call-to-action Doodle image.
+  LOGO_IMPRESSION_TYPE_CTA = 1,
+  // Animated Doodle image.
+  LOGO_IMPRESSION_TYPE_ANIMATED = 2,
+
+  LOGO_IMPRESSION_TYPE_MAX
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:NewTabPageLogoShown)
+
+// This enum must match the numbering for NewTabPageLogoClick in enums.xml.
+// Do not reorder or remove items, and only add new items before
+// LOGO_CLICK_TYPE_MAX.
+// LINT.IfChange(LogoClickType)
+enum LogoClickType {
+  // Static Doodle image.
+  LOGO_CLICK_TYPE_STATIC = 0,
+  // (Deprecated) Call-to-action Doodle image.
+  LOGO_CLICK_TYPE_CTA = 1,
+  // Animated Doodle image.
+  LOGO_CLICK_TYPE_ANIMATED = 2,
+
+  LOGO_CLICK_TYPE_MAX
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/new_tab_page/enums.xml:NewTabPageLogoClick)
 
 // Helper class for logging data from the NTP. Attached to each NTP instance.
 class NTPUserDataLogger {
  public:
   // Creates a NTPUserDataLogger. MUST be called only when the NTP is active.
+  // `ntp_navigation_start_time_ticks` is the monotonic-clock timestamp of the
+  // NTP navigation start; it is used directly as the anchor for trace events.
   NTPUserDataLogger(Profile* profile,
                     const GURL& ntp_url,
-                    base::Time ntp_navigation_start_time);
+                    base::TimeTicks ntp_navigation_start_time_ticks);
 
   NTPUserDataLogger(const NTPUserDataLogger&) = delete;
   NTPUserDataLogger& operator=(const NTPUserDataLogger&) = delete;
@@ -49,7 +79,10 @@ class NTPUserDataLogger {
   // Called when all NTP tiles have finished loading (successfully or failing).
   void LogMostVisitedLoaded(base::TimeDelta time,
                             bool using_most_visited,
-                            bool is_visible);
+                            bool using_custom_links,
+                            bool using_enterprise_shortcuts,
+                            bool is_visible,
+                            std::optional<bool> is_expanded);
 
   // Logs an impression on one of the NTP tiles by given details.
   void LogMostVisitedImpression(const ntp_tiles::NTPTileImpression& impression);
@@ -70,13 +103,15 @@ class NTPUserDataLogger {
   // the tab/shutting down Chrome), or when the user navigates to a URL.
   void EmitNtpStatistics(base::TimeDelta load_time,
                          bool using_most_visited,
-                         bool is_visible);
+                         bool using_custom_links,
+                         bool using_enterprise_shortcuts,
+                         bool is_visible,
+                         std::optional<bool> is_expanded);
 
   void EmitNtpTraceEvent(const char* event_name, base::TimeDelta duration);
 
   void RecordDoodleImpression(base::TimeDelta time,
-                              bool is_cta,
-                              bool from_cache);
+                              LogoImpressionType logo_type);
 
   // Logs the user |action| via base::RecordAction.
   void RecordAction(const char* action);
@@ -91,7 +126,7 @@ class NTPUserDataLogger {
   // sources, such as signing in (switching from client to server tiles), then
   // only the impressions for the first source will be logged, leaving the
   // number of impressions for a source slightly out-of-sync with navigations.
-  std::array<absl::optional<ntp_tiles::NTPTileImpression>,
+  std::array<std::optional<ntp_tiles::NTPTileImpression>,
              ntp_tiles::kMaxNumTiles>
       logged_impressions_;
 

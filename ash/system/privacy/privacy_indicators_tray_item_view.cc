@@ -1,4 +1,4 @@
-// Copyright 2022 The Chromium Authors. All rights reserved.
+// Copyright 2022 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -13,16 +13,19 @@
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "ash/style/ash_color_provider.h"
+#include "ash/style/ash_color_id.h"
 #include "ash/system/privacy/privacy_indicators_controller.h"
 #include "ash/system/tray/tray_item_view.h"
 #include "base/check.h"
 #include "base/check_op.h"
-#include "base/containers/flat_set.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "chromeos/constants/chromeos_features.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/models/image_model.h"
+#include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/compositor/animation_throughput_reporter.h"
@@ -34,8 +37,8 @@
 #include "ui/gfx/animation/tween.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/animation/animation_builder.h"
+#include "ui/views/background.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
@@ -47,12 +50,12 @@ namespace {
 constexpr auto kPrivacyIndicatorsViewPadding = gfx::Insets::VH(4, 8);
 const int kPrivacyIndicatorsViewSpacing = 2;
 const int kPrivacyIndicatorsIconSize = 16;
+const ui::ColorId kPrivacyIndicatorsIconColor =
+    cros_tokens::kCrosSysInverseOnSurface;
 const int kPrivacyIndicatorsViewExpandedShorterSideSize = 24;
 const int kPrivacyIndicatorsViewExpandedLongerSideSize = 50;
 const int kPrivacyIndicatorsViewExpandedWithScreenShareSize = 68;
 const int kPrivacyIndicatorsViewSize = 8;
-
-constexpr auto kRepeatedShowTimerInterval = base::Milliseconds(100);
 
 constexpr auto kDwellInExpandDuration = base::Milliseconds(3000);
 constexpr auto kShorterSizeShrinkAnimationDelay =
@@ -75,14 +78,15 @@ void StartAnimation(gfx::LinearAnimation* animation) {
 
 void StartRecordAnimationSmoothness(
     views::Widget* widget,
-    absl::optional<ui::ThroughputTracker>& tracker) {
+    std::optional<ui::ThroughputTracker>& tracker) {
   // `widget` may not exist in tests.
   if (!widget)
     return;
 
-  tracker.emplace(widget->GetCompositor()->RequestNewThroughputTracker());
-  tracker->Start(
-      ash::metrics_util::ForSmoothness(base::BindRepeating([](int smoothness) {
+  tracker.emplace(
+      widget->GetCompositor()->RequestNewCompositorMetricsTracker());
+  tracker->Start(ash::metrics_util::ForSmoothnessV3(
+      base::BindRepeating([](int smoothness) {
         base::UmaHistogramPercentage(
             "Ash.PrivacyIndicators.AnimationSmoothness", smoothness);
       })));
@@ -109,7 +113,7 @@ void FadeInView(views::View* view,
 
   ui::AnimationThroughputReporter reporter(
       view->layer()->GetAnimator(),
-      metrics_util::ForSmoothness(base::BindRepeating(
+      metrics_util::ForSmoothnessV3(base::BindRepeating(
           &StartReportLayerAnimationSmoothness, animation_histogram_name)));
 
   views::AnimationBuilder()
@@ -129,7 +133,7 @@ bool IsInPrimaryDisplay(views::Widget* widget) {
     return false;
   }
 
-  auto* screen = display::Screen::GetScreen();
+  auto* screen = display::Screen::Get();
   return screen->GetDisplayNearestWindow(widget->GetNativeWindow()) ==
          screen->GetPrimaryDisplay();
 }
@@ -149,12 +153,7 @@ PrivacyIndicatorsTrayItemView::PrivacyIndicatorsTrayItemView(Shelf* shelf)
       shorter_side_shrink_animation_(std::make_unique<gfx::LinearAnimation>(
           kSizeChangeAnimationDuration,
           gfx::LinearAnimation::kDefaultFrameRate,
-          this)),
-      repeated_shows_timer_(
-          FROM_HERE,
-          kRepeatedShowTimerInterval,
-          this,
-          &PrivacyIndicatorsTrayItemView::RecordRepeatedShows) {
+          this)) {
   SetVisible(false);
 
   auto container_view = std::make_unique<views::View>();
@@ -169,26 +168,28 @@ PrivacyIndicatorsTrayItemView::PrivacyIndicatorsTrayItemView(Shelf* shelf)
   // Set up a solid color layer to paint the background color, then add a layer
   // to each child so that they are visible and can perform layer animation.
   SetPaintToLayer(ui::LAYER_SOLID_COLOR);
-  layer()->SetFillsBoundsOpaquely(false);
-  layer()->SetRoundedCornerRadius(
-      gfx::RoundedCornersF{kPrivacyIndicatorsViewExpandedShorterSideSize / 2});
+  SetBackground(views::CreateLayerBasedRoundedBackground(
+      ui::kColorAshPrivacyIndicatorsBackground,
+      gfx::RoundedCornersF{kPrivacyIndicatorsViewExpandedShorterSideSize / 2}));
 
-  auto add_icon_to_container = [&container_view]() {
+  auto add_icon_to_container = [&container_view](
+                                   const gfx::VectorIcon& vector_icon) {
     auto icon = std::make_unique<views::ImageView>();
     icon->SetPaintToLayer();
     icon->layer()->SetFillsBoundsOpaquely(false);
     icon->SetVisible(false);
+    icon->SetImage(ui::ImageModel::FromVectorIcon(
+        vector_icon, kPrivacyIndicatorsIconColor, kPrivacyIndicatorsIconSize));
     return container_view->AddChildView(std::move(icon));
   };
 
-  camera_icon_ = add_icon_to_container();
-  microphone_icon_ = add_icon_to_container();
-  screen_share_icon_ = add_icon_to_container();
+  camera_icon_ = add_icon_to_container(kPrivacyIndicatorsCameraIcon);
+  microphone_icon_ = add_icon_to_container(kPrivacyIndicatorsMicrophoneIcon);
+  screen_share_icon_ = add_icon_to_container(kPrivacyIndicatorsCameraIcon);
 
   AddChildView(std::move(container_view));
 
-  UpdateIcons();
-  TooltipTextChanged();
+  UpdateVisibility();
 
   Shell::Get()->session_controller()->AddObserver(this);
 }
@@ -225,7 +226,6 @@ void PrivacyIndicatorsTrayItemView::OnCameraAndMicrophoneAccessStateChanged(
   camera_icon_->SetVisible(is_camera_used);
   microphone_icon_->SetVisible(is_microphone_used);
 
-  TooltipTextChanged();
   RecordPrivacyIndicatorsType();
 
   // Perform animation if either one of the icon is visible.
@@ -245,7 +245,6 @@ void PrivacyIndicatorsTrayItemView::UpdateScreenShareStatus(
     return;
 
   screen_share_icon_->SetVisible(is_screen_sharing_);
-  TooltipTextChanged();
   RecordPrivacyIndicatorsType();
 
   // Perform animation whever screen is start sharing.
@@ -261,42 +260,12 @@ void PrivacyIndicatorsTrayItemView::UpdateAlignmentForShelf(Shelf* shelf) {
   UpdateBoundsInset();
 }
 
-std::u16string PrivacyIndicatorsTrayItemView::GetTooltipText(
-    const gfx::Point& point) const {
-  auto* controller = PrivacyIndicatorsController::Get();
-  auto cam_and_mic_status = std::u16string();
-  if (controller->IsCameraUsed() && controller->IsMicrophoneUsed()) {
-    cam_and_mic_status = l10n_util::GetStringUTF16(
-        IDS_PRIVACY_NOTIFICATION_TITLE_CAMERA_AND_MIC);
-  } else if (controller->IsCameraUsed()) {
-    cam_and_mic_status =
-        l10n_util::GetStringUTF16(IDS_PRIVACY_NOTIFICATION_TITLE_CAMERA);
-  } else if (controller->IsMicrophoneUsed()) {
-    cam_and_mic_status =
-        l10n_util::GetStringUTF16(IDS_PRIVACY_NOTIFICATION_TITLE_MIC);
-  }
-
-  auto screen_share_status =
-      is_screen_sharing_
-          ? l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_SCREEN_SHARE_TITLE)
-          : std::u16string();
-
-  if (cam_and_mic_status.empty())
-    return screen_share_status;
-
-  if (screen_share_status.empty())
-    return cam_and_mic_status;
-
-  return l10n_util::GetStringFUTF16(IDS_PRIVACY_INDICATORS_VIEW_TOOLTIP,
-                                    {cam_and_mic_status, screen_share_status},
-                                    /*offsets=*/nullptr);
-}
-
 void PrivacyIndicatorsTrayItemView::UpdateVisibility() {
   // We only hide the view when nothing is in use.
   const bool visible = PrivacyIndicatorsController::Get()->IsCameraUsed() ||
                        PrivacyIndicatorsController::Get()->IsMicrophoneUsed() ||
                        is_screen_sharing_;
+  UpdateTooltipText();
 
   if (GetVisible() == visible) {
     return;
@@ -305,16 +274,20 @@ void PrivacyIndicatorsTrayItemView::UpdateVisibility() {
   SetVisible(visible);
 
   if (!visible) {
+    if (IsInPrimaryDisplay(GetWidget())) {
+      base::UmaHistogramLongTimes(
+          "Ash.PrivacyIndicators.IndicatorShowsDuration",
+          base::Time::Now() - start_showing_time_);
+    }
     return;
   }
 
-  ++count_visible_per_session_;
+  // Only record this metric on primary screen.
+  if (IsInPrimaryDisplay(GetWidget())) {
+    start_showing_time_ = base::Time::Now();
+  }
 
-  // Keep incrementing the count to track the number of times the view flickers.
-  // When the delay of `kRepeatedShowTimerInterval` has reached, record that
-  // count.
-  ++count_repeated_shows_;
-  repeated_shows_timer_.Reset();
+  ++count_visible_per_session_;
 }
 
 void PrivacyIndicatorsTrayItemView::PerformVisibilityAnimation(bool visible) {
@@ -325,10 +298,11 @@ void PrivacyIndicatorsTrayItemView::PerformVisibilityAnimation(bool visible) {
 }
 
 void PrivacyIndicatorsTrayItemView::HandleLocaleChange() {
-  TooltipTextChanged();
+  UpdateTooltipText();
 }
 
-gfx::Size PrivacyIndicatorsTrayItemView::CalculatePreferredSize() const {
+gfx::Size PrivacyIndicatorsTrayItemView::CalculatePreferredSize(
+    const views::SizeBounds& available_size) const {
   int shorter_side;
   int longer_side;
 
@@ -366,14 +340,6 @@ gfx::Size PrivacyIndicatorsTrayItemView::CalculatePreferredSize() const {
                                  gfx::Size(shorter_side, longer_side));
 }
 
-void PrivacyIndicatorsTrayItemView::OnThemeChanged() {
-  views::View::OnThemeChanged();
-  UpdateIcons();
-
-  layer()->SetColor(
-      GetColorProvider()->GetColor(ui::kColorAshPrivacyIndicatorsBackground));
-}
-
 void PrivacyIndicatorsTrayItemView::OnBoundsChanged(
     const gfx::Rect& previous_bounds) {
   UpdateBoundsInset();
@@ -382,10 +348,6 @@ void PrivacyIndicatorsTrayItemView::OnBoundsChanged(
 views::View* PrivacyIndicatorsTrayItemView::GetTooltipHandlerForPoint(
     const gfx::Point& point) {
   return GetLocalBounds().Contains(point) ? this : nullptr;
-}
-
-const char* PrivacyIndicatorsTrayItemView::GetClassName() const {
-  return "PrivacyIndicatorsTrayItemView";
 }
 
 void PrivacyIndicatorsTrayItemView::AnimationProgressed(
@@ -446,6 +408,12 @@ void PrivacyIndicatorsTrayItemView::AnimationCanceled(
   UpdateBoundsInset();
 }
 
+void PrivacyIndicatorsTrayItemView::ImmediatelyUpdateVisibility() {
+  // Normally there is work to do here, but this view implements custom
+  // visibility animations that do not adhere to the `TrayItemView` animations
+  // contract. See b/283493232 for details.
+}
+
 void PrivacyIndicatorsTrayItemView::PerformAnimation() {
   // End all previous animations before starting a new sequence of animations.
   EndAllAnimations();
@@ -456,8 +424,8 @@ void PrivacyIndicatorsTrayItemView::PerformAnimation() {
   // 3. kOnlyLongerSideShrink: After that, collapses the long side first.
   // 4. kBothSideShrink: Before the long side shrinks completely, collapses the
   //    short side to the final size (a green dot).
-  expand_animation_->Start();
   animation_state_ = AnimationState::kExpand;
+  expand_animation_->Start();
   StartRecordAnimationSmoothness(GetWidget(), throughput_tracker_);
 
   // At the same time, fade in icons.
@@ -488,20 +456,6 @@ void PrivacyIndicatorsTrayItemView::OnSessionStateChanged(
   base::UmaHistogramCounts100("Ash.PrivacyIndicators.NumberOfShowsPerSession",
                               count_visible_per_session_);
   count_visible_per_session_ = 0;
-}
-
-void PrivacyIndicatorsTrayItemView::UpdateIcons() {
-  const SkColor icon_color = AshColorProvider::Get()->GetContentLayerColor(
-      AshColorProvider::ContentLayerType::kIconColorPrimary);
-
-  camera_icon_->SetImage(gfx::CreateVectorIcon(
-      kPrivacyIndicatorsCameraIcon, kPrivacyIndicatorsIconSize, icon_color));
-  microphone_icon_->SetImage(
-      gfx::CreateVectorIcon(kPrivacyIndicatorsMicrophoneIcon,
-                            kPrivacyIndicatorsIconSize, icon_color));
-  screen_share_icon_->SetImage(
-      gfx::CreateVectorIcon(kPrivacyIndicatorsScreenShareIcon,
-                            kPrivacyIndicatorsIconSize, icon_color));
 }
 
 void PrivacyIndicatorsTrayItemView::UpdateBoundsInset() {
@@ -589,18 +543,42 @@ void PrivacyIndicatorsTrayItemView::RecordPrivacyIndicatorsType() {
   }
 }
 
-void PrivacyIndicatorsTrayItemView::RecordRepeatedShows() {
-  // Only records in primary display. Note that we also record the metric when
-  // `count_repeated_shows_` is one even though this is not a bad signal. This
-  // is because we want to record proper shows so we can analyze the repeated
-  // shows in context.
-  if (count_repeated_shows_ == 0 || !IsInPrimaryDisplay(GetWidget())) {
+void PrivacyIndicatorsTrayItemView::UpdateTooltipText() {
+  auto* controller = PrivacyIndicatorsController::Get();
+  auto cam_and_mic_status = std::u16string();
+  if (controller->IsCameraUsed() && controller->IsMicrophoneUsed()) {
+    cam_and_mic_status =
+        l10n_util::GetStringUTF16(IDS_PRIVACY_INDICATORS_STATUS_CAMERA_AND_MIC);
+  } else if (controller->IsCameraUsed()) {
+    cam_and_mic_status =
+        l10n_util::GetStringUTF16(IDS_PRIVACY_INDICATORS_STATUS_CAMERA);
+  } else if (controller->IsMicrophoneUsed()) {
+    cam_and_mic_status =
+        l10n_util::GetStringUTF16(IDS_PRIVACY_INDICATORS_STATUS_MIC);
+  }
+
+  auto screen_share_status =
+      is_screen_sharing_
+          ? l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_SCREEN_SHARE_TITLE)
+          : std::u16string();
+
+  if (cam_and_mic_status.empty()) {
+    SetTooltipText(screen_share_status);
     return;
   }
 
-  base::UmaHistogramCounts100("Ash.PrivacyIndicators.NumberOfRepeatedShows",
-                              count_repeated_shows_);
-  count_repeated_shows_ = 0;
+  if (screen_share_status.empty()) {
+    SetTooltipText(cam_and_mic_status);
+    return;
+  }
+
+  SetTooltipText(
+      l10n_util::GetStringFUTF16(IDS_PRIVACY_INDICATORS_VIEW_TOOLTIP,
+                                 {cam_and_mic_status, screen_share_status},
+                                 /*offsets=*/nullptr));
 }
+
+BEGIN_METADATA(PrivacyIndicatorsTrayItemView)
+END_METADATA
 
 }  // namespace ash

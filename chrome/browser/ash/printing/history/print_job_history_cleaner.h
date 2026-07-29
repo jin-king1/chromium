@@ -34,7 +34,7 @@ class PrintJobHistoryCleaner {
 
   // Removes expired print jobs from the database.
   // The expiration period is controlled by
-  // |prefs::kPrintJobHistoryExpirationPeriod| pref.
+  // |ash::prefs::kPrintJobHistoryExpirationPeriod| pref.
   // |callback| is called after all expired print jobs are removed from the
   // database.
   void CleanUp(base::OnceClosure callback);
@@ -51,12 +51,12 @@ class PrintJobHistoryCleaner {
 
   // This object is owned by PrintJobHistoryService and outlives
   // PrintJobHistoryCleaner.
-  raw_ptr<PrintJobDatabase, ExperimentalAsh> print_job_database_;
+  raw_ptr<PrintJobDatabase> print_job_database_;
 
-  raw_ptr<PrefService, ExperimentalAsh> pref_service_;
+  raw_ptr<PrefService> pref_service_;
 
   // Points to the base::DefaultClock by default.
-  raw_ptr<const base::Clock, ExperimentalAsh> clock_;
+  raw_ptr<const base::Clock> clock_;
 
   // Stores the completion time of the oldest print job in the database or the
   // time of last cleanup.

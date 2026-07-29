@@ -5,14 +5,15 @@
 #ifndef COMPONENTS_SEGMENTATION_PLATFORM_PUBLIC_RESULT_H_
 #define COMPONENTS_SEGMENTATION_PLATFORM_PUBLIC_RESULT_H_
 
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
-#include "base/functional/callback_helpers.h"
-#include "base/strings/string_piece.h"
+#include "base/containers/flat_map.h"
+#include "base/functional/callback_forward.h"
 #include "components/segmentation_platform/public/proto/prediction_result.pb.h"
 #include "components/segmentation_platform/public/trigger.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace segmentation_platform {
 
@@ -64,19 +65,31 @@ struct AnnotatedNumericResult {
 
   // Returns the result for the given label. Null if the result failed to fetch
   // or if the label is not available in the output config.
-  absl::optional<float> GetResultForLabel(base::StringPiece label) const;
+  std::optional<float> GetResultForLabel(std::string_view label) const;
+
+  // Returns all the results, a float score for each output label.
+  base::flat_map<std::string, float> GetAllResults() const;
 
   // Various error codes such as model failed or insufficient data collection.
   PredictionStatus status;
 
   // The result from the model.
   proto::PredictionResult result;
+
+  // The request ID used for identifying a specific training data inputs. Can be
+  // null if training data was not uploaded for that execution.
+  TrainingRequestId request_id;
+
+  std::string ToDebugString() const;
 };
 
 using ClassificationResultCallback =
     base::OnceCallback<void(const ClassificationResult&)>;
 using AnnotatedNumericResultCallback =
     base::OnceCallback<void(const AnnotatedNumericResult&)>;
+
+using RawResult = AnnotatedNumericResult;
+using RawResultCallback = base::OnceCallback<void(const RawResult&)>;
 
 }  // namespace segmentation_platform
 

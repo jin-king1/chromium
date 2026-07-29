@@ -27,11 +27,11 @@
 
 #include "base/feature_list.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/trace_event/trace_event.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/core/dom/document.h"
+#include "third_party/blink/renderer/core/dom/quota_exceeded_error.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/modules/storage/dom_window_storage.h"
@@ -46,6 +46,18 @@
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
+
+// static
+const char StorageArea::kAccessDataMessage[] =
+    "Storage is disabled inside 'data:' URLs.";
+
+// static
+const char StorageArea::kAccessDeniedMessage[] =
+    "Access is denied for this document.";
+
+// static
+const char StorageArea::kAccessSandboxedMessage[] =
+    "The document is sandboxed and lacks the 'allow-same-origin' flag.";
 
 StorageArea* StorageArea::Create(LocalDOMWindow* window,
                                  scoped_refptr<CachedStorageArea> storage_area,
@@ -77,14 +89,14 @@ StorageArea::StorageArea(LocalDOMWindow* window,
   cached_area_->RegisterSource(this);
   if (cached_area_->is_session_storage_for_prerendering()) {
     DomWindow()->document()->AddWillDispatchPrerenderingchangeCallback(
-        WTF::BindOnce(&StorageArea::OnDocumentActivatedForPrerendering,
-                      WrapWeakPersistent(this)));
+        BindOnce(&StorageArea::OnDocumentActivatedForPrerendering,
+                 WrapWeakPersistent(this)));
   }
 }
 
 unsigned StorageArea::length(ExceptionState& exception_state) const {
   if (!CanAccessStorage()) {
-    exception_state.ThrowSecurityError("access is denied for this document.");
+    exception_state.ThrowSecurityError(StorageArea::kAccessDeniedMessage);
     return 0;
   }
   return cached_area_->GetLength();
@@ -92,7 +104,7 @@ unsigned StorageArea::length(ExceptionState& exception_state) const {
 
 String StorageArea::key(unsigned index, ExceptionState& exception_state) const {
   if (!CanAccessStorage()) {
-    exception_state.ThrowSecurityError("access is denied for this document.");
+    exception_state.ThrowSecurityError(StorageArea::kAccessDeniedMessage);
     return String();
   }
   return cached_area_->GetKey(index);
@@ -101,7 +113,7 @@ String StorageArea::key(unsigned index, ExceptionState& exception_state) const {
 String StorageArea::getItem(const String& key,
                             ExceptionState& exception_state) const {
   if (!CanAccessStorage()) {
-    exception_state.ThrowSecurityError("access is denied for this document.");
+    exception_state.ThrowSecurityError(StorageArea::kAccessDeniedMessage);
     return String();
   }
   return cached_area_->GetItem(key);
@@ -112,13 +124,13 @@ NamedPropertySetterResult StorageArea::setItem(
     const String& value,
     ExceptionState& exception_state) {
   if (!CanAccessStorage()) {
-    exception_state.ThrowSecurityError("access is denied for this document.");
+    exception_state.ThrowSecurityError(StorageArea::kAccessDeniedMessage);
     return NamedPropertySetterResult::kIntercepted;
   }
   if (!cached_area_->SetItem(key, value, this)) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kQuotaExceededError,
-        "Setting the value of '" + key + "' exceeded the quota.");
+    QuotaExceededError::Throw(
+        exception_state,
+        StrCat({"Setting the value of '", key, "' exceeded the quota."}));
     return NamedPropertySetterResult::kIntercepted;
   }
   return NamedPropertySetterResult::kIntercepted;
@@ -128,7 +140,7 @@ NamedPropertyDeleterResult StorageArea::removeItem(
     const String& key,
     ExceptionState& exception_state) {
   if (!CanAccessStorage()) {
-    exception_state.ThrowSecurityError("access is denied for this document.");
+    exception_state.ThrowSecurityError(StorageArea::kAccessDeniedMessage);
     return NamedPropertyDeleterResult::kDidNotDelete;
   }
   cached_area_->RemoveItem(key, this);
@@ -137,7 +149,7 @@ NamedPropertyDeleterResult StorageArea::removeItem(
 
 void StorageArea::clear(ExceptionState& exception_state) {
   if (!CanAccessStorage()) {
-    exception_state.ThrowSecurityError("access is denied for this document.");
+    exception_state.ThrowSecurityError(StorageArea::kAccessDeniedMessage);
     return;
   }
   cached_area_->Clear(this);
@@ -146,7 +158,7 @@ void StorageArea::clear(ExceptionState& exception_state) {
 bool StorageArea::Contains(const String& key,
                            ExceptionState& exception_state) const {
   if (!CanAccessStorage()) {
-    exception_state.ThrowSecurityError("access is denied for this document.");
+    exception_state.ThrowSecurityError(StorageArea::kAccessDeniedMessage);
     return false;
   }
   return !cached_area_->GetItem(key).IsNull();
@@ -202,7 +214,7 @@ KURL StorageArea::GetPageUrl() const {
 bool StorageArea::EnqueueStorageEvent(const String& key,
                                       const String& old_value,
                                       const String& new_value,
-                                      const String& url) {
+                                      const KURL& url) {
   if (!should_enqueue_events_)
     return true;
   if (!DomWindow())

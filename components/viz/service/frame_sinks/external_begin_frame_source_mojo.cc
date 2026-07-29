@@ -6,7 +6,10 @@
 
 #include <utility>
 
+#include "base/check_is_test.h"
+#include "base/notreached.h"
 #include "components/viz/service/frame_sinks/frame_sink_manager_impl.h"
+#include "mojo/public/cpp/bindings/message.h"
 
 namespace viz {
 
@@ -14,40 +17,63 @@ ExternalBeginFrameSourceMojo::ExternalBeginFrameSourceMojo(
     FrameSinkManagerImpl* frame_sink_manager,
     mojo::PendingAssociatedReceiver<mojom::ExternalBeginFrameController>
         controller_receiver,
-    uint32_t restart_id)
+    mojo::PendingAssociatedRemote<mojom::ExternalBeginFrameControllerClient>
+        controller_client_remote,
+    uint32_t restart_id,
+    bool wait_for_all_frame_sinks)
     : ExternalBeginFrameSource(this, restart_id),
       frame_sink_manager_(frame_sink_manager),
-      receiver_(this, std::move(controller_receiver)) {
+      receiver_(this, std::move(controller_receiver)),
+      remote_client_(std::move(controller_client_remote)),
+      wait_for_all_frame_sinks_(wait_for_all_frame_sinks) {
   frame_sink_manager_->AddObserver(this);
 }
 
 ExternalBeginFrameSourceMojo::~ExternalBeginFrameSourceMojo() {
   frame_sink_manager_->RemoveObserver(this);
-  DCHECK(!display_);
+  CHECK(!display_);
 }
 
 void ExternalBeginFrameSourceMojo::IssueExternalBeginFrame(
     const BeginFrameArgs& args,
-    bool force,
     base::OnceCallback<void(const BeginFrameAck&)> callback) {
-  DCHECK(!pending_frame_callback_) << "Got overlapping IssueExternalBeginFrame";
-  DCHECK(pending_frame_sinks_.empty());
+  if (pending_frame_callback_ ||
+      (wait_for_all_frame_sinks_ && !pending_frame_sinks_.empty())) {
+    mojo::ReportBadMessage("Got overlapping IssueExternalBeginFrame");
+    return;
+  }
   original_source_id_ = args.frame_id.source_id;
 
   OnBeginFrame(args);
 
   pending_frame_callback_ = std::move(callback);
 
-  // When not forcing a frame, wait for it to occur when sinks needs a frame.
-  if (!force)
+  if (!display_) {
+    CHECK_IS_TEST();
     return;
-  // Ensure that Display will receive the BeginFrame (as a missed one), even
-  // if it doesn't currently need it. This way, we ensure that
-  // OnDisplayDidFinishFrame will be called for this BeginFrame.
-  DCHECK(display_);
-  display_->SetNeedsOneBeginFrame();
+  }
+
+  // Ensure that Display will receive the BeginFrame (as a missed one), even if
+  // it doesn't currently need it. This way, we ensure that
+  // `OnDisplayDidFinishFrame()` will be called for this BeginFrame.
+  display_->SetNeedsOneBeginFrame(args);
   MaybeProduceFrameCallback();
 }
+
+#if BUILDFLAG(IS_MAC)
+void ExternalBeginFrameSourceMojo::IssueExternalVSync(
+    const CADisplayLinkParams& params) {
+  // For ExternalBeginFrameSourceMojoMac only.
+  NOTREACHED();
+}
+
+void ExternalBeginFrameSourceMojo::SetSupportedDisplayLinkId(
+    int64_t display_id,
+    bool is_supported) {
+  // For ExternalBeginFrameSourceMojoMac only.
+  NOTREACHED();
+}
+#endif
 
 void ExternalBeginFrameSourceMojo::OnDestroyedCompositorFrameSink(
     const FrameSinkId& sink_id) {
@@ -58,16 +84,18 @@ void ExternalBeginFrameSourceMojo::OnDestroyedCompositorFrameSink(
 void ExternalBeginFrameSourceMojo::OnFrameSinkDidBeginFrame(
     const FrameSinkId& sink_id,
     const BeginFrameArgs& args) {
-  if (args.frame_id.source_id != original_source_id_)
+  if (!original_source_id_ || args.frame_id.source_id != *original_source_id_) {
     return;
+  }
   pending_frame_sinks_.insert(sink_id);
 }
 
 void ExternalBeginFrameSourceMojo::OnFrameSinkDidFinishFrame(
     const FrameSinkId& sink_id,
     const BeginFrameArgs& args) {
-  if (args.frame_id.source_id != original_source_id_)
+  if (!original_source_id_ || args.frame_id.source_id != *original_source_id_) {
     return;
+  }
   pending_frame_sinks_.erase(sink_id);
   MaybeProduceFrameCallback();
 }
@@ -113,11 +141,21 @@ void ExternalBeginFrameSourceMojo::DispatchFrameCallback(
 }
 
 void ExternalBeginFrameSourceMojo::OnDisplayDidFinishFrame(
-    const BeginFrameAck& ack) {
+    const BeginFrameId& frame_id,
+    DisplaySchedulerDrawResult result) {
   if (!pending_frame_callback_)
     return;
-  if (!pending_frame_sinks_.empty()) {
-    DCHECK(!pending_ack_);
+
+  if (result == DisplaySchedulerDrawResult::kDrawnLate ||
+      result == DisplaySchedulerDrawResult::kMayDrawLate) {
+    NOTREACHED();
+  }
+
+  bool has_damage = (result == DisplaySchedulerDrawResult::kDrawn);
+  BeginFrameAck ack(frame_id.source_id, frame_id.sequence_number, has_damage);
+
+  if (wait_for_all_frame_sinks_ && !pending_frame_sinks_.empty()) {
+    CHECK(!pending_ack_);
     pending_ack_ = ack;
     return;
   }
@@ -136,6 +174,19 @@ void ExternalBeginFrameSourceMojo::SetDisplay(Display* display) {
   display_ = display;
   if (display_)
     display_->AddObserver(this);
+}
+
+void ExternalBeginFrameSourceMojo::OnNeedsBeginFrames(bool needs_begin_frames) {
+  if (remote_client_) {
+    remote_client_->SetNeedsBeginFrame(needs_begin_frames);
+  }
+}
+
+void ExternalBeginFrameSourceMojo::SetPreferredInterval(
+    base::TimeDelta interval) {
+  if (remote_client_) {
+    remote_client_->SetPreferredInterval(interval);
+  }
 }
 
 }  // namespace viz

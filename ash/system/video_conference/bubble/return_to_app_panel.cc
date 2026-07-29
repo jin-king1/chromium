@@ -7,38 +7,40 @@
 #include <memory>
 #include <string>
 
-#include "ash/bubble/bubble_utils.h"
 #include "ash/public/cpp/metrics_util.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "ash/style/typography.h"
 #include "ash/system/video_conference/bubble/bubble_view_ids.h"
+#include "ash/system/video_conference/bubble/return_to_app_button_base.h"
+#include "ash/system/video_conference/video_conference_common.h"
 #include "ash/system/video_conference/video_conference_tray_controller.h"
+#include "ash/system/video_conference/video_conference_utils.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
-#include "chromeos/crosapi/mojom/video_conference.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/compositor/animation_throughput_reporter.h"
 #include "ui/compositor/compositor.h"
+#include "ui/compositor/compositor_metrics_tracker.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
-#include "ui/compositor/throughput_tracker.h"
 #include "ui/gfx/animation/linear_animation.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/gfx/scoped_canvas.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/animation_builder.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/image_view.h"
-#include "ui/views/controls/label.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/view_class_properties.h"
@@ -49,14 +51,12 @@ namespace ash::video_conference {
 namespace {
 
 const int kReturnToAppPanelRadius = 16;
-const int kReturnToAppPanelTopPadding = 12;
-const int kReturnToAppPanelBottomPadding = 8;
+const int kReturnToAppPanelExpandedTopPadding = 12;
+const int kReturnToAppPanelVerticalPadding = 8;
 const int kReturnToAppPanelSidePadding = 16;
 const int kReturnToAppPanelSpacing = 8;
 const int kReturnToAppButtonTopRowSpacing = 12;
 const int kReturnToAppButtonSpacing = 16;
-const int kReturnToAppButtonIconsSpacing = 2;
-const int kReturnToAppIconSize = 20;
 
 constexpr auto kPanelBoundsChangeAnimationDuration = base::Milliseconds(200);
 
@@ -71,15 +71,16 @@ void StartReportLayerAnimationSmoothness(
 
 void StartRecordAnimationSmoothness(
     views::Widget* widget,
-    absl::optional<ui::ThroughputTracker>& tracker) {
+    std::optional<ui::ThroughputTracker>& tracker) {
   // `widget` may not exist in tests.
   if (!widget) {
     return;
   }
 
-  tracker.emplace(widget->GetCompositor()->RequestNewThroughputTracker());
-  tracker->Start(
-      ash::metrics_util::ForSmoothness(base::BindRepeating([](int smoothness) {
+  tracker.emplace(
+      widget->GetCompositor()->RequestNewCompositorMetricsTracker());
+  tracker->Start(ash::metrics_util::ForSmoothnessV3(
+      base::BindRepeating([](int smoothness) {
         base::UmaHistogramPercentage(
             "Ash.VideoConference.ReturnToAppPanel.BoundsChange."
             "AnimationSmoothness",
@@ -94,8 +95,8 @@ void FadeInView(views::View* view,
                 const std::string& animation_histogram_name) {
   // If we are in testing with animation (non zero duration), we shouldn't have
   // delays so that we can properly track when animation is completed in test.
-  if (ui::ScopedAnimationDurationScaleMode::duration_multiplier() ==
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION) {
+  if (gfx::ScopedAnimationDurationScaleMode::duration_multiplier() ==
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION) {
     delay_in_ms = 0;
   }
 
@@ -104,7 +105,7 @@ void FadeInView(views::View* view,
 
   ui::AnimationThroughputReporter reporter(
       view->layer()->GetAnimator(),
-      metrics_util::ForSmoothness(base::BindRepeating(
+      metrics_util::ForSmoothnessV3(base::BindRepeating(
           &StartReportLayerAnimationSmoothness, animation_histogram_name)));
 
   views::AnimationBuilder()
@@ -138,7 +139,7 @@ void FadeOutView(views::View* view,
 
   ui::AnimationThroughputReporter reporter(
       view->layer()->GetAnimator(),
-      metrics_util::ForSmoothness(base::BindRepeating(
+      metrics_util::ForSmoothnessV3(base::BindRepeating(
           &StartReportLayerAnimationSmoothness, animation_histogram_name)));
 
   view->SetVisible(true);
@@ -153,83 +154,22 @@ void FadeOutView(views::View* view,
       .SetOpacity(view, 0.0f);
 }
 
-// Creates a view containing camera, microphone, and screen share icons that
-// shows capturing state of a media app.
-std::unique_ptr<views::View> CreateReturnToAppIconsContainer(
-    bool is_capturing_camera,
-    bool is_capturing_microphone,
-    bool is_capturing_screen) {
-  auto container = std::make_unique<views::View>();
-  container->SetLayoutManager(std::make_unique<views::FlexLayout>())
-      ->SetOrientation(views::LayoutOrientation::kHorizontal)
-      .SetMainAxisAlignment(views::LayoutAlignment::kEnd)
-      .SetCrossAxisAlignment(views::LayoutAlignment::kStretch)
-      .SetDefault(views::kMarginsKey,
-                  gfx::Insets::TLBR(0, kReturnToAppButtonIconsSpacing / 2, 0,
-                                    kReturnToAppButtonIconsSpacing / 2));
-
-  if (is_capturing_camera) {
-    auto camera_icon = std::make_unique<views::ImageView>();
-    camera_icon->SetImage(ui::ImageModel::FromVectorIcon(
-        kPrivacyIndicatorsCameraIcon, cros_tokens::kCrosSysPositive,
-        kReturnToAppIconSize));
-    container->AddChildView(std::move(camera_icon));
-  }
-
-  if (is_capturing_microphone) {
-    auto microphone_icon = std::make_unique<views::ImageView>();
-    microphone_icon->SetImage(ui::ImageModel::FromVectorIcon(
-        kPrivacyIndicatorsMicrophoneIcon, cros_tokens::kCrosSysPositive,
-        kReturnToAppIconSize));
-    container->AddChildView(std::move(microphone_icon));
-  }
-
-  if (is_capturing_screen) {
-    auto screen_share_icon = std::make_unique<views::ImageView>();
-    screen_share_icon->SetImage(ui::ImageModel::FromVectorIcon(
-        kPrivacyIndicatorsScreenShareIcon, cros_tokens::kCrosSysPositive,
-        kReturnToAppIconSize));
-    container->AddChildView(std::move(screen_share_icon));
-  }
-
-  return container;
-}
-
-// Gets the display text representing a media app shown in the return to app
-// panel.
-std::u16string GetMediaAppDisplayText(
-    mojo::StructPtr<crosapi::mojom::VideoConferenceMediaAppInfo>& media_app) {
-  auto url = media_app->url;
-  auto title = media_app->title;
-
-  // Displays the title if it is not empty. Otherwise, display app url.
-  if (!title.empty()) {
-    return title;
-  }
-
-  if (url) {
-    return base::UTF8ToUTF16(url->GetContent());
-  }
-
-  return std::u16string();
-}
+}  // namespace
 
 // A customized toggle button for the return to app panel, which rotates
 // depending on the expand state.
-class ReturnToAppExpandButton : public views::ImageView,
-                                ReturnToAppButton::Observer {
+class ReturnToAppExpandButton : public views::ImageView {
+  METADATA_HEADER(ReturnToAppExpandButton, views::ImageView)
+
  public:
   explicit ReturnToAppExpandButton(ReturnToAppButton* return_to_app_button)
       : return_to_app_button_(return_to_app_button) {
-    return_to_app_button_->AddObserver(this);
   }
 
   ReturnToAppExpandButton(const ReturnToAppExpandButton&) = delete;
   ReturnToAppExpandButton& operator=(const ReturnToAppExpandButton&) = delete;
 
-  ~ReturnToAppExpandButton() override {
-    return_to_app_button_->RemoveObserver(this);
-  }
+  ~ReturnToAppExpandButton() override = default;
 
   // views::ImageView:
   void OnPaint(gfx::Canvas* canvas) override {
@@ -244,9 +184,7 @@ class ReturnToAppExpandButton : public views::ImageView,
     canvas->DrawImageInt(image, -image.width() / 2, -image.height() / 2);
   }
 
- private:
-  // ReturnToAppButton::Observer:
-  void OnExpandedStateChanged(bool expanded) override {
+  void OnExpandedStateChanged(bool expanded) {
     if (expanded_ == expanded) {
       return;
     }
@@ -256,37 +194,38 @@ class ReturnToAppExpandButton : public views::ImageView,
     SchedulePaint();
   }
 
+ private:
   // Indicates if this button (and also the parent panel) is in the expanded
   // state.
   bool expanded_ = false;
 
   // Owned by the views hierarchy. Will be destroyed after this view since it is
   // the parent.
-  const raw_ptr<ReturnToAppButton, ExperimentalAsh> return_to_app_button_;
+  const raw_ptr<ReturnToAppButton> return_to_app_button_;
 };
 
-}  // namespace
+BEGIN_METADATA(ReturnToAppExpandButton)
+END_METADATA
 
 // -----------------------------------------------------------------------------
 // ReturnToAppButton:
 
-ReturnToAppButton::ReturnToAppButton(
-    ReturnToAppPanel* panel,
-    bool is_top_row,
-    const base::UnguessableToken& id,
-    bool is_capturing_camera,
-    bool is_capturing_microphone,
-    bool is_capturing_screen,
-    const std::u16string& display_text,
-    crosapi::mojom::VideoConferenceAppType app_type)
-    : is_capturing_camera_(is_capturing_camera),
-      is_capturing_microphone_(is_capturing_microphone),
-      is_capturing_screen_(is_capturing_screen),
-      panel_(panel) {
-  SetCallback(base::BindRepeating(&ReturnToAppButton::OnButtonClicked,
-                                  weak_ptr_factory_.GetWeakPtr(), id,
-                                  app_type));
-
+ReturnToAppButton::ReturnToAppButton(ReturnToAppPanel* panel,
+                                     bool is_top_row,
+                                     const base::UnguessableToken& id,
+                                     bool is_capturing_camera,
+                                     bool is_capturing_microphone,
+                                     bool is_capturing_screen,
+                                     const std::u16string& display_text,
+                                     VideoConferenceAppType app_type)
+    : ReturnToAppButtonBase(id,
+                            is_capturing_camera,
+                            is_capturing_microphone,
+                            is_capturing_screen,
+                            display_text,
+                            app_type),
+      panel_(panel),
+      expand_indicator_(is_top_row ? CreateExpandIndicator() : nullptr) {
   auto spacing = is_top_row ? kReturnToAppButtonTopRowSpacing / 2
                             : kReturnToAppButtonSpacing / 2;
   SetLayoutManager(std::make_unique<views::FlexLayout>())
@@ -298,51 +237,13 @@ ReturnToAppButton::ReturnToAppButton(
       .SetInteriorMargin(gfx::Insets::TLBR(0, kReturnToAppPanelSidePadding, 0,
                                            kReturnToAppPanelSidePadding));
 
-  icons_container_ = AddChildView(CreateReturnToAppIconsContainer(
-      is_capturing_camera, is_capturing_microphone, is_capturing_screen));
   if (!is_top_row) {
-    icons_container_->SetPreferredSize(
+    icons_container()->SetPreferredSize(
         gfx::Size(/*width=*/kReturnToAppIconSize * panel->max_capturing_count(),
                   /*height=*/kReturnToAppIconSize));
   }
 
-  auto label = std::make_unique<views::Label>(display_text);
-  label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  label->SetProperty(
-      views::kFlexBehaviorKey,
-      views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
-                               views::MaximumFlexSizeRule::kPreferred));
-
-  label->SetAutoColorReadabilityEnabled(false);
-  TypographyProvider::Get()->StyleLabel(TypographyToken::kLegacyBody2, *label);
-  label->SetEnabledColorId(cros_tokens::kCrosSysOnSurface);
-
-  label_ = AddChildView(std::move(label));
-
-  if (is_top_row) {
-    auto expand_indicator = std::make_unique<ReturnToAppExpandButton>(this);
-    expand_indicator->SetImage(ui::ImageModel::FromVectorIcon(
-        kUnifiedMenuExpandIcon, cros_tokens::kCrosSysSecondary, 16));
-    expand_indicator->SetTooltipText(l10n_util::GetStringUTF16(
-        IDS_ASH_VIDEO_CONFERENCE_RETURN_TO_APP_SHOW_TOOLTIP));
-    expand_indicator_ = AddChildView(std::move(expand_indicator));
-
-    // Add a layer for icons container in the top row to perform animation.
-    icons_container_->SetPaintToLayer();
-    icons_container_->layer()->SetFillsBoundsOpaquely(false);
-  }
-
-  // An empty `id` means that this view is not associated with any particular
-  // app and it is the summary row, so we will just use the `display_text` as
-  // accessible name in this case rather than the full string.
-  std::u16string return_to_app_accessible_name =
-      id.is_empty()
-          ? display_text
-          : l10n_util::GetStringFUTF16(
-                VIDEO_CONFERENCE_RETURN_TO_APP_ACCESSIBLE_NAME, display_text);
-
-  SetAccessibleName(GetPeripheralsAccessibleName() +
-                    return_to_app_accessible_name);
+  UpdateAccessibleName();
 
   // When we show the bubble for the first time, only the top row is visible.
   SetVisible(is_top_row);
@@ -351,28 +252,21 @@ ReturnToAppButton::ReturnToAppButton(
     // Add a layer to perform fade in animation.
     SetPaintToLayer();
     layer()->SetFillsBoundsOpaquely(false);
+  } else {
+    // Add a layer for icons container in the top row to perform animation.
+    icons_container()->SetPaintToLayer();
+    icons_container()->layer()->SetFillsBoundsOpaquely(false);
   }
 }
 
 ReturnToAppButton::~ReturnToAppButton() = default;
 
-void ReturnToAppButton::AddObserver(Observer* observer) {
-  observer_list_.AddObserver(observer);
-}
-
-void ReturnToAppButton::RemoveObserver(Observer* observer) {
-  observer_list_.RemoveObserver(observer);
-}
-
-void ReturnToAppButton::OnButtonClicked(
-    const base::UnguessableToken& id,
-    crosapi::mojom::VideoConferenceAppType app_type) {
+void ReturnToAppButton::OnButtonClicked(const base::UnguessableToken& id,
+                                        VideoConferenceAppType app_type) {
   // For rows that are not the summary row (which has non-empty `id`), perform
   // return to app.
   if (!id.is_empty()) {
-    ash::VideoConferenceTrayController::Get()->ReturnToApp(id);
-    base::UmaHistogramEnumeration("Ash.VideoConference.ReturnToApp.Click",
-                                  app_type);
+    ReturnToAppButtonBase::OnButtonClicked(id, app_type);
     return;
   }
 
@@ -385,44 +279,59 @@ void ReturnToAppButton::OnButtonClicked(
   // For summary row, toggle the expand state.
   expanded_ = !expanded_;
 
-  for (auto& observer : observer_list_) {
-    observer.OnExpandedStateChanged(expanded_);
+  UpdateAccessibleName();
+
+  panel_->OnExpandedStateChanged(expanded_);
+  if (expand_indicator_) {
+    expand_indicator_->OnExpandedStateChanged(expanded_);
   }
 
-  icons_container_->SetVisible(!expanded_);
+  icons_container()->SetVisible(!expanded_);
   auto tooltip_text_id =
       expanded_ ? IDS_ASH_VIDEO_CONFERENCE_RETURN_TO_APP_HIDE_TOOLTIP
                 : IDS_ASH_VIDEO_CONFERENCE_RETURN_TO_APP_SHOW_TOOLTIP;
   expand_indicator_->SetTooltipText(l10n_util::GetStringUTF16(tooltip_text_id));
 
-  if (icons_container_->GetVisible()) {
-    FadeInView(icons_container_, /*delay_in_ms=*/100, /*duration_in_ms=*/100,
+  if (icons_container()->GetVisible()) {
+    FadeInView(icons_container(), /*delay_in_ms=*/100, /*duration_in_ms=*/100,
                /*animation_histogram_name=*/
                "Ash.VideoConference.SummaryIcons.FadeIn.AnimationSmoothness");
   }
 }
 
-std::u16string ReturnToAppButton::GetPeripheralsAccessibleName() {
-  std::u16string tooltip_text;
-  if (is_capturing_camera_) {
-    tooltip_text += l10n_util::GetStringFUTF16(
-        VIDEO_CONFERENCE_RETURN_TO_APP_PERIPHERALS_ACCESSIBLE_NAME,
-        l10n_util::GetStringUTF16(VIDEO_CONFERENCE_TOGGLE_BUTTON_TYPE_CAMERA));
-  }
-  if (is_capturing_microphone_) {
-    tooltip_text += l10n_util::GetStringFUTF16(
-        VIDEO_CONFERENCE_RETURN_TO_APP_PERIPHERALS_ACCESSIBLE_NAME,
-        l10n_util::GetStringUTF16(
-            VIDEO_CONFERENCE_TOGGLE_BUTTON_TYPE_MICROPHONE));
-  }
-  if (is_capturing_screen_) {
-    tooltip_text += l10n_util::GetStringFUTF16(
-        VIDEO_CONFERENCE_RETURN_TO_APP_PERIPHERALS_ACCESSIBLE_NAME,
-        l10n_util::GetStringUTF16(
-            VIDEO_CONFERENCE_TOGGLE_BUTTON_TYPE_SCREEN_SHARE));
-  }
-  return tooltip_text;
+void ReturnToAppButton::HideExpandIndicator() {
+  expand_indicator_->SetVisible(false);
 }
+
+const views::ImageView* ReturnToAppButton::expand_indicator_for_testing()
+    const {
+  return expand_indicator_;
+}
+
+void ReturnToAppButton::UpdateAccessibleName() {
+  auto accessible_name =
+      base::StrCat({GetPeripheralsAccessibleName(), GetLabelText()});
+
+  if (is_top_row()) {
+    accessible_name += l10n_util::GetStringUTF16(
+        expanded_ ? VIDEO_CONFERENCE_RETURN_TO_APP_EXPANDED_ACCESSIBLE_NAME
+                  : VIDEO_CONFERENCE_RETURN_TO_APP_COLLAPSED_ACCESSIBLE_NAME);
+  }
+
+  GetViewAccessibility().SetName(accessible_name);
+}
+
+ReturnToAppExpandButton* ReturnToAppButton::CreateExpandIndicator() {
+  auto expand_indicator = std::make_unique<ReturnToAppExpandButton>(this);
+  expand_indicator->SetImage(ui::ImageModel::FromVectorIcon(
+      kUnifiedMenuExpandIcon, cros_tokens::kCrosSysSecondary, 16));
+  expand_indicator->SetTooltipText(l10n_util::GetStringUTF16(
+      IDS_ASH_VIDEO_CONFERENCE_RETURN_TO_APP_SHOW_TOOLTIP));
+  return AddChildView(std::move(expand_indicator));
+}
+
+BEGIN_METADATA(ReturnToAppButton)
+END_METADATA
 
 // -----------------------------------------------------------------------------
 // ReturnToAppContainer:
@@ -433,15 +342,16 @@ ReturnToAppPanel::ReturnToAppContainer::ReturnToAppContainer()
           kPanelBoundsChangeAnimationDuration,
           gfx::LinearAnimation::kDefaultFrameRate,
           /*delegate=*/this)) {
-  SetLayoutManager(std::make_unique<views::FlexLayout>())
-      ->SetOrientation(views::LayoutOrientation::kVertical)
+  auto flex_layout = std::make_unique<views::FlexLayout>();
+  flex_layout->SetOrientation(views::LayoutOrientation::kVertical)
       .SetMainAxisAlignment(views::LayoutAlignment::kCenter)
       .SetCrossAxisAlignment(views::LayoutAlignment::kStretch)
       .SetDefault(views::kMarginsKey,
-                  gfx::Insets::TLBR(0, 0, kReturnToAppPanelSpacing, 0))
-      .SetInteriorMargin(gfx::Insets::TLBR(kReturnToAppPanelTopPadding, 0,
-                                           kReturnToAppPanelBottomPadding, 0));
-  SetBackground(views::CreateThemedRoundedRectBackground(
+                  gfx::Insets::TLBR(0, 0, kReturnToAppPanelSpacing, 0));
+  layout_manager_ = SetLayoutManager(std::move(flex_layout));
+  AdjustLayoutForExpandCollapseState(/*expanded=*/false);
+
+  SetBackground(views::CreateRoundedRectBackground(
       cros_tokens::kCrosSysSystemOnBase, kReturnToAppPanelRadius));
 }
 
@@ -454,6 +364,19 @@ void ReturnToAppPanel::ReturnToAppContainer::StartExpandCollapseAnimation() {
 
   animation_->Start();
   StartRecordAnimationSmoothness(GetWidget(), throughput_tracker_);
+}
+
+void ReturnToAppPanel::ReturnToAppContainer::AdjustLayoutForExpandCollapseState(
+    bool expanded) {
+  // For bottom padding in expanded state, we need an extra
+  // `kReturnToAppPanelVerticalPadding`, on top of the bottom padding of the
+  // last child (which is `kReturnToAppPanelSpacing`).
+  int bottom_padding = expanded ? kReturnToAppPanelVerticalPadding : 0;
+
+  layout_manager_->SetInteriorMargin(
+      gfx::Insets::TLBR(expanded ? kReturnToAppPanelExpandedTopPadding
+                                 : kReturnToAppPanelVerticalPadding,
+                        0, bottom_padding, 0));
 }
 
 void ReturnToAppPanel::ReturnToAppContainer::AnimationProgressed(
@@ -477,9 +400,9 @@ void ReturnToAppPanel::ReturnToAppContainer::AnimationCanceled(
   AnimationEnded(animation);
 }
 
-gfx::Size ReturnToAppPanel::ReturnToAppContainer::CalculatePreferredSize()
-    const {
-  gfx::Size size = views::View::CalculatePreferredSize();
+gfx::Size ReturnToAppPanel::ReturnToAppContainer::CalculatePreferredSize(
+    const views::SizeBounds& available_size) const {
+  gfx::Size size = views::View::CalculatePreferredSize(available_size);
 
   if (!animation_->is_animating()) {
     return size;
@@ -500,33 +423,79 @@ gfx::Size ReturnToAppPanel::ReturnToAppContainer::CalculatePreferredSize()
   return size;
 }
 
+BEGIN_METADATA(ReturnToAppPanel, ReturnToAppContainer)
+END_METADATA
+
 // -----------------------------------------------------------------------------
 // ReturnToAppPanel:
 
-ReturnToAppPanel::ReturnToAppPanel() {
+ReturnToAppPanel::ReturnToAppPanel(const MediaApps& apps) {
   SetID(BubbleViewID::kReturnToApp);
 
-  SetLayoutManager(std::make_unique<views::FlexLayout>())
-      ->SetOrientation(views::LayoutOrientation::kVertical)
-      .SetMainAxisAlignment(views::LayoutAlignment::kCenter)
-      .SetCrossAxisAlignment(views::LayoutAlignment::kStretch)
-      .SetInteriorMargin(gfx::Insets::TLBR(16, 16, 0, 16));
+  SetOrientation(views::LayoutOrientation::kVertical);
+  SetMainAxisAlignment(views::LayoutAlignment::kCenter);
+  SetCrossAxisAlignment(views::LayoutAlignment::kStretch);
+  SetInteriorMargin(gfx::Insets::TLBR(16, 16, 0, 16));
+
+  // TODO(crbug.com/40232718): See View::SetLayoutManagerUseConstrainedSpace
+  SetLayoutManagerUseConstrainedSpace(false);
 
   auto container_view = std::make_unique<ReturnToAppContainer>();
   container_view_ = AddChildView(std::move(container_view));
 
-  // Add running media apps buttons to the panel.
-  VideoConferenceTrayController::Get()->GetMediaApps(base::BindOnce(
-      &ReturnToAppPanel::AddButtonsToPanel, weak_ptr_factory_.GetWeakPtr()));
-}
+  if (apps.size() < 1) {
+    SetVisible(false);
+    return;
+  }
 
-ReturnToAppPanel::~ReturnToAppPanel() {
-  // We only need to remove observer in case that there's a summary row
-  // (multiple apps).
-  if (summary_row_view_) {
-    summary_row_view_->RemoveObserver(this);
+  if (apps.size() == 1) {
+    auto& app = apps.front();
+    auto app_button = std::make_unique<ReturnToAppButton>(
+        /*panel=*/this, /*is_top_row=*/true, app.id, app.is_capturing_camera,
+        app.is_capturing_microphone, app.is_capturing_screen,
+        video_conference_utils::GetMediaAppDisplayText(app), app.app_type);
+    app_button->HideExpandIndicator();
+    container_view_->AddChildView(std::move(app_button));
+    return;
+  }
+
+  bool any_apps_capturing_camera = false;
+  bool any_apps_capturing_microphone = false;
+  bool any_apps_capturing_screen = false;
+
+  for (auto& app : apps) {
+    max_capturing_count_ =
+        std::max(max_capturing_count_, app.is_capturing_camera +
+                                           app.is_capturing_microphone +
+                                           app.is_capturing_screen);
+
+    any_apps_capturing_camera |= app.is_capturing_camera;
+    any_apps_capturing_microphone |= app.is_capturing_microphone;
+    any_apps_capturing_screen |= app.is_capturing_screen;
+  }
+
+  auto summary_text = l10n_util::GetStringFUTF16Int(
+      IDS_ASH_VIDEO_CONFERENCE_RETURN_TO_APP_SUMMARY_TEXT,
+      static_cast<int>(apps.size()));
+
+  // Note that the `app_type` parameter for the summary row is unused.
+  summary_row_view_ =
+      container_view_->AddChildView(std::make_unique<ReturnToAppButton>(
+          /*panel=*/this,
+          /*is_top_row=*/true, /*app_id=*/base::UnguessableToken::Null(),
+          any_apps_capturing_camera, any_apps_capturing_microphone,
+          any_apps_capturing_screen, summary_text,
+          /*app_type=*/VideoConferenceAppType::kBrowserUnknown));
+
+  for (auto& app : apps) {
+    container_view_->AddChildView(std::make_unique<ReturnToAppButton>(
+        /*panel=*/this, /*is_top_row=*/false, app.id, app.is_capturing_camera,
+        app.is_capturing_microphone, app.is_capturing_screen,
+        video_conference_utils::GetMediaAppDisplayText(app), app.app_type));
   }
 }
+
+ReturnToAppPanel::~ReturnToAppPanel() = default;
 
 bool ReturnToAppPanel::IsExpandCollapseAnimationRunning() {
   return container_view_->animation()->is_animating();
@@ -535,8 +504,9 @@ bool ReturnToAppPanel::IsExpandCollapseAnimationRunning() {
 void ReturnToAppPanel::OnExpandedStateChanged(bool expanded) {
   container_view_->set_height_before_animation(
       container_view_->GetPreferredSize().height());
+  container_view_->AdjustLayoutForExpandCollapseState(expanded);
 
-  for (auto* child : container_view_->children()) {
+  for (views::View* child : container_view_->children()) {
     // Skip the first child since we always show the summary row. Otherwise,
     // show the other rows if `expanded` and vice versa.
     if (child == container_view_->children().front()) {
@@ -559,8 +529,8 @@ void ReturnToAppPanel::OnExpandedStateChanged(bool expanded) {
   // In tests, widget might be null and the animation, in some cases, might be
   // configured to have zero duration.
   if (GetWidget() &&
-      ui::ScopedAnimationDurationScaleMode::duration_multiplier() !=
-          ui::ScopedAnimationDurationScaleMode::ZERO_DURATION) {
+      gfx::ScopedAnimationDurationScaleMode::duration_multiplier() !=
+          gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION) {
     container_view_->set_expanded_target(expanded);
     container_view_->StartExpandCollapseAnimation();
   } else {
@@ -572,66 +542,7 @@ void ReturnToAppPanel::ChildPreferredSizeChanged(View* child) {
   PreferredSizeChanged();
 }
 
-void ReturnToAppPanel::AddButtonsToPanel(MediaApps apps) {
-  // Every exit path of this function needs to call `PreferredSizeChanged()`
-  // because these views are added asynchronously in LaCrOS, after the bubble
-  // widget has allocated size for the bubble. See b/273814401.
-  base::ScopedClosureRunner preferred_size_changed_runner(base::BindOnce(
-      &ReturnToAppPanel::PreferredSizeChanged, base::Unretained(this)));
-
-  if (apps.size() < 1) {
-    SetVisible(false);
-    return;
-  }
-
-  if (apps.size() == 1) {
-    auto& app = apps.front();
-    auto app_button = std::make_unique<ReturnToAppButton>(
-        /*panel=*/this,
-        /*is_top_row=*/true, app->id, app->is_capturing_camera,
-        app->is_capturing_microphone, app->is_capturing_screen,
-        GetMediaAppDisplayText(app), app->app_type);
-    app_button->expand_indicator()->SetVisible(false);
-    container_view_->AddChildView(std::move(app_button));
-    return;
-  }
-
-  bool any_apps_capturing_camera = false;
-  bool any_apps_capturing_microphone = false;
-  bool any_apps_capturing_screen = false;
-
-  for (auto& app : apps) {
-    max_capturing_count_ =
-        std::max(max_capturing_count_, app->is_capturing_camera +
-                                           app->is_capturing_microphone +
-                                           app->is_capturing_screen);
-
-    any_apps_capturing_camera |= app->is_capturing_camera;
-    any_apps_capturing_microphone |= app->is_capturing_microphone;
-    any_apps_capturing_screen |= app->is_capturing_screen;
-  }
-
-  auto summary_text = l10n_util::GetStringFUTF16Int(
-      IDS_ASH_VIDEO_CONFERENCE_RETURN_TO_APP_SUMMARY_TEXT,
-      static_cast<int>(apps.size()));
-
-  // Note that the `app_type` parameter for the summary row is unused.
-  summary_row_view_ =
-      container_view_->AddChildView(std::make_unique<ReturnToAppButton>(
-          /*panel=*/this,
-          /*is_top_row=*/true, /*app_id=*/base::UnguessableToken::Null(),
-          any_apps_capturing_camera, any_apps_capturing_microphone,
-          any_apps_capturing_screen, summary_text,
-          /*app_type=*/crosapi::mojom::VideoConferenceAppType::kDefaultValue));
-  summary_row_view_->AddObserver(this);
-
-  for (auto& app : apps) {
-    container_view_->AddChildView(std::make_unique<ReturnToAppButton>(
-        /*panel=*/this,
-        /*is_top_row=*/false, app->id, app->is_capturing_camera,
-        app->is_capturing_microphone, app->is_capturing_screen,
-        GetMediaAppDisplayText(app), app->app_type));
-  }
-}
+BEGIN_METADATA(ReturnToAppPanel)
+END_METADATA
 
 }  // namespace ash::video_conference

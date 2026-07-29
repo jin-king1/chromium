@@ -7,18 +7,12 @@
     padding-inline-start: 20px;
   }
 
-  :host-context([theme='legacy']) cr-button {
-    border-radius: 16px;
+  [slot='title'] {
+    /* override the default margin for H1. */
+    margin: 0;
   }
 
-  :host-context([theme='legacy']) cr-button:focus-visible {
-    /* disable cr-button default keyboard focus style */
-    box-shadow: none;
-    outline: 2px solid var(--cros-focus-ring-color);
-    outline-offset: 2px;
-  }
-
-  :host-context([theme='refresh23']) cr-button {
+  cr-button {
     --active-bg: transparent;
     --active-shadow: none;
     --active-shadow-action: none;
@@ -42,45 +36,39 @@
     box-shadow: none;
   }
 
-  :host-context([theme='refresh23']) cr-button.cancel-button {
+  cr-button.cancel-button {
     background-color: var(--cros-sys-primary_container);
   }
 
-  :host-context([theme='refresh23'])
-      cr-button.cancel-button:hover::part(hoverBackground) {
+  cr-button.cancel-button:hover::part(hoverBackground) {
     background-color: var(--cros-sys-hover_on_subtle);
     display: block;
   }
 
-  :host-context([theme='refresh23'])
-      cr-button.action-button:hover::part(hoverBackground) {
+  cr-button.action-button:hover::part(hoverBackground) {
     background-color: var(--cros-sys-hover_on_prominent);
     display: block;
   }
 
-  :host-context([theme='refresh23']):host-context(.focus-outline-visible)
-      cr-button:focus {
+  :host-context(.focus-outline-visible) cr-button:focus {
     outline: 2px solid var(--cros-sys-focus_ring);
     outline-offset: 2px;
   }
 </style>
 
-<!-- TODO(b/254586358): Use localized strings -->
 <svg slot="header-image" viewBox="0 0 448 200">
   <use href="images/welcome.svg#EXPORT_image"></use>
 </svg>
-<div slot="title">
-  Set up Microsoft 365 to open files
-</div>
+<h1 slot="title">
+  $i18n{welcomeTitle}
+</h1>
 <div slot="body">
   <div id="description"></div>
   <p>
-    <a href="#" target="_blank">Learn more</a> about Microsoft 365 on your
-    Chromebook. Read the <a href="#" target="_blank">Microsoft terms and
-    conditions.</a>
+    $i18nRaw{welcomeBodyText}
   </p>
 </div>
 <div slot="button-container">
-  <cr-button class="cancel-button">Cancel</cr-button>
-  <cr-button class="action-button">Get started</cr-button>
+  <cr-button class="cancel-button">$i18n{cancel}</cr-button>
+  <cr-button class="action-button">$i18n{welcomeGetStarted}</cr-button>
 </div>

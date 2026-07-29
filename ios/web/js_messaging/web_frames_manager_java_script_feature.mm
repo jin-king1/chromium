@@ -4,6 +4,7 @@
 
 #import "ios/web/js_messaging/web_frames_manager_java_script_feature.h"
 
+#import "base/strings/string_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "ios/web/js_messaging/java_script_content_world_util.h"
 #import "ios/web/js_messaging/java_script_feature_manager.h"
@@ -14,12 +15,8 @@
 #import "ios/web/public/js_messaging/java_script_feature_util.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
+#import "ios/web/util/wk_security_origin_util.h"
 #import "ios/web/web_state/web_state_impl.h"
-#import "ios/web/web_view/wk_security_origin_util.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace web {
 
@@ -93,9 +90,7 @@ WebFramesManagerJavaScriptFeature::WebFramesManagerJavaScriptFeature(
                FeatureScript::InjectionTime::kDocumentStart,
                FeatureScript::TargetFrames::kAllFrames,
                FeatureScript::ReinjectionBehavior::
-                   kReinjectOnDocumentRecreation)},
-          {java_script_features::GetCommonJavaScriptFeature(),
-           java_script_features::GetMessageJavaScriptFeature()}),
+                   kReinjectOnDocumentRecreation)}),
       content_world_(content_world),
       browser_state_(browser_state),
       weak_factory_(this) {}
@@ -147,8 +142,7 @@ void WebFramesManagerJavaScriptFeature::ConfigureHandlers(
 
 void WebFramesManagerJavaScriptFeature::FrameAvailableMessageReceived(
     WKScriptMessage* message) {
-  WebState* web_state = WebViewWebStateMap::FromBrowserState(browser_state_)
-                            ->GetWebStateForWebView(message.webView);
+  WebState* web_state = web::GetWebStateForWebView(message.webView);
   if (!web_state) {
     // Ignore this message if `message.webView` is no longer associated with a
     // WebState.
@@ -181,20 +175,19 @@ void WebFramesManagerJavaScriptFeature::FrameAvailableMessageReceived(
     }
   }
 
-  GURL message_frame_origin =
-      web::GURLOriginWithWKSecurityOrigin(message.frameInfo.securityOrigin);
+  url::Origin message_frame_origin =
+      web::OriginWithWKSecurityOrigin(message.frameInfo.securityOrigin);
 
   auto new_frame = std::make_unique<web::WebFrameImpl>(
       message.frameInfo, frame_id, message.frameInfo.mainFrame,
-      message_frame_origin, web_state);
+      message_frame_origin, web_state, content_world_);
 
   web_frames_manager.AddFrame(std::move(new_frame));
 }
 
 void WebFramesManagerJavaScriptFeature::FrameUnavailableMessageReceived(
     WKScriptMessage* message) {
-  WebState* web_state = WebViewWebStateMap::FromBrowserState(browser_state_)
-                            ->GetWebStateForWebView(message.webView);
+  WebState* web_state = web::GetWebStateForWebView(message.webView);
   if (!web_state) {
     // Ignore this message if `message.webView` is no longer associated with a
     // WebState.

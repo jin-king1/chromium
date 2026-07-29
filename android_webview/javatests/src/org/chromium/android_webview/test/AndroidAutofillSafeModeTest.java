@@ -8,36 +8,33 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import android.os.Build;
-
-import androidx.annotation.RequiresApi;
 import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.autofill.AndroidAutofillSafeModeAction;
 import org.chromium.android_webview.common.SafeModeAction;
+import org.chromium.android_webview.common.SafeModeActionIds;
 import org.chromium.android_webview.common.SafeModeController;
 import org.chromium.android_webview.test.AwActivityTestRule.TestDependencyFactory;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.MinAndroidSdkLevel;
 
-import java.util.Set;
-
-/**
- * Tests for WebView AndroidAutofillSafeMode.
- */
-@RunWith(AwJUnit4ClassRunner.class)
-@MinAndroidSdkLevel(Build.VERSION_CODES.O)
-@RequiresApi(Build.VERSION_CODES.O)
-public class AndroidAutofillSafeModeTest {
+/** Tests for WebView AndroidAutofillSafeMode. */
+@RunWith(Parameterized.class)
+@UseParametersRunnerFactory(AwJUnit4ClassRunnerWithParameters.Factory.class)
+public class AndroidAutofillSafeModeTest extends AwParameterizedTest {
     public static final String TAG = "AndroidAutofillTest";
 
-    @Rule
-    public AwActivityTestRule mRule = new AwActivityTestRule();
+    @Rule public AwActivityTestRule mRule;
+
+    public AndroidAutofillSafeModeTest(AwSettingsMutation param) {
+        this.mRule = new AwActivityTestRule(param.getMutation());
+    }
 
     @After
     public void tearDown() {
@@ -52,11 +49,12 @@ public class AndroidAutofillSafeModeTest {
         SafeModeController safeModeController = SafeModeController.getInstance();
         safeModeController.registerActions(
                 new SafeModeAction[] {new AndroidAutofillSafeModeAction()});
-        safeModeController.executeActions(Set.of(AndroidAutofillSafeModeAction.ID));
+        safeModeController.enableAllRegisteredActionsForTesting();
 
         // When
-        AwTestContainerView mTestContainerView = mRule.createAwTestContainerViewOnMainSync(
-                new TestAwContentsClient(), false, new TestDependencyFactory());
+        AwTestContainerView mTestContainerView =
+                mRule.createAwTestContainerViewOnMainSync(
+                        new TestAwContentsClient(), false, new TestDependencyFactory());
 
         // Then
         assertNull(mTestContainerView.getAwContents().getAutofillProviderForTesting());
@@ -66,13 +64,19 @@ public class AndroidAutofillSafeModeTest {
     @SmallTest
     @Feature({"AndroidWebView"})
     public void testSafeModeActionSavesState() throws Throwable {
+        SafeModeController controller = SafeModeController.getInstance();
+        controller.registerActions(new SafeModeAction[] {new AndroidAutofillSafeModeAction()});
         // Given
-        assertFalse(AndroidAutofillSafeModeAction.isAndroidAutofillDisabled());
+        assertFalse(
+                SafeModeController.getInstance()
+                        .isActionEnabled(SafeModeActionIds.DISABLE_ANDROID_AUTOFILL));
 
         // When
-        new AndroidAutofillSafeModeAction().execute();
+        controller.enableAllRegisteredActionsForTesting();
 
         // Then
-        assertTrue(AndroidAutofillSafeModeAction.isAndroidAutofillDisabled());
+        assertTrue(
+                SafeModeController.getInstance()
+                        .isActionEnabled(SafeModeActionIds.DISABLE_ANDROID_AUTOFILL));
     }
 }

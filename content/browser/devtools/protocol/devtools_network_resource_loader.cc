@@ -3,7 +3,9 @@
 // found in the LICENSE file.
 
 #include "content/browser/devtools/protocol/devtools_network_resource_loader.h"
+
 #include <cstddef>
+#include <string_view>
 
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
@@ -44,11 +46,13 @@ DevToolsNetworkResourceLoader::Create(
     net::SiteForCookies site_for_cookies,
     Caching caching,
     Credentials include_credentials,
-    CompletionCallback completion_callback) {
+    CompletionCallback completion_callback,
+    bool is_outermost_main_frame) {
   network::ResourceRequest resource_request;
   resource_request.url = std::move(gurl);
   resource_request.request_initiator = origin;
   resource_request.site_for_cookies = site_for_cookies;
+  resource_request.is_outermost_main_frame = is_outermost_main_frame;
   if (caching == Caching::kBypass) {
     resource_request.load_flags |= net::LOAD_BYPASS_CACHE;
   }
@@ -101,9 +105,9 @@ void DevToolsNetworkResourceLoader::DownloadAsStream() {
   loader_->DownloadAsStream(url_loader_factory_.get(), this);
 }
 
-void DevToolsNetworkResourceLoader::OnDataReceived(base::StringPiece chunk,
+void DevToolsNetworkResourceLoader::OnDataReceived(std::string_view chunk,
                                                    base::OnceClosure resume) {
-  content_.append(chunk.data(), chunk.size());
+  content_.append(chunk);
   std::move(resume).Run();
 }
 

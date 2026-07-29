@@ -5,9 +5,10 @@
 #include "components/payments/content/payment_app.h"
 
 #include <algorithm>
+#include <optional>
 
-#include "base/containers/contains.h"
 #include "base/functional/callback.h"
+#include "url/origin.h"
 
 namespace payments {
 namespace {
@@ -25,18 +26,35 @@ int GetSortingGroup(const PaymentApp& app) {
       return 2;
     case PaymentApp::Type::UNDEFINED:
       NOTREACHED();
-      return 99;
   }
 }
 }  // namespace
 
+PaymentApp::PaymentEntityLogo::PaymentEntityLogo(std::u16string label,
+                                                 std::unique_ptr<SkBitmap> icon,
+                                                 GURL url)
+    : label(std::move(label)), icon(std::move(icon)), url(std::move(url)) {}
+
+PaymentApp::PaymentEntityLogo::PaymentEntityLogo(
+    PaymentApp::PaymentEntityLogo&&) = default;
+
+PaymentApp::PaymentEntityLogo& PaymentApp::PaymentEntityLogo::operator=(
+    PaymentApp::PaymentEntityLogo&&) = default;
+
+PaymentApp::PaymentEntityLogo::~PaymentEntityLogo() = default;
+
 PaymentApp::PaymentApp(int icon_resource_id, Type type)
     : icon_resource_id_(icon_resource_id), type_(type) {}
 
-PaymentApp::~PaymentApp() {}
+PaymentApp::~PaymentApp() = default;
 
 const SkBitmap* PaymentApp::icon_bitmap() const {
   return nullptr;
+}
+
+std::vector<PaymentApp::PaymentEntityLogo*>
+PaymentApp::GetPaymentEntitiesLogos() {
+  return {};
 }
 
 std::string PaymentApp::GetApplicationIdentifierToHide() const {
@@ -51,7 +69,7 @@ std::set<std::string> PaymentApp::GetApplicationIdentifiersThatHideThisApp()
 void PaymentApp::IsValidForPaymentMethodIdentifier(
     const std::string& payment_method_identifier,
     bool* is_valid) const {
-  *is_valid = base::Contains(app_method_names_, payment_method_identifier);
+  *is_valid = app_method_names_.contains(payment_method_identifier);
 }
 
 const std::set<std::string>& PaymentApp::GetAppMethodNames() const {
@@ -140,6 +158,10 @@ bool PaymentApp::operator<(const PaymentApp& other) const {
   if (CanPreselect() != other.CanPreselect())
     return CanPreselect();
   return false;
+}
+
+std::optional<url::Origin> PaymentApp::GetPaymentHandlerOrigin() const {
+  return std::nullopt;
 }
 
 }  // namespace payments

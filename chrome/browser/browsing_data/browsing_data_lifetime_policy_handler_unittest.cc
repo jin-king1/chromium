@@ -5,9 +5,8 @@
 #include "chrome/browser/browsing_data/browsing_data_lifetime_policy_handler.h"
 
 #include "base/strings/utf_string_conversions.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
-#include "components/browsing_data/core/features.h"
+#include "components/browsing_data/core/browsing_data_policies_utils.h"
 #include "components/browsing_data/core/pref_names.h"
 #include "components/policy/core/browser/policy_error_map.h"
 #include "components/policy/core/common/policy_map.h"
@@ -16,64 +15,9 @@
 #include "components/prefs/pref_value_map.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/base/pref_names.h"
-#include "components/sync/driver/sync_policy_handler.h"
+#include "components/sync/service/sync_policy_handler.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/l10n/l10n_util.h"
-
-// When the kDataRetentionPoliciesDisableSyncTypesNeeded feature is not set, the
-// data retention policies will fail if SyncDisabled is not to set, or if
-// SyncDisabled is set to false. There will be an error, but no other messages
-// in the entry.
-TEST(BrowsingDataLifetimePolicyHandler, SyncDisabledNotSet) {
-  policy::PolicyMap policy_map;
-  policy::PolicyErrorMap errors;
-
-  policy_map.Set(policy::key::kBrowsingDataLifetime,
-                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
-                 policy::POLICY_SOURCE_CLOUD,
-                 base::Value(base::Value::Type::LIST), nullptr);
-
-  BrowsingDataLifetimePolicyHandler handler(
-      policy::key::kBrowsingDataLifetime,
-      browsing_data::prefs::kBrowsingDataLifetime,
-      policy::Schema::Wrap(policy::GetChromeSchemaData()));
-
-  handler.CheckPolicySettings(policy_map, &errors);
-  EXPECT_EQ(errors.GetErrorMessages(policy::key::kBrowsingDataLifetime),
-            l10n_util::GetStringFUTF16(
-                IDS_POLICY_DEPENDENCY_ERROR,
-                base::UTF8ToUTF16(policy::key::kSyncDisabled), u"true"));
-  handler.PrepareForDisplaying(&policy_map);
-  EXPECT_FALSE(policy_map.Get(policy::key::kBrowsingDataLifetime)
-                   ->HasMessage(policy::PolicyMap::MessageType::kInfo));
-}
-
-TEST(BrowsingDataLifetimePolicyHandler, SyncDisabledFalse) {
-  policy::PolicyMap policy_map;
-  policy::PolicyErrorMap errors;
-
-  policy_map.Set(policy::key::kBrowsingDataLifetime,
-                 policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
-                 policy::POLICY_SOURCE_CLOUD,
-                 base::Value(base::Value::Type::LIST), nullptr);
-  policy_map.Set(policy::key::kSyncDisabled, policy::POLICY_LEVEL_MANDATORY,
-                 policy::POLICY_SCOPE_MACHINE, policy::POLICY_SOURCE_CLOUD,
-                 base::Value(false), nullptr);
-
-  BrowsingDataLifetimePolicyHandler handler(
-      policy::key::kBrowsingDataLifetime,
-      browsing_data::prefs::kBrowsingDataLifetime,
-      policy::Schema::Wrap(policy::GetChromeSchemaData()));
-
-  handler.CheckPolicySettings(policy_map, &errors);
-  EXPECT_EQ(errors.GetErrorMessages(policy::key::kBrowsingDataLifetime),
-            l10n_util::GetStringFUTF16(
-                IDS_POLICY_DEPENDENCY_ERROR,
-                base::UTF8ToUTF16(policy::key::kSyncDisabled), u"true"));
-  handler.PrepareForDisplaying(&policy_map);
-  EXPECT_FALSE(policy_map.Get(policy::key::kBrowsingDataLifetime)
-                   ->HasMessage(policy::PolicyMap::MessageType::kInfo));
-}
 
 TEST(BrowsingDataLifetimePolicyHandler, SyncDisabledTrue) {
   policy::PolicyMap policy_map;
@@ -103,10 +47,6 @@ TEST(BrowsingDataLifetimePolicyHandler, SyncDisabledTrue) {
 // be applied and the error map and messages should be empty
 #if !BUILDFLAG(IS_CHROMEOS)
 TEST(BrowsingDataLifetimePolicyHandler, BrowserSigninDisabled) {
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_feature_list_.InitWithFeatureState(
-      browsing_data::features::kDataRetentionPoliciesDisableSyncTypesNeeded,
-      true);
   policy::PolicyMap policy_map;
   policy::PolicyErrorMap errors;
 
@@ -134,24 +74,19 @@ TEST(BrowsingDataLifetimePolicyHandler, BrowserSigninDisabled) {
 // Check that the policies work correctly when set together with sync.
 TEST(BrowsingDataLifetimePolicyHandler,
      SyncTypesListDisabledWithDataRetentionPolicies) {
-  base::test::ScopedFeatureList scoped_feature_list_;
-  scoped_feature_list_.InitWithFeatureState(
-      browsing_data::features::kDataRetentionPoliciesDisableSyncTypesNeeded,
-      true);
-
   // Start with prefs enabled so we can sense that they have changed.
   PrefValueMap prefs;
-  prefs.SetBoolean(syncer::prefs::kSyncAutofill, true);
-  prefs.SetBoolean(syncer::prefs::kSyncPreferences, true);
-  prefs.SetBoolean(syncer::prefs::kSyncTypedUrls, true);
-  prefs.SetBoolean(syncer::prefs::kSyncTabs, true);
-  prefs.SetBoolean(syncer::prefs::kSyncSavedTabGroups, true);
-  prefs.SetBoolean(syncer::prefs::kSyncPasswords, true);
-  prefs.SetBoolean(syncer::prefs::kSyncBookmarks, true);
+  prefs.SetBoolean(syncer::prefs::internal::kSyncAutofill, true);
+  prefs.SetBoolean(syncer::prefs::internal::kSyncPreferences, true);
+  prefs.SetBoolean(syncer::prefs::internal::kSyncHistory, true);
+  prefs.SetBoolean(syncer::prefs::internal::kSyncTabs, true);
+  prefs.SetBoolean(syncer::prefs::internal::kSyncSavedTabGroups, true);
+  prefs.SetBoolean(syncer::prefs::internal::kSyncPasswords, true);
+  prefs.SetBoolean(syncer::prefs::internal::kSyncBookmarks, true);
 
   // Set sync types to bookmarks and create handler.
   policy::PolicyMap policy;
-  base::Value::List sync_types_disabled_by_policy;
+  base::ListValue sync_types_disabled_by_policy;
   sync_types_disabled_by_policy.Append("bookmarks");
   policy.Set(policy::key::kSyncTypesListDisabled,
              policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
@@ -160,9 +95,9 @@ TEST(BrowsingDataLifetimePolicyHandler,
   syncer::SyncPolicyHandler sync_handler;
 
   // Set BrowsinggDataOnExitList for some types.
-  base::Value::Dict browsing_data_types_first_dict =
-      base::Value::Dict()
-          .Set("data_types", base::Value::List()
+  base::DictValue browsing_data_types_first_dict =
+      base::DictValue()
+          .Set("data_types", base::ListValue()
                                  .Append("browsing_history")
                                  .Append("site_settings")
                                  .Append("cached_images_and_files")
@@ -170,13 +105,18 @@ TEST(BrowsingDataLifetimePolicyHandler,
           .Set("time_to_live_in_hours", 1);
 
   base::Value browsing_data_lifetime_value = base::Value(
-      base::Value::List().Append(std::move(browsing_data_types_first_dict)));
+      base::ListValue().Append(std::move(browsing_data_types_first_dict)));
+
+  // Save the types to compare against before moving into Policy base::Value.
+  syncer::UserSelectableTypeSet sync_types =
+      browsing_data::GetSyncTypesForBrowsingDataLifetime(
+          browsing_data_lifetime_value);
 
   policy.Set(policy::key::kBrowsingDataLifetime, policy::POLICY_LEVEL_MANDATORY,
              policy::POLICY_SCOPE_USER, policy::POLICY_SOURCE_CLOUD,
              base::Value(std::move(browsing_data_lifetime_value)), nullptr);
 
-  BrowsingDataLifetimePolicyHandler browsing_data_lieftime_handler(
+  BrowsingDataLifetimePolicyHandler browsing_data_lifetime_handler(
       policy::key::kBrowsingDataLifetime,
       browsing_data::prefs::kBrowsingDataLifetime,
       policy::Schema::Wrap(policy::GetChromeSchemaData()));
@@ -184,36 +124,42 @@ TEST(BrowsingDataLifetimePolicyHandler,
   // Apply sync policy and BrowsingDataLifetime then check the prefs.
   policy::PolicyErrorMap errors;
   sync_handler.ApplyPolicySettings(policy, &prefs);
-  browsing_data_lieftime_handler.CheckPolicySettings(policy, &errors);
-  EXPECT_TRUE(errors.empty());
+  browsing_data_lifetime_handler.CheckPolicySettings(policy, &errors);
 
-  // Check that an info message is added for the BrowsingDataLifetimeHandler.
-  browsing_data_lieftime_handler.ApplyPolicySettings(policy, &prefs);
-  browsing_data_lieftime_handler.PrepareForDisplaying(&policy);
-  EXPECT_TRUE(policy.Get(policy::key::kBrowsingDataLifetime)
-                  ->HasMessage(policy::PolicyMap::MessageType::kInfo));
+  // Check that the correct info message is added for
+  // BrowsingDataLifetimeHandler.
+  EXPECT_EQ(errors.GetErrorMessages(policy::key::kBrowsingDataLifetime,
+                                    policy::PolicyMap::MessageType::kInfo),
+            l10n_util::GetStringFUTF16(
+                IDS_POLICY_BROWSING_DATA_DEPENDENCY_APPLIED_INFO,
+                base::UTF8ToUTF16(UserSelectableTypeSetToString(sync_types))));
 
-  // Check that prefs are set for sync types disabled as a result of both
-  // policies.
+  // Check that the correct sync types are disabled.
+  browsing_data_lifetime_handler.ApplyPolicySettings(policy, &prefs);
+
   bool enabled;
-  ASSERT_TRUE(prefs.GetBoolean(syncer::prefs::kSyncBookmarks, &enabled));
+  ASSERT_TRUE(
+      prefs.GetBoolean(syncer::prefs::internal::kSyncBookmarks, &enabled));
   EXPECT_FALSE(enabled);
-  ASSERT_TRUE(prefs.GetBoolean(syncer::prefs::kSyncPreferences, &enabled));
+  ASSERT_TRUE(
+      prefs.GetBoolean(syncer::prefs::internal::kSyncPreferences, &enabled));
   EXPECT_FALSE(enabled);
-  ASSERT_TRUE(prefs.GetBoolean(syncer::prefs::kSyncTypedUrls, &enabled));
+  ASSERT_TRUE(
+      prefs.GetBoolean(syncer::prefs::internal::kSyncHistory, &enabled));
   EXPECT_FALSE(enabled);
-  ASSERT_TRUE(prefs.GetBoolean(syncer::prefs::kSyncTabs, &enabled));
+  ASSERT_TRUE(prefs.GetBoolean(syncer::prefs::internal::kSyncTabs, &enabled));
   EXPECT_FALSE(enabled);
-  ASSERT_TRUE(prefs.GetBoolean(syncer::prefs::kSyncSavedTabGroups, &enabled));
+  ASSERT_TRUE(
+      prefs.GetBoolean(syncer::prefs::internal::kSyncSavedTabGroups, &enabled));
   EXPECT_FALSE(enabled);
 
   // Set ClearBrowsingDataOnExitList for some other types.
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
-  base::Value::List clear_browsing_data_list = base::Value::List()
-                                                   .Append("autofill")
-                                                   .Append("password_signin")
-                                                   .Append("hosted_app_data")
-                                                   .Append("download_history");
+  base::ListValue clear_browsing_data_list = base::ListValue()
+                                                 .Append("autofill")
+                                                 .Append("password_signin")
+                                                 .Append("hosted_app_data")
+                                                 .Append("download_history");
 
   policy.Set(policy::key::kClearBrowsingDataOnExitList,
              policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
@@ -226,17 +172,79 @@ TEST(BrowsingDataLifetimePolicyHandler,
       policy::Schema::Wrap(policy::GetChromeSchemaData()));
 
   clear_browsing_data_handler.CheckPolicySettings(policy, &errors);
-  EXPECT_TRUE(errors.empty());
+  EXPECT_EQ(errors.GetErrorMessages(policy::key::kBrowsingDataLifetime,
+                                    policy::PolicyMap::MessageType::kInfo),
+            l10n_util::GetStringFUTF16(
+                IDS_POLICY_BROWSING_DATA_DEPENDENCY_APPLIED_INFO,
+                base::UTF8ToUTF16(UserSelectableTypeSetToString(sync_types))));
 
-  // Check that an info message is added for the BrowsingDataLifetimeHandler.
+  // Check that the correct sync types are disabled.
   clear_browsing_data_handler.ApplyPolicySettings(policy, &prefs);
-  clear_browsing_data_handler.PrepareForDisplaying(&policy);
-  EXPECT_TRUE(policy.Get(policy::key::kBrowsingDataLifetime)
-                  ->HasMessage(policy::PolicyMap::MessageType::kInfo));
 
-  ASSERT_TRUE(prefs.GetBoolean(syncer::prefs::kSyncAutofill, &enabled));
+  ASSERT_TRUE(
+      prefs.GetBoolean(syncer::prefs::internal::kSyncAutofill, &enabled));
   EXPECT_FALSE(enabled);
-  ASSERT_TRUE(prefs.GetBoolean(syncer::prefs::kSyncPasswords, &enabled));
+  ASSERT_TRUE(
+      prefs.GetBoolean(syncer::prefs::internal::kSyncPasswords, &enabled));
   EXPECT_FALSE(enabled);
 #endif
+}
+
+// Validates that a warning for unsupported data_types is shown, and they are
+// filtered out from the policy value, only on Android.
+TEST(BrowsingDataLifetimePolicyHandler,
+     BrowsingDataLifetimeUnsupportedDataTypes) {
+  policy::PolicyMap policy_map;
+  policy::PolicyErrorMap errors;
+
+  base::DictValue browsing_data_types_first_dict =
+      base::DictValue()
+          .Set("data_types", base::ListValue()
+                                 .Append("hosted_app_data")
+                                 .Append("download_history")
+                                 .Append("cached_images_and_files"))
+          .Set("time_to_live_in_hours", 1);
+
+  base::Value browsing_data_unsupported_types_value = base::Value(
+      base::ListValue().Append(std::move(browsing_data_types_first_dict)));
+
+  policy_map.Set(
+      policy::key::kBrowsingDataLifetime, policy::POLICY_LEVEL_MANDATORY,
+      policy::POLICY_SCOPE_MACHINE, policy::POLICY_SOURCE_CLOUD,
+      base::Value(std::move(browsing_data_unsupported_types_value)), nullptr);
+
+  BrowsingDataLifetimePolicyHandler browsing_data_lifetime_handler(
+      policy::key::kBrowsingDataLifetime,
+      browsing_data::prefs::kBrowsingDataLifetime,
+      policy::Schema::Wrap(policy::GetChromeSchemaData()));
+
+  browsing_data_lifetime_handler.CheckPolicySettings(policy_map, &errors);
+#if BUILDFLAG(IS_ANDROID)
+  EXPECT_EQ(
+      errors.GetErrorMessages(policy::key::kBrowsingDataLifetime,
+                              policy::PolicyMap::MessageType::kWarning),
+      l10n_util::GetStringFUTF16(IDS_POLICY_BROWSING_DATA_PLATFORM_UNSUPPORTED,
+                                 u"download_history, hosted_app_data"));
+#else
+  EXPECT_TRUE(errors.empty());
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  PrefValueMap prefs;
+  browsing_data_lifetime_handler.ApplyPolicySettings(policy_map, &prefs);
+
+  base::Value expected_value(base::Value::Type::LIST);
+  expected_value.GetList().Append(
+      base::DictValue()
+          .Set("data_types", base::ListValue()
+#if !BUILDFLAG(IS_ANDROID)
+                                 .Append("hosted_app_data")
+                                 .Append("download_history")
+#endif  // !BUILDFLAG(IS_ANDROID)
+                                 .Append("cached_images_and_files"))
+          .Set("time_to_live_in_hours", 1));
+
+  base::Value* applied_value = nullptr;
+  ASSERT_TRUE(prefs.GetValue(browsing_data::prefs::kBrowsingDataLifetime,
+                             &applied_value));
+  EXPECT_EQ(expected_value, *applied_value);
 }

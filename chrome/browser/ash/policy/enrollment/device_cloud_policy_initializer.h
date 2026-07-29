@@ -10,7 +10,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/policy/server_backed_state/server_backed_state_keys_broker.h"
@@ -39,12 +39,14 @@ class DeviceManagementService;
 //
 // It is expected that the |DeviceCloudPolicyInitializer| will be
 // destroyed soon after it called |StartConnection|, but see
-// crbug.com/705758 for complications.
+// crbug.com/41309774 for complications.
 class DeviceCloudPolicyInitializer
     : public CloudPolicyStore::Observer,
       public DeviceCloudPolicyManagerAsh::Observer {
  public:
+  // `url_loader_factory` must be non-null.
   DeviceCloudPolicyInitializer(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       DeviceManagementService* enterprise_service,
       ash::InstallAttributes* install_attributes,
       ServerBackedStateKeysBroker* state_keys_broker,
@@ -69,9 +71,6 @@ class DeviceCloudPolicyInitializer
   void OnDeviceCloudPolicyManagerConnected() override;
   void OnDeviceCloudPolicyManagerGotRegistry() override;
 
-  void SetSystemURLLoaderFactoryForTesting(
-      scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory);
-
  private:
   // Creates a new CloudPolicyClient.
   std::unique_ptr<CloudPolicyClient> CreateClient(
@@ -80,14 +79,13 @@ class DeviceCloudPolicyInitializer
   void TryToStartConnection();
   void StartConnection(std::unique_ptr<CloudPolicyClient> client);
 
-  raw_ptr<DeviceManagementService, DanglingUntriaged | ExperimentalAsh>
-      enterprise_service_;
-  raw_ptr<ash::InstallAttributes, ExperimentalAsh> install_attributes_;
-  raw_ptr<ServerBackedStateKeysBroker, ExperimentalAsh> state_keys_broker_;
-  raw_ptr<DeviceCloudPolicyStoreAsh, ExperimentalAsh> policy_store_;
-  raw_ptr<DeviceCloudPolicyManagerAsh, ExperimentalAsh> policy_manager_;
-  raw_ptr<ash::system::StatisticsProvider, ExperimentalAsh>
-      statistics_provider_;
+  const scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+  raw_ptr<DeviceManagementService, DanglingUntriaged> enterprise_service_;
+  raw_ptr<ash::InstallAttributes, DanglingUntriaged> install_attributes_;
+  raw_ptr<ServerBackedStateKeysBroker> state_keys_broker_;
+  raw_ptr<DeviceCloudPolicyStoreAsh, DanglingUntriaged> policy_store_;
+  raw_ptr<DeviceCloudPolicyManagerAsh, DanglingUntriaged> policy_manager_;
+  raw_ptr<ash::system::StatisticsProvider> statistics_provider_;
   bool is_initialized_ = false;
   bool policy_manager_store_ready_notified_ = false;
 
@@ -95,10 +93,6 @@ class DeviceCloudPolicyInitializer
   base::ScopedObservation<DeviceCloudPolicyManagerAsh,
                           DeviceCloudPolicyManagerAsh::Observer>
       policy_manager_observer_{this};
-
-  // The URLLoaderFactory set in tests.
-  scoped_refptr<network::SharedURLLoaderFactory>
-      system_url_loader_factory_for_testing_;
 };
 
 }  // namespace policy

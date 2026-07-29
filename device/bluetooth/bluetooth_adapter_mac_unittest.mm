@@ -6,11 +6,17 @@
 
 #import <IOBluetooth/IOBluetooth.h>
 
+#include <memory>
+
 #include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
 #import "base/task/sequenced_task_runner.h"
+#include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
+#include "device/bluetooth/bluetooth_classic_device_mac.h"
+#include "device/bluetooth/test/mock_bluetooth_device.h"
 #import "device/bluetooth/test/test_bluetooth_adapter_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -32,6 +38,10 @@ class BluetoothAdapterMacTest : public testing::Test {
   // members.
   void PollAdapter() { adapter_mac_->PollAdapter(); }
 
+  void SetPollCallback(base::OnceClosure callback) {
+    adapter_mac_->SetPollCallbackForTesting(std::move(callback));
+  }
+
   void SetHostControllerPowerFunction(bool powered) {
     adapter_mac_->SetHostControllerStateFunctionForTesting(
         base::BindLambdaForTesting([powered] {
@@ -39,6 +49,22 @@ class BluetoothAdapterMacTest : public testing::Test {
           state.classic_powered = powered;
           return state;
         }));
+  }
+
+  BluetoothAdapterMac::DeviceInfo CreateClassicDeviceInfo(
+      const std::string& device_address,
+      BluetoothDevice::UUIDSet uuids) {
+    BluetoothAdapterMac::DeviceInfo device_info;
+    device_info.objc_device = nil;
+    device_info.address = device_address;
+    device_info.uuids = std::vector(uuids.begin(), uuids.end());
+    return device_info;
+  }
+
+  void AddOrUpdateClassicDevice(const std::string& device_address,
+                                BluetoothDevice::UUIDSet uuids) {
+    adapter_mac_->OnConnectedDeviceStateRetrieved(
+        CreateClassicDeviceInfo(device_address, uuids));
   }
 
  protected:
@@ -49,32 +75,89 @@ class BluetoothAdapterMacTest : public testing::Test {
   TestBluetoothAdapterObserver observer_;
 };
 
-TEST_F(BluetoothAdapterMacTest, Poll) {
+// TODO(https://crbug.com/331653043): Re-enable when passing on macOS 14 bots.
+TEST_F(BluetoothAdapterMacTest, DISABLED_Poll) {
+  base::RunLoop run_loop;
+  SetPollCallback(run_loop.QuitClosure());
   PollAdapter();
+  run_loop.Run();
   EXPECT_TRUE(ui_task_runner_->HasPendingTask());
 }
 
-TEST_F(BluetoothAdapterMacTest, PollAndChangePower) {
+// TODO(https://crbug.com/331653043): Re-enable when passing on macOS 14 bots.
+TEST_F(BluetoothAdapterMacTest, DISABLED_PollAndChangePower) {
   // By default the adapter is powered off, check that this expectation matches
   // reality.
   EXPECT_FALSE(adapter_mac_->IsPowered());
   EXPECT_EQ(0, observer_.powered_changed_count());
 
-  SetHostControllerPowerFunction(true);
-  PollAdapter();
-  EXPECT_TRUE(ui_task_runner_->HasPendingTask());
-  ui_task_runner_->RunPendingTasks();
-  EXPECT_EQ(1, observer_.powered_changed_count());
-  EXPECT_TRUE(observer_.last_powered());
-  EXPECT_TRUE(adapter_mac_->IsPowered());
+  {
+    base::RunLoop run_loop;
+    SetPollCallback(run_loop.QuitClosure());
+    SetHostControllerPowerFunction(true);
+    PollAdapter();
+    run_loop.Run();
+    EXPECT_TRUE(ui_task_runner_->HasPendingTask());
+    EXPECT_EQ(1, observer_.powered_changed_count());
+    EXPECT_TRUE(observer_.last_powered());
+    EXPECT_TRUE(adapter_mac_->IsPowered());
+  }
 
-  SetHostControllerPowerFunction(false);
-  PollAdapter();
-  EXPECT_TRUE(ui_task_runner_->HasPendingTask());
-  ui_task_runner_->RunPendingTasks();
-  EXPECT_EQ(2, observer_.powered_changed_count());
-  EXPECT_FALSE(observer_.last_powered());
-  EXPECT_FALSE(adapter_mac_->IsPowered());
+  {
+    base::RunLoop run_loop;
+    SetPollCallback(run_loop.QuitClosure());
+    SetHostControllerPowerFunction(false);
+    PollAdapter();
+    run_loop.Run();
+    EXPECT_TRUE(ui_task_runner_->HasPendingTask());
+    EXPECT_EQ(2, observer_.powered_changed_count());
+    EXPECT_FALSE(observer_.last_powered());
+    EXPECT_FALSE(adapter_mac_->IsPowered());
+  }
+}
+
+TEST_F(BluetoothAdapterMacTest, ClassicDeviceAddedAndChanged) {
+  // Simulate a paired Bluetooth Classic device with one service UUID.
+  std::string device_address = "AA:BB:CC:DD:EE:FF";
+  BluetoothDevice::UUIDSet uuids;
+  uuids.insert(BluetoothUUID("110b"));
+  AddOrUpdateClassicDevice(device_address, uuids);
+  EXPECT_EQ(1, observer_.device_added_count());
+  EXPECT_EQ(0, observer_.device_changed_count());
+  EXPECT_EQ(observer_.last_device_address(), device_address);
+  observer_.Reset();
+
+  // Adding the same device again does not notify observers.
+  AddOrUpdateClassicDevice(device_address, uuids);
+  EXPECT_EQ(0, observer_.device_added_count());
+  EXPECT_EQ(0, observer_.device_changed_count());
+  observer_.Reset();
+
+  // Update the device by adding a second service UUID.
+  uuids.insert(BluetoothUUID("110c"));
+  AddOrUpdateClassicDevice(device_address, uuids);
+  EXPECT_EQ(0, observer_.device_added_count());
+  EXPECT_EQ(1, observer_.device_changed_count());
+  EXPECT_EQ(observer_.last_device_address(), device_address);
+}
+
+TEST_F(BluetoothAdapterMacTest, DeviceConnected) {
+  // Simulate a paired Bluetooth Classic device with one service UUID.
+  std::string device_address = "AA:BB:CC:DD:EE:FF";
+  BluetoothDevice::UUIDSet uuids;
+  uuids.insert(BluetoothUUID("110b"));
+
+  // Device connected when device is unknown to the adapter.
+  AddOrUpdateClassicDevice(device_address, uuids);
+  EXPECT_EQ(1, observer_.device_added_count());
+  EXPECT_EQ(0, observer_.device_changed_count());
+  EXPECT_EQ(observer_.last_device_address(), device_address);
+  observer_.Reset();
+
+  // Device connected when device is known to the adapter.
+  AddOrUpdateClassicDevice(device_address, uuids);
+  EXPECT_EQ(0, observer_.device_added_count());
+  EXPECT_EQ(0, observer_.device_changed_count());
 }
 
 }  // namespace device

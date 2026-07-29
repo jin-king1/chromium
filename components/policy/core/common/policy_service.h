@@ -6,7 +6,9 @@
 #define COMPONENTS_POLICY_CORE_COMMON_POLICY_SERVICE_H_
 
 #include <map>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -15,6 +17,7 @@
 #include "build/build_config.h"
 #include "components/policy/core/common/policy_map.h"
 #include "components/policy/core/common/policy_namespace.h"
+#include "components/policy/core/common/policy_types.h"
 #include "components/policy/policy_export.h"
 
 namespace policy {
@@ -78,7 +81,7 @@ class POLICY_EXPORT PolicyService {
         ConfigurationPolicyProvider* provider) = 0;
   };
 
-  virtual ~PolicyService() {}
+  virtual ~PolicyService() = default;
 
   // Observes changes to all components of the given |domain|.
   virtual void AddObserver(PolicyDomain domain, Observer* observer) = 0;
@@ -95,6 +98,16 @@ class POLICY_EXPORT PolicyService {
   virtual bool HasProvider(ConfigurationPolicyProvider* provider) const = 0;
 
   virtual const PolicyMap& GetPolicies(const PolicyNamespace& ns) const = 0;
+
+  // Returns the hash of the initial value (see PolicyValueHash) of
+  // `policy_name` in the POLICY_DOMAIN_CHROME domain. Returns `{}` if
+  // - `policy_name` is marked as dynamic_refresh: true (currently, policy
+  // hashes
+  //    are not calculated for that case as an optimization)
+  // - `policy_name` does not exist
+  // - IsFirstPolicyLoadComplete(POLICY_DOMAIN_CHROME) is false.
+  virtual std::optional<size_t> GetInitialChromePolicyValueHash(
+      std::string_view policy_name) const = 0;
 
   // The PolicyService loads policy from several sources, and some require
   // asynchronous loads. IsInitializationComplete() returns true once all
@@ -127,12 +140,15 @@ class POLICY_EXPORT PolicyService {
   // Asks the PolicyService to reload policy from all available policy sources.
   // |callback| is invoked once every source has reloaded its policies, and
   // GetPolicies() is guaranteed to return the updated values at that point.
-  virtual void RefreshPolicies(base::OnceClosure callback) = 0;
+  virtual void RefreshPolicies(base::OnceClosure callback,
+                               PolicyFetchReason reason) = 0;
 
 #if BUILDFLAG(IS_ANDROID)
   // Get the PolicyService JNI bridge instance.
   virtual android::PolicyServiceAndroid* GetPolicyServiceAndroid() = 0;
 #endif
+  virtual void UseLocalTestPolicyProvider(
+      ConfigurationPolicyProvider* provider) = 0;
 };
 
 // A registrar that only observes changes to particular policies within the

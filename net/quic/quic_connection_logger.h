@@ -31,6 +31,7 @@ class NET_EXPORT_PRIVATE QuicConnectionLogger
  public:
   QuicConnectionLogger(
       quic::QuicSession* session,
+      const char* const connection_description,
       std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
       const NetLogWithSource& net_log);
 
@@ -51,7 +52,8 @@ class NET_EXPORT_PRIVATE QuicConnectionLogger
                     quic::EncryptionLevel encryption_level,
                     const quic::QuicFrames& retransmittable_frames,
                     const quic::QuicFrames& nonretransmittable_frames,
-                    quic::QuicTime sent_time) override;
+                    quic::QuicTime sent_time,
+                    uint32_t batch_id) override;
   void OnIncomingAck(quic::QuicPacketNumber ack_packet_number,
                      quic::EncryptionLevel ack_decrypted_level,
                      const quic::QuicAckFrame& frame,
@@ -87,7 +89,6 @@ class NET_EXPORT_PRIVATE QuicConnectionLogger
       const quic::QuicStreamsBlockedFrame& frame) override;
   void OnMaxStreamsFrame(const quic::QuicMaxStreamsFrame& frame) override;
   void OnStreamFrame(const quic::QuicStreamFrame& frame) override;
-  void OnStopWaitingFrame(const quic::QuicStopWaitingFrame& frame) override;
   void OnRstStreamFrame(const quic::QuicRstStreamFrame& frame) override;
   void OnConnectionCloseFrame(
       const quic::QuicConnectionCloseFrame& frame) override;
@@ -103,11 +104,10 @@ class NET_EXPORT_PRIVATE QuicConnectionLogger
   void OnNewTokenFrame(const quic::QuicNewTokenFrame& frame) override;
   void OnRetireConnectionIdFrame(
       const quic::QuicRetireConnectionIdFrame& frame) override;
-  void OnMessageFrame(const quic::QuicMessageFrame& frame) override;
+  void OnDatagramFrame(const quic::QuicDatagramFrame& frame) override;
   void OnHandshakeDoneFrame(const quic::QuicHandshakeDoneFrame& frame) override;
   void OnCoalescedPacketSent(const quic::QuicCoalescedPacket& coalesced_packet,
                              size_t length) override;
-  void OnPublicResetPacket(const quic::QuicPublicResetPacket& packet) override;
   void OnVersionNegotiationPacket(
       const quic::QuicVersionNegotiationPacket& packet) override;
   void OnConnectionClosed(const quic::QuicConnectionCloseFrame& frame,
@@ -121,6 +121,8 @@ class NET_EXPORT_PRIVATE QuicConnectionLogger
       const quic::TransportParameters& transport_parameters) override;
   void OnTransportParametersResumed(
       const quic::TransportParameters& transport_parameters) override;
+  void OnZeroRttRejected(int reason) override;
+  void OnEncryptedClientHelloSent(std::string_view client_hello) override;
 
   void OnCryptoHandshakeMessageReceived(
       const quic::CryptoHandshakeMessage& message);
@@ -129,14 +131,18 @@ class NET_EXPORT_PRIVATE QuicConnectionLogger
   void UpdateReceivedFrameCounts(quic::QuicStreamId stream_id,
                                  int num_frames_received,
                                  int num_duplicate_frames_received);
-  void OnCertificateVerified(const CertVerifyResult& result);
+  void OnCertificateVerified(
+      const CertVerifyResult& result,
+      const std::vector<std::vector<uint8_t>>& server_tais);
 
   // Returns connection's overall packet loss rate in fraction.
   float ReceivedPacketLossRate() const;
 
-  void OnZeroRttRejected(int reason) override;
-
  private:
+  // For connections longer than 21 received packets, this call will calculate
+  // the overall packet loss rate, and record it into a histogram.
+  void RecordAggregatePacketLossRate() const;
+
   raw_ptr<quic::QuicSession> session_;  // Unowned.
   // The last packet number received.
   quic::QuicPacketNumber last_received_packet_number_;
@@ -192,6 +198,9 @@ class NET_EXPORT_PRIVATE QuicConnectionLogger
   // contain solo ACK frames.  An element is true iff an ACK frame was in the
   // corresponding packet, and there was very little else.
   std::bitset<150> received_acks_;
+  // The available type of connection (WiFi, 3G, etc.) when connection was first
+  // used.
+  const char* const connection_description_;
   // Receives notifications regarding the performance of the underlying socket
   // for the QUIC connection. May be null.
   const std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher_;

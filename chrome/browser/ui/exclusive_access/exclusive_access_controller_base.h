@@ -6,20 +6,21 @@
 #define CHROME_BROWSER_UI_EXCLUSIVE_ACCESS_EXCLUSIVE_ACCESS_CONTROLLER_BASE_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_bubble_type.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "url/origin.h"
 
 class ExclusiveAccessManager;
-class GURL;
 
 namespace content {
 class WebContents;
 }
 
 // The base class for the different exclusive access controllers like the
-// FullscreenController, KeyboardLockController, and MouseLockController which
-// controls lifetime for which the resource (screen/mouse/keyboard) is held
-// exclusively.
+// FullscreenController, KeyboardLockController, and PointerLockController which
+// controls lifetime for which the resource (screen/mouse-pointer/keyboard) is
+// held exclusively.
 class ExclusiveAccessControllerBase {
  public:
   explicit ExclusiveAccessControllerBase(ExclusiveAccessManager* manager);
@@ -30,8 +31,7 @@ class ExclusiveAccessControllerBase {
 
   virtual ~ExclusiveAccessControllerBase();
 
-  GURL GetExclusiveAccessBubbleURL() const;
-  virtual GURL GetURLForExclusiveAccessBubble() const;
+  virtual url::Origin GetOriginForExclusiveAccessBubble() const;
 
   content::WebContents* exclusive_access_tab() const {
     return web_contents_observer_.web_contents();
@@ -39,8 +39,17 @@ class ExclusiveAccessControllerBase {
 
   // Functions implemented by derived classes:
 
-  // Control behavior when escape is pressed returning true if it was handled.
+  // Called when Esc is pressed. Returns true if the event is handled.
   virtual bool HandleUserPressedEscape() = 0;
+
+  // Called when Esc is held for longer than the press-and-hold duration.
+  virtual void HandleUserHeldEscape() = 0;
+
+  // Called when Esc is released before reaching the press-and-hold duration.
+  virtual void HandleUserReleasedEscapeEarly() = 0;
+
+  // Returns true if the controller requires press-and-hold to exit.
+  virtual bool RequiresPressAndHoldEscToExit() const = 0;
 
   // Called by Browser in response to call from ExclusiveAccessBubble.
   virtual void ExitExclusiveAccessToPreviousState() = 0;
@@ -77,6 +86,8 @@ class ExclusiveAccessControllerBase {
    private:
     const raw_ref<ExclusiveAccessControllerBase> controller_;
   } web_contents_observer_{*this};
+
+  base::WeakPtrFactory<ExclusiveAccessControllerBase> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_EXCLUSIVE_ACCESS_EXCLUSIVE_ACCESS_CONTROLLER_BASE_H_

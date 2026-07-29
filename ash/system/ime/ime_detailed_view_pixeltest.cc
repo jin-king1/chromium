@@ -6,35 +6,39 @@
 #include "ash/ime/ime_controller_impl.h"
 #include "ash/public/cpp/ime_info.h"
 #include "ash/shell.h"
+#include "ash/system/ime/ime_detailed_view.h"
+#include "ash/system/ime_menu/ime_list_view.h"
+#include "ash/system/tray/tray_detailed_view.h"
 #include "ash/system/unified/quick_settings_view.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/system/unified/unified_system_tray_bubble.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/test/pixel/ash_pixel_differ.h"
+#include "ash/test/pixel/ash_pixel_test_helper.h"
 #include "ash/test/pixel/ash_pixel_test_init_params.h"
-#include "base/test/scoped_feature_list.h"
-#include "chromeos/constants/chromeos_features.h"
 
 namespace ash {
 namespace {
 
-class IMEDetailedViewPixelTest : public AshTestBase {
+class IMEDetailedViewPixelTest
+    : public AshTestBase,
+      public testing::WithParamInterface</*enable_system_blur=*/bool> {
  public:
-  IMEDetailedViewPixelTest() {
-    feature_list_.InitWithFeatures(
-        {features::kQsRevamp, chromeos::features::kJelly}, {});
-  }
-
   // AshTestBase:
-  absl::optional<pixel_test::InitParams> CreatePixelTestInitParams()
+  std::optional<pixel_test::InitParams> CreatePixelTestInitParams()
       const override {
-    return pixel_test::InitParams();
+    pixel_test::InitParams init_params;
+    init_params.system_blur_enabled = GetParam();
+    return init_params;
   }
-
-  base::test::ScopedFeatureList feature_list_;
 };
 
-TEST_F(IMEDetailedViewPixelTest, Basics) {
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    IMEDetailedViewPixelTest,
+    testing::Bool());
+
+TEST_P(IMEDetailedViewPixelTest, Basics) {
   // Set up some IMEs.
   std::vector<ImeInfo> available_imes;
   ImeInfo ime1;
@@ -47,12 +51,9 @@ TEST_F(IMEDetailedViewPixelTest, Basics) {
   ime2.name = u"Spanish";
   ime2.short_name = u"ES";
   available_imes.push_back(ime2);
-  auto* ime_controller = Shell::Get()->ime_controller();
-  ime_controller->RefreshIme(ime1.id, std::move(available_imes),
-                             std::vector<ImeMenuItem>());
 
   // Show the enterprise management icon.
-  ime_controller->SetImesManagedByPolicy(true);
+  Shell::Get()->ime_controller()->SetImesManagedByPolicy(true);
 
   // Show the detailed view.
   UnifiedSystemTray* system_tray = GetPrimaryUnifiedSystemTray();
@@ -63,12 +64,22 @@ TEST_F(IMEDetailedViewPixelTest, Basics) {
       ->ShowIMEDetailedView();
 
   // Compare pixels.
-  auto* detailed_view =
-      system_tray->bubble()->quick_settings_view()->detailed_view();
+  TrayDetailedView* detailed_view =
+      system_tray->bubble()
+          ->quick_settings_view()
+          ->GetDetailedViewForTest<TrayDetailedView>();
+
+  // Show the keyboard toggle with ime list.
+  static_cast<IMEDetailedView*>(detailed_view)
+      ->Update(ime1.id, std::move(available_imes), std::vector<ImeMenuItem>(),
+               /*show_keyboard_toggle=*/true,
+               /*single_ime_behavior=*/ImeListView::SHOW_SINGLE_IME);
+
   ASSERT_TRUE(detailed_view);
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "check_view",
-      /*revision_number=*/1, detailed_view));
+      GenerateScreenshotName("check_view"),
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 13 : 0,
+      detailed_view));
 }
 
 }  // namespace

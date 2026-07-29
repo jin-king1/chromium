@@ -5,9 +5,11 @@
 #include "chrome/credential_provider/gaiacp/reg_utils.h"
 
 #include "base/base64.h"
-#include "base/strings/stringprintf.h"
+#include "base/compiler_specific.h"
+#include "base/strings/strcat.h"
+#include "base/strings/strcat_win.h"
+#include "base/strings/string_number_conversions_win.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/win/atl.h"
 #include "base/win/registry.h"
 #include "base/win/win_util.h"
 #include "build/branding_buildflags.h"
@@ -33,6 +35,8 @@ const wchar_t kWinlogonUserListRegKey[] =
     L"SOFTWARE\\Microsoft\\Windows NT"
     L"\\CurrentVersion\\Winlogon\\SpecialAccounts\\UserList";
 
+const wchar_t kRegEnableSecurityKeySupport[] = L"enable_security_key_support";
+
 const wchar_t kLogonUiUserTileRegKey[] =
     L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Authentication\\LogonUI"
     L"\\UserTile";
@@ -44,6 +48,11 @@ const wchar_t kMicrosoftCryptographyMachineGuidRegKey[] = L"MachineGuid";
 constexpr wchar_t kRegUserDeviceResourceId[] = L"device_resource_id";
 constexpr wchar_t kRegGlsPath[] = L"gls_path";
 constexpr wchar_t kRegEnableVerboseLogging[] = L"enable_verbose_logging";
+constexpr wchar_t kRegLogFilePath[] = L"log_file_path";
+constexpr wchar_t kRegLogFileAppend[] = L"log_file_append";
+constexpr wchar_t kRegChromeLogFilePath[] = L"chrome_log_file_path";
+constexpr wchar_t kRegEnableChromeVerboseLogging[] =
+    L"enable_chrome_verbose_logging";
 constexpr wchar_t kRegInitializeCrashReporting[] = L"enable_crash_reporting";
 constexpr wchar_t kRegMdmUrl[] = L"mdm";
 constexpr wchar_t kRegEnableDmEnrollment[] = L"enable_dm_enrollment";
@@ -59,6 +68,7 @@ constexpr wchar_t kRegDeviceDetailsUploadFailures[] =
 constexpr wchar_t kRegDeveloperMode[] = L"developer_mode";
 constexpr wchar_t kRegUpdateCredentialsOnChange[] =
     L"update_credentials_on_change";
+constexpr wchar_t kRegEnableGcpwModalDialog[] = L"enable_gcpw_modal_dialog";
 constexpr wchar_t kRegUseShorterAccountName[] = L"use_shorter_account_name";
 constexpr wchar_t kEmailDomainsKey[] = L"ed";  // deprecated.
 constexpr wchar_t kEmailDomainsKeyNew[] = L"domains_allowed_to_login";
@@ -109,13 +119,12 @@ HRESULT SetMachineRegBinaryInternal(const std::wstring& key_name,
   return S_OK;
 }
 
-std::wstring GetImageRegKeyForSpecificSize(int image_size) {
-  return base::StringPrintf(L"%ls%i", kImageRegKey, image_size);
+std::wstring GetImageRegKeyForSpecificSize(size_t image_size) {
+  return kImageRegKey + base::NumberToWString(image_size);
 }
 
 std::wstring GetAccountPictureRegPathForUSer(const std::wstring& user_sid) {
-  return base::StringPrintf(L"%ls\\%ls", kAccountPicturesRootRegKey,
-                            user_sid.c_str());
+  return base::StrCat({kAccountPicturesRootRegKey, L"\\", user_sid});
 }
 
 }  // namespace
@@ -213,7 +222,7 @@ HRESULT GetMachineRegString(const std::wstring& key_name,
     return HRESULT_FROM_WIN32(sts);
   }
 
-  value[local_length] = 0;
+  UNSAFE_TODO(value[local_length]) = 0;
   *length = local_length;
   return S_OK;
 }
@@ -254,7 +263,7 @@ HRESULT GetMachineRegBinaryInternal(const std::wstring& key_name,
 }
 
 HRESULT GetAccountPictureRegString(const std::wstring& user_sid,
-                                   int image_size,
+                                   size_t image_size,
                                    wchar_t* value,
                                    ULONG* length) {
   return GetMachineRegString(GetAccountPictureRegPathForUSer(user_sid),
@@ -264,7 +273,7 @@ HRESULT GetAccountPictureRegString(const std::wstring& user_sid,
 
 // Sets a specific account picture registry key in HKEY_LOCAL_MACHINE
 HRESULT SetAccountPictureRegString(const std::wstring& user_sid,
-                                   int image_size,
+                                   size_t image_size,
                                    const std::wstring& value) {
   return SetMachineRegString(GetAccountPictureRegPathForUSer(user_sid),
                              GetImageRegKeyForSpecificSize(image_size), value);
@@ -352,8 +361,8 @@ HRESULT GetUserProperty(const std::wstring& sid,
                         const std::wstring& name,
                         DWORD* value) {
   wchar_t key_name[128];
-  swprintf_s(key_name, std::size(key_name), L"%s\\%s", kGcpUsersRootKeyName,
-             sid.c_str());
+  UNSAFE_TODO(swprintf_s(key_name, std::size(key_name), L"%s\\%s",
+                         kGcpUsersRootKeyName, sid.c_str()));
   return GetMachineRegDWORD(key_name, name, value);
 }
 
@@ -362,8 +371,8 @@ HRESULT GetUserProperty(const std::wstring& sid,
                         wchar_t* value,
                         ULONG* length) {
   wchar_t key_name[128];
-  swprintf_s(key_name, std::size(key_name), L"%s\\%s", kGcpUsersRootKeyName,
-             sid.c_str());
+  UNSAFE_TODO(swprintf_s(key_name, std::size(key_name), L"%s\\%s",
+                         kGcpUsersRootKeyName, sid.c_str()));
   return GetMachineRegString(key_name, name, value, length);
 }
 
@@ -371,8 +380,8 @@ HRESULT SetUserProperty(const std::wstring& sid,
                         const std::wstring& name,
                         DWORD value) {
   wchar_t key_name[128];
-  swprintf_s(key_name, std::size(key_name), L"%s\\%s", kGcpUsersRootKeyName,
-             sid.c_str());
+  UNSAFE_TODO(swprintf_s(key_name, std::size(key_name), L"%s\\%s",
+                         kGcpUsersRootKeyName, sid.c_str()));
   return SetMachineRegDWORD(key_name, name, value);
 }
 
@@ -380,8 +389,8 @@ HRESULT SetUserProperty(const std::wstring& sid,
                         const std::wstring& name,
                         const std::wstring& value) {
   wchar_t key_name[128];
-  swprintf_s(key_name, std::size(key_name), L"%s\\%s", kGcpUsersRootKeyName,
-             sid.c_str());
+  UNSAFE_TODO(swprintf_s(key_name, std::size(key_name), L"%s\\%s",
+                         kGcpUsersRootKeyName, sid.c_str()));
   return SetMachineRegString(key_name, name, value);
 }
 
@@ -440,7 +449,7 @@ HRESULT GetSidFromKey(const wchar_t* key,
       if (result_found)
         return HRESULT_FROM_WIN32(ERROR_USER_EXISTS);
 
-      wcsncpy_s(sid, length, user_sid, wcslen(user_sid));
+      UNSAFE_TODO(wcsncpy_s(sid, length, user_sid, wcslen(user_sid)));
       result_found = true;
     }
   }
@@ -469,8 +478,8 @@ HRESULT GetSidFromDomainAccountInfo(const std::wstring& domain,
                               sid1, length)) &&
       SUCCEEDED(GetSidFromKey(base::UTF8ToWide(kKeyUsername).c_str(), username,
                               sid2, length)) &&
-      wcsicmp(sid1, sid2) == 0) {
-    wcscpy_s(sid, length, sid1);
+      UNSAFE_TODO(wcsicmp(sid1, sid2) == 0)) {
+    UNSAFE_TODO(wcscpy_s(sid, length, sid1));
     return S_OK;
   } else {
     return E_FAIL;
@@ -484,7 +493,7 @@ HRESULT GetIdFromSid(const wchar_t* sid, std::wstring* id) {
   for (; iter.Valid(); ++iter) {
     const wchar_t* user_sid = iter.Name();
 
-    if (wcscmp(sid, user_sid) == 0) {
+    if (UNSAFE_TODO(wcscmp(sid, user_sid) == 0)) {
       wchar_t user_id[256];
       ULONG user_length = std::size(user_id);
       HRESULT hr = GetUserProperty(user_sid, kUserId, user_id, &user_length);
@@ -595,7 +604,7 @@ HRESULT GetDmToken(std::string* dm_token) {
       GetMachineRegBinaryInternal(kEnrollmentRegKey, kDmTokenRegKey,
                                   &binary_dm_token, KEY_READ | KEY_WOW64_32KEY);
   if (SUCCEEDED(hr)) {
-    base::Base64Encode(binary_dm_token, dm_token);
+    *dm_token = base::Base64Encode(binary_dm_token);
   }
   return hr;
 }

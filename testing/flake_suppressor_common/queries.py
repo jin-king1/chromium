@@ -7,13 +7,12 @@ import collections
 import json
 import os
 import subprocess
-from typing import List
+from typing import Any, Dict, List
 
+# //testing imports.
 from flake_suppressor_common import common_typing as ct
 from flake_suppressor_common import results as results_module
 from flake_suppressor_common import tag_utils
-
-from unexpected_passes_common import queries as upc_queries
 
 MAX_ROWS = (2**31) - 1
 
@@ -54,6 +53,8 @@ SHERIFF_ROTATIONS_CI_BUILDS_TEMPLATE = """\
                                     INTERVAL @sample_period DAY)
 """
 
+QueryParameters = Dict[str, Dict[str, Any]]
+
 
 class BigQueryQuerier():
   def __init__(self, sample_period: int, billing_project: str,
@@ -90,7 +91,7 @@ class BigQueryQuerier():
         self.GetFailingBuildCulpritFromCiQuery())
 
   def GetFlakyOrFailingTestsFromCiBuilders(
-      self, builder_name_list: List[str]) -> ct.QueryJsonType:
+      self, builder_names: List[str]) -> ct.QueryJsonType:
     """Gets all flaky or failing tests from input CI builders.
 
     Returns:
@@ -98,7 +99,18 @@ class BigQueryQuerier():
       all failing results that came from input CI builders.
     """
     return self._GetJsonResultsFromBigQuery(
-        self.GetFlakyOrFailingFromCIBuildersQuery(builder_name_list))
+        self.GetFlakyOrFailingFromCIBuildersQuery(builder_names))
+
+  def GetFailingBuildCulpritFromCiBuilders(
+      self, builder_names: List[str]) -> ct.QueryJsonType:
+    """Gets all failing build culprit tests from input CI builders.
+
+    Returns:
+      A JSON representation of the BigQuery results containing all found
+      all failing results that came from input CI builders.
+    """
+    return self._GetJsonResultsFromBigQuery(
+        self.GetFailingBuildCulpritFromCIBuildersQuery(builder_names))
 
   def GetFlakyOrFailingTryTests(self) -> ct.QueryJsonType:
     """Gets all flaky or failing tests from the trybots.
@@ -131,7 +143,7 @@ class BigQueryQuerier():
     return result_counts
 
   def GetResultCountFromCiBuilders(
-      self, builder_name_list: List[str]) -> ct.ResultCountType:
+      self, builder_names: List[str]) -> ct.ResultCountType:
     """Gets the result count for the input CI builders.
 
     Returns:
@@ -145,8 +157,7 @@ class BigQueryQuerier():
     result_counts = collections.defaultdict(
         lambda: collections.defaultdict(int))
     self._GetResultCountWithQuery(
-        self.GetResultCountFromCIBuildersQuery(builder_name_list),
-        result_counts)
+        self.GetResultCountFromCIBuildersQuery(builder_names), result_counts)
     return result_counts
 
   def GetFlakyOrFailingCiQuery(self) -> str:
@@ -164,10 +175,19 @@ class BigQueryQuerier():
     raise NotImplementedError
 
   def GetFlakyOrFailingFromCIBuildersQuery(self,
-                                           builder_name_list: List[str]) -> str:
+                                           builder_names: List[str]) -> str:
     """
     Returns:
       Query string to get all the failing or flaky results from input CI
+      builders.
+    """
+    raise NotImplementedError
+
+  def GetFailingBuildCulpritFromCIBuildersQuery(
+      self, builder_names: List[str]) -> str:
+    """
+    Returns:
+      Query string to get all failing build culprit results from input CI
       builders.
     """
     raise NotImplementedError
@@ -195,8 +215,7 @@ class BigQueryQuerier():
     """
     raise NotImplementedError
 
-  def GetResultCountFromCIBuildersQuery(self,
-                                        builder_name_list: List[str]) -> str:
+  def GetResultCountFromCIBuildersQuery(self, builder_names: List[str]) -> str:
     """
     Returns:
       Query string to get the result count for test/tag combination from input
@@ -216,7 +235,7 @@ class BigQueryQuerier():
     Returns:
       The loaded JSON results from running |query|.
     """
-    cmd = upc_queries.GenerateBigQueryCommand(
+    cmd = GenerateBigQueryCommand(
         self._billing_project,
         {'INT64': {
             'sample_period': self._sample_period
@@ -251,3 +270,44 @@ class BigQueryQuerier():
           test_name)
       count = int(r['result_count'])
       result_counts[typ_tags][test_name] += count
+
+
+# TODO(crbug.com/343248818): Switch off this and use the bigquery module
+# directly.
+def GenerateBigQueryCommand(project: str,
+                            parameters: QueryParameters,
+                            batch: bool = True) -> List[str]:
+  """Generate a BigQuery commandline.
+
+  Does not contain the actual query, as that is passed in via stdin.
+
+  Args:
+    project: A string containing the billing project to use for BigQuery.
+    parameters: A dict specifying parameters to substitute in the query in
+        the format {type: {key: value}}. For example, the dict:
+        {'INT64': {'num_builds': 5}}
+        would result in --parameter=num_builds:INT64:5 being passed to BigQuery.
+    batch: Whether to run the query in batch mode or not. Batching adds some
+        random amount of overhead since it means the query has to wait for idle
+        resources, but also allows for much better parallelism.
+
+  Returns:
+    A list containing the BigQuery commandline, suitable to be passed to a
+    method from the subprocess module.
+  """
+  cmd = [
+      'bq',
+      'query',
+      '--max_rows=%d' % MAX_ROWS,
+      '--format=json',
+      '--project_id=%s' % project,
+      '--use_legacy_sql=false',
+  ]
+
+  if batch:
+    cmd.append('--batch')
+
+  for parameter_type, parameter_pairs in parameters.items():
+    for k, v in parameter_pairs.items():
+      cmd.append('--parameter=%s:%s:%s' % (k, parameter_type, v))
+  return cmd

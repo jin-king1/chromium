@@ -4,6 +4,7 @@
 
 #include "ash/wallpaper/wallpaper_image_downloader.h"
 
+#include <optional>
 #include <string>
 
 #include "ash/public/cpp/image_downloader.h"
@@ -14,7 +15,6 @@
 #include "components/account_id/account_id.h"
 #include "net/http/http_request_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/size.h"
 #include "url/gurl.h"
@@ -111,8 +111,7 @@ std::string GetBackdropWallpaperSuffix() {
   // FIFE url is used for Backdrop wallpapers and the desired image size should
   // be specified. Currently we are using two times the display size. This is
   // determined by trial and error and is subject to change.
-  gfx::Size display_size =
-      display::Screen::GetScreen()->GetPrimaryDisplay().size();
+  gfx::Size display_size = display::Screen::Get()->GetPrimaryDisplay().size();
   return "=w" + base::NumberToString(
                     2 * std::max(display_size.width(), display_size.height()));
 }
@@ -126,7 +125,7 @@ WallpaperImageDownloaderImpl::~WallpaperImageDownloaderImpl() = default;
 void WallpaperImageDownloaderImpl::DownloadGooglePhotosImage(
     const GURL& url,
     const AccountId& account_id,
-    const absl::optional<std::string>& access_token,
+    const std::optional<std::string>& access_token,
     ImageDownloader::DownloadCallback callback) const {
   GURL url_with_dimensions = AddDimensionsToGooglePhotosURL(url);
 

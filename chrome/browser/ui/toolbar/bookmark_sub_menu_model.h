@@ -11,7 +11,7 @@
 
 #include <memory>
 
-#include "ui/base/models/simple_menu_model.h"
+#include "ui/menus/simple_menu_model.h"
 
 class Browser;
 class ReadingListSubMenuModel;
@@ -19,6 +19,8 @@ class ReadingListSubMenuModel;
 class BookmarkSubMenuModel : public ui::SimpleMenuModel {
  public:
   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kShowBookmarkBarMenuItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kShowBookmarkSidePanelItem);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kReadingListMenuItem);
 
   BookmarkSubMenuModel(ui::SimpleMenuModel::Delegate* delegate,
                        Browser* browser);
@@ -31,6 +33,7 @@ class BookmarkSubMenuModel : public ui::SimpleMenuModel {
  private:
   void Build(Browser* browser);
 
+  std::unique_ptr<ui::SimpleMenuModel> bookmark_bar_sub_menu_model_;
   std::unique_ptr<ReadingListSubMenuModel> reading_list_sub_menu_model_;
 };
 

@@ -11,8 +11,6 @@
 #include "media/capture/video/mock_device_factory.h"
 #include "media/capture/video/video_capture_device.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/receiver.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "services/video_capture/device_factory_impl.h"
 #include "services/video_capture/public/cpp/mock_video_frame_handler.h"
 #include "services/video_capture/public/mojom/device.mojom.h"
@@ -37,7 +35,7 @@ class MockVideoCaptureDeviceTest : public ::testing::Test {
   void SetUp() override;
 
  protected:
-  raw_ptr<media::MockDeviceFactory> mock_device_factory_;
+  raw_ptr<media::MockDeviceFactory, DanglingUntriaged> mock_device_factory_;
   std::unique_ptr<DeviceFactoryImpl> mock_device_factory_adapter_;
 
   base::MockCallback<DeviceFactory::GetDeviceInfosCallback>

@@ -6,19 +6,22 @@
 #define CHROME_BROWSER_ASH_FILE_MANAGER_COPY_OR_MOVE_IO_TASK_POLICY_IMPL_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/files/file.h"
+#include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ash/file_manager/copy_or_move_io_task_impl.h"
+#include "chrome/browser/ash/policy/dlp/dialogs/files_policy_dialog.h"
+#include "chrome/browser/enterprise/connectors/analysis/file_transfer_analysis_delegate.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/safe_browsing/cloud_content_scanning/deep_scanning_utils.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/file_system_url.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace enterprise_connectors {
 class FileTransferAnalysisDelegate;
@@ -45,19 +48,16 @@ class CopyOrMoveIOTaskPolicyImpl : public CopyOrMoveIOTaskImpl {
   using IsTransferAllowedCallback = base::OnceCallback<void(base::File::Error)>;
 
  public:
-  // `type` must be either kCopy or kMove.
-  // Use this constructor if you require the destination entries to have
-  // different file names to the source entries. The size of `source_urls` and
-  // `destination_file_names` must be the same.
-  // `settings` should be the settings returned by
-  // `FileTransferAnalysisDelegate::IsEnabledVec()` and contain separate
-  // settings for each source url. A setting for a source url can be null if
-  // scanning is not enabled for that source url.
+  // `type` must be either kCopy or kMove. The size of `source_urls` and
+  // `destination_file_names` must be the same. `settings` should be the
+  // settings returned by `FileTransferAnalysisDelegate::IsEnabledVec()` and
+  // contain separate settings for each source url. A setting for a source url
+  // can be null if scanning is not enabled for that source url.
   CopyOrMoveIOTaskPolicyImpl(
       OperationType type,
       ProgressStatus& progress,
       std::vector<base::FilePath> destination_file_names,
-      std::vector<absl::optional<enterprise_connectors::AnalysisSettings>>
+      std::vector<std::optional<enterprise_connectors::AnalysisSettings>>
           settings,
       storage::FileSystemURL destination_folder,
       Profile* profile,
@@ -65,12 +65,20 @@ class CopyOrMoveIOTaskPolicyImpl : public CopyOrMoveIOTaskImpl {
       bool show_notification = true);
   ~CopyOrMoveIOTaskPolicyImpl() override;
 
+  // CopyOrMoveIOTaskImpl overrides:
   void Execute(ProgressCallback progress_callback,
                CompleteCallback complete_callback) override;
+  void Resume(ResumeParams params) override;
+  void Complete(State state) override;
 
  private:
-  // Verifies the transfer by performing enterprise connector scans.
+  // CopyOrMoveIOTaskImpl overrides:
+  // Verifies the transfer by applying Data Leak Prevention files restrictions
+  // and enterprise connectors scans.
   void VerifyTransfer() override;
+  storage::FileSystemOperation::ErrorBehavior GetErrorBehavior() override;
+  std::unique_ptr<storage::CopyOrMoveHookDelegate> GetHookDelegate(
+      size_t idx) override;
 
   // This function scans the source associated with `idx` if scanning is enabled
   // for the respective source-destination-pair.
@@ -81,6 +89,20 @@ class CopyOrMoveIOTaskPolicyImpl : public CopyOrMoveIOTaskImpl {
   // Scanning is performed recursively for all files within
   // `progress_.sources[idx]`.
   void MaybeScanForDisallowedFiles(size_t idx);
+
+  // Called when scanning is completed.
+  void ScanningCompleted();
+
+  // Shows a warning for the connectors.
+  // Returns whether the warning was shown.
+  bool MaybeShowConnectorsWarning();
+
+  // Called after the warning dialog is proceeded or cancelled.
+  // This resumes the transfer and allows for the warned files to be transferred
+  // if the warning is proceeded.
+  void OnConnectorsWarnDialogResult(
+      std::optional<std::u16string> user_justification,
+      bool should_proceed);
 
   // Checks `file_transfer_analysis_delegates_[idx]` whether a transfer is
   // allowed for the source-destination-pair.
@@ -93,20 +115,19 @@ class CopyOrMoveIOTaskPolicyImpl : public CopyOrMoveIOTaskImpl {
                          const storage::FileSystemURL& destination_url,
                          IsTransferAllowedCallback callback);
 
-  // Returns the error behavior to be used for the copy or move operation.
-  storage::FileSystemOperation::ErrorBehavior GetErrorBehavior() override;
-  // Returns the storage::CopyOrMoveHookDelegate to be used for the copy or move
-  // operation.
-  std::unique_ptr<storage::CopyOrMoveHookDelegate> GetHookDelegate(
-      size_t idx) override;
+  // Continues executing the IO task after DLP checks are done.
+  void OnCheckIfTransferAllowed(
+      std::vector<storage::FileSystemURL> blocked_entries);
 
-  raw_ptr<Profile, ExperimentalAsh> profile_;
+  // Returns the total number of files in `connectors_blocked_files_`.
+  size_t GetConnectorsBlockedFilesNum() const;
+
+  raw_ptr<Profile> profile_;
   scoped_refptr<storage::FileSystemContext> file_system_context_;
 
   // Stores the settings, only valid until creation of respective.
   // FileTransferAnalysisDelegate.
-  std::vector<absl::optional<enterprise_connectors::AnalysisSettings>>
-      settings_;
+  std::vector<std::optional<enterprise_connectors::AnalysisSettings>> settings_;
   // Stores the delegates responsible for the file scanning.
   // Will be empty if the FileTransferConnector is disabled. If scanning is
   // disabled for a source-destination-pair, the unique_ptr will be nullptr. If
@@ -119,8 +140,13 @@ class CopyOrMoveIOTaskPolicyImpl : public CopyOrMoveIOTaskImpl {
   // This is set to true if `block_until_verdict` is 0.
   bool report_only_scans_ = false;
 
-  // Whether transferring at least one file was blocked after scanning.
-  bool has_blocked_files_ = false;
+  // The list of files blocked by Data Leak Prevention policy.
+  std::set<base::FilePath> dlp_blocked_files_;
+
+  // Maps block reasons to their associated enterprise connector blocked file
+  // paths.
+  std::map<policy::FilesPolicyDialog::BlockReason, std::vector<base::FilePath>>
+      connectors_blocked_files_;
 
   base::WeakPtrFactory<CopyOrMoveIOTaskPolicyImpl> weak_ptr_factory_{this};
 };

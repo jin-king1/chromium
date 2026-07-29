@@ -25,7 +25,7 @@ typedef uint32_t CGSConnectionID;
 CGSConnectionID CGSMainConnectionID(void);
 }
 
-#endif  // BUIDLFAG(IS_MAC)
+#endif  // BUILDFLAG(IS_MAC)
 
 // The CAContextID type identifies a CAContext across processes. This is the
 // token that is passed from the process that is sharing the CALayer that it is
@@ -42,6 +42,9 @@ typedef uint32_t CAContextID;
 #if BUILDFLAG(IS_MAC)
 + (instancetype)contextWithCGSConnection:(CAContextID)contextId
                                  options:(NSDictionary*)optionsDict;
+- (mach_port_t)createFencePort;
+- (void)setFencePort:(mach_port_t)port;
+- (void)setFencePort:(mach_port_t)port commitHandler:(void (^)(void))block;
 #endif  // BUILDFLAG(IS_MAC)
 #if BUILDFLAG(IS_IOS)
 + (instancetype)remoteContextWithOptions:(NSDictionary*)optionsDict;

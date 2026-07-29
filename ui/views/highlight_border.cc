@@ -4,7 +4,8 @@
 
 #include "ui/views/highlight_border.h"
 
-#include "ui/chromeos/styles/cros_tokens_color_mappings.h"
+#include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/canvas.h"
@@ -38,24 +39,24 @@ void HighlightBorder::PaintBorderToCanvas(
   const float dsf = canvas->UndoDeviceScaleFactor();
   const gfx::RectF pixel_bounds = gfx::ConvertRectToPixels(bounds, dsf);
 
-  const SkScalar radii[8] = {
-      corner_radii.upper_left() * dsf,  corner_radii.upper_left() * dsf,
-      corner_radii.upper_right() * dsf, corner_radii.upper_right() * dsf,
-      corner_radii.lower_right() * dsf, corner_radii.lower_right() * dsf,
-      corner_radii.lower_left() * dsf,  corner_radii.lower_left() * dsf};
+  const SkVector radii[4] = {
+      {corner_radii.upper_left() * dsf,  corner_radii.upper_left() * dsf},
+      {corner_radii.upper_right() * dsf, corner_radii.upper_right() * dsf},
+      {corner_radii.lower_right() * dsf, corner_radii.lower_right() * dsf},
+      {corner_radii.lower_left() * dsf,  corner_radii.lower_left() * dsf}};
 
   gfx::RectF outer_border_bounds(pixel_bounds);
   outer_border_bounds.Inset(half_thickness);
-  SkPath outer_path;
-  outer_path.addRoundRect(gfx::RectFToSkRect(outer_border_bounds), radii);
+  const SkPath outer_path = SkPath::RRect(
+      SkRRect::MakeRectRadii(gfx::RectFToSkRect(outer_border_bounds), radii));
   canvas->DrawPath(outer_path, flags);
 
   gfx::RectF inner_border_bounds(pixel_bounds);
   inner_border_bounds.Inset(kHighlightBorderThickness);
   inner_border_bounds.Inset(half_thickness);
   flags.setColor(highlight_color);
-  SkPath inner_path;
-  inner_path.addRoundRect(gfx::RectFToSkRect(inner_border_bounds), radii);
+  const SkPath inner_path = SkPath::RRect(
+      SkRRect::MakeRectRadii(gfx::RectFToSkRect(inner_border_bounds), radii));
   canvas->DrawPath(inner_path, flags);
 }
 
@@ -76,10 +77,8 @@ SkColor HighlightBorder::GetHighlightColor(const views::View& view,
   ui::ColorId highlight_color_id;
   switch (type) {
     case HighlightBorder::Type::kHighlightBorderNoShadow:
-      highlight_color_id = cros_tokens::kCrosSysSystemHighlight;
-      break;
     case HighlightBorder::Type::kHighlightBorderOnShadow:
-      highlight_color_id = cros_tokens::kCrosSysSystemHighlight1;
+      highlight_color_id = ui::kColorCrosSystemHighlight;
       break;
     case HighlightBorder::Type::kHighlightBorder1:
       highlight_color_id = ui::kColorHighlightBorderHighlight1;
@@ -103,10 +102,10 @@ SkColor HighlightBorder::GetBorderColor(const views::View& view,
   ui::ColorId border_color_id;
   switch (type) {
     case HighlightBorder::Type::kHighlightBorderNoShadow:
-      border_color_id = cros_tokens::kCrosSysSystemBorder;
+      border_color_id = ui::kColorCrosSystemHighlightBorder;
       break;
     case HighlightBorder::Type::kHighlightBorderOnShadow:
-      border_color_id = cros_tokens::kCrosSysSystemBorder1;
+      border_color_id = ui::kColorCrosSystemHighlightBorder1;
       break;
     case HighlightBorder::Type::kHighlightBorder1:
       border_color_id = ui::kColorHighlightBorderBorder1;

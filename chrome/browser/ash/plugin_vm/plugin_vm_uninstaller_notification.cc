@@ -8,12 +8,13 @@
 
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
+#include "ash/resources/vector_icons/vector_icons.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/notifications/notification_display_service.h"
-#include "chrome/grit/generated_resources.h"
+#include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
@@ -41,12 +42,8 @@ PluginVmUninstallerNotification::PluginVmUninstallerNotification(
     Profile* profile)
     : profile_(profile) {
   message_center::RichNotificationData rich_notification_data;
-  rich_notification_data.vector_small_image = &kNotificationPluginVmIcon;
-  if (chromeos::features::IsJellyEnabled()) {
-    rich_notification_data.accent_color_id = cros_tokens::kCrosSysPrimary;
-  } else {
-    rich_notification_data.accent_color = ash::kSystemNotificationColorNormal;
-  }
+  rich_notification_data.vector_small_image = &ash::kNotificationPluginVmIcon;
+  rich_notification_data.accent_color_id = cros_tokens::kCrosSysPrimary;
   rich_notification_data.pinned = true;
   rich_notification_data.never_timeout = true;
 
@@ -87,12 +84,7 @@ void PluginVmUninstallerNotification::SetFailed(FailedReason reason) {
   notification_->set_message(message);
   notification_->set_pinned(false);
   notification_->set_never_timeout(false);
-  if (chromeos::features::IsJellyEnabled()) {
-    notification_->set_accent_color_id(cros_tokens::kCrosSysError);
-  } else {
-    notification_->set_accent_color(
-        ash::kSystemNotificationColorCriticalWarning);
-  }
+  notification_->set_accent_color_id(cros_tokens::kCrosSysError);
   ForceRedisplay();
 }
 
@@ -107,7 +99,7 @@ void PluginVmUninstallerNotification::SetCompleted() {
 }
 
 void PluginVmUninstallerNotification::ForceRedisplay() {
-  NotificationDisplayService::GetForProfile(profile_)->Display(
+  NotificationDisplayServiceFactory::GetForProfile(profile_)->Display(
       NotificationHandler::Type::TRANSIENT, *notification_,
       /*metadata=*/nullptr);
 }

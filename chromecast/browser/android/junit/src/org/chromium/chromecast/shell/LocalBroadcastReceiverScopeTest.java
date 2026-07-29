@@ -15,20 +15,18 @@ import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.robolectric.RobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.LooperMode;
+
+import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Tests for LocalBroadcastReceiverScope.
- */
-@RunWith(RobolectricTestRunner.class)
+/** Tests for LocalBroadcastReceiverScope. */
+@RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
-@LooperMode(LooperMode.Mode.LEGACY)
 public class LocalBroadcastReceiverScopeTest {
     @Test
     public void testConstructorRegistersReceiver() {
@@ -38,10 +36,13 @@ public class LocalBroadcastReceiverScopeTest {
         List<String> result = new ArrayList<>();
         LocalBroadcastManager broadcastManager =
                 LocalBroadcastManager.getInstance(RuntimeEnvironment.application);
-        new LocalBroadcastReceiverScope(broadcastManager, filter,
+        new LocalBroadcastReceiverScope(
+                broadcastManager,
+                filter,
                 (Intent intent) -> result.add("Intent received: " + intent.getAction()));
         Intent intent = new Intent().setAction(action);
         broadcastManager.sendBroadcast(intent);
+        RobolectricUtil.runAllBackgroundAndUi();
         assertThat(result, contains("Intent received: org.chromium.chromecast.test.ACTION_HELLO"));
     }
 
@@ -54,7 +55,9 @@ public class LocalBroadcastReceiverScopeTest {
         List<String> result = new ArrayList<>();
         LocalBroadcastManager broadcastManager =
                 LocalBroadcastManager.getInstance(RuntimeEnvironment.application);
-        new LocalBroadcastReceiverScope(broadcastManager, filter,
+        new LocalBroadcastReceiverScope(
+                broadcastManager,
+                filter,
                 (Intent intent) -> result.add("Intent received: " + intent.getAction()));
         Intent intent = new Intent().setAction(goodbyeAction);
         broadcastManager.sendBroadcast(intent);
@@ -70,8 +73,11 @@ public class LocalBroadcastReceiverScopeTest {
         LocalBroadcastManager broadcastManager =
                 LocalBroadcastManager.getInstance(RuntimeEnvironment.application);
         // Wrap scope in try-with-resources to call close() on it.
-        try (AutoCloseable scope = new LocalBroadcastReceiverScope(broadcastManager, filter,
-                     (Intent intent) -> result.add("Intent received: " + intent.getAction()))) {
+        try (AutoCloseable scope =
+                new LocalBroadcastReceiverScope(
+                        broadcastManager,
+                        filter,
+                        (Intent intent) -> result.add("Intent received: " + intent.getAction()))) {
         } catch (Exception e) {
             result.add("Exception during lifetime of BroadcastReceiver scope: " + e);
         }

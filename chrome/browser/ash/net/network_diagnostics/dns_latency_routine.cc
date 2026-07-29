@@ -6,6 +6,7 @@
 
 #include <iterator>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -22,7 +23,6 @@
 #include "net/base/net_errors.h"
 #include "net/base/network_anonymization_key.h"
 #include "services/network/public/cpp/simple_host_resolver.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace base {
 class TimeTicks;
@@ -48,7 +48,7 @@ constexpr char kHostSuffix[] = "-ccd-testing-v4.metric.gstatic.com";
 const std::string GetRandomString(int length) {
   std::string prefix;
   for (int i = 0; i < length; i++) {
-    prefix += ('a' + base::RandInt(0, 25));
+    prefix += ('a' + base::RandIntInclusive(0, 25));
   }
   return prefix;
 }
@@ -85,8 +85,9 @@ double AverageLatency(const std::vector<base::TimeDelta>& latencies) {
 
 }  // namespace
 
-DnsLatencyRoutine::DnsLatencyRoutine()
-    : tick_clock_(base::DefaultTickClock::GetInstance()) {
+DnsLatencyRoutine::DnsLatencyRoutine(mojom::RoutineCallSource source)
+    : NetworkDiagnosticsRoutine(source),
+      tick_clock_(base::DefaultTickClock::GetInstance()) {
   profile_ = GetUserProfile();
   network_context_ =
       profile_->GetDefaultStoragePartition()->GetNetworkContext();
@@ -138,10 +139,11 @@ void DnsLatencyRoutine::AttemptNextResolution() {
   std::string hostname = hostnames_to_query_.back();
   hostnames_to_query_.pop_back();
 
+  // Resolver host parameter source must be unset or set to ANY in order for DNS
+  // queries with BuiltInDnsClientEnabled policy disabled to work (b/353448388).
   network::mojom::ResolveHostParametersPtr parameters =
       network::mojom::ResolveHostParameters::New();
   parameters->dns_query_type = net::DnsQueryType::A;
-  parameters->source = net::HostResolverSource::DNS;
   parameters->cache_usage =
       network::mojom::ResolveHostParameters::CacheUsage::DISALLOWED;
 
@@ -162,15 +164,14 @@ void DnsLatencyRoutine::AttemptNextResolution() {
 void DnsLatencyRoutine::OnComplete(
     int result,
     const net::ResolveErrorInfo& resolve_error_info,
-    const absl::optional<net::AddressList>& resolved_addresses,
-    const absl::optional<net::HostResolverEndpointResults>&
-        endpoint_results_with_metadata) {
+    const net::AddressList& resolved_addresses,
+    const net::HostResolverEndpointResults& alternative_endpoints) {
   resolution_complete_time_ = tick_clock_->NowTicks();
   const base::TimeDelta latency =
       resolution_complete_time_ - start_resolution_time_;
 
   if (result != net::OK) {
-    CHECK(!resolved_addresses);
+    CHECK(resolved_addresses.empty());
     // Failed to get resolved address of host
     AnalyzeResultsAndExecuteCallback();
   } else if (hostnames_to_query_.size() > 0) {

@@ -55,9 +55,11 @@ PRINT STATEMENT: *
 # //third_party/webgpu-cts/scripts/run_regenerate_internal_cts_html.py
 *: webgpu/*.html
 
+# Allow testdriver in reftests and crashtests
+TESTDRIVER-IN-UNSUPPORTED-TYPE: *
+
 # Other exceptions.
 WEB-PLATFORM.TEST: *
-SUPPORT-WRONG-DIR: css/css-fonts/*
 MULTIPLE-TESTDRIVER-VENDOR: fenced_frame/hid.https.html
 MULTIPLE-TESTDRIVER-VENDOR: fenced_frame/client-hints.https.html
 MULTIPLE-TESTDRIVER-VENDOR: fenced_frame/client-hints-meta.https.html
@@ -66,3 +68,9 @@ TESTHARNESS-IN-OTHER-TYPE: html/semantics/embedded-content/the-iframe-element/if
 TESTHARNESS-IN-OTHER-TYPE: geolocation-api/window-close-crash.https.html
 TESTHARNESS-IN-OTHER-TYPE: geolocation-api/clear-watch-invalid-id-crash.https.html
 TESTHARNESS-IN-OTHER-TYPE: geolocation-api/remove-remote-context-in-error-callback-crash.https.html
+HTML INVALID SYNTAX: webxr/events_deviceconnect.https.html
+HTML INVALID SYNTAX: webxr/xr_view_projection_detached.https.html
+
+# HTML-in-Canvas video tests use pixel readback
+CONTENT-VISUAL: webgl/draw-element-image/wegl-video-worker.html
+CONTENT-VISUAL: webgl/draw-element-image/wegl-video.html

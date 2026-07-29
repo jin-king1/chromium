@@ -1,19 +1,28 @@
-// Copyright 2023 The Chromium Authors
+// Copyright 2026 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#![feature(int_roundings)]
-// Require unsafe blocks for unsafe operations even in an unsafe fn.
-#![deny(unsafe_op_in_unsafe_fn)]
+//! This crate defines various utilities for working with Mojo from Rust code.
+//! The types in this crate are designed as ergonomic, high-level
+//! representations of the underlying Mojo types. Developers should prefer to
+//! use these types when possible. However, there is an abstraction cost, and
+//! performance-critical code may need to use the lower-level types in the
+//! `mojo_rust_system_bindings` crate instead.
 
-/// `pub` since a macro refers to `$crate::system`.
-pub extern crate mojo_system as system;
+mod multiplex_router;
 
-pub mod macros;
+mod marker_types;
+mod pending_associated_endpoint;
+mod pending_associated_endpoint_parsing;
+mod pending_endpoint;
 
-pub mod decoding;
-pub mod encoding;
+pub mod interface;
 pub mod message;
-pub mod mojom;
+pub mod message_header;
+pub mod message_pipe_watcher;
+pub mod receiver;
+pub mod remote;
 
-pub use system::util::run_loop;
+pub mod for_testing {
+    pub use crate::pending_associated_endpoint_parsing::DummyRegistrarForTesting;
+}

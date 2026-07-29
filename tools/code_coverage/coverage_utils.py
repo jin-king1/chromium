@@ -7,7 +7,6 @@
 import argparse
 from collections import defaultdict
 import functools
-import jinja2
 import json
 import logging
 import os
@@ -15,6 +14,13 @@ import re
 import shutil
 import subprocess
 import sys
+
+# Appends third_party/ so that coverage_utils can import jinja2 from
+# third_party/.
+sys.path.append(
+    os.path.join(os.path.dirname(__file__), os.path.pardir, os.path.pardir,
+                 'third_party'))
+import jinja2
 
 # The default name of the html coverage report for a directory.
 DIRECTORY_COVERAGE_HTML_REPORT_NAME = os.extsep.join(['report', 'html'])
@@ -276,9 +282,8 @@ class CoverageReportPostProcessor(object):
     # Path to the main HTML index file.
     self.html_index_path = GetHtmlIndexPath(self.output_dir)
 
-    self.path_map = None
+    self.path_map = []
     if path_equivalence:
-
       def _PreparePath(path):
         path = os.path.normpath(path)
         if not path.endswith(os.sep):
@@ -286,8 +291,12 @@ class CoverageReportPostProcessor(object):
           path += os.sep
         return path
 
-      self.path_map = [_PreparePath(p) for p in path_equivalence.split(',')]
-      assert len(self.path_map) == 2, 'Path equivalence argument is incorrect.'
+      if isinstance(path_equivalence, str):
+        path_equivalence = [path_equivalence]
+      for pe in path_equivalence:
+        parts = [_PreparePath(p) for p in pe.split(',')]
+        assert len(parts) == 2, 'Path equivalence argument is incorrect.'
+        self.path_map.append(parts)
 
   def _ExtractComponentToDirectoriesMapping(self, component_mappings):
     """Initializes a mapping from components to directories."""
@@ -310,9 +319,17 @@ class CoverageReportPostProcessor(object):
 
   def _MapToLocal(self, path):
     """Maps a path from the coverage data to a local path."""
-    if not self.path_map:
-      return path
-    return path.replace(self.path_map[0], self.path_map[1], 1)
+    for mapping in self.path_map:
+      if path.startswith(mapping[0]):
+        return path.replace(mapping[0], mapping[1], 1)
+    return path
+
+  def _MapFromLocal(self, path):
+    """Maps a local path back to the path from the coverage data."""
+    for mapping in self.path_map:
+      if path.startswith(mapping[1]):
+        return path.replace(mapping[1], mapping[0], 1)
+    return path
 
   def CalculatePerDirectoryCoverageSummary(self, per_file_coverage_summary):
     """Calculates per directory coverage summary."""
@@ -427,7 +444,9 @@ class CoverageReportPostProcessor(object):
     """Given a file path, returns the corresponding html report path."""
     assert os.path.isfile(
         self._MapToLocal(file_path)), '"%s" is not a file.' % file_path
-    html_report_path = os.extsep.join([GetFullPath(file_path), 'html'])
+
+    unmapped_file_path = self._MapFromLocal(file_path)
+    html_report_path = os.extsep.join([GetFullPath(unmapped_file_path), 'html'])
 
     return self.CombineAbsolutePaths(self.html_file_root_dir, html_report_path)
 
@@ -451,6 +470,9 @@ class CoverageReportPostProcessor(object):
     totals_coverage_summary = CoverageSummary()
 
     for file_path in per_file_coverage_summary:
+      if not os.path.isfile(self._MapToLocal(file_path)):
+        logging.warning('%s is not a file.', file_path)
+        continue
       totals_coverage_summary.AddSummary(per_file_coverage_summary[file_path])
       html_generator.AddLinkToAnotherReport(
           self.GetCoverageHtmlReportPathForFile(file_path),
@@ -468,7 +490,8 @@ class CoverageReportPostProcessor(object):
 
     per_file_coverage_summary = {}
     for file_coverage_data in files_coverage_data:
-      file_path = os.path.normpath(file_coverage_data['filename'])
+      file_path = self._MapToLocal(
+          os.path.normpath(file_coverage_data['filename']))
       assert file_path.startswith(self.src_root_dir), (
           'File path "%s" in coverage summary is outside source checkout.' %
           file_path)

@@ -11,23 +11,19 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/theme_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/safe_browsing/core/browser/tailored_security_service/tailored_security_outcome.h"
 #include "components/safe_browsing/core/browser/tailored_security_service/tailored_security_service_util.h"
-#include "content/public/browser/web_contents.h"
+#include "ui/base/base_window.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/image/image_skia.h"
-#include "ui/views/controls/label.h"
 
 namespace safe_browsing {
 
@@ -54,7 +50,7 @@ class TailoredSecurityDialogModelDelegate : public ui::DialogModelDelegate {
     base::RecordAction(accept_user_action_);
   }
 
-  void OnDialogRejected(Browser* browser) {
+  void OnDialogRejected(BrowserWindowInterface* browser) {
     // Redirect to the Chrome safe browsing settings page.
     base::UmaHistogramEnumeration(kOutcomeMetricName_,
                                   TailoredSecurityOutcome::kSettings);
@@ -113,7 +109,8 @@ TailoredSecurityDesktopDialogManager::~TailoredSecurityDesktopDialogManager() =
     default;
 
 void TailoredSecurityDesktopDialogManager::ShowEnabledDialogForBrowser(
-    Browser* browser) {
+    BrowserWindowInterface* browser,
+    base::OnceCallback<void()> on_destroyed_callback) {
   auto model_delegate = std::make_unique<EnabledDialogModelDelegate>();
   auto* model_delegate_ptr = model_delegate.get();
 
@@ -141,14 +138,15 @@ void TailoredSecurityDesktopDialogManager::ShowEnabledDialogForBrowser(
           .AddCancelButton(
               base::BindOnce(&EnabledDialogModelDelegate::OnDialogRejected,
                              base::Unretained(model_delegate_ptr), browser),
-              ui::DialogModelButton::Params().SetLabel(
+              ui::DialogModel::Button::Params().SetLabel(
                   l10n_util::GetStringUTF16(
                       IDS_TAILORED_SECURITY_DIALOG_SETTINGS_BUTTON)))
+          .SetDialogDestroyingCallback(std::move(on_destroyed_callback))
           .Build();
 
   // `window` should always be non-null unless this is called before
   // CreateBrowserWindow().
-  DCHECK(browser->window());
+  DCHECK(browser->GetWindow());
 
   if (close_dialog_callback_) {
     std::move(close_dialog_callback_).Run();
@@ -157,11 +155,12 @@ void TailoredSecurityDesktopDialogManager::ShowEnabledDialogForBrowser(
   base::RecordAction(base::UserMetricsAction(
       safe_browsing::kTailoredSecurityEnabledDialogShown));
   constrained_window::ShowBrowserModal(std::move(dialog_model),
-                                       browser->window()->GetNativeWindow());
+                                       browser->GetWindow()->GetNativeWindow());
 }
 
 void TailoredSecurityDesktopDialogManager::ShowDisabledDialogForBrowser(
-    Browser* browser) {
+    BrowserWindowInterface* browser,
+    base::OnceCallback<void()> on_destroyed_callback) {
   auto model_delegate = std::make_unique<DisabledDialogModelDelegate>();
   auto* model_delegate_ptr = model_delegate.get();
 
@@ -179,20 +178,21 @@ void TailoredSecurityDesktopDialogManager::ShowDisabledDialogForBrowser(
           .AddOkButton(
               base::BindOnce(&DisabledDialogModelDelegate::OnDialogAccepted,
                              base::Unretained(model_delegate_ptr)),
-              ui::DialogModelButton::Params().SetLabel(
+              ui::DialogModel::Button::Params().SetLabel(
                   l10n_util::GetStringUTF16(
                       IDS_TAILORED_SECURITY_DISABLED_DIALOG_ACCEPT_BUTTON)))
           .AddCancelButton(
               base::BindOnce(&DisabledDialogModelDelegate::OnDialogRejected,
                              base::Unretained(model_delegate_ptr), browser),
-              ui::DialogModelButton::Params().SetLabel(
+              ui::DialogModel::Button::Params().SetLabel(
                   l10n_util::GetStringUTF16(
                       IDS_TAILORED_SECURITY_DIALOG_SETTINGS_BUTTON)))
+          .SetDialogDestroyingCallback(std::move(on_destroyed_callback))
           .Build();
 
   // `window` should always be non-null unless this is called before
   // CreateBrowserWindow().
-  DCHECK(browser->window());
+  DCHECK(browser->GetWindow());
 
   if (close_dialog_callback_) {
     std::move(close_dialog_callback_).Run();
@@ -201,7 +201,7 @@ void TailoredSecurityDesktopDialogManager::ShowDisabledDialogForBrowser(
   base::RecordAction(base::UserMetricsAction(
       safe_browsing::kTailoredSecurityDisabledDialogShown));
   constrained_window::ShowBrowserModal(std::move(dialog_model),
-                                       browser->window()->GetNativeWindow());
+                                       browser->GetWindow()->GetNativeWindow());
 }
 
 }  // namespace safe_browsing

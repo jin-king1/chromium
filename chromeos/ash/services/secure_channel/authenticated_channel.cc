@@ -10,8 +10,6 @@
 
 namespace ash::secure_channel {
 
-AuthenticatedChannel::Observer::~Observer() = default;
-
 AuthenticatedChannel::AuthenticatedChannel() = default;
 
 AuthenticatedChannel::~AuthenticatedChannel() = default;
@@ -72,6 +70,14 @@ void AuthenticatedChannel::NotifyMessageReceived(const std::string& feature,
 
   for (auto& observer : observer_list_)
     observer.OnMessageReceived(feature_copy, payload_copy);
+}
+
+void AuthenticatedChannel::NotifyNearbyConnectionStateChanged(
+    mojom::NearbyConnectionStep step,
+    mojom::NearbyConnectionStepResult result) {
+  for (auto& observer : observer_list_) {
+    observer.OnNearbyConnectionStateChanged(step, result);
+  }
 }
 
 }  // namespace ash::secure_channel

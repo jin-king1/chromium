@@ -2,47 +2,52 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <string>
-#include <vector>
+#include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
+#include "chrome/browser/renderer_context_menu/context_menu_test_util.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/models/menu_model.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/chromeos/policy/dlp/dlp_rules_manager.h"
 #endif
 
-using ui::MenuModel;
+#if BUILDFLAG(ENABLE_COMPOSE)
+#include "chrome/browser/compose/chrome_compose_client.h"
+#endif
 
 TestRenderViewContextMenu::TestRenderViewContextMenu(
     content::RenderFrameHost& render_frame_host,
     content::ContextMenuParams params)
-    : RenderViewContextMenu(render_frame_host, params) {}
+    : RenderViewContextMenu(render_frame_host,
+                            params,
+                            /*is_paste_enabled=*/false,
+                            /*is_paste_and_match_style_enabled=*/false) {}
 
-TestRenderViewContextMenu::~TestRenderViewContextMenu() {}
+TestRenderViewContextMenu::~TestRenderViewContextMenu() = default;
 
 // static
 std::unique_ptr<TestRenderViewContextMenu> TestRenderViewContextMenu::Create(
     content::WebContents* web_contents,
-    const GURL& page_url,
+    const GURL& frame_url,
     const GURL& link_url,
-    const GURL& frame_url) {
-  return Create(web_contents->GetPrimaryMainFrame(), page_url, link_url,
-                frame_url);
+    bool is_subframe) {
+  return Create(web_contents->GetPrimaryMainFrame(), frame_url, link_url,
+                is_subframe);
 }
 
 // static
 std::unique_ptr<TestRenderViewContextMenu> TestRenderViewContextMenu::Create(
     content::RenderFrameHost* render_frame_host,
-    const GURL& page_url,
+    const GURL& frame_url,
     const GURL& link_url,
-    const GURL& frame_url) {
+    bool is_subframe) {
   content::ContextMenuParams params;
-  params.page_url = page_url;
-  params.link_url = link_url;
+  params.page_url = frame_url;
   params.frame_url = frame_url;
+  params.link_url = link_url;
+  params.is_subframe = is_subframe;
   auto menu =
       std::make_unique<TestRenderViewContextMenu>(*render_frame_host, params);
   menu->Init();
@@ -54,13 +59,13 @@ bool TestRenderViewContextMenu::IsItemPresent(int command_id) const {
 }
 
 bool TestRenderViewContextMenu::IsItemChecked(int command_id) const {
-  const absl::optional<size_t> index =
+  const std::optional<size_t> index =
       menu_model_.GetIndexOfCommandId(command_id);
   return index && menu_model_.IsItemCheckedAt(*index);
 }
 
 bool TestRenderViewContextMenu::IsItemEnabled(int command_id) const {
-  const absl::optional<size_t> index =
+  const std::optional<size_t> index =
       menu_model_.GetIndexOfCommandId(command_id);
   return index && menu_model_.IsEnabledAt(*index);
 }
@@ -77,29 +82,10 @@ bool TestRenderViewContextMenu::IsItemInRangePresent(
   return false;
 }
 
-bool TestRenderViewContextMenu::GetMenuModelAndItemIndex(
-    int command_id,
-    MenuModel** found_model,
-    size_t* found_index) {
-  std::vector<MenuModel*> models_to_search;
-  models_to_search.push_back(&menu_model_);
-
-  while (!models_to_search.empty()) {
-    MenuModel* model = models_to_search.back();
-    models_to_search.pop_back();
-    for (size_t i = 0; i < model->GetItemCount(); i++) {
-      if (model->GetCommandIdAt(i) == command_id) {
-        *found_model = model;
-        *found_index = i;
-        return true;
-      }
-      if (model->GetTypeAt(i) == MenuModel::TYPE_SUBMENU) {
-        models_to_search.push_back(model->GetSubmenuModelAt(i));
-      }
-    }
-  }
-
-  return false;
+std::optional<std::pair<ui::MenuModel*, size_t>>
+TestRenderViewContextMenu::GetMenuModelAndItemIndex(int command_id) {
+  return context_menu_test_util::GetMenuModelAndItemIndex(&menu_model_,
+                                                          command_id);
 }
 
 int TestRenderViewContextMenu::GetCommandIDByProfilePath(
@@ -112,13 +98,14 @@ int TestRenderViewContextMenu::GetCommandIDByProfilePath(
   return -1;
 }
 
-void TestRenderViewContextMenu::SetBrowser(Browser* browser) {
+void TestRenderViewContextMenu::SetBrowser(BrowserWindowInterface* browser) {
   browser_ = browser;
 }
 
-Browser* TestRenderViewContextMenu::GetBrowser() const {
-  if (browser_)
+BrowserWindowInterface* TestRenderViewContextMenu::GetBrowser() const {
+  if (browser_) {
     return browser_;
+  }
   return RenderViewContextMenu::GetBrowser();
 }
 
@@ -136,3 +123,14 @@ void TestRenderViewContextMenu::set_dlp_rules_manager(
   dlp_rules_manager_ = dlp_rules_manager;
 }
 #endif
+
+#if BUILDFLAG(ENABLE_COMPOSE)
+ChromeComposeClient* TestRenderViewContextMenu::GetChromeComposeClient() const {
+  return compose_client_;
+}
+
+void TestRenderViewContextMenu::SetChromeComposeClient(
+    ChromeComposeClient* compose_client) {
+  compose_client_ = compose_client;
+}
+#endif  // BUILDFLAG(ENABLE_COMPOSE)

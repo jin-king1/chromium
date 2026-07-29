@@ -6,7 +6,6 @@
 
 #include <map>
 
-#include "base/containers/contains.h"
 #include "base/no_destructor.h"
 
 namespace ash {
@@ -41,22 +40,16 @@ std::map<HoldingSpaceSectionId, HoldingSpaceSection> CreateSectionsById() {
           /*supported_types=*/
           std::set<HoldingSpaceItem::Type>({
               HoldingSpaceItem::Type::kArcDownload,
-              HoldingSpaceItem::Type::kCameraAppPhoto,
-              HoldingSpaceItem::Type::kCameraAppScanJpg,
-              HoldingSpaceItem::Type::kCameraAppScanPdf,
-              HoldingSpaceItem::Type::kCameraAppVideoGif,
-              HoldingSpaceItem::Type::kCameraAppVideoMp4,
               HoldingSpaceItem::Type::kDiagnosticsLog,
               HoldingSpaceItem::Type::kDownload,
-              HoldingSpaceItem::Type::kLacrosDownload,
               HoldingSpaceItem::Type::kNearbyShare,
+              HoldingSpaceItem::Type::kPhotoshopWeb,
               HoldingSpaceItem::Type::kPrintedPdf,
               HoldingSpaceItem::Type::kScan,
               HoldingSpaceItem::Type::kPhoneHubCameraRoll,
           }),
-          /*max_item_count=*/absl::make_optional<size_t>(50u),
           /*max_visible_item_count=*/
-          absl::make_optional<size_t>(4u)));
+          std::make_optional<size_t>(4u)));
 
   // Pinned files.
   sections_by_id.emplace(
@@ -68,8 +61,7 @@ std::map<HoldingSpaceSectionId, HoldingSpaceSection> CreateSectionsById() {
           std::set<HoldingSpaceItem::Type>({
               HoldingSpaceItem::Type::kPinnedFile,
           }),
-          /*max_item_count=*/absl::optional<size_t>(),
-          /*max_visible_item_count=*/absl::optional<size_t>()));
+          /*max_visible_item_count=*/std::optional<size_t>()));
 
   // Screen captures.
   sections_by_id.emplace(
@@ -83,9 +75,8 @@ std::map<HoldingSpaceSectionId, HoldingSpaceSection> CreateSectionsById() {
               HoldingSpaceItem::Type::kScreenRecordingGif,
               HoldingSpaceItem::Type::kScreenshot,
           }),
-          /*max_item_count=*/absl::make_optional<size_t>(50u),
           /*max_visible_item_count=*/
-          absl::make_optional<size_t>(3u)));
+          std::make_optional<size_t>(3u)));
 
   // Suggestions.
   sections_by_id.emplace(
@@ -98,9 +89,8 @@ std::map<HoldingSpaceSectionId, HoldingSpaceSection> CreateSectionsById() {
               HoldingSpaceItem::Type::kDriveSuggestion,
               HoldingSpaceItem::Type::kLocalSuggestion,
           }),
-          /*max_item_count=*/absl::optional<size_t>(),
           /*max_visible_item_count=*/
-          absl::make_optional<size_t>(4u)));
+          std::make_optional<size_t>(4u)));
 
   DCHECK(IsValid(sections_by_id));
   return sections_by_id;
@@ -121,11 +111,9 @@ std::map<HoldingSpaceSectionId, HoldingSpaceSection>& GetSectionsById() {
 HoldingSpaceSection::HoldingSpaceSection(
     HoldingSpaceSectionId id,
     std::set<HoldingSpaceItem::Type> supported_types,
-    absl::optional<size_t> max_item_count,
-    absl::optional<size_t> max_visible_item_count)
+    std::optional<size_t> max_visible_item_count)
     : id(id),
       supported_types(std::move(supported_types)),
-      max_item_count(max_item_count),
       max_visible_item_count(max_visible_item_count) {}
 
 HoldingSpaceSection::~HoldingSpaceSection() = default;
@@ -134,7 +122,7 @@ HoldingSpaceSection::~HoldingSpaceSection() = default;
 
 const HoldingSpaceSection* GetHoldingSpaceSection(HoldingSpaceItem::Type type) {
   for (const auto& [id, section] : GetSectionsById()) {
-    if (base::Contains(section.supported_types, type))
+    if (section.supported_types.contains(type))
       return &section;
   }
   return nullptr;

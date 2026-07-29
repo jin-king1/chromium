@@ -117,7 +117,7 @@ std::unique_ptr<HashStoreContents> RegistryHashStoreContentsWin::MakeCopy()
   return base::WrapUnique(new RegistryHashStoreContentsWin(*this));
 }
 
-base::StringPiece RegistryHashStoreContentsWin::GetUMASuffix() const {
+std::string_view RegistryHashStoreContentsWin::GetUMASuffix() const {
   return user_prefs::tracked::kTrackedPrefRegistryValidationSuffix;
 }
 
@@ -185,25 +185,38 @@ bool RegistryHashStoreContentsWin::RemoveEntry(const std::string& path) {
          ClearSplitMac(preference_key_name_, path);
 }
 
+bool RegistryHashStoreContentsWin::SupportsSuperMac() const {
+  return false;
+}
+
 void RegistryHashStoreContentsWin::ImportEntry(const std::string& path,
                                                const base::Value* in_value) {
   NOTREACHED()
       << "RegistryHashStoreContents does not support the ImportEntry operation";
 }
 
-const base::Value::Dict* RegistryHashStoreContentsWin::GetContents() const {
+const base::DictValue* RegistryHashStoreContentsWin::GetContents() const {
   NOTREACHED()
       << "RegistryHashStoreContents does not support the GetContents operation";
-  return NULL;
 }
 
 std::string RegistryHashStoreContentsWin::GetSuperMac() const {
   NOTREACHED()
       << "RegistryHashStoreContents does not support the GetSuperMac operation";
-  return NULL;
 }
 
 void RegistryHashStoreContentsWin::SetSuperMac(const std::string& super_mac) {
   NOTREACHED()
       << "RegistryHashStoreContents does not support the SetSuperMac operation";
+}
+
+std::string RegistryHashStoreContentsWin::GetSuperEncryptedHash() const {
+  NOTREACHED() << "RegistryHashStoreContents does not support the "
+                  "GetSuperEncryptedHash operation";
+}
+
+void RegistryHashStoreContentsWin::SetSuperEncryptedHash(
+    const std::string& super_encrypted_hash) {
+  NOTREACHED() << "RegistryHashStoreContents does not support the "
+                  "SetSuperEncryptedHash operation";
 }

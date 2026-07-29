@@ -15,6 +15,7 @@
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "content/public/browser/render_process_host_creation_observer.h"
 #include "content/public/browser/render_process_host_observer.h"
+#include "content/public/common/child_process_id.h"
 
 namespace content {
 class RenderProcessHost;
@@ -35,7 +36,7 @@ class RendererFreezer
    public:
     using ResultCallback = base::OnceCallback<void(bool)>;
 
-    virtual ~Delegate() {}
+    virtual ~Delegate() = default;
 
     // If |frozen| is true, marks the renderer process |handle| to be frozen
     // when FreezeRenderers() is called; otherwise marks it to remain unfrozen.
@@ -69,7 +70,7 @@ class RendererFreezer
   void SuspendDone() override;
 
   // content::RenderProcessHostCreationObserver implementation.
-  void OnRenderProcessHostCreated(content::RenderProcessHost* host) override;
+  void OnRenderProcessLaunched(content::RenderProcessHost* host) override;
 
   // content::RenderProcessHostObserver overrides.
   void RenderProcessExited(
@@ -96,7 +97,7 @@ class RendererFreezer
 
   // Set that keeps track of the RenderProcessHosts for processes that are
   // hosting GCM extensions.
-  std::set<int> gcm_extension_processes_;
+  std::set<content::ChildProcessId> gcm_extension_processes_;
 
   base::WeakPtrFactory<RendererFreezer> weak_factory_{this};
 };

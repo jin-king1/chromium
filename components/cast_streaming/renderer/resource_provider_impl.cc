@@ -65,12 +65,12 @@ std::unique_ptr<media::Demuxer> ResourceProviderImpl::MaybeGetDemuxerOverride(
   // Do not create a FrameInjectingDemuxer if the Cast Streaming MessagePort
   // was not set in the browser process. This will manifest as an unbound
   // DemuxerConnector object in the renderer process.
-  // TODO(crbug.com/1082821): Simplify the instantiation conditions for the
+  // TODO(crbug.com/40131115): Simplify the instantiation conditions for the
   // FrameInjectingDemuxer.
   if (per_frame_resources_ && IsCastStreamingMediaSourceUrl(url) &&
       per_frame_resources_->demuxer_connector().IsBound()) {
     return std::make_unique<FrameInjectingDemuxer>(
-        &per_frame_resources_->demuxer_connector(),
+        per_frame_resources_->demuxer_connector().config_buffer(),
         std::move(media_task_runner));
   }
 

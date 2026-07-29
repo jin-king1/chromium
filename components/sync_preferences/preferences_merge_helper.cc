@@ -4,16 +4,32 @@
 
 #include "components/sync_preferences/preferences_merge_helper.h"
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
+#include "base/check_is_test.h"
+#include "base/notreached.h"
 #include "components/sync_preferences/pref_model_associator_client.h"
+#include "components/sync_preferences/syncable_prefs_database.h"
 
 namespace sync_preferences::helper {
 
-base::Value::List MergeListValues(const base::Value::List& local_value,
-                                  const base::Value::List& server_value) {
-  base::Value::List result = server_value.Clone();
+namespace {
+
+MergeBehavior GetMergeBehavior(const PrefModelAssociatorClient& client,
+                               std::string_view pref_name) {
+  std::optional<SyncablePrefMetadata> metadata =
+      client.GetSyncablePrefsDatabase().GetSyncablePrefMetadata(pref_name);
+  CHECK(metadata.has_value());
+  return metadata->merge_behavior();
+}
+
+}  // namespace
+
+base::ListValue MergeListValues(const base::ListValue& local_value,
+                                const base::ListValue& server_value) {
+  base::ListValue result = server_value.Clone();
   for (const auto& value : local_value) {
-    if (!base::Contains(result, value)) {
+    if (!std::ranges::contains(result, value)) {
       result.Append(value.Clone());
     }
   }
@@ -21,9 +37,9 @@ base::Value::List MergeListValues(const base::Value::List& local_value,
   return result;
 }
 
-base::Value::Dict MergeDictionaryValues(const base::Value::Dict& local_value,
-                                        const base::Value::Dict& server_value) {
-  base::Value::Dict result = server_value.Clone();
+base::DictValue MergeDictionaryValues(const base::DictValue& local_value,
+                                      const base::DictValue& server_value) {
+  base::DictValue result = server_value.Clone();
 
   for (auto it : local_value) {
     // It's not clear whether using a C++17 structured binding here would cause
@@ -45,51 +61,64 @@ base::Value::Dict MergeDictionaryValues(const base::Value::Dict& local_value,
 }
 
 base::Value MergePreference(const PrefModelAssociatorClient* client,
-                            const std::string& pref_name,
+                            std::string_view pref_name,
                             const base::Value& local_value,
                             const base::Value& server_value) {
-  if (client) {
-    if (client->IsMergeableListPreference(pref_name)) {
-      if (!server_value.is_list()) {
-        // Server value is corrupt or missing, keep pref value unchanged.
-        // TODO(crbug.com/1430854): Investigate in which scenarios can the value
-        // be corrupt.
-        return local_value.Clone();
-      }
-      if (local_value.is_none()) {
-        return server_value.Clone();
-      }
-      return base::Value(
-          MergeListValues(local_value.GetList(), server_value.GetList()));
-    }
-    if (client->IsMergeableDictionaryPreference(pref_name)) {
+  if (!client) {
+    CHECK_IS_TEST();
+    // No client was registered. Directly let server value win.
+    return server_value.Clone();
+  }
+
+  switch (GetMergeBehavior(*client, pref_name)) {
+    case MergeBehavior::kMergeableDict:
       if (!server_value.is_dict()) {
         // Server value is corrupt or missing, keep pref value unchanged.
+        // TODO(crbug.com/40901973): Investigate in which scenarios can the
+        // value be corrupt.
         return local_value.Clone();
       }
-      if (local_value.is_none()) {
+      // TODO(crbug.com/40933499): Investigate if this is valid or if this
+      // should be a CHECK instead.
+      if (!local_value.is_dict()) {
         return server_value.Clone();
       }
       return base::Value(
           MergeDictionaryValues(local_value.GetDict(), server_value.GetDict()));
-    }
-    base::Value merged_value = client->MaybeMergePreferenceValues(
-        pref_name, local_value, server_value);
-    if (!merged_value.is_none()) {
-      return merged_value;
-    }
+    case MergeBehavior::kMergeableListWithRewriteOnUpdate:
+      if (!server_value.is_list()) {
+        // Server value is corrupt or missing, keep pref value unchanged.
+        // TODO(crbug.com/40901973): Investigate in which scenarios can the
+        // value be corrupt.
+        return local_value.Clone();
+      }
+      // TODO(crbug.com/40933499): Investigate if this is valid or if this
+      // should be a CHECK instead.
+      if (!local_value.is_list()) {
+        return server_value.Clone();
+      }
+      return base::Value(
+          MergeListValues(local_value.GetList(), server_value.GetList()));
+    case MergeBehavior::kCustom:
+      if (base::Value merged_value = client->MaybeMergePreferenceValues(
+              pref_name, local_value, server_value);
+          !merged_value.is_none()) {
+        return merged_value;
+      }
+      [[fallthrough]];
+    case MergeBehavior::kNone:
+      // If this is not a specially handled preference, server wins.
+      return server_value.Clone();
   }
-
-  // If this is not a specially handled preference, server wins.
-  return server_value.Clone();
+  NOTREACHED();
 }
 
-std::pair<base::Value::Dict, base::Value::Dict> UnmergeDictionaryValues(
-    base::Value::Dict new_dict,
-    const base::Value::Dict& original_local_dict,
-    const base::Value::Dict& original_account_dict) {
-  base::Value::Dict new_local_dict;
-  base::Value::Dict new_account_dict;
+std::pair<base::DictValue, base::DictValue> UnmergeDictionaryValues(
+    base::DictValue new_dict,
+    const base::DictValue& original_local_dict,
+    const base::DictValue& original_account_dict) {
+  base::DictValue new_local_dict;
+  base::DictValue new_account_dict;
 
   // Keep only keys that exist in the `new_dict`.
   for (auto [k, v] : original_local_dict) {
@@ -108,12 +137,11 @@ std::pair<base::Value::Dict, base::Value::Dict> UnmergeDictionaryValues(
     // If contained value is again a dict, recursively un-merge.
     if (new_dict_value.is_dict()) {
       base::Value local_dict_value(base::Value::Type::DICT);
-      if (base::Value::Dict* local_dict_value_dict =
-              new_local_dict.FindDict(k)) {
+      if (base::DictValue* local_dict_value_dict = new_local_dict.FindDict(k)) {
         local_dict_value = base::Value(std::move(*local_dict_value_dict));
       }
       base::Value account_dict_value(base::Value::Type::DICT);
-      if (base::Value::Dict* account_dict_value_dict =
+      if (base::DictValue* account_dict_value_dict =
               new_account_dict.FindDict(k)) {
         account_dict_value = base::Value(std::move(*account_dict_value_dict));
       }

@@ -27,37 +27,37 @@ class FedCmTracker : public DevToolsEventListener {
   bool ListensToConnections() const override;
   Status OnEvent(DevToolsClient* client,
                  const std::string& method,
-                 const base::Value::Dict& params) override;
+                 const base::DictValue& params) override;
 
   bool HasDialog() const { return !last_dialog_id_.empty(); }
 
   const std::string& GetLastDialogId() const { return last_dialog_id_; }
 
-  const base::Value::List& GetLastAccounts() const { return last_accounts_; }
+  const base::ListValue& GetLastAccounts() const { return last_accounts_; }
 
   const std::string& GetLastTitle() const { return last_title_; }
-  const absl::optional<std::string>& GetLastSubtitle() const {
+  const std::optional<std::string>& GetLastSubtitle() const {
     return last_subtitle_;
   }
 
   const std::string& GetLastDialogType() const { return last_dialog_type_; }
 
   // To be called when the client issues one of the commands that
-  // close the dialog.
+  // close the dialog or if we get a dialogClosed event.
   void DialogClosed() {
     last_dialog_id_ = "";
     last_title_ = "";
     last_subtitle_ = "";
     last_dialog_type_ = "";
-    last_accounts_ = base::Value::List();
+    last_accounts_ = base::ListValue();
   }
 
  private:
   std::string last_dialog_id_;
   std::string last_title_;
-  absl::optional<std::string> last_subtitle_;
+  std::optional<std::string> last_subtitle_;
   std::string last_dialog_type_;
-  base::Value::List last_accounts_;
+  base::ListValue last_accounts_;
 };
 
 #endif  // CHROME_TEST_CHROMEDRIVER_CHROME_FEDCM_TRACKER_H_

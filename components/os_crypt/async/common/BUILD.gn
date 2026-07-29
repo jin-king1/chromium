@@ -18,9 +18,9 @@ mojom("common_mojom") {
       types = [
         {
           mojom = "os_crypt_async.mojom.Encryptor"
-          cpp = "::os_crypt_async::Encryptor"
-          default_constructible = false
-          move_only = true
+          cpp = "::scoped_refptr<::os_crypt_async::Encryptor>"
+          nullable_is_same_type = true
+          copyable_pass_by_value = true
         },
         {
           mojom = "os_crypt_async.mojom.Key"
@@ -37,6 +37,7 @@ mojom("common_mojom") {
       traits_deps = [
         ":algorithm_mojom",
         ":common",
+        ":crypto_lib",
       ]
     },
   ]
@@ -60,7 +61,7 @@ component("common") {
   ]
 
   deps = [
-    "//components/os_crypt/sync",
+    ":crypto_lib",
     "//crypto",
   ]
 
@@ -70,6 +71,32 @@ component("common") {
   ]
 
   defines = [ "IS_OS_CRYPT_ASYNC_IMPL" ]
+}
+
+source_set("test_support") {
+  testonly = true
+
+  # Access this class via browser/test_utils.h.
+  visibility = [ "//components/os_crypt/async/browser:test_support" ]
+
+  sources = [
+    "test_encryptor.cc",
+    "test_encryptor.h",
+  ]
+
+  deps = [
+    ":common",
+    "//base",
+  ]
+}
+
+# Mojo typemaps do not support adding a library dependency directly, so this
+# allows the dependency on crypt32.lib to be forwarded to both :common and
+# :common_mojom which might be in different modules in a component-build.
+source_set("crypto_lib") {
+  if (is_win) {
+    libs = [ "crypt32.lib" ]
+  }
 }
 
 source_set("unit_tests") {
@@ -82,8 +109,6 @@ source_set("unit_tests") {
     ":common_mojom",
     "//base",
     "//base/test:test_support",
-    "//components/os_crypt/sync",
-    "//components/os_crypt/sync:test_support",
     "//crypto",
     "//mojo/public/cpp/test_support:test_utils",
     "//testing/gtest",

@@ -8,8 +8,9 @@
 #include <string>
 
 #include "base/memory/weak_ptr.h"
-#include "chrome/browser/ash/login/enrollment/enterprise_enrollment_helper.h"
+#include "chrome/browser/ash/login/enrollment/enrollment_launcher.h"
 #include "chrome/browser/ash/login/oobe_screen.h"
+#include "chrome/browser/ui/webui/ash/login/online_login_utils.h"
 
 class GoogleServiceAuthError;
 
@@ -21,8 +22,7 @@ class EnrollmentStatus;
 namespace ash {
 
 // Interface class for the enterprise enrollment screen view.
-class EnrollmentScreenView
-    : public base::SupportsWeakPtr<EnrollmentScreenView> {
+class EnrollmentScreenView {
  public:
   // This defines the interface for controllers which will be called back when
   // something happens on the UI.
@@ -30,7 +30,7 @@ class EnrollmentScreenView
    public:
     virtual ~Controller() = default;
 
-    virtual void OnLoginDone(const std::string& user,
+    virtual void OnLoginDone(login::OnlineSigninArtifacts signin_artifacts,
                              int license_type,
                              const std::string& auth_code) = 0;
     virtual void OnRetry() = 0;
@@ -52,14 +52,14 @@ class EnrollmentScreenView
     kEnterprise,
     kCFM,
     kEnterpriseLicense,
-    kEducationLicense
+    kEducationLicense,
+    kDeviceEnrollment,
   };
   enum class GaiaButtonsType {
     kDefault,
     kEnterprisePreferred,
     kKioskPreferred
   };
-  enum class UserErrorType { kConsumerDomain, kBusinessDomain };
 
   // Initializes the view with parameters.
   virtual void SetEnrollmentConfig(const policy::EnrollmentConfig& config) = 0;
@@ -89,6 +89,9 @@ class EnrollmentScreenView
   // Reloads the signin screen.
   virtual void ReloadSigninScreen() = 0;
 
+  // Resets shown enrollment screen.
+  virtual void ResetEnrollmentScreen() = 0;
+
   // Shows error related to user account eligibility.
   virtual void ShowUserError(const std::string& email) = 0;
 
@@ -112,12 +115,14 @@ class EnrollmentScreenView
   virtual void ShowAuthError(const GoogleServiceAuthError& error) = 0;
 
   // Show non-authentication error.
-  virtual void ShowOtherError(EnterpriseEnrollmentHelper::OtherError error) = 0;
+  virtual void ShowOtherError(EnrollmentLauncher::OtherError error) = 0;
 
   // Update the UI to report the `status` of the enrollment procedure.
   virtual void ShowEnrollmentStatus(policy::EnrollmentStatus status) = 0;
 
   virtual void Shutdown() = 0;
+
+  virtual base::WeakPtr<EnrollmentScreenView> AsWeakPtr() = 0;
 };
 
 }  // namespace ash

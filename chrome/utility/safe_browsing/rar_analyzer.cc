@@ -10,7 +10,6 @@
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/i18n/streaming_utf8_validator.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/checked_math.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
@@ -34,11 +33,28 @@ bool RarAnalyzer::ResumeExtraction() {
   while (reader_.ExtractNextEntry()) {
     const third_party_unrar::RarReader::EntryInfo& entry =
         reader_.current_entry();
-    if (!UpdateResultsForEntry(
-            temp_file_.Duplicate(), GetRootPath().Append(entry.file_path),
-            entry.file_size, entry.is_encrypted, entry.is_directory)) {
+    if (entry.is_encrypted && !entry.contents_valid) {
+      results()->encryption_info.password_status =
+          EncryptionInfo::kKnownIncorrect;
+    }
+    if (!UpdateResultsForEntry(temp_file_.Duplicate(),
+                               GetRootPath().Append(entry.file_path),
+                               entry.file_size, entry.is_encrypted,
+                               entry.is_directory, entry.contents_valid)) {
       return false;
     }
+  }
+
+  if (reader_.HasWriteError()) {
+    results()->analysis_result = ArchiveAnalysisResult::kDiskError;
+    results()->success = false;
+    return false;
+  }
+
+  if (results()->encryption_info.password_status !=
+          EncryptionInfo::kKnownIncorrect &&
+      results()->encryption_info.is_encrypted) {
+    results()->encryption_info.password_status = EncryptionInfo::kKnownCorrect;
   }
 
   results()->success = true;
@@ -62,9 +78,32 @@ void RarAnalyzer::OnGetTempFile(base::File temp_file) {
     InitComplete(ArchiveAnalysisResult::kTooLarge);
     return;
   }
+
+  if (password()) {
+    reader_.SetPassword(*password());
+  }
+
+  CHECK(analysis_delegate_);
+  reader_.SetWriterDelegate(
+      analysis_delegate_->CreateRarWriterDelegate(temp_file_.Duplicate()));
+
   // `rar_file_` is consumed by the reader and cannot be used after
   // this point.
-  if (!reader_.Open(std::move(GetArchiveFile()), temp_file_.Duplicate())) {
+  std::unique_ptr<third_party_unrar::RarReaderDelegate> reader_delegate =
+      analysis_delegate_->CreateRarReaderDelegate(std::move(GetArchiveFile()));
+  if (!reader_.Open(std::move(reader_delegate), temp_file_.Duplicate())) {
+    InitComplete(ArchiveAnalysisResult::kUnknown);
+    return;
+  }
+
+  results()->encryption_info.is_encrypted |= reader_.HeadersEncrypted();
+  if (IsTopLevelArchive()) {
+    results()->encryption_info.is_top_level_encrypted |=
+        reader_.HeadersEncrypted();
+  }
+  if (reader_.HeaderDecryptionFailed()) {
+    results()->encryption_info.password_status =
+        EncryptionInfo::kKnownIncorrect;
     InitComplete(ArchiveAnalysisResult::kUnknown);
     return;
   }

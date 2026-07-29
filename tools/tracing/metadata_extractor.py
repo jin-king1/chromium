@@ -13,13 +13,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), os.pardir, 'perf'))
 from core.tbmv3 import trace_processor
 
 VERSION_NUM_QUERY = (
-    'select str_value from metadata where name="cr-product-version"')
-OS_NAME_QUERY = 'select str_value from metadata where name="cr-os-name"'
-ARCH_QUERY = 'select str_value from metadata where name="cr-os-arch"'
+    'select str_value from metadata where name LIKE "cr-%product-version"')
+OS_NAME_QUERY = 'select str_value from metadata where name LIKE "cr-%os-name"'
+ARCH_QUERY = 'select str_value from metadata where name LIKE "cr-%os-arch"'
 BITNESS_QUERY = (
-    'select int_value from metadata where name="cr-chrome-bitness"')
-VERSION_CODE_QUERY = (
-    'select int_value from metadata where name="cr-playstore_version_code"')
+    'select int_value from metadata where name LIKE "cr-%chrome-bitness"')
+VERSION_CODE_QUERY = ('select int_value from metadata '
+                      'where name LIKE "cr-%playstore_version_code"')
 MODULES_QUERY = 'select name, build_id from stack_profile_mapping'
 
 
@@ -97,7 +97,7 @@ class MetadataExtractor:
   def Initialize(self):
     """Extracts metadata from perfetto system trace.
     """
-    # TODO(crbug/1239694): Implement Trace Processor method to run multiple
+    # TODO(crbug.com/40193968): Implement Trace Processor method to run multiple
     # SQL queries without processing trace for every query.
 
     if self._initialized:

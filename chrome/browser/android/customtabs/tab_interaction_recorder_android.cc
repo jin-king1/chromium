@@ -5,16 +5,17 @@
 #include "chrome/browser/android/customtabs/tab_interaction_recorder_android.h"
 
 #include <memory>
+#include <string>
 
 #include "base/android/jni_android.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
-#include "chrome/android/chrome_jni_headers/TabInteractionRecorder_jni.h"
 #include "chrome/browser/android/customtabs/custom_tab_session_state_tracker.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "components/autofill/content/browser/content_autofill_driver.h"
-#include "components/autofill/core/browser/autofill_manager.h"
+#include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/common/unique_ids.h"
 #include "content/public/browser/document_user_data.h"
 #include "content/public/browser/global_routing_id.h"
@@ -23,10 +24,13 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 
+// Must come after all headers that specialize FromJniType() / ToJniType().
+#include "chrome/android/chrome_jni_headers/TabInteractionRecorder_jni.h"
+
 namespace customtabs {
 
 using autofill::AutofillManager;
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using content::GlobalRenderFrameHostId;
 using content::RenderFrameHost;
@@ -38,7 +42,7 @@ AutofillManager* GetAutofillManager(RenderFrameHost* render_frame_host) {
       autofill::ContentAutofillDriver::GetForRenderFrameHost(render_frame_host);
   if (!autofill_driver)
     return nullptr;
-  return autofill_driver->autofill_manager();
+  return &autofill_driver->GetAutofillManager();
 }
 }  // namespace
 
@@ -56,26 +60,35 @@ AutofillObserverImpl::~AutofillObserverImpl() {
   Invalidate();
 }
 
-void AutofillObserverImpl::OnFormSubmitted(autofill::AutofillManager&) {
+void AutofillObserverImpl::OnBeforeFormSubmitted(autofill::AutofillManager&,
+                                                 const autofill::FormData&) {
   OnFormInteraction();
 }
 
-void AutofillObserverImpl::OnSelectControlDidChange(
-    autofill::AutofillManager&) {
+void AutofillObserverImpl::OnAfterSelectControlSelectionChanged(
+    autofill::AutofillManager&,
+    autofill::FormGlobalId,
+    autofill::FieldGlobalId) {
   OnFormInteraction();
 }
 
-void AutofillObserverImpl::OnTextFieldDidChange(autofill::AutofillManager&) {
+void AutofillObserverImpl::OnAfterTextFieldValueChanged(
+    autofill::AutofillManager&,
+    autofill::FormGlobalId,
+    autofill::FieldGlobalId) {
   OnFormInteraction();
 }
 
-void AutofillObserverImpl::OnTextFieldDidScroll(autofill::AutofillManager&) {
+void AutofillObserverImpl::OnAfterTextFieldDidScroll(autofill::AutofillManager&,
+                                                     autofill::FormGlobalId,
+                                                     autofill::FieldGlobalId) {
   OnFormInteraction();
 }
 
 void AutofillObserverImpl::OnAfterFormsSeen(
     AutofillManager& manager,
-    base::span<const autofill::FormGlobalId> forms) {
+    base::span<const autofill::FormGlobalId> updated_forms,
+    base::span<const autofill::FormGlobalId> removed_forms) {
   RenderFrameHost* rfh = RenderFrameHost::FromID(global_id_);
   // Only mark has form associated data for the RFH observed. This is to
   // metigate the fact that AutofillManager will dispatch |OnAfterFormsSeen| to
@@ -86,7 +99,7 @@ void AutofillObserverImpl::OnAfterFormsSeen(
 
   // Check whether the form seen lives in the observed RFH.
   bool forms_in_rfh = false;
-  for (auto form_id : forms) {
+  for (auto form_id : updated_forms) {
     if (form_id.frame_token ==
         autofill::LocalFrameToken(rfh->GetFrameToken().value())) {
       forms_in_rfh = true;
@@ -245,22 +258,21 @@ void TabInteractionRecorderAndroid::StartObservingFrame(
 WEB_CONTENTS_USER_DATA_KEY_IMPL(TabInteractionRecorderAndroid);
 
 // JNI methods
-jboolean TabInteractionRecorderAndroid::DidGetUserInteraction(
-    JNIEnv* env) const {
+bool TabInteractionRecorderAndroid::DidGetUserInteraction(JNIEnv* env) const {
   return did_get_user_interaction_;
 }
 
-jboolean TabInteractionRecorderAndroid::HadFormInteractionInSession(
+bool TabInteractionRecorderAndroid::HadFormInteractionInSession(
     JNIEnv* env) const {
   return has_form_interactions_in_session();
 }
 
-jboolean TabInteractionRecorderAndroid::HadNavigationInteraction(
+bool TabInteractionRecorderAndroid::HadNavigationInteraction(
     JNIEnv* env) const {
   return did_get_user_interaction_ && HasNavigatedFromFirstPage();
 }
 
-jboolean TabInteractionRecorderAndroid::HadFormInteractionInActivePage(
+bool TabInteractionRecorderAndroid::HadFormInteractionInActivePage(
     JNIEnv* env) const {
   return HasActiveFormInteraction();
 }
@@ -269,12 +281,12 @@ void TabInteractionRecorderAndroid::Reset(JNIEnv* env) {
   ResetImpl();
 }
 
-ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_GetFromTab(
+static ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_GetFromTab(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jtab) {
+    const JavaRef<jobject>& jtab) {
   TabAndroid* tab = TabAndroid::GetNativeTab(env, jtab);
   if (!tab || !tab->web_contents() || tab->web_contents()->IsBeingDestroyed()) {
-    return ScopedJavaLocalRef<jobject>(env, nullptr);
+    return nullptr;
   }
 
   auto* recorder =
@@ -283,12 +295,12 @@ ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_GetFromTab(
       env, reinterpret_cast<int64_t>(recorder));
 }
 
-ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_CreateForTab(
+static ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_CreateForTab(
     JNIEnv* env,
-    const JavaParamRef<jobject>& jtab) {
+    const JavaRef<jobject>& jtab) {
   TabAndroid* tab = TabAndroid::GetNativeTab(env, jtab);
   if (!tab || !tab->web_contents() || tab->web_contents()->IsBeingDestroyed()) {
-    return ScopedJavaLocalRef<jobject>(env, nullptr);
+    return nullptr;
   }
 
   TabInteractionRecorderAndroid::CreateForWebContents(tab->web_contents());
@@ -300,3 +312,5 @@ ScopedJavaLocalRef<jobject> JNI_TabInteractionRecorder_CreateForTab(
 }
 
 }  // namespace customtabs
+
+DEFINE_JNI(TabInteractionRecorder)

@@ -7,309 +7,193 @@
 #include <memory>
 #include <string>
 
-#include "base/strings/string_number_conversions.h"
-#include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
+#include "base/metrics/user_metrics.h"
+#include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/layout_constants.h"
-#include "chrome/browser/ui/tabs/tab_types.h"
-#include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/tabs/browser_tab_strip_controller.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/variations/variations_associated_data.h"
-#include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/pointer/touch_ui_controller.h"
-#include "ui/base/theme_provider.h"
+#include "components/tabs/public/tab_group.h"
+#include "ui/base/interaction/element_identifier.h"
+#include "ui/base/l10n/l10n_util.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/compositor/compositor.h"
-#include "ui/gfx/color_utils.h"
-#include "ui/gfx/scoped_canvas.h"
-#include "ui/views/animation/flood_fill_ink_drop_ripple.h"
-#include "ui/views/animation/ink_drop.h"
-#include "ui/views/animation/ink_drop_impl.h"
-#include "ui/views/animation/ink_drop_mask.h"
-#include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/view_class_properties.h"
-#include "ui/views/widget/widget.h"
 
-#if BUILDFLAG(IS_WIN)
-#include "ui/display/win/screen_win.h"
-#include "ui/views/win/hwnd_util.h"
-#endif
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(NewTabButtonMenuModel, kNewTab);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(NewTabButtonMenuModel, kNewTabInGroup);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(NewTabButtonMenuModel, kNewSplitView);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(NewTabButtonMenuModel,
+                                      kCreateNewTabGroup);
 
-// static
-const gfx::Size NewTabButton::kButtonSize{28, 28};
-
-class NewTabButton::HighlightPathGenerator
-    : public views::HighlightPathGenerator {
- public:
-  HighlightPathGenerator() = default;
-  HighlightPathGenerator(const HighlightPathGenerator&) = delete;
-  HighlightPathGenerator& operator=(const HighlightPathGenerator&) = delete;
-
-  // views::HighlightPathGenerator:
-  SkPath GetHighlightPath(const views::View* view) override {
-    return static_cast<const NewTabButton*>(view)->GetBorderPath(
-        view->GetContentsBounds().origin(), 1.0f, false);
-  }
-};
-
-NewTabButton::NewTabButton(TabStrip* tab_strip, PressedCallback callback)
-    : views::ImageButton(std::move(callback)), tab_strip_(tab_strip) {
-  SetAnimateOnStateChange(true);
-// TODO(crbug.com/1052397): Revisit the macro expression once build flag switch
-// of lacros-chrome is complete.
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS_LACROS)
-  SetTriggerableEventFlags(GetTriggerableEventFlags() |
-                           ui::EF_MIDDLE_MOUSE_BUTTON);
-#endif
-
-  if (features::IsChromeRefresh2023()) {
-    foreground_frame_active_color_id_ =
-        kColorNewTabButtonCRForegroundFrameActive;
-    foreground_frame_inactive_color_id_ =
-        kColorNewTabButtonCRForegroundFrameInactive;
-    background_frame_active_color_id_ =
-        kColorNewTabButtonCRBackgroundFrameActive;
-    background_frame_inactive_color_id_ =
-        kColorNewTabButtonCRBackgroundFrameInactive;
-  } else {
-    foreground_frame_active_color_id_ = kColorNewTabButtonForegroundFrameActive;
-    foreground_frame_inactive_color_id_ =
-        kColorNewTabButtonForegroundFrameInactive;
-    background_frame_active_color_id_ = kColorNewTabButtonBackgroundFrameActive;
-    background_frame_inactive_color_id_ =
-        kColorNewTabButtonBackgroundFrameInactive;
-  }
-
-  ink_drop_container_ =
-      AddChildView(std::make_unique<views::InkDropContainerView>());
-
-  views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::ON);
-  views::InkDrop::Get(this)->SetHighlightOpacity(0.16f);
-  views::InkDrop::Get(this)->SetVisibleOpacity(0.14f);
-
-  SetInstallFocusRingOnFocus(true);
-  views::HighlightPathGenerator::Install(
-      this, std::make_unique<NewTabButton::HighlightPathGenerator>());
-
-  SetFocusBehavior(FocusBehavior::ACCESSIBLE_ONLY);
-
+NewTabButton::NewTabButton(PressedCallback callback,
+                           const gfx::VectorIcon& icon,
+                           Edge fixed_flat_edge,
+                           Edge animated_flat_edge,
+                           BrowserWindowInterface* browser)
+    : TabStripControlButton(browser,
+                            std::move(callback),
+                            icon,
+                            fixed_flat_edge,
+                            animated_flat_edge),
+      browser_(browser) {
+  set_context_menu_controller(this);
   SetProperty(views::kElementIdentifierKey, kNewTabButtonElementId);
 }
 
-NewTabButton::~NewTabButton() {
-  // TODO(pbos): Revisit explicit removal of InkDrop for classes that override
-  // Add/RemoveLayerFromRegions(). This is done so that the InkDrop doesn't
-  // access the non-override versions in ~View.
-  views::InkDrop::Remove(this);
-}
+NewTabButton::~NewTabButton() = default;
 
-void NewTabButton::FrameColorsChanged() {
-  const auto* const color_provider = GetColorProvider();
-  views::FocusRing::Get(this)->SetColorId(kColorNewTabButtonFocusRing);
-  views::InkDrop::Get(this)->SetBaseColor(
-      color_provider->GetColor(tab_strip_->ShouldPaintAsActiveFrame()
-                                   ? kColorNewTabButtonInkDropFrameActive
-                                   : kColorNewTabButtonInkDropFrameInactive));
-  SchedulePaint();
-}
+void NewTabButton::ShowContextMenuForViewImpl(
+    View* source,
+    const gfx::Point& point,
+    ui::mojom::MenuSourceType source_type) {
+  if (base::FeatureList::IsEnabled(features::kNewTabButtonContextMenu)) {
+    context_menu_model_ = std::make_unique<NewTabButtonMenuModel>(browser_);
 
-void NewTabButton::AnimateToStateForTesting(views::InkDropState state) {
-  views::InkDrop::Get(this)->GetInkDrop()->AnimateToState(state);
-}
+    int32_t menu_runner_flags =
+        views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU;
 
-void NewTabButton::AddLayerToRegion(ui::Layer* new_layer,
-                                    views::LayerRegion region) {
-  ink_drop_container_->AddLayerToRegion(new_layer, region);
-}
+    context_menu_runner_ = std::make_unique<views::MenuRunner>(
+        context_menu_model_.get(), menu_runner_flags);
 
-void NewTabButton::RemoveLayerFromRegions(ui::Layer* old_layer) {
-  ink_drop_container_->RemoveLayerFromRegions(old_layer);
-}
-
-SkColor NewTabButton::GetForegroundColor() const {
-  if (features::IsChromeRefresh2023()) {
-    return GetColorProvider()->GetColor(
-        tab_strip_->ShouldPaintAsActiveFrame()
-            ? foreground_frame_active_color_id_
-            : foreground_frame_inactive_color_id_);
+    context_menu_runner_->RunMenuAt(
+        source->GetWidget(), nullptr, gfx::Rect(point, gfx::Size()),
+        views::MenuAnchorPosition::kTopLeft, source_type);
   }
-  return tab_strip_->GetTabForegroundColor(TabActive::kInactive);
 }
 
-int NewTabButton::GetCornerRadius() const {
-  return ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
-      views::Emphasis::kMaximum, GetContentsBounds().size());
+void NewTabButton::UpdateBackground() {
+  if (features::IsGlassFrameEnabled()) {
+    SetBackground(views::CreateSolidBackground(SK_ColorTRANSPARENT));
+    return;
+  }
+  TabStripControlButton::UpdateBackground();
 }
 
-SkPath NewTabButton::GetBorderPath(const gfx::Point& origin,
-                                   float scale,
-                                   bool extend_to_top) const {
-  gfx::PointF scaled_origin(origin);
-  scaled_origin.Scale(scale);
-  const float radius = GetCornerRadius() * scale;
+NewTabButtonMenuModel::NewTabButtonMenuModel(BrowserWindowInterface* browser)
+    : ui::SimpleMenuModel(this), browser_(browser) {
+  CHECK(browser_);
 
-  SkPath path;
-  if (extend_to_top) {
-    path.moveTo(scaled_origin.x(), 0);
-    const float diameter = radius * 2;
-    path.rLineTo(diameter, 0);
-    path.rLineTo(0, scaled_origin.y() + radius);
-    path.rArcTo(radius, radius, 0, SkPath::kSmall_ArcSize, SkPathDirection::kCW,
-                -diameter, 0);
-    path.close();
+  // Build the menu.
+  AddItemWithStringId(IDC_NEW_TAB, IDS_NEW_TAB);
+  SetElementIdentifierAt(GetIndexOfCommandId(IDC_NEW_TAB).value(), kNewTab);
+  AddNewTabInGroupItem();
+
+  AddSeparator(ui::NORMAL_SEPARATOR);
+
+  AddItemWithStringId(IDC_CREATE_NEW_TAB_GROUP, IDS_NEW_TAB_GROUP);
+  SetElementIdentifierAt(GetIndexOfCommandId(IDC_CREATE_NEW_TAB_GROUP).value(),
+                         kCreateNewTabGroup);
+
+  AddSeparator(ui::NORMAL_SEPARATOR);
+  AddNewSplitTabItem();
+}
+
+NewTabButtonMenuModel::~NewTabButtonMenuModel() = default;
+
+void NewTabButtonMenuModel::ExecuteCommand(int command_id, int event_flags) {
+  CHECK(browser_);
+
+  switch (command_id) {
+    case IDC_NEW_TAB:
+      base::RecordAction(
+          base::UserMetricsAction("NewTabButton_ContextMenu_NewTab"));
+      break;
+    case IDC_ADD_NEW_TAB_RECENT_GROUP:
+      base::RecordAction(
+          base::UserMetricsAction("NewTabButton_ContextMenu_NewTabInGroup"));
+      break;
+    case IDC_CREATE_NEW_TAB_GROUP:
+      base::RecordAction(
+          base::UserMetricsAction("NewTabButton_ContextMenu_NewGroup"));
+      break;
+    case IDC_NEW_SPLIT_TAB:
+      base::RecordAction(
+          base::UserMetricsAction("NewTabButton_ContextMenu_NewSplitTab"));
+      break;
+  }
+
+  if (command_id == IDC_NEW_SPLIT_TAB) {
+    // Handle this command directly because we want to specify the source
+    // as the new tab button.
+    chrome::NewSplitTab(browser_, split_tabs::SplitTabLayout::kSideBySide,
+                        split_tabs::SplitTabCreatedSource::kNewTabButton);
+    return;
+  }
+
+  chrome::ExecuteCommand(browser_, command_id);
+}
+
+bool NewTabButtonMenuModel::GetAcceleratorForCommandId(
+    int command_id,
+    ui::Accelerator* accelerator) const {
+  CHECK(browser_);
+  if (command_id < 0) {
+    // This is a non-interactive title.
+    return false;
+  }
+
+  return browser_->GetFeatures()
+      .accelerator_provider()
+      ->GetAcceleratorForCommandId(command_id, accelerator);
+}
+
+void NewTabButtonMenuModel::AddNewTabInGroupItem() {
+  TabStripModel* tab_strip_model = browser_->GetTabStripModel();
+  CHECK(tab_strip_model);
+
+  TabGroupModel* tab_group_model = tab_strip_model->group_model();
+  CHECK(tab_group_model);
+
+  std::optional<tab_groups::TabGroupId> group_id =
+      tab_group_model->GetMostRecentTabGroupId();
+
+  if (!group_id) {
+    // There is no most recent group. So we don't enable this option.
+    AddItem(IDC_ADD_NEW_TAB_RECENT_GROUP,
+            l10n_util::GetStringUTF16(IDS_NEW_TAB_IN_GROUP_NO_GROUPS));
+    SetEnabledAt(GetIndexOfCommandId(IDC_ADD_NEW_TAB_RECENT_GROUP).value(),
+                 false);
   } else {
-    path.addCircle(scaled_origin.x() + radius, scaled_origin.y() + radius,
-                   radius);
-  }
-  return path;
-}
+    // The most recent tab group exists.
+    std::u16string group_name =
+        tab_group_model->GetTabGroup(*group_id)->visual_data()->title();
 
-void NewTabButton::OnBoundsChanged(const gfx::Rect& previous_bounds) {
-  ImageButton::OnBoundsChanged(previous_bounds);
-  ink_drop_container_->SetBoundsRect(GetLocalBounds());
-}
+    std::u16string menu_item_label;
 
-void NewTabButton::AddedToWidget() {
-  paint_as_active_subscription_ =
-      GetWidget()->RegisterPaintAsActiveChangedCallback(base::BindRepeating(
-          &NewTabButton::FrameColorsChanged, base::Unretained(this)));
-}
-
-void NewTabButton::RemovedFromWidget() {
-  paint_as_active_subscription_ = {};
-}
-
-void NewTabButton::OnThemeChanged() {
-  views::ImageButton::OnThemeChanged();
-  FrameColorsChanged();
-}
-
-#if BUILDFLAG(IS_WIN)
-void NewTabButton::OnMouseReleased(const ui::MouseEvent& event) {
-  if (!event.IsOnlyRightMouseButton()) {
-    views::ImageButton::OnMouseReleased(event);
-    return;
-  }
-
-  // TODO(pkasting): If we handled right-clicks on the frame, and we made sure
-  // this event was not handled, it seems like things would Just Work.
-  gfx::Point point = event.location();
-  views::View::ConvertPointToScreen(this, &point);
-  point = display::win::ScreenWin::DIPToScreenPoint(point);
-  auto weak_this = weak_factory_.GetWeakPtr();
-  views::ShowSystemMenuAtScreenPixelLocation(views::HWNDForView(this), point);
-  if (!weak_this)
-    return;
-  SetState(views::Button::STATE_NORMAL);
-}
-#endif
-
-void NewTabButton::OnGestureEvent(ui::GestureEvent* event) {
-  // Consume all gesture events here so that the parent (Tab) does not
-  // start consuming gestures.
-  views::ImageButton::OnGestureEvent(event);
-  event->SetHandled();
-}
-
-void NewTabButton::NotifyClick(const ui::Event& event) {
-  ImageButton::NotifyClick(event);
-  views::InkDrop::Get(this)->GetInkDrop()->AnimateToState(
-      views::InkDropState::ACTION_TRIGGERED);
-}
-
-void NewTabButton::PaintButtonContents(gfx::Canvas* canvas) {
-  gfx::ScopedCanvas scoped_canvas(canvas);
-  canvas->Translate(GetContentsBounds().OffsetFromOrigin());
-  PaintFill(canvas);
-  PaintIcon(canvas);
-}
-
-gfx::Size NewTabButton::CalculatePreferredSize() const {
-  gfx::Size size = kButtonSize;
-  const auto insets = GetInsets();
-  size.Enlarge(insets.width(), insets.height());
-  return size;
-}
-
-bool NewTabButton::GetHitTestMask(SkPath* mask) const {
-  DCHECK(mask);
-
-  gfx::Point origin = GetContentsBounds().origin();
-  if (base::i18n::IsRTL())
-    origin.set_x(GetInsets().right());
-  const float scale = GetWidget()->GetCompositor()->device_scale_factor();
-  SkPath border = GetBorderPath(origin, scale,
-                                tab_strip_->controller()->IsFrameCondensed());
-  mask->addPath(border, SkMatrix::Scale(1 / scale, 1 / scale));
-  return true;
-}
-
-void NewTabButton::PaintFill(gfx::Canvas* canvas) const {
-  gfx::ScopedCanvas scoped_canvas(canvas);
-  canvas->UndoDeviceScaleFactor();
-  cc::PaintFlags flags;
-  flags.setAntiAlias(true);
-
-  const float scale = canvas->image_scale();
-  const absl::optional<int> bg_id =
-      tab_strip_->GetCustomBackgroundId(BrowserFrameActiveState::kUseCurrent);
-  if (bg_id.has_value()) {
-    float x_scale = scale;
-    const gfx::Rect& contents_bounds = GetContentsBounds();
-    gfx::RectF bounds_in_tab_strip(GetLocalBounds());
-    View::ConvertRectToTarget(this, tab_strip_, &bounds_in_tab_strip);
-    int x = bounds_in_tab_strip.x() + contents_bounds.x() +
-            tab_strip_->GetBackgroundOffset();
-    if (base::i18n::IsRTL()) {
-      // The new tab background is mirrored in RTL mode, but the theme
-      // background should never be mirrored. Mirror it here to compensate.
-      x_scale = -scale;
-      // Offset by |width| such that the same region is painted as if there
-      // was no flip.
-      x += contents_bounds.width();
+    if (group_name.empty()) {
+      // "New tab in 2 tabs
+      int num_tabs = tab_group_model->GetTabGroup(*group_id)->tab_count();
+      menu_item_label = l10n_util::GetPluralStringFUTF16(
+          IDS_NEW_TAB_IN_GROUP_NO_NAME, num_tabs);
+    } else {
+      // "New tab in |group_name|".
+      menu_item_label =
+          l10n_util::GetStringFUTF16(IDS_NEW_TAB_IN_GROUP, group_name);
     }
-
-    canvas->InitPaintFlagsForTiling(
-        *GetThemeProvider()->GetImageSkiaNamed(bg_id.value()), x,
-        contents_bounds.y(), x_scale, scale, 0, 0, SkTileMode::kRepeat,
-        SkTileMode::kRepeat, &flags);
-  } else {
-    flags.setColor(GetColorProvider()->GetColor(
-        tab_strip_->ShouldPaintAsActiveFrame()
-            ? background_frame_active_color_id_
-            : background_frame_inactive_color_id_));
+    AddItem(IDC_ADD_NEW_TAB_RECENT_GROUP, menu_item_label);
   }
 
-  canvas->DrawPath(GetBorderPath(gfx::Point(), scale, false), flags);
+  SetElementIdentifierAt(
+      GetIndexOfCommandId(IDC_ADD_NEW_TAB_RECENT_GROUP).value(),
+      kNewTabInGroup);
 }
 
-void NewTabButton::PaintIcon(gfx::Canvas* canvas) {
-  cc::PaintFlags flags;
-  flags.setAntiAlias(true);
-  flags.setColor(GetForegroundColor());
-  flags.setStrokeCap(cc::PaintFlags::kRound_Cap);
-  constexpr int kStrokeWidth = 2;
-  flags.setStrokeWidth(kStrokeWidth);
+void NewTabButtonMenuModel ::AddNewSplitTabItem() {
+  AddItemWithStringId(IDC_NEW_SPLIT_TAB, IDS_TAB_CXMENU_NEW_SPLIT_WITH_CURRENT);
+  SetElementIdentifierAt(GetIndexOfCommandId(IDC_NEW_SPLIT_TAB).value(),
+                         kNewSplitView);
 
-  const int radius = ui::TouchUiController::Get()->touch_ui() ? 7 : 6;
-  const int offset = GetCornerRadius() - radius;
-  // The cap will be added outside the end of the stroke; inset to compensate.
-  constexpr int kCapRadius = kStrokeWidth / 2;
-  const int start = offset + kCapRadius;
-  const int end = offset + (radius * 2) - kCapRadius;
-  const int center = offset + radius;
+  TabStripModel* tab_strip_model = browser_->GetTabStripModel();
+  CHECK(tab_strip_model);
 
-  // Horizontal stroke.
-  canvas->DrawLine(gfx::PointF(start, center), gfx::PointF(end, center), flags);
+  const tabs::TabInterface* const active_tab = tab_strip_model->GetActiveTab();
+  bool is_active_tab_split = active_tab && active_tab->IsSplit();
 
-  // Vertical stroke.
-  canvas->DrawLine(gfx::PointF(center, start), gfx::PointF(center, end), flags);
+  SetEnabledAt(GetIndexOfCommandId(IDC_NEW_SPLIT_TAB).value(),
+               !is_active_tab_split);
 }
-
-BEGIN_METADATA(NewTabButton, views::ImageButton)
-END_METADATA

@@ -32,7 +32,6 @@ media::VideoCodecProfile ToVideoDecoderConfigCodecProfile(
   }
 
   NOTREACHED();
-  return media::VideoCodecProfile::VIDEO_CODEC_PROFILE_UNKNOWN;
 }
 
 media::AudioCodec ToAudioDecoderConfigCodec(
@@ -47,7 +46,6 @@ media::AudioCodec ToAudioDecoderConfigCodec(
   }
 
   NOTREACHED();
-  return media::AudioCodec::kUnknown;
 }
 
 media::VideoCodec ToVideoDecoderConfigCodec(
@@ -68,7 +66,6 @@ media::VideoCodec ToVideoDecoderConfigCodec(
   }
 
   NOTREACHED();
-  return media::VideoCodec::kUnknown;
 }
 
 }  // namespace
@@ -85,7 +82,6 @@ openscreen::cast::AudioCodec ToAudioCaptureConfigCodec(
   }
 
   NOTREACHED();
-  return openscreen::cast::AudioCodec::kNotSpecified;
 }
 
 openscreen::cast::VideoCodec ToVideoCaptureConfigCodec(
@@ -106,7 +102,6 @@ openscreen::cast::VideoCodec ToVideoCaptureConfigCodec(
   }
 
   NOTREACHED();
-  return openscreen::cast::VideoCodec::kNotSpecified;
 }
 
 openscreen::cast::AudioCaptureConfig ToAudioCaptureConfig(
@@ -115,8 +110,7 @@ openscreen::cast::AudioCaptureConfig ToAudioCaptureConfig(
 
   openscreen::cast::AudioCaptureConfig audio_capture_config;
   audio_capture_config.codec = ToAudioCaptureConfigCodec(audio_config.codec());
-  audio_capture_config.channels =
-      media::ChannelLayoutToChannelCount(audio_config.channel_layout());
+  audio_capture_config.channels = audio_config.channels();
   audio_capture_config.sample_rate = audio_config.samples_per_second();
   audio_capture_config.bit_rate = 0;  // Selected by the sender.
 
@@ -143,7 +137,7 @@ media::AudioDecoderConfig ToAudioDecoderConfig(
 
   return media::AudioDecoderConfig(
       media_audio_codec, media::SampleFormat::kSampleFormatF32,
-      media::GuessChannelLayout(audio_capture_config.channels),
+      media::ChannelLayoutConfig::Guess(audio_capture_config.channels),
       audio_capture_config.sample_rate /* samples_per_second */,
       media::EmptyExtraData(), media::EncryptionScheme::kUnencrypted);
 }

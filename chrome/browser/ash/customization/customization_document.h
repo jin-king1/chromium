@@ -8,6 +8,7 @@
 #include <stddef.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -17,7 +18,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/values.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 class PrefRegistrySimple;
@@ -63,6 +63,10 @@ class CustomizationDocument {
   // Return true if the document was successfully fetched and parsed.
   bool IsReady() const { return root_.get(); }
 
+  void set_root_for_test(std::unique_ptr<base::DictValue> root) {
+    root_ = std::move(root);
+  }
+
  protected:
   explicit CustomizationDocument(const std::string& accepted_version);
 
@@ -73,7 +77,7 @@ class CustomizationDocument {
                                       const std::string& dictionary_name,
                                       const std::string& entry_name) const;
 
-  std::unique_ptr<base::Value::Dict> root_;
+  std::unique_ptr<base::DictValue> root_;
 
   // Value of the "version" attribute that is supported.
   // Otherwise config is not loaded.
@@ -153,7 +157,9 @@ class ServicesCustomizationDocument : public CustomizationDocument {
   static void RegisterPrefs(PrefRegistrySimple* registry);
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
-  static const char kManifestUrl[];
+  // Template URL where to fetch OEM services customization manifest from.
+  static constexpr char kManifestUrl[] =
+      "https://ssl.gstatic.com/chrome/chromeos-customization/%s.json";
 
   // Return true if the customization was applied. Customization is applied only
   // once per machine.
@@ -177,7 +183,7 @@ class ServicesCustomizationDocument : public CustomizationDocument {
   bool GetDefaultWallpaperUrl(GURL* out_url) const;
 
   // Returns list of default apps.
-  absl::optional<base::Value::Dict> GetDefaultApps() const;
+  std::optional<base::DictValue> GetDefaultApps() const;
 
   // Creates an extensions::ExternalLoader that will provide OEM default apps.
   // Cache of OEM default apps stored in profile preferences.
@@ -231,7 +237,7 @@ class ServicesCustomizationDocument : public CustomizationDocument {
   // Overriden from CustomizationDocument:
   bool LoadManifestFromString(const std::string& manifest) override;
 
-  void OnSimpleLoaderComplete(std::unique_ptr<std::string> response_body);
+  void OnSimpleLoaderComplete(std::optional<std::string> response_body);
 
   // Initiate file fetching. Wait for online status.
   void StartFileFetch();
@@ -246,8 +252,8 @@ class ServicesCustomizationDocument : public CustomizationDocument {
   void OnManifestLoaded();
 
   // Returns list of default apps in ExternalProvider format.
-  static base::Value::Dict GetDefaultAppsInProviderFormat(
-      const base::Value::Dict& root);
+  static base::DictValue GetDefaultAppsInProviderFormat(
+      const base::DictValue& root);
 
   // Update cached manifest for |profile|.
   void UpdateCachedManifest(Profile* profile);
@@ -256,11 +262,11 @@ class ServicesCustomizationDocument : public CustomizationDocument {
   void OnCustomizationNotFound();
 
   // Set OEM apps folder name for AppListSyncableService for |profile|.
-  void SetOemFolderName(Profile* profile, const base::Value::Dict& root);
+  void SetOemFolderName(Profile* profile, const base::DictValue& root);
 
   // Returns the name of the folder for OEM apps for given |locale|.
   std::string GetOemAppsFolderNameImpl(const std::string& locale,
-                                       const base::Value::Dict& root) const;
+                                       const base::DictValue& root) const;
 
   // Start download of wallpaper image if needed.
   void StartOEMWallpaperDownload(const GURL& wallpaper_url,
@@ -306,7 +312,7 @@ class ServicesCustomizationDocument : public CustomizationDocument {
 
   // Delay between checks for network online state. If the optional is empty,
   // the default value for delay is used.
-  absl::optional<base::TimeDelta> custom_network_delay_ = absl::nullopt;
+  std::optional<base::TimeDelta> custom_network_delay_;
 
   // Known external loaders.
   ExternalLoaders external_loaders_;

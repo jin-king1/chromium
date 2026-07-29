@@ -10,31 +10,70 @@
 
 #include "base/functional/callback_forward.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
-#include "components/supervised_user/core/common/buildflags.h"
+#include "chrome/browser/download/download_danger_prompt.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_id.h"
+#include "ui/base/interaction/element_identifier.h"
+#include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
-#if !BUILDFLAG(ENABLE_EXTENSIONS)
-#error "Extensions must be enabled"
-#endif
+#if BUILDFLAG(IS_CHROMEOS)
+#include "base/files/safe_base_name.h"
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
-class Browser;
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
+class ControlledHomeDialogControllerInterface;
 class SettingsOverriddenDialogController;
+class Profile;
+
+namespace base {
+class FilePath;
+}
 
 namespace content {
 class WebContents;
 }
 
+namespace custom_handlers {
+class ProtocolHandler;
+}  // namespace custom_handlers
+
+namespace download {
+class DownloadItem;
+}  // namespace download
+
 namespace gfx {
 class ImageSkia;
 }  // namespace gfx
 
+namespace permissions {
+class ChooserController;
+}  // namespace permissions
+
+namespace url {
+class Origin;
+}  // namespace url
+
 namespace extensions {
 
 class Extension;
+
+DECLARE_ELEMENT_IDENTIFIER_VALUE(kControlledHomeDialogCancelButtonElementId);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(kDownloadDangerDialogCancelButtonElementId);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(kDownloadDangerDialogKeepButtonElementId);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(kExtensionInstallFrictionLearnMoreLink);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(kMv2KeepDialogOkButtonElementId);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(kParentBlockedDialogMessage);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(
+    kConfirmProtocolHandlerDialogHandlerRedirection);
+DECLARE_ELEMENT_IDENTIFIER_VALUE(
+    kConfirmProtocolHandlerDialogRememberMeCheckbox);
+
+void ShowConstrainedDeviceChooserDialog(
+    content::WebContents* web_contents,
+    std::unique_ptr<permissions::ChooserController> controller);
 
 // Shows a dialog to notify the user that the extension installation is
 // blocked due to policy. It also shows additional information from
@@ -47,6 +86,30 @@ void ShowExtensionInstallBlockedDialog(
     content::WebContents* web_contents,
     base::OnceClosure done_callback);
 
+// Shows a dialog to notify the user when an extension has changed the home
+// page.
+void ShowControlledHomeDialog(
+    Profile* profile,
+    gfx::NativeWindow parent,
+    std::unique_ptr<ControlledHomeDialogControllerInterface> controller);
+
+// Shows a dialog that prompts the user for whether to open a DownloadItem using
+// native UI. This step is necessary to prevent a malicious extension from
+// opening any downloaded file.
+void ShowDownloadOpenConfirmationDialog(
+    content::WebContents* web_contents,
+    const std::string& extension_name,
+    const base::FilePath& file_path,
+    base::OnceCallback<void(bool)> open_callback);
+
+// Shows a dialog that prompts the user for whether to accept a dangerous
+// DownloadItem using native UI. This step is necessary to prevent a malicious
+// extension from accepting a dangerous download.
+void ShowDownloadDangerDialog(
+    download::DownloadItem* download_item,
+    content::WebContents* web_contents,
+    base::OnceCallback<void(DownloadDangerPrompt::Action)> done_callback);
+
 // Shows a modal dialog to Enhanced Safe Browsing users before the extension
 // install dialog if the extension is not included in the Safe Browsing CRX
 // allowlist. `callback` will be invoked with `true` if the user accepts or
@@ -55,21 +118,21 @@ void ShowExtensionInstallFrictionDialog(
     content::WebContents* contents,
     base::OnceCallback<void(bool)> callback);
 
-// Shows a dialog when extensions require a refresh for their action
-// to be run or blocked. When the dialog is accepted, `callback` is
-// invoked.
-void ShowReloadPageDialog(
-    Browser* browser,
-    const std::vector<extensions::ExtensionId>& extension_ids,
-    base::OnceClosure callback);
+// Shows a model dialog to users when they uninstall multiple extensions.
+// When the dialog is accepted, `accept_callback` is invoked.
+// When the dialog is canceled, `cancel_callback` is invoked.
+void ShowExtensionMultipleUninstallDialog(
+    Profile* profile,
+    gfx::NativeWindow parent,
+    const std::vector<ExtensionId>& extension_ids,
+    base::OnceClosure accept_callback,
+    base::OnceClosure cancel_callback);
 
 // Shows a dialog with a warning to the user that their settings have been
 // overridden by an extension.
 void ShowSettingsOverriddenDialog(
     std::unique_ptr<SettingsOverriddenDialogController> controller,
-    Browser* browser);
-
-#if BUILDFLAG(ENABLE_SUPERVISED_USERS)
+    gfx::NativeWindow parent);
 
 // The type of action that the ExtensionInstalledBlockedByParentDialog
 // is being shown in reaction to.
@@ -86,9 +149,55 @@ void ShowExtensionInstallBlockedByParentDialog(
     content::WebContents* web_contents,
     base::OnceClosure done_callback);
 
-#endif  // BUILDFLAG(ENABLE_SUPERVISED_USERS)
+#if BUILDFLAG(IS_ANDROID)
+// Shows a dialog to notify the user that they need to ask their parent for
+// approval to install an extension. This is the first of a set of dialogs for
+// supervised user accounts on Android.
+void ShowExtensionInstallAskParentDialog(content::WebContents* web_contents,
+                                         base::OnceClosure cancel_callback,
+                                         base::OnceClosure approve_callback);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+// Shows a dialog when the user tries to upload an extension to their account.
+void ShowUploadExtensionToAccountDialog(Profile* profile,
+                                        gfx::NativeWindow parent,
+                                        const Extension& extension,
+                                        base::OnceClosure accept_callback,
+                                        base::OnceClosure cancel_callback);
+
+#if !BUILDFLAG(IS_ANDROID)
+// Shows a dialog when the user tries to perform a navigation and the target url
+// has a protocol handler registered by an extension to handle the url's scheme.
+void ShowConfirmProtocolHandlerDialog(
+    content::WebContents* web_contents,
+    const custom_handlers::ProtocolHandler& handler,
+    const std::optional<url::Origin>& initiating_origin,
+    base::OnceCallback<void(bool)> granted_callback,
+    base::OnceCallback<void()> denied_callback);
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_CHROMEOS)
+
+// Shows a scanner discovery confirmation dialog bubble anchored to the toolbar
+// icon for the extension.  If there's no toolbar icon or parent, it will
+// display a browser-modal dialog instead.
+void ShowDocumentScannerDiscoveryConfirmationDialog(
+    gfx::NativeWindow parent,
+    const ExtensionId& extension_id,
+    const std::u16string& extension_name,
+    const gfx::ImageSkia& extension_icon,
+    base::OnceCallback<void(bool)> callback);
+
+// Shows a start scan confirmation dialog bubble anchored to the toolbar icon
+// for the extension.  If there's no toolbar icon or parent, it will display a
+// browser-modal dialog instead.
+void ShowDocumentScannerStartScanConfirmationDialog(
+    gfx::NativeWindow parent,
+    const ExtensionId& extension_id,
+    const std::u16string& extension_name,
+    const std::u16string& scanner_name,
+    const gfx::ImageSkia& extension_icon,
+    base::OnceCallback<void(bool)> callback);
 
 // Shows a dialog requesting the user to grant the extension access to a file
 // system.
@@ -97,13 +206,11 @@ void ShowRequestFileSystemDialog(
     const std::string& extension_name,
     const std::string& volume_label,
     bool writable,
-    base::OnceCallback<void(ui::DialogButton)> callback);
+    base::OnceCallback<void(ui::mojom::DialogButton)> callback);
 
 // Shows the print job confirmation dialog bubble anchored to the toolbar icon
-// for the extension.
-// If there's no toolbar icon, shows a modal dialog using
-// CreateBrowserModalDialogViews(). Note that this dialog is shown even if there
-// is no `parent` window.
+// for the extension.  If there's no toolbar icon or parent, it will display a
+// browser-modal dialog instead.
 void ShowPrintJobConfirmationDialog(gfx::NativeWindow parent,
                                     const ExtensionId& extension_id,
                                     const std::u16string& extension_name,

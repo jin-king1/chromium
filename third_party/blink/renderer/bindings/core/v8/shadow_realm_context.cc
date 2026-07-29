@@ -65,8 +65,8 @@ v8::MaybeLocal<v8::Context> OnCreateShadowRealmV8Context(
   ExecutionContext* initiator_execution_context =
       ExecutionContext::From(initiator_context);
   DCHECK(initiator_execution_context);
-  v8::Isolate* isolate = initiator_context->GetIsolate();
-  scoped_refptr<DOMWrapperWorld> world = DOMWrapperWorld::Create(
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
+  DOMWrapperWorld* world = DOMWrapperWorld::Create(
       isolate, DOMWrapperWorld::WorldType::kShadowRealm);
   CHECK(world);  // Not yet run out of the world id.
 
@@ -90,17 +90,13 @@ v8::MaybeLocal<v8::Context> OnCreateShadowRealmV8Context(
   context->UseDefaultSecurityToken();
 
   // Associate the Blink object with the v8::Context.
-  ScriptState* script_state = MakeGarbageCollected<ScriptState>(
-      context, world, shadow_realm_global_scope);
+  ScriptState* script_state =
+      ScriptState::Create(context, world, shadow_realm_global_scope);
 
   // Associate the Blink object with the v8::Objects.
   global_proxy = context->Global();
-  V8DOMWrapper::SetNativeInfo(isolate, global_proxy, wrapper_type_info,
-                              shadow_realm_global_scope);
-  v8::Local<v8::Object> global_object =
-      global_proxy->GetPrototype().As<v8::Object>();
-  V8DOMWrapper::SetNativeInfo(isolate, global_object, wrapper_type_info,
-                              shadow_realm_global_scope);
+  V8DOMWrapper::SetNativeInfoForGlobal(isolate, global_proxy,
+                                       shadow_realm_global_scope);
 
   // Install context-dependent properties.
   std::ignore =

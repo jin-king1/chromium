@@ -11,7 +11,6 @@
 #include "chrome/browser/chromeos/video_conference/video_conference_manager_client_common.h"
 #include "chrome/browser/chromeos/video_conference/video_conference_web_app.h"
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
-#include "chromeos/crosapi/mojom/video_conference.mojom.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
 
@@ -21,7 +20,7 @@ VideoConferenceMediaListener::VideoConferenceMediaListener(
     base::RepeatingCallback<void()> media_usage_update_callback,
     base::RepeatingCallback<VideoConferenceWebApp*(content::WebContents*)>
         create_vc_web_app_callback,
-    base::RepeatingCallback<void(crosapi::mojom::VideoConferenceMediaDevice,
+    base::RepeatingCallback<void(ash::VideoConferenceMediaDevice,
                                  const std::u16string&)>
         device_used_while_disabled_callback)
     : media_usage_update_callback_(std::move(media_usage_update_callback)),
@@ -36,17 +35,15 @@ VideoConferenceMediaListener::VideoConferenceMediaListener(
 VideoConferenceMediaListener::~VideoConferenceMediaListener() = default;
 
 void VideoConferenceMediaListener::SetSystemMediaDeviceStatus(
-    crosapi::mojom::VideoConferenceMediaDevice device,
-    bool disabled) {
+    ash::VideoConferenceMediaDevice device,
+    bool enabled) {
   switch (device) {
-    case crosapi::mojom::VideoConferenceMediaDevice::kCamera:
-      camera_system_disabled_ = disabled;
+    case ash::VideoConferenceMediaDevice::kCamera:
+      camera_system_enabled_ = enabled;
       break;
-    case crosapi::mojom::VideoConferenceMediaDevice::kMicrophone:
-      microphone_system_disabled_ = disabled;
+    case ash::VideoConferenceMediaDevice::kMicrophone:
+      microphone_system_enabled_ = enabled;
       break;
-    case crosapi::mojom::VideoConferenceMediaDevice::kUnusedDefault:
-      return;
   }
 }
 
@@ -61,7 +58,8 @@ void VideoConferenceMediaListener::OnIsCapturingVideoChanged(
   if (vc_app) {
     auto& state = vc_app->state();
     bool prev_is_capturing_video = state.is_capturing_camera;
-    state.is_capturing_camera = is_capturing_video;
+    vc_app->SetCapturingStatus(VideoConferenceMediaType::kCamera,
+                               is_capturing_video);
 
     // Remove `vc_app` from client if it belongs to an extension which has
     // stopped capturing.
@@ -70,14 +68,15 @@ void VideoConferenceMediaListener::OnIsCapturingVideoChanged(
       return;
     }
 
-    if (camera_system_disabled_ && !prev_is_capturing_video &&
+    media_usage_update_callback_.Run();
+
+    // This will be an AnchoredNudge, which is only visible if the tray is
+    // visible; so we have to call this after media_usage_update_callback_.
+    if (!camera_system_enabled_ && !prev_is_capturing_video &&
         is_capturing_video) {
       device_used_while_disabled_callback_.Run(
-          crosapi::mojom::VideoConferenceMediaDevice::kCamera,
-          contents->GetTitle());
+          ash::VideoConferenceMediaDevice::kCamera, contents->GetTitle());
     }
-
-    media_usage_update_callback_.Run();
   }
 }
 
@@ -93,7 +92,8 @@ void VideoConferenceMediaListener::OnIsCapturingAudioChanged(
   if (vc_app) {
     auto& state = vc_app->state();
     bool prev_is_capturing_audio = state.is_capturing_microphone;
-    state.is_capturing_microphone = is_capturing_audio;
+    vc_app->SetCapturingStatus(VideoConferenceMediaType::kMicrophone,
+                               is_capturing_audio);
 
     // Remove `vc_app` from client if it belongs to an extension which has
     // stopped capturing.
@@ -102,15 +102,24 @@ void VideoConferenceMediaListener::OnIsCapturingAudioChanged(
       return;
     }
 
-    if (microphone_system_disabled_ && !prev_is_capturing_audio &&
+    media_usage_update_callback_.Run();
+
+    // This will be an AnchoredNudge, which is only visible if the tray is
+    // visible; so we have to call this after media_usage_update_callback_.
+    if (!microphone_system_enabled_ && !prev_is_capturing_audio &&
         is_capturing_audio) {
       device_used_while_disabled_callback_.Run(
-          crosapi::mojom::VideoConferenceMediaDevice::kMicrophone,
-          contents->GetTitle());
+          ash::VideoConferenceMediaDevice::kMicrophone, contents->GetTitle());
     }
-
-    media_usage_update_callback_.Run();
   }
+}
+
+void VideoConferenceMediaListener::OnIsCapturingTabChanged(
+    content::WebContents* contents,
+    bool is_capturing_tab) {
+  // We don't distinguish between tab and display capture and put them
+  // together into 'screen capturing'.
+  OnIsCapturingScreenChanged(contents, is_capturing_tab);
 }
 
 void VideoConferenceMediaListener::OnIsCapturingWindowChanged(
@@ -139,7 +148,8 @@ void VideoConferenceMediaListener::OnIsCapturingScreenChanged(
   // upon the deletion of a `VideoConferenceWebApp` with an is_capturing of
   // false.
   if (vc_app) {
-    vc_app->state().is_capturing_screen = is_capturing_screen;
+    vc_app->SetCapturingStatus(VideoConferenceMediaType::kScreen,
+                               is_capturing_screen);
 
     // Remove `vc_app` from client if it belongs to an extension which has
     // stopped capturing.
@@ -170,7 +180,7 @@ VideoConferenceWebApp* VideoConferenceMediaListener::GetOrCreateVcWebApp(
       return nullptr;
     }
 
-    if (ShouldSkipId(contents->GetURL().host())) {
+    if (ShouldSkipId(contents->GetURL().GetHost())) {
       return nullptr;
     }
 

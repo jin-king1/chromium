@@ -5,20 +5,18 @@
 #ifndef COMPONENTS_VIZ_COMMON_GPU_VULKAN_IN_PROCESS_CONTEXT_PROVIDER_H_
 #define COMPONENTS_VIZ_COMMON_GPU_VULKAN_IN_PROCESS_CONTEXT_PROVIDER_H_
 
+#include <atomic>
 #include <memory>
 #include <vector>
 
-#include "base/memory/memory_pressure_listener.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory_coordinator/async_memory_consumer_registration.h"
+#include "base/memory_coordinator/memory_consumer.h"
 #include "base/time/time.h"
 #include "components/viz/common/gpu/vulkan_context_provider.h"
 #include "components/viz/common/viz_vulkan_context_provider_export.h"
 #include "gpu/vulkan/buildflags.h"
-#include "third_party/skia/include/gpu/GrContextOptions.h"
-
-#if BUILDFLAG(ENABLE_VULKAN)
-#include "third_party/skia/include/gpu/vk/GrVkBackendContext.h"
-#endif
+#include "third_party/skia/include/gpu/ganesh/GrContextOptions.h"
 
 namespace gpu {
 class VulkanImplementation;
@@ -29,12 +27,17 @@ struct GPUInfo;
 namespace viz {
 
 class VIZ_VULKAN_CONTEXT_PROVIDER_EXPORT VulkanInProcessContextProvider
-    : public VulkanContextProvider {
+    : public VulkanContextProvider,
+      public base::MemoryConsumer {
  public:
-  // if |sync_cpu_memory_limit| is set and greater than zero,
-  // |cooldown_duration_at_memory_pressure_critical| is the duration of applying
-  // zero sync cpu memory limit after CRITICAL memory pressure signal is
-  // received. 15s is default to sync with memory monitor cycles.
+  // If |sync_cpu_memory_limit| is set and greater than zero, it is the
+  // threshold above which GPU work should be synchronized with the CPU to free
+  // memory immediately. |cooldown_duration_at_memory_pressure_critical| is the
+  // duration (default 15s to sync with memory monitor cycles) for which a zero
+  // limit is applied after a CRITICAL memory pressure signal is received. If
+  // the kStatefulMemoryPressure feature is enabled, the limit scales
+  // dynamically based on the pressure level instead of using the fixed cooldown
+  // period.
   static scoped_refptr<VulkanInProcessContextProvider> Create(
       gpu::VulkanImplementation* vulkan_implementation,
       uint32_t heap_memory_limit = 0,
@@ -69,7 +72,7 @@ class VIZ_VULKAN_CONTEXT_PROVIDER_EXPORT VulkanInProcessContextProvider
   void EnqueueSecondaryCBSemaphores(
       std::vector<VkSemaphore> semaphores) override;
   void EnqueueSecondaryCBPostSubmitTask(base::OnceClosure closure) override;
-  absl::optional<uint32_t> GetSyncCpuMemoryLimit() const override;
+  std::optional<uint32_t> GetSyncCpuMemoryLimit() const override;
 
  private:
   friend class VulkanInProcessContextProviderTest;
@@ -87,21 +90,25 @@ class VIZ_VULKAN_CONTEXT_PROVIDER_EXPORT VulkanInProcessContextProvider
   void InitializeForCompositorGpuThread(
       std::unique_ptr<gpu::VulkanDeviceQueue> vulkan_device_queue);
 
-  // Memory pressure handler, called by |memory_pressure_listener_|.
-  void OnMemoryPressure(
-      base::MemoryPressureListener::MemoryPressureLevel level);
+  // base::MemoryConsumer:
+  void OnReleaseMemory() override;
+  void OnUpdateMemoryLimit() override;
 
 #if BUILDFLAG(ENABLE_VULKAN)
+  uint32_t GetCurrentGpuMemoryUsage() const;
+
   sk_sp<GrDirectContext> gr_context_;
   raw_ptr<gpu::VulkanImplementation> vulkan_implementation_;
   std::unique_ptr<gpu::VulkanDeviceQueue> device_queue_;
   const uint32_t heap_memory_limit_;
-  const uint32_t sync_cpu_memory_limit_;
+  const std::optional<uint32_t> sync_cpu_memory_limit_;
   const base::TimeDelta cooldown_duration_at_memory_pressure_critical_;
-  base::TimeTicks critical_memory_pressure_expiration_time_;
+  std::atomic<base::TimeTicks> critical_memory_pressure_expiration_time_;
+  std::atomic<uint32_t> active_sync_cpu_memory_limit_;
 #endif
 
-  std::unique_ptr<base::MemoryPressureListener> memory_pressure_listener_;
+  std::unique_ptr<base::AsyncMemoryConsumerRegistration>
+      memory_consumer_registration_;
 };
 
 }  // namespace viz

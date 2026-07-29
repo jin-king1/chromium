@@ -4,15 +4,17 @@
 
 #include "ash/system/status_area_widget.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 
+#include "ash/annotator/annotation_tray.h"
 #include "ash/capture_mode/stop_recording_button_tray.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "ash/constants/tray_background_view_catalog.h"
 #include "ash/keyboard/ui/keyboard_ui_controller.h"
-#include "ash/projector/projector_annotation_tray.h"
 #include "ash/public/cpp/shelf_config.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shelf/drag_handle.h"
@@ -21,72 +23,62 @@
 #include "ash/shelf/shelf_widget.h"
 #include "ash/shell.h"
 #include "ash/system/accessibility/dictation_button_tray.h"
+#include "ash/system/accessibility/mouse_keys/mouse_keys_tray.h"
 #include "ash/system/accessibility/select_to_speak/select_to_speak_tray.h"
 #include "ash/system/eche/eche_tray.h"
+#include "ash/system/focus_mode/focus_mode_tray.h"
 #include "ash/system/holding_space/holding_space_tray.h"
 #include "ash/system/ime_menu/ime_menu_tray.h"
 #include "ash/system/media/media_tray.h"
-#include "ash/system/model/clock_model.h"
-#include "ash/system/model/system_tray_model.h"
 #include "ash/system/notification_center/notification_center_tray.h"
 #include "ash/system/overview/overview_button_tray.h"
 #include "ash/system/palette/palette_tray.h"
 #include "ash/system/phonehub/phone_hub_tray.h"
+#include "ash/system/pods_overflow_tray.h"
 #include "ash/system/session/logout_button_tray.h"
 #include "ash/system/status_area_animation_controller.h"
 #include "ash/system/status_area_widget_delegate.h"
+#include "ash/system/tray/imaged_tray_icon.h"
 #include "ash/system/tray/status_area_overflow_button_tray.h"
 #include "ash/system/tray/tray_background_view.h"
 #include "ash/system/tray/tray_constants.h"
 #include "ash/system/tray/tray_container.h"
 #include "ash/system/unified/date_tray.h"
 #include "ash/system/unified/unified_system_tray.h"
+#include "ash/system/unified/unified_system_tray_bubble.h"
 #include "ash/system/video_conference/video_conference_tray.h"
 #include "ash/system/virtual_keyboard/virtual_keyboard_tray.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
-#include "ash/wm_mode/wm_mode_button_tray.h"
+#include "ash/wm/window_pin_util.h"
+#include "base/check.h"
 #include "base/command_line.h"
 #include "base/containers/adapters.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_forward.h"
 #include "base/i18n/time_formatting.h"
 #include "base/metrics/histogram_macros.h"
-#include "chromeos/ash/services/assistant/public/cpp/features.h"
+#include "chromeos/ui/base/window_pin_type.h"
+#include "components/session_manager/session_manager_types.h"
+#include "ui/base/models/image_model.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/display/display.h"
+#include "ui/display/screen.h"
 #include "ui/message_center/message_center.h"
 #include "ui/message_center/message_center_types.h"
+#include "ui/views/accessibility/view_accessibility.h"
 
 namespace ash {
+namespace {
 
-////////////////////////////////////////////////////////////////////////////////
-// StatusAreaWidget::ScopedTrayBubbleCounter
+// Ensures that there is no id collision within the subtree of StatusAreaWidget.
+constexpr uint64_t kCustomIconsBaseId = 10000;
 
-StatusAreaWidget::ScopedTrayBubbleCounter::ScopedTrayBubbleCounter(
-    StatusAreaWidget* status_area_widget)
-    : status_area_widget_(status_area_widget->weak_ptr_factory_.GetWeakPtr()) {
-  if (status_area_widget_->tray_bubble_count_ == 0) {
-    status_area_widget_->shelf()
-        ->shelf_layout_manager()
-        ->OnShelfTrayBubbleVisibilityChanged(/*bubble_shown=*/true);
-  }
-  ++status_area_widget_->tray_bubble_count_;
+uint64_t GetCustomIconId(const TrayIconConfiguration& configuration) {
+  return configuration.id + kCustomIconsBaseId;
 }
 
-StatusAreaWidget::ScopedTrayBubbleCounter::~ScopedTrayBubbleCounter() {
-  // ScopedTrayBubbleCounter may live longer than StatusAreaWidget.
-  if (!status_area_widget_) {
-    return;
-  }
-
-  --status_area_widget_->tray_bubble_count_;
-  if (status_area_widget_->tray_bubble_count_ == 0) {
-    status_area_widget_->shelf()
-        ->shelf_layout_manager()
-        ->OnShelfTrayBubbleVisibilityChanged(/*bubble_shown=*/false);
-  }
-
-  DCHECK_GE(status_area_widget_->tray_bubble_count_, 0);
-}
+}  // namespace
 
 ////////////////////////////////////////////////////////////////////////////////
 // StatusAreaWidget
@@ -97,15 +89,17 @@ StatusAreaWidget::StatusAreaWidget(aura::Window* status_container, Shelf* shelf)
   DCHECK(status_container);
   DCHECK(shelf);
   views::Widget::InitParams params(
+      views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
       views::Widget::InitParams::TYPE_WINDOW_FRAMELESS);
   params.delegate = status_area_widget_delegate_.get();
   params.name = "StatusAreaWidget";
   params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
-  params.ownership = views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET;
   params.parent = status_container;
   Init(std::move(params));
   set_focus_on_creation(false);
   SetContentsView(status_area_widget_delegate_);
+
+  Shell::Get()->AddShellObserver(this);
 }
 
 void StatusAreaWidget::Initialize() {
@@ -118,12 +112,15 @@ void StatusAreaWidget::Initialize() {
     video_conference_tray_ =
         AddTrayButton(std::make_unique<VideoConferenceTray>(shelf_));
   }
+  focus_mode_tray_ = AddTrayButton(std::make_unique<FocusModeTray>(shelf_));
   holding_space_tray_ =
       AddTrayButton(std::make_unique<HoldingSpaceTray>(shelf_));
   logout_button_tray_ =
       AddTrayButton(std::make_unique<LogoutButtonTray>(shelf_));
   dictation_button_tray_ = AddTrayButton(std::make_unique<DictationButtonTray>(
       shelf_, TrayBackgroundViewCatalogName::kDictationStatusArea));
+  mouse_keys_tray_ = AddTrayButton(std::make_unique<MouseKeysTray>(
+      shelf_, TrayBackgroundViewCatalogName::kMouseKeysStatusArea));
   select_to_speak_tray_ = AddTrayButton(std::make_unique<SelectToSpeakTray>(
       shelf_, TrayBackgroundViewCatalogName::kSelectToSpeakStatusArea));
   ime_menu_tray_ = AddTrayButton(std::make_unique<ImeMenuTray>(shelf_));
@@ -133,8 +130,7 @@ void StatusAreaWidget::Initialize() {
   stop_recording_button_tray_ =
       AddTrayButton(std::make_unique<StopRecordingButtonTray>(shelf_));
 
-  projector_annotation_tray_ =
-      AddTrayButton(std::make_unique<ProjectorAnnotationTray>(shelf_));
+  annotation_tray_ = AddTrayButton(std::make_unique<AnnotationTray>(shelf_));
 
   palette_tray_ = AddTrayButton(std::make_unique<PaletteTray>(shelf_));
 
@@ -148,17 +144,16 @@ void StatusAreaWidget::Initialize() {
     phone_hub_tray_ = AddTrayButton(std::make_unique<PhoneHubTray>(shelf_));
   }
 
-  if (features::IsWmModeEnabled()) {
-    wm_mode_button_tray_ =
-        AddTrayButton(std::make_unique<WmModeButtonTray>(shelf_));
+  if (features::IsScalableShelfPodsEnabled()) {
+    pods_overflow_tray_ =
+        AddTrayButton(std::make_unique<PodsOverflowTray>(shelf_));
   }
 
-  if (features::IsQsRevampEnabled()) {
-    notification_center_tray_ =
-        AddTrayButton(std::make_unique<NotificationCenterTray>(shelf_));
-    notification_center_tray_->views::View::AddObserver(this);
-  }
-
+  notification_center_tray_ =
+      AddTrayButton(std::make_unique<NotificationCenterTray>(shelf_));
+  notification_center_tray_->AddObserver(this);
+  animation_controller_ = std::make_unique<StatusAreaAnimationController>(
+      notification_center_tray());
   auto unified_system_tray = std::make_unique<UnifiedSystemTray>(shelf_);
   unified_system_tray_ = unified_system_tray.get();
   date_tray_ =
@@ -182,11 +177,6 @@ void StatusAreaWidget::Initialize() {
 
   EnsureTrayOrder();
 
-  if (features::IsQsRevampEnabled()) {
-    animation_controller_ = std::make_unique<StatusAreaAnimationController>(
-        notification_center_tray());
-  }
-
   UpdateAfterLoginStatusChange(
       Shell::Get()->session_controller()->login_status());
   UpdateLayout(/*animate=*/false);
@@ -200,19 +190,22 @@ void StatusAreaWidget::Initialize() {
 }
 
 StatusAreaWidget::~StatusAreaWidget() {
+  Shell::Get()->RemoveShellObserver(this);
   Shell::Get()->session_controller()->RemoveObserver(this);
-  // If QsRevamp flag is enabled, `notification_center_tray_` may be null in
-  // some unittests. During the test environment tear-down, removing the
-  // observer will lead to a crash.
-  if (features::IsQsRevampEnabled() && notification_center_tray_) {
-    notification_center_tray_->views::View::RemoveObserver(this);
-  }
 
-  // If QsRevamp flag is enabled, reset `animation_controller_` before
-  // destroying `notification_center_tray_` so that we don't run into a UaF.
-  if (features::IsQsRevampEnabled()) {
-    animation_controller_.reset(nullptr);
-  }
+  // Resets `animation_controller_` before destroying
+  // `notification_center_tray_` so that we don't run into a UaF.
+  animation_controller_.reset(nullptr);
+
+  // `TrayBubbleView` might be deleted after `StatusAreaWidget`, so we reset the
+  // pointer here to avoid dangling pointer.
+  open_shelf_pod_bubble_ = nullptr;
+
+  // All tray pods are deleted upon shutdown of `status_area_widget_delegate_`,
+  // so their pointers are reset here to prevent them from dangling.
+  // TODO(b/338090322): Handle all dangling tray pointers here.
+  pods_overflow_tray_ = nullptr;
+
   status_area_widget_delegate_->Shutdown();
 }
 
@@ -235,10 +228,7 @@ void StatusAreaWidget::UpdateAfterLoginStatusChange(LoginStatus login_status) {
 void StatusAreaWidget::SetSystemTrayVisibility(bool visible) {
   unified_system_tray_->SetVisiblePreferred(visible);
   date_tray_->SetVisiblePreferred(visible);
-
-  if (features::IsQsRevampEnabled()) {
-    notification_center_tray_->OnSystemTrayVisibilityChanged(visible);
-  }
+  notification_center_tray_->OnSystemTrayVisibilityChanged(visible);
 
   if (visible) {
     Show();
@@ -293,8 +283,11 @@ void StatusAreaWidget::UpdateCollapseState() {
 
 void StatusAreaWidget::LogVisiblePodCountMetric() {
   int visible_pod_count = 0;
-  for (auto* tray_button : tray_buttons_) {
+  for (ash::TrayBackgroundView* tray_button : tray_buttons_) {
     switch (tray_button->catalog_name()) {
+      case TrayBackgroundViewCatalogName::kWmMode_DEPRECATED:
+        NOTREACHED();
+
       case TrayBackgroundViewCatalogName::kUnifiedSystem:
       case TrayBackgroundViewCatalogName::kStatusAreaOverflowButton:
       case TrayBackgroundViewCatalogName::kDateTray:
@@ -320,10 +313,13 @@ void StatusAreaWidget::LogVisiblePodCountMetric() {
       case TrayBackgroundViewCatalogName::kMediaPlayer:
       case TrayBackgroundViewCatalogName::kPalette:
       case TrayBackgroundViewCatalogName::kPhoneHub:
+      case TrayBackgroundViewCatalogName::kPodsOverflow:
       case TrayBackgroundViewCatalogName::kLogoutButton:
       case TrayBackgroundViewCatalogName::kVirtualKeyboardStatusArea:
-      case TrayBackgroundViewCatalogName::kWmMode:
       case TrayBackgroundViewCatalogName::kVideoConferenceTray:
+      case TrayBackgroundViewCatalogName::kFocusMode:
+      case TrayBackgroundViewCatalogName::kMouseKeysStatusArea:
+      case TrayBackgroundViewCatalogName::kChromeCustom:
         if (!tray_button->GetVisible()) {
           continue;
         }
@@ -332,7 +328,7 @@ void StatusAreaWidget::LogVisiblePodCountMetric() {
     }
   }
 
-  if (Shell::Get()->tablet_mode_controller()->InTabletMode()) {
+  if (display::Screen::Get()->InTabletMode()) {
     UMA_HISTOGRAM_COUNTS_100("ChromeOS.SystemTray.Tablet.ShelfPodCount",
                              visible_pod_count);
   } else {
@@ -418,24 +414,28 @@ void StatusAreaWidget::UpdateTargetBoundsForGesture(int shelf_position) {
   }
 }
 
+void StatusAreaWidget::OnPinnedStateChanged(aura::Window* pinned_window) {
+  // Close all tray bubbles when in locked fullscreen mode to prevent users from
+  // exiting this mode.
+  if (GetWindowPinType(pinned_window) ==
+      chromeos::WindowPinType::kLockedFullscreen) {
+    for (ash::TrayBackgroundView* const tray_button : tray_buttons_) {
+      tray_button->CloseBubble(
+          TrayBackgroundView::CloseReason::kWindowActivation);
+    }
+  }
+}
+
 void StatusAreaWidget::HandleLocaleChange() {
   // Here we force the layer's bounds to be updated for text direction (if
   // needed).
   status_area_widget_delegate_->RemoveAllChildViewsWithoutDeleting();
 
-  for (auto* tray_button : tray_buttons_) {
+  for (ash::TrayBackgroundView* tray_button : tray_buttons_) {
     tray_button->HandleLocaleChange();
     status_area_widget_delegate_->AddChildView(tray_button);
   }
   EnsureTrayOrder();
-}
-
-void StatusAreaWidget::NotifyAnyBubbleVisibilityChanged(
-    views::Widget* bubble_widget,
-    bool visible) {
-  for (auto* tray_button : tray_buttons_) {
-    tray_button->OnAnyBubbleVisibilityChanged(bubble_widget, visible);
-  }
 }
 
 void StatusAreaWidget::CalculateButtonVisibilityForCollapsedState() {
@@ -513,12 +513,32 @@ void StatusAreaWidget::CalculateButtonVisibilityForCollapsedState() {
 }
 
 void StatusAreaWidget::EnsureTrayOrder() {
-  if (projector_annotation_tray_) {
-    status_area_widget_delegate_->ReorderChildView(projector_annotation_tray_,
-                                                   1);
+  if (annotation_tray_) {
+    status_area_widget_delegate_->ReorderChildView(annotation_tray_, 1);
   }
-  status_area_widget_delegate_->ReorderChildView(
-      stop_recording_button_tray_, projector_annotation_tray_ ? 2 : 1);
+  status_area_widget_delegate_->ReorderChildView(stop_recording_button_tray_,
+                                                 annotation_tray_ ? 2 : 1);
+
+  auto reorder_before = [&](views::View* view_to_move, views::View* ref_view) {
+    size_t target_index =
+        status_area_widget_delegate_->GetIndexOf(ref_view).value();
+
+    // If the view is currently BEFORE the target, moving it to 'target_index'
+    // would actually place it AFTER the target (because the target shifts
+    // left). We must decrement the target index in this case.
+    if (status_area_widget_delegate_->GetIndexOf(view_to_move).value() <
+        target_index) {
+      target_index--;
+    }
+
+    status_area_widget_delegate_->ReorderChildView(view_to_move, target_index);
+  };
+
+  // The custom tray button should come before fixed pods.
+  for (auto id : custom_tray_buttons_ids_) {
+    reorder_before(status_area_widget_delegate_->GetViewByID(id),
+                   notification_center_tray_);
+  }
 }
 
 StatusAreaWidget::CollapseState StatusAreaWidget::CalculateCollapseState()
@@ -535,8 +555,7 @@ StatusAreaWidget::CollapseState StatusAreaWidget::CalculateCollapseState()
   }
 
   bool is_collapsible =
-      Shell::Get()->tablet_mode_controller()->InTabletMode() &&
-      ShelfConfig::Get()->is_in_app();
+      display::Screen::Get()->InTabletMode() && ShelfConfig::Get()->is_in_app();
 
   bool force_collapsible = base::CommandLine::ForCurrentProcess()->HasSwitch(
       switches::kAshForceStatusAreaCollapsible);
@@ -592,61 +611,6 @@ TrayBackgroundView* StatusAreaWidget::GetSystemTrayAnchor() const {
   return unified_system_tray_;
 }
 
-gfx::Rect StatusAreaWidget::GetMediaTrayAnchorRect() const {
-  if (!media_tray_) {
-    return gfx::Rect();
-  }
-
-  // Calculate anchor rect of media tray bubble. This is required because the
-  // bubble can be visible while the tray button is hidden. (e.g. when user
-  // clicks the unpin button in the dialog, which will not close the dialog)
-  bool found_media_tray = false;
-  int offset = 0;
-
-  // Accumulate the width/height of all visible tray buttons after media tray.
-  for (views::View* tray_button : tray_buttons_) {
-    if (tray_button == media_tray_) {
-      found_media_tray = true;
-      continue;
-    }
-
-    if (!found_media_tray || !tray_button->GetVisible()) {
-      continue;
-    }
-
-    offset += shelf_->IsHorizontalAlignment() ? tray_button->width()
-                                              : tray_button->height();
-  }
-
-  // Use system tray anchor view (system tray or overview button tray if
-  // visible) to find media tray button's origin.
-  gfx::Rect system_tray_bounds = GetSystemTrayAnchor()->GetBoundsInScreen();
-
-  switch (shelf_->alignment()) {
-    case ShelfAlignment::kBottom:
-    case ShelfAlignment::kBottomLocked:
-      if (base::i18n::IsRTL()) {
-        return gfx::Rect(system_tray_bounds.origin() + gfx::Vector2d(offset, 0),
-                         gfx::Size());
-      } else {
-        return gfx::Rect(
-            system_tray_bounds.top_right() - gfx::Vector2d(offset, 0),
-            gfx::Size());
-      }
-    case ShelfAlignment::kLeft:
-      return gfx::Rect(
-          system_tray_bounds.bottom_right() - gfx::Vector2d(0, offset),
-          gfx::Size());
-    case ShelfAlignment::kRight:
-      return gfx::Rect(
-          system_tray_bounds.bottom_left() - gfx::Vector2d(0, offset),
-          gfx::Size());
-  }
-
-  NOTREACHED();
-  return gfx::Rect();
-}
-
 bool StatusAreaWidget::ShouldShowShelf() const {
   // If it has main bubble, return true.
   if (unified_system_tray_->IsBubbleShown()) {
@@ -668,7 +632,7 @@ bool StatusAreaWidget::ShouldShowShelf() const {
   // Some TrayBackgroundViews' cache their bubble, the shelf should only be
   // forced to show if the bubble is visible, and we should not show the shelf
   // for cached, hidden bubbles.
-  if (tray_bubble_count_ > 0) {
+  if (open_shelf_pod_bubble_) {
     for (TrayBackgroundView* tray_button : tray_buttons_) {
       if (!tray_button->GetBubbleView()) {
         continue;
@@ -713,12 +677,147 @@ bool StatusAreaWidget::OnNativeWidgetActivationChanged(bool active) {
   return true;
 }
 
-void StatusAreaWidget::OnViewVisibilityChanged(views::View* observed_view,
-                                               views::View* starting_view) {
-  if (observed_view != notification_center_tray_) {
+void StatusAreaWidget::InitializeTrayButtonsAccessibleNavFocus() {
+  for (TrayBackgroundView* tray_button : tray_buttons_) {
+    tray_button->UpdateAccessibleNavFocus(shelf_);
+  }
+}
+
+bool StatusAreaWidget::AddTrayIcon(const TrayIconConfiguration& configuration,
+                                   base::RepeatingClosure callback) {
+  const int64_t icon_id = GetCustomIconId(configuration);
+  CHECK(!custom_tray_buttons_ids_.contains(icon_id));
+
+  std::u16string tooltip_text = configuration.tool_tip.value_or(u"");
+  ui::ImageModel image_model =
+      configuration.image ? ui::ImageModel::FromImageSkia(*configuration.image)
+                          : ui::ImageModel();
+
+  auto icon = std::make_unique<ImagedTrayIcon>(
+      shelf_, std::move(image_model), /*tooltip=*/tooltip_text,
+      /*accessibility_name=*/tooltip_text,
+      TrayBackgroundViewCatalogName::kChromeCustom);
+  icon->SetID(icon_id);
+  icon->SetCallback(std::move(callback));
+  icon->SetVisiblePreferred(true);
+  icon->set_icon_visibility_callback(
+      base::BindRepeating([](session_manager::SessionState state) -> bool {
+        return !Shell::Get()->session_controller()->IsUserSessionBlocked();
+      }));
+
+  custom_tray_buttons_ids_.insert(icon_id);
+
+  auto* icon_ptr = AddTrayButton(std::move(icon));
+  icon_ptr->Initialize();
+
+  EnsureTrayOrder();
+  CalculateTargetBounds();
+  UpdateLayout(/*animate=*/true);
+  UpdateCollapseState();
+  return true;
+}
+
+bool StatusAreaWidget::UpdateTrayIcon(
+    const TrayIconConfiguration& configuration) {
+  const int64_t icon_id = GetCustomIconId(configuration);
+  if (!custom_tray_buttons_ids_.contains(icon_id)) {
+    return false;
+  }
+
+  auto* icon = static_cast<ImagedTrayIcon*>(
+      status_area_widget_delegate_->GetViewByID(icon_id));
+  CHECK(icon);
+
+  auto* image_view = icon->image_view();
+  CHECK(image_view);
+  if (configuration.tool_tip) {
+    const std::u16string& new_tooltip = *configuration.tool_tip;
+    if (new_tooltip != image_view->GetTooltipText()) {
+      icon->SetTooltip(new_tooltip);
+      icon->SetAccessibilityName(new_tooltip);
+    }
+  }
+
+  if (configuration.image) {
+    ui::ImageModel model = ui::ImageModel::FromImageSkia(*configuration.image);
+    if (model != image_view->GetImageModel()) {
+      image_view->SetImage(model);
+    }
+  }
+
+  return true;
+}
+
+bool StatusAreaWidget::RemoveTrayIcon(
+    const TrayIconConfiguration& configuration) {
+  const int64_t icon_id = GetCustomIconId(configuration);
+  if (!custom_tray_buttons_ids_.contains(icon_id)) {
+    return false;
+  }
+
+  auto* icon = static_cast<ImagedTrayIcon*>(
+      status_area_widget_delegate_->GetViewByID(icon_id));
+  CHECK(icon);
+
+  icon->SetVisiblePreferred(false);
+
+  auto position = std::find(tray_buttons_.begin(), tray_buttons_.end(), icon);
+  if (position != tray_buttons_.end()) {
+    tray_buttons_.erase(position);
+  }
+
+  custom_tray_buttons_ids_.erase(icon_id);
+  status_area_widget_delegate_->RemoveChildViewT(icon);
+
+  EnsureTrayOrder();
+  CalculateTargetBounds();
+  UpdateLayout(/*animate=*/true);
+  UpdateCollapseState();
+  return true;
+}
+
+void StatusAreaWidget::SetOpenShelfPodBubble(
+    TrayBubbleView* open_shelf_pod_bubble) {
+  if (open_shelf_pod_bubble_ == open_shelf_pod_bubble) {
     return;
   }
 
+  DCHECK(unified_system_tray_);
+
+  if (open_shelf_pod_bubble) {
+    DCHECK(open_shelf_pod_bubble->GetBubbleType() ==
+           TrayBubbleView::TrayBubbleType::kShelfPodBubble);
+
+    // We only keep track of bubbles that are anchored to the status area
+    // widget.
+    DCHECK(open_shelf_pod_bubble->IsAnchoredToStatusArea());
+
+    // There should be only one shelf pod bubble open at a time, so we will
+    // close the current bubble for the new one to come in.
+    if (open_shelf_pod_bubble_) {
+      open_shelf_pod_bubble_->CloseBubbleView();
+      open_shelf_pod_bubble_ = nullptr;
+    }
+  }
+
+  open_shelf_pod_bubble_ = open_shelf_pod_bubble;
+  shelf()->shelf_layout_manager()->OnShelfTrayBubbleVisibilityChanged(
+      /*bubble_shown=*/open_shelf_pod_bubble_);
+}
+
+void StatusAreaWidget::InitializeAccessibleProperties() {
+  status_area_widget_delegate()->UpdateAccessiblePreviousAndNextFocus();
+}
+
+void StatusAreaWidget::OnViewIsDeleting(views::View* observed_view) {
+  CHECK(observed_view == notification_center_tray_);
+  notification_center_tray_->RemoveObserver(this);
+}
+
+void StatusAreaWidget::OnViewVisibilityChanged(views::View* observed_view,
+                                               views::View* starting_view,
+                                               bool visible) {
+  CHECK(observed_view == notification_center_tray_);
   UpdateDateTrayRoundedCorners();
 }
 
@@ -733,7 +832,7 @@ void StatusAreaWidget::OnMouseEvent(ui::MouseEvent* event) {
   // virtual keyboard.
   gfx::Point location = event->location();
   views::View::ConvertPointFromWidget(virtual_keyboard_tray_, &location);
-  if (event->type() == ui::ET_MOUSE_PRESSED &&
+  if (event->type() == ui::EventType::kMousePressed &&
       !virtual_keyboard_tray_->HitTestPoint(location)) {
     keyboard::KeyboardUIController::Get()->HideKeyboardImplicitlyByUser();
   }
@@ -745,7 +844,7 @@ void StatusAreaWidget::OnGestureEvent(ui::GestureEvent* event) {
   // virtual keyboard.
   gfx::Point location = event->location();
   views::View::ConvertPointFromWidget(virtual_keyboard_tray_, &location);
-  if (event->type() == ui::ET_GESTURE_TAP_DOWN &&
+  if (event->type() == ui::EventType::kGestureTapDown &&
       !virtual_keyboard_tray_->HitTestPoint(location)) {
     keyboard::KeyboardUIController::Get()->HideKeyboardImplicitlyByUser();
   }
@@ -800,7 +899,7 @@ StatusAreaWidget::LayoutInputs StatusAreaWidget::GetLayoutInputs() const {
 }
 
 void StatusAreaWidget::UpdateDateTrayRoundedCorners() {
-  if (!features::IsQsRevampEnabled() || !date_tray_) {
+  if (!date_tray_) {
     return;
   }
 
@@ -824,6 +923,12 @@ int StatusAreaWidget::GetCollapseAvailableWidth(bool force_collapsible) const {
   available_width += date_tray_->tray_container()->GetPreferredSize().width();
 
   return available_width;
+}
+
+void StatusAreaWidget::OnLockStateChanged(bool locked) {
+  for (ash::TrayBackgroundView* tray_button : tray_buttons_) {
+    tray_button->UpdateAfterLockStateChange(locked);
+  }
 }
 
 }  // namespace ash

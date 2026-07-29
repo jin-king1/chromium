@@ -2,12 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "content/browser/devtools/protocol/devtools_network_resource_loader.h"
+
 #include "base/files/file_util.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
-#include "content/browser/devtools/protocol/devtools_network_resource_loader.h"
+#include "content/browser/loader/url_loader_factory_utils.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
 #include "content/browser/url_loader_factory_params_helper.h"
 #include "content/browser/web_contents/web_contents_impl.h"
@@ -30,8 +32,8 @@
 #include "net/cookies/site_for_cookies.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "services/network/public/cpp/constants.h"
 #include "services/network/public/cpp/resource_request.h"
-#include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "url/gurl.h"
@@ -70,23 +72,30 @@ class DevtoolsNetworkResourceLoaderTest : public ContentBrowserTest {
   }
 
   mojo::Remote<network::mojom::URLLoaderFactory> CreateURLLoaderFactory() {
-    mojo::Remote<network::mojom::URLLoaderFactory> url_loader_factory;
     auto* frame = current_frame_host();
     auto params = URLLoaderFactoryParamsHelper::CreateForFrame(
         frame, frame->GetLastCommittedOrigin(),
         frame->GetIsolationInfoForSubresources(),
         frame->BuildClientSecurityState(),
-        /**coep_reporter=*/mojo::NullRemote(), frame->GetProcess(),
+        /*coep_reporter=*/mojo::NullRemote(),
+        /*dip_reporter=*/mojo::NullRemote(), frame->GetProcess(),
         network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
         network::mojom::TrustTokenOperationPolicyVerdict::kForbid,
-        net::CookieSettingOverrides(), "DevtoolsNetworkResourceLoaderTest");
-    // Let DevTools fetch resources without CORS and CORB. Source maps are valid
+        net::CookieSettingOverrides(), network::GetTestNetworkRestrictionsId(),
+        "DevtoolsNetworkResourceLoaderTest");
+    // Let DevTools fetch resources without CORS and ORB. Source maps are valid
     // JSON and would otherwise require a CORS fetch + correct response headers.
     // See BUG(chromium:1076435) for more context.
-    params->is_corb_enabled = false;
-    current_frame_host()->GetProcess()->CreateURLLoaderFactory(
-        url_loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
-    return url_loader_factory;
+    params->is_orb_enabled = false;
+    return mojo::Remote<network::mojom::URLLoaderFactory>(
+        url_loader_factory::CreatePendingRemote(
+            ContentBrowserClient::URLLoaderFactoryType::kDevTools,
+            url_loader_factory::TerminalParams::ForNetworkContext(
+                current_frame_host()
+                    ->GetProcess()
+                    ->GetStoragePartition()
+                    ->GetNetworkContext(),
+                std::move(params))));
   }
 
   // Repeats |number_of_error_A| times |error_A|, then continues with |error_B|.
@@ -133,7 +142,7 @@ class DevtoolsNetworkResourceLoaderTest : public ContentBrowserTest {
         current_frame_host()->GetLastCommittedOrigin(),
         current_frame_host()->ComputeSiteForCookies(), caching,
         protocol::DevToolsNetworkResourceLoader::Credentials::kInclude,
-        std::move(callback));
+        std::move(callback), current_frame_host()->IsOutermostMainFrame());
   }
 
  protected:
@@ -159,7 +168,7 @@ IN_PROC_BROWSER_TEST_F(DevtoolsNetworkResourceLoaderTest, BasicDownload) {
 }
 
 // This test is fetching a source map from a cross-origin URL. While the fetch
-// isn't a CORS fetch, the source map is JSON, so this tests that CORB is
+// isn't a CORS fetch, the source map is JSON, so this tests that ORB is
 // disabled.
 IN_PROC_BROWSER_TEST_F(DevtoolsNetworkResourceLoaderTest,
                        BasicDownloadCrossOrigin) {
@@ -185,7 +194,7 @@ IN_PROC_BROWSER_TEST_F(DevtoolsNetworkResourceLoaderTest,
       source_map_url, protocol::DevToolsNetworkResourceLoader::Caching::kBypass,
       base::BindOnce(CheckSuccess, this, &run_loop));
   run_loop.Run();
-  absl::optional<network::ResourceRequest> request =
+  std::optional<network::ResourceRequest> request =
       monitor.GetRequestInfo(source_map_url);
   EXPECT_TRUE(request->load_flags & net::LOAD_BYPASS_CACHE);
 }
@@ -285,7 +294,7 @@ IN_PROC_BROWSER_TEST_F(DevtoolsNetworkResourceLoaderTest,
                    base::BindOnce(CheckSuccess, this, &run_loop));
   run_loop.Run();
 
-  absl::optional<network::ResourceRequest> request =
+  std::optional<network::ResourceRequest> request =
       monitor.GetRequestInfo(source_map_url);
   EXPECT_TRUE(
       frame->ComputeSiteForCookies().IsEquivalent(request->site_for_cookies));

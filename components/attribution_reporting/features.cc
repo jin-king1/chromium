@@ -6,10 +6,9 @@
 
 #include "base/feature_list.h"
 
-namespace attribution_reporting {
+namespace attribution_reporting::features {
 
-BASE_FEATURE(kAttributionReportingNullAggregatableReports,
-             "AttributionReportingNullAggregatableReports",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+// Controls whether the Conversion Measurement API infrastructure is enabled.
+BASE_FEATURE(kConversionMeasurement, base::FEATURE_ENABLED_BY_DEFAULT);
 
-}  // namespace attribution_reporting
+}  // namespace attribution_reporting::features

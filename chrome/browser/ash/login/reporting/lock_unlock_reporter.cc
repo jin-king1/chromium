@@ -1,17 +1,17 @@
-// Copyright 2021 The Chromium Authors. All rights reserved.
+// Copyright 2021 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
 #include "chrome/browser/ash/login/reporting/lock_unlock_reporter.h"
 
+#include <optional>
 #include <utility>
 
 #include "base/logging.h"
 #include "base/task/bind_post_task.h"
 #include "chrome/browser/ash/policy/core/device_local_account.h"
-#include "chrome/browser/ash/policy/core/reporting_user_tracker.h"
 #include "chrome/browser/ash/policy/reporting/user_event_reporter_helper.h"
-#include "chrome/browser/browser_process.h"
+#include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
@@ -55,12 +55,9 @@ UnlockType GetUnlockTypeForEvent(
 
 LockUnlockReporter::LockUnlockReporter(
     std::unique_ptr<::reporting::UserEventReporterHelper> helper,
-    policy::ReportingUserTracker* reporting_user_tracker,
     policy::ManagedSessionService* managed_session_service,
     base::Clock* clock)
-    : clock_(clock),
-      helper_(std::move(helper)),
-      reporting_user_tracker_(reporting_user_tracker) {
+    : clock_(clock), helper_(std::move(helper)) {
   if (managed_session_service) {
     managed_session_observation_.Observe(managed_session_service);
   }
@@ -70,23 +67,20 @@ LockUnlockReporter::~LockUnlockReporter() = default;
 
 // static
 std::unique_ptr<LockUnlockReporter> LockUnlockReporter::Create(
-    policy::ReportingUserTracker* reporting_user_tracker,
     policy::ManagedSessionService* managed_session_service) {
   return base::WrapUnique(new LockUnlockReporter(
       std::make_unique<::reporting::UserEventReporterHelper>(
           ::reporting::Destination::LOCK_UNLOCK_EVENTS),
-      reporting_user_tracker, managed_session_service));
+      managed_session_service));
 }
 
 // static
 std::unique_ptr<LockUnlockReporter> LockUnlockReporter::CreateForTest(
     std::unique_ptr<::reporting::UserEventReporterHelper> reporter_helper,
-    policy::ReportingUserTracker* reporting_user_tracker,
     policy::ManagedSessionService* managed_session_service,
     base::Clock* clock) {
-  return base::WrapUnique(
-      new LockUnlockReporter(std::move(reporter_helper), reporting_user_tracker,
-                             managed_session_service, clock));
+  return base::WrapUnique(new LockUnlockReporter(
+      std::move(reporter_helper), managed_session_service, clock));
 }
 
 void LockUnlockReporter::MaybeReportEvent(LockUnlockRecord record) {
@@ -95,12 +89,16 @@ void LockUnlockReporter::MaybeReportEvent(LockUnlockRecord record) {
   }
   const std::string& user_email =
       user_manager::UserManager::Get()->GetPrimaryUser()->GetDisplayEmail();
-  if (!reporting_user_tracker_->ShouldReportUser(user_email)) {
-    return;
+  if (helper_->ShouldReportUser(user_email)) {
+    record.mutable_affiliated_user()->set_user_email(user_email);
+  } else if (const auto user_id =
+                 helper_->GetUniqueUserIdForThisDevice(user_email);
+             user_id.has_value()) {
+    // This is an unaffiliated user. We can't report any personal information
+    // about them, so we report a device-unique user id instead.
+    record.mutable_unaffiliated_user()->set_user_id_num(user_id.value());
   }
-
   record.set_event_timestamp_sec(clock_->Now().ToTimeT());
-  record.mutable_affiliated_user()->set_user_email(user_email);
 
   helper_->ReportEvent(std::make_unique<LockUnlockRecord>(std::move(record)),
                        ::reporting::Priority::SECURITY);

@@ -6,7 +6,7 @@
 #define CHROME_BROWSER_ASH_NEARBY_BLUETOOTH_ADAPTER_MANAGER_H_
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -44,7 +44,7 @@ class BluetoothAdapterManager {
   }
 
  private:
-  raw_ptr<device::BluetoothAdapter, ExperimentalAsh> device_bluetooth_adapter_;
+  raw_ptr<device::BluetoothAdapter> device_bluetooth_adapter_;
   std::unique_ptr<bluetooth::Adapter> bluetooth_adapter_;
   std::unique_ptr<mojo::Receiver<bluetooth::mojom::Adapter>>
       bluetooth_receiver_;

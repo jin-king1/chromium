@@ -2,7 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {PageClassification} from './omnibox.mojom-webui.js';
 import {OmniboxElement} from './omnibox_element.js';
+import sheet from './omnibox_input.css' with {type : 'css'};
 
 export interface QueryInputs {
   inputText: string;
@@ -11,7 +13,7 @@ export interface QueryInputs {
   cursorPosition: number;
   zeroSuggest: boolean;
   preventInlineAutocomplete: boolean;
-  preferKeyword: boolean;
+  inKeywordMode: boolean;
   currentUrl: string;
   pageClassification: number;
 }
@@ -42,7 +44,7 @@ export class OmniboxInput extends OmniboxElement {
     inputText: HTMLInputElement,
     lockCursorPosition: HTMLInputElement,
     pageClassification: HTMLSelectElement,
-    preferKeyword: HTMLInputElement,
+    inKeywordMode: HTMLInputElement,
     preventInlineAutocomplete: HTMLInputElement,
     processBatch: HTMLElement,
     processBatchInput: HTMLInputElement,
@@ -58,6 +60,7 @@ export class OmniboxInput extends OmniboxElement {
 
   constructor() {
     super('omnibox-input-template');
+    this.shadowRoot!.adoptedStyleSheets = [sheet];
   }
 
   connectedCallback() {
@@ -79,7 +82,7 @@ export class OmniboxInput extends OmniboxElement {
       inputText: this.$<HTMLInputElement>('#input-text')!,
       lockCursorPosition: this.$<HTMLInputElement>('#lock-cursor-position')!,
       pageClassification: this.$<HTMLSelectElement>('#page-classification')!,
-      preferKeyword: this.$<HTMLInputElement>('#prefer-keyword')!,
+      inKeywordMode: this.$<HTMLInputElement>('#in-keyword-mode')!,
       preventInlineAutocomplete:
           this.$<HTMLInputElement>('#prevent-inline-autocomplete')!,
       processBatch: this.$<HTMLElement>('#process-batch')!,
@@ -97,6 +100,25 @@ export class OmniboxInput extends OmniboxElement {
     };
     this.restoreInputs();
     this.setupElementListeners();
+    this.addPageClassification();
+  }
+
+  // Add Page Classification labels as options to dropdown.
+  private addPageClassification() {
+    const dropdown = this.$<HTMLSelectElement>('#page-classification')!;
+    for (const page in Object.keys(PageClassification)) {
+      const label = PageClassification[page];
+      // Filter out built-in reverse mappings for this numeric enum.
+      if (label === undefined) {
+        continue;
+      }
+      const option = document.createElement('option');
+      option.value = page;
+      option.text = label;
+      // Pre-select the OTHER option.
+      page === '4' ? option.selected = true : null;
+      dropdown.appendChild(option);
+    }
   }
 
   private storeInputs() {
@@ -121,7 +143,7 @@ export class OmniboxInput extends OmniboxElement {
      this.elements.lockCursorPosition,
      this.elements.zeroSuggest,
      this.elements.preventInlineAutocomplete,
-     this.elements.preferKeyword,
+     this.elements.inKeywordMode,
      this.elements.currentUrl,
      this.elements.pageClassification,
     ].forEach(element => {
@@ -230,7 +252,7 @@ export class OmniboxInput extends OmniboxElement {
       zeroSuggest: this.elements.zeroSuggest.checked,
       preventInlineAutocomplete:
           this.elements.preventInlineAutocomplete.checked,
-      preferKeyword: this.elements.preferKeyword.checked,
+      inKeywordMode: this.elements.inKeywordMode.checked,
       currentUrl: this.elements.currentUrl.value,
       pageClassification: Number(this.elements.pageClassification.value),
     };
@@ -245,7 +267,7 @@ export class OmniboxInput extends OmniboxElement {
     this.elements.zeroSuggest.checked = queryInputs.zeroSuggest;
     this.elements.preventInlineAutocomplete.checked =
         queryInputs.preventInlineAutocomplete;
-    this.elements.preferKeyword.checked = queryInputs.preferKeyword;
+    this.elements.inKeywordMode.checked = queryInputs.inKeywordMode;
     this.elements.currentUrl.value = queryInputs.currentUrl;
     this.elements.pageClassification.value =
         String(queryInputs.pageClassification);

@@ -6,15 +6,17 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <cwctype>
 
 #include <memory>
 #include <vector>
 
 #include "base/auto_reset.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/heap_array.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
+#include "base/strings/string_util.h"
 #include "base/win/windows_version.h"
 #include "ui/base/ime/text_input_client.h"
 #include "ui/base/ime/win/on_screen_keyboard_display_manager_input_pane.h"
@@ -36,8 +38,7 @@ constexpr size_t kExtraNumberOfChars = 20;
 
 std::unique_ptr<VirtualKeyboardController> CreateKeyboardController(
     HWND attached_window_handle) {
-  if (base::FeatureList::IsEnabled(features::kInputPaneOnScreenKeyboard) &&
-      base::win::GetVersion() >= base::win::Version::WIN10_RS4) {
+  if (base::win::GetVersion() >= base::win::Version::WIN10_RS4) {
     return std::make_unique<OnScreenKeyboardDisplayManagerInputPane>(
         attached_window_handle);
   } else {
@@ -83,8 +84,8 @@ bool IsRTLKeyboardLayoutInstalled() {
 
   // Retrieve the keyboard layouts in an array and check if there is an RTL
   // layout in it.
-  std::unique_ptr<HKL[]> layouts(new HKL[size]);
-  ::GetKeyboardLayoutList(size, layouts.get());
+  auto layouts = base::HeapArray<HKL>::Uninit(size);
+  ::GetKeyboardLayoutList(size, layouts.data());
   for (int i = 0; i < size; ++i) {
     if (IsRTLPrimaryLangID(
             PRIMARYLANGID(reinterpret_cast<uintptr_t>(layouts[i])))) {
@@ -115,14 +116,15 @@ bool IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
   //    To ignore the keys checked in 1, we set their status to 0 before
   //    checking the key status.
   const int kKeyDownMask = 0x80;
-  if ((keystate[VK_CONTROL] & kKeyDownMask) == 0)
+  if ((UNSAFE_TODO(keystate[VK_CONTROL]) & kKeyDownMask) == 0) {
     return false;
+  }
 
-  if (keystate[VK_RSHIFT] & kKeyDownMask) {
-    keystate[VK_RSHIFT] = 0;
+  if (UNSAFE_TODO(keystate[VK_RSHIFT]) & kKeyDownMask) {
+    UNSAFE_TODO(keystate[VK_RSHIFT]) = 0;
     *direction = base::i18n::RIGHT_TO_LEFT;
-  } else if (keystate[VK_LSHIFT] & kKeyDownMask) {
-    keystate[VK_LSHIFT] = 0;
+  } else if (UNSAFE_TODO(keystate[VK_LSHIFT]) & kKeyDownMask) {
+    UNSAFE_TODO(keystate[VK_LSHIFT]) = 0;
     *direction = base::i18n::LEFT_TO_RIGHT;
   } else {
     return false;
@@ -134,17 +136,18 @@ bool IsCtrlShiftPressed(base::i18n::TextDirection* direction) {
   // right-shift key (or a left-shift key), i.e. we should ignore the status of
   // the keys: VK_SHIFT, VK_CONTROL, VK_RCONTROL, and VK_LCONTROL.
   // So, we reset their status to 0 and ignore them.
-  keystate[VK_SHIFT] = 0;
-  keystate[VK_CONTROL] = 0;
-  keystate[VK_RCONTROL] = 0;
-  keystate[VK_LCONTROL] = 0;
+  UNSAFE_TODO(keystate[VK_SHIFT]) = 0;
+  UNSAFE_TODO(keystate[VK_CONTROL]) = 0;
+  UNSAFE_TODO(keystate[VK_RCONTROL]) = 0;
+  UNSAFE_TODO(keystate[VK_LCONTROL]) = 0;
   // Oddly, pressing F10 in another application seemingly breaks all subsequent
   // calls to GetKeyboardState regarding the state of the F22 key. Perhaps this
   // defect is limited to my keyboard driver, but ignoring F22 should be okay.
-  keystate[VK_F22] = 0;
+  UNSAFE_TODO(keystate[VK_F22]) = 0;
   for (int i = 0; i <= VK_PACKET; ++i) {
-    if (keystate[i] & kKeyDownMask)
+    if (UNSAFE_TODO(keystate[i]) & kKeyDownMask) {
       return false;
+    }
   }
   return true;
 }
@@ -212,7 +215,7 @@ ui::EventDispatchDetails InputMethodWinBase::DispatchKeyEvent(
   // Handles ctrl-shift key to change text direction and layout alignment.
   if (IsRTLKeyboardLayoutInstalled() && !IsTextInputTypeNone()) {
     ui::KeyboardCode code = event->key_code();
-    if (event->type() == ui::ET_KEY_PRESSED) {
+    if (event->type() == ui::EventType::kKeyPressed) {
       if (code == ui::VKEY_SHIFT) {
         base::i18n::TextDirection dir;
         if (IsCtrlShiftPressed(&dir))
@@ -220,7 +223,7 @@ ui::EventDispatchDetails InputMethodWinBase::DispatchKeyEvent(
       } else if (code != ui::VKEY_CONTROL) {
         pending_requested_direction_ = base::i18n::UNKNOWN_DIRECTION;
       }
-    } else if (event->type() == ui::ET_KEY_RELEASED &&
+    } else if (event->type() == ui::EventType::kKeyReleased &&
                (code == ui::VKEY_SHIFT || code == ui::VKEY_CONTROL) &&
                pending_requested_direction_ != base::i18n::UNKNOWN_DIRECTION) {
       GetTextInputClient()->ChangeTextDirectionAndLayoutAlignment(
@@ -230,9 +233,9 @@ ui::EventDispatchDetails InputMethodWinBase::DispatchKeyEvent(
   }
 
   // If only 1 WM_CHAR per the key event, set it as the character of it.
-  if (char_msgs.size() == 1 &&
-      !std::iswcntrl(static_cast<wint_t>(char_msgs[0].wParam)))
+  if (char_msgs.size() == 1 && !base::IsAsciiControl(char_msgs[0].wParam)) {
     event->set_character(static_cast<char16_t>(char_msgs[0].wParam));
+  }
 
   return ProcessUnhandledKeyEvent(event, &char_msgs);
 }
@@ -268,7 +271,7 @@ bool InputMethodWinBase::IsWindowFocused(const TextInputClient* client) const {
   // true for Chromium-based browser products at least.
   // We need to relax this condition by checking |GetFocus()| so this works fine
   // for embedded Chromium windows.
-  // TODO(crbug/1286880): Check if this can be replaced with |GetFocus()|.
+  // TODO(crbug.com/40815890): Check if this can be replaced with |GetFocus()|.
   return attached_window_handle_ &&
          (GetActiveWindow() == attached_window_handle_ ||
           GetFocus() == attached_window_handle_);
@@ -386,8 +389,8 @@ LRESULT InputMethodWinBase::OnDocumentFeed(RECONVERTSTRING* reconv) {
   reconv->dwTargetStrLen = target_range.length();
   reconv->dwTargetStrOffset = reconv->dwCompStrOffset;
 
-  memcpy((char*)reconv + sizeof(RECONVERTSTRING), text.c_str(),
-         len * sizeof(WCHAR));
+  UNSAFE_TODO(memcpy((char*)reconv + sizeof(RECONVERTSTRING), text.c_str(),
+                     len * sizeof(WCHAR)));
 
   // According to Microsoft API document, IMR_RECONVERTSTRING and
   // IMR_DOCUMENTFEED should return reconv, but some applications return
@@ -440,8 +443,8 @@ LRESULT InputMethodWinBase::OnReconvertString(RECONVERTSTRING* reconv) {
   reconv->dwTargetStrLen = len;
   reconv->dwTargetStrOffset = 0;
 
-  memcpy(reinterpret_cast<char*>(reconv) + sizeof(RECONVERTSTRING),
-         text.c_str(), len * sizeof(WCHAR));
+  UNSAFE_TODO(memcpy(reinterpret_cast<char*>(reconv) + sizeof(RECONVERTSTRING),
+                     text.c_str(), len * sizeof(WCHAR)));
 
   // According to Microsoft API document, IMR_RECONVERTSTRING and
   // IMR_DOCUMENTFEED should return reconv, but some applications return
@@ -476,7 +479,7 @@ LRESULT InputMethodWinBase::OnQueryCharPosition(IMECHARPOSITION* char_positon) {
       return 0;
     dip_rect = client->GetCaretBounds();
   }
-  const gfx::Rect rect = display::win::ScreenWin::DIPToScreenRect(
+  const gfx::Rect rect = display::win::GetScreenWin()->DIPToScreenRect(
       attached_window_handle_, dip_rect);
 
   char_positon->pt.x = rect.x();

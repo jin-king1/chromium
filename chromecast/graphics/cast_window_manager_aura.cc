@@ -4,6 +4,7 @@
 
 #include "chromecast/graphics/cast_window_manager_aura.h"
 
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "build/build_config.h"
 #include "chromecast/base/cast_features.h"
@@ -39,13 +40,13 @@ namespace chromecast {
 namespace {
 
 gfx::Transform GetPrimaryDisplayRotationTransform() {
-  display::Display display = display::Screen::GetScreen()->GetPrimaryDisplay();
+  display::Display display = display::Screen::Get()->GetPrimaryDisplay();
   return display::CreateRotationTransform(display.rotation(),
                                           gfx::SizeF(display.size()));
 }
 
 gfx::Rect GetPrimaryDisplayHostBounds() {
-  display::Display display(display::Screen::GetScreen()->GetPrimaryDisplay());
+  display::Display display(display::Screen::Get()->GetPrimaryDisplay());
   gfx::Point display_origin_in_pixel = display.bounds().origin();
   gfx::Size display_size_in_pixel = display.GetSizeInPixel();
   switch (display.rotation()) {
@@ -180,7 +181,7 @@ void CastWindowManagerAura::Setup() {
   if (window_tree_host_) {
     return;
   }
-  DCHECK(display::Screen::GetScreen());
+  DCHECK(display::Screen::Get());
 
   ui::InitializeInputMethodForTesting();
 
@@ -224,10 +225,6 @@ void CastWindowManagerAura::Setup() {
   side_swipe_detector_ = std::make_unique<SideSwipeDetector>(
       system_gesture_dispatcher_.get(), root_window);
 
-#if BUILDFLAG(IS_CAST_AUDIO_ONLY)
-  window_tree_host_->compositor()->SetDisplayVSyncParameters(
-      base::TimeTicks(), base::Milliseconds(250));
-#endif
 
   // Chromecast devices do not support cut/copy/paste.
   DCHECK(!ui::TouchSelectionMenuRunner::GetInstance());
@@ -295,8 +292,10 @@ CastWindowManagerAura::GetWindowOrder() {
   return window_order_;
 }
 
-aura::Window* CastWindowManagerAura::GetDefaultParent(aura::Window* window,
-                                                      const gfx::Rect& bounds) {
+aura::Window* CastWindowManagerAura::GetDefaultParent(
+    aura::Window* window,
+    const gfx::Rect& bounds,
+    const int64_t display_id) {
   DCHECK(window_tree_host_);
   return window_tree_host_->window();
 }

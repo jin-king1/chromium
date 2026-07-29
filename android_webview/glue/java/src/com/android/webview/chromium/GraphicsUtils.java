@@ -4,17 +4,11 @@
 
 package com.android.webview.chromium;
 
-import org.chromium.base.annotations.JniIgnoreNatives;
 import org.chromium.build.annotations.UsedByReflection;
 
-@JniIgnoreNatives
 abstract class GraphicsUtils {
     public static long getDrawSWFunctionTable() {
         return nativeGetDrawSWFunctionTable();
-    }
-
-    public static long getDrawGLFunctionTable() {
-        return nativeGetDrawGLFunctionTable();
     }
 
     // The Android framework performs manual JNI registration on these methods, so the method
@@ -22,6 +16,7 @@ abstract class GraphicsUtils {
     // technically true, as a way to preserve these methods and their names.
     @UsedByReflection("Android framework manual registration")
     private static native long nativeGetDrawSWFunctionTable();
+
     @UsedByReflection("Android framework manual registration")
     private static native long nativeGetDrawGLFunctionTable();
 }

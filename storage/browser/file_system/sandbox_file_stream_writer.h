@@ -19,7 +19,6 @@
 #include "storage/browser/file_system/task_runner_bound_observer_list.h"
 #include "storage/common/file_system/file_system_types.h"
 #include "third_party/blink/public/mojom/quota/quota_types.mojom.h"
-#include "url/gurl.h"
 
 namespace storage {
 
@@ -44,7 +43,8 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) SandboxFileStreamWriter
             int buf_len,
             net::CompletionOnceCallback callback) override;
   int Cancel(net::CompletionOnceCallback callback) override;
-  int Flush(net::CompletionOnceCallback callback) override;
+  int Flush(FlushMode flush_mode,
+            net::CompletionOnceCallback callback) override;
 
   // Used only by tests.
   void set_default_quota(int64_t quota) { default_quota_ = quota; }

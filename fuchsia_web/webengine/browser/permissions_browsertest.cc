@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "base/files/file_util.h"
 #include "base/fuchsia/mem_buffer_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/scoped_blocking_call.h"
@@ -121,7 +120,7 @@ IN_PROC_BROWSER_TEST_F(PermissionsBrowserTest, PermissionInCrossOriginIframe) {
 
   ASSERT_NO_FATAL_FAILURE(LoadPageInIframe(iframe_src.spec()));
 
-  frame_.navigation_listener().RunUntilTitleEquals("ended-NotAllowedError");
+  frame_.navigation_listener().RunUntilTitleEquals("ended-NotFoundError");
 }
 
 IN_PROC_BROWSER_TEST_F(PermissionsBrowserTest,

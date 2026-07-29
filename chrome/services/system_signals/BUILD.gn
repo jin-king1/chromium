@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/features.gni")
-
 source_set("system_signals") {
   public = []
 
@@ -11,6 +9,8 @@ source_set("system_signals") {
     "base_system_signals_service.cc",
     "base_system_signals_service.h",
   ]
+
+  configs += [ "//build/config/compiler:wexit_time_destructors" ]
 
   public_deps = [
     "//components/device_signals/core/common/mojom",
@@ -41,8 +41,6 @@ source_set("system_signals") {
     public += [ "mac/mac_system_signals_service.h" ]
 
     sources += [ "mac/mac_system_signals_service.mm" ]
-
-    configs += [ "//build/config/compiler:enable_arc" ]
 
     deps += [ "//components/device_signals/core/system_signals/mac" ]
   }
@@ -86,7 +84,6 @@ source_set("unit_tests") {
 
   if (is_mac) {
     sources += [ "mac/mac_system_signals_service_unittest.mm" ]
-    configs += [ "//build/config/compiler:enable_arc" ]
   }
 
   if (is_linux) {

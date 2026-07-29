@@ -4,14 +4,14 @@
 
 #include "chrome/browser/signin/bound_session_credentials/bound_session_cookie_observer.h"
 
-#include "chrome/browser/signin/chrome_signin_client.h"
+#include "content/public/browser/storage_partition.h"
 #include "net/cookies/canonical_cookie.h"
 
 namespace {
-absl::optional<const net::CanonicalCookie> GetCookie(
+std::optional<const net::CanonicalCookie> GetCookie(
     const net::CookieAccessResultList& cookie_list,
     const std::string& cookie_name) {
-  auto it = base::ranges::find_if(
+  auto it = std::ranges::find_if(
       cookie_list,
       [&cookie_name](
           const net::CookieWithAccessResult& cookie_with_access_result) {
@@ -21,16 +21,16 @@ absl::optional<const net::CanonicalCookie> GetCookie(
   if (it != cookie_list.end()) {
     return it->cookie;
   }
-  return absl::nullopt;
+  return std::nullopt;
 }
 }  // namespace
 
 BoundSessionCookieObserver::BoundSessionCookieObserver(
-    SigninClient* client,
+    content::StoragePartition* storage_partion,
     const GURL& url,
     const std::string& cookie_name,
     CookieExpirationDateUpdate callback)
-    : client_(client),
+    : storage_partition_(storage_partion),
       url_(url),
       cookie_name_(cookie_name),
       callback_(std::move(callback)) {
@@ -41,14 +41,15 @@ BoundSessionCookieObserver::BoundSessionCookieObserver(
 BoundSessionCookieObserver::~BoundSessionCookieObserver() = default;
 
 void BoundSessionCookieObserver::StartGetCookieList() {
-  network::mojom::CookieManager* cookie_manager = client_->GetCookieManager();
+  network::mojom::CookieManager* cookie_manager =
+      storage_partition_->GetCookieManagerForBrowserProcess();
   if (!cookie_manager) {
     return;
   }
 
   cookie_manager->GetCookieList(
       url_, net::CookieOptions::MakeAllInclusive(),
-      net::CookiePartitionKeyCollection::Todo(),
+      net::CookiePartitionKeyCollection(),
       base::BindOnce(&BoundSessionCookieObserver::OnGetCookieList,
                      weak_ptr_factory_.GetWeakPtr()));
 }
@@ -56,21 +57,23 @@ void BoundSessionCookieObserver::StartGetCookieList() {
 void BoundSessionCookieObserver::OnGetCookieList(
     const net::CookieAccessResultList& cookie_list,
     const net::CookieAccessResultList& excluded_cookies) {
-  absl::optional<const net::CanonicalCookie> cookie =
+  std::optional<const net::CanonicalCookie> cookie =
       GetCookie(cookie_list, cookie_name_);
   DCHECK(!GetCookie(excluded_cookies, cookie_name_).has_value())
       << "BSC cookie should not be excluded!";
-  callback_.Run(cookie.has_value() ? cookie->ExpiryDate() : base::Time());
+  callback_.Run(cookie_name_,
+                cookie.has_value() ? cookie->ExpiryDate() : base::Time());
 }
 
 void BoundSessionCookieObserver::OnCookieChange(
     const net::CookieChangeInfo& change) {
   DCHECK_EQ(change.cookie.Name(), cookie_name_);
-  DCHECK(change.cookie.IsDomainMatch(url_.host()));
+  DCHECK(change.cookie.IsDomainMatch(url_.GetHost()));
   switch (change.cause) {
     // The cookie was inserted.
     case net::CookieChangeCause::INSERTED:
-      callback_.Run(change.cookie.ExpiryDate());
+    case net::CookieChangeCause::INSERTED_NO_VALUE_CHANGE_OVERWRITE:
+      callback_.Run(cookie_name_, change.cookie.ExpiryDate());
       break;
 
     // The cookie was automatically removed due to an insert operation that
@@ -78,6 +81,11 @@ void BoundSessionCookieObserver::OnCookieChange(
     // delete + set operation, so we get an extra notification.
     case net::CookieChangeCause::OVERWRITE:
       // Skip the notification as `change.value` contains the old cookie value.
+      break;
+
+    // This can only happen if the expiration of the cookie was not updated in
+    // the change.
+    case net::CookieChangeCause::INSERTED_NO_CHANGE_OVERWRITE:
       break;
 
     // Cookie removed/expired.
@@ -90,20 +98,21 @@ void BoundSessionCookieObserver::OnCookieChange(
     // The cookie was overwritten with an already-expired expiration date.
     case net::CookieChangeCause::EXPIRED_OVERWRITE:
       DCHECK(net::CookieChangeCauseIsDeletion(change.cause));
-      callback_.Run(base::Time());
+      callback_.Run(cookie_name_, base::Time());
       break;
 
     // The cookie was automatically removed as it expired.
     case net::CookieChangeCause::EXPIRED:
       DCHECK(net::CookieChangeCauseIsDeletion(change.cause));
       DCHECK(change.cookie.ExpiryDate() < base::Time::Now());
-      callback_.Run(change.cookie.ExpiryDate());
+      callback_.Run(cookie_name_, change.cookie.ExpiryDate());
   }
 }
 
 void BoundSessionCookieObserver::AddCookieChangeListener() {
   DCHECK(!cookie_listener_receiver_.is_bound());
-  network::mojom::CookieManager* cookie_manager = client_->GetCookieManager();
+  network::mojom::CookieManager* cookie_manager =
+      storage_partition_->GetCookieManagerForBrowserProcess();
   // NOTE: `cookie_manager` can be nullptr when TestSigninClient is used in
   // testing contexts.
   if (!cookie_manager) {

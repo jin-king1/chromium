@@ -54,7 +54,7 @@ class DownloadDriverImpl : public DownloadDriver,
   void Remove(const std::string& guid, bool remove_file) override;
   void Pause(const std::string& guid) override;
   void Resume(const std::string& guid) override;
-  absl::optional<DriverEntry> Find(const std::string& guid) override;
+  std::optional<DriverEntry> Find(const std::string& guid) override;
   std::set<std::string> GetActiveDownloads() override;
   size_t EstimateMemoryUsage() const override;
 
@@ -70,6 +70,11 @@ class DownloadDriverImpl : public DownloadDriver,
                          download::DownloadItem* item) override;
   void OnDownloadRemoved(SimpleDownloadManagerCoordinator* coordinator,
                          download::DownloadItem* item) override;
+
+  void NotifyClientOfUpdatedState(const DriverEntry& entry,
+                                  download::DownloadItem::DownloadState state,
+                                  download::DownloadInterruptReason reason);
+  void NotifyClientOfCreatedState(const DriverEntry& entry);
 
   void OnUploadProgress(const std::string& guid, uint64_t bytes_uploaded);
 

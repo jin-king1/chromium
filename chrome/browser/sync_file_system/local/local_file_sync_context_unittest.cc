@@ -5,10 +5,11 @@
 #include "chrome/browser/sync_file_system/local/local_file_sync_context.h"
 
 #include <stdint.h>
+
+#include <string_view>
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -17,6 +18,7 @@
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/sync_file_system/local/canned_syncable_file_system.h"
 #include "chrome/browser/sync_file_system/local/local_file_change_tracker.h"
@@ -50,7 +52,7 @@ using storage::FileSystemURLSet;
 // multi-file-system-context environment.
 // Basic combined tests (single-thread / single-file-system-context)
 // that involve LocalFileSyncContext are also in
-// syncable_file_system_unittests.cc.
+// syncable_file_system_unittest.cc.
 
 namespace sync_file_system {
 
@@ -85,7 +87,8 @@ class LocalFileSyncContextTest : public testing::Test {
                            LocalFileSyncContext::SyncMode sync_mode,
                            SyncFileMetadata* metadata,
                            FileChangeList* changes,
-                           storage::ScopedFile* snapshot) {
+                           storage::ScopedFile* snapshot,
+                           base::OnceClosure quit_closure) {
     ASSERT_TRUE(changes != nullptr);
     ASSERT_FALSE(has_inflight_prepare_for_sync_);
     status_ = SYNC_STATUS_UNKNOWN;
@@ -93,7 +96,8 @@ class LocalFileSyncContextTest : public testing::Test {
     sync_context_->PrepareForSync(
         file_system_context, url, sync_mode,
         base::BindOnce(&LocalFileSyncContextTest::DidPrepareForSync,
-                       base::Unretained(this), metadata, changes, snapshot));
+                       base::Unretained(this), metadata, changes, snapshot,
+                       std::move(quit_closure)));
   }
 
   SyncStatusCode PrepareForSync(FileSystemContext* file_system_context,
@@ -102,9 +106,11 @@ class LocalFileSyncContextTest : public testing::Test {
                                 SyncFileMetadata* metadata,
                                 FileChangeList* changes,
                                 storage::ScopedFile* snapshot) {
+    base::RunLoop loop;
     StartPrepareForSync(file_system_context, url, sync_mode, metadata, changes,
-                        snapshot);
-    base::RunLoop().Run();
+                        snapshot, loop.QuitWhenIdleClosure());
+
+    loop.Run();
     return status_;
   }
 
@@ -114,16 +120,17 @@ class LocalFileSyncContextTest : public testing::Test {
       LocalFileSyncContext::SyncMode sync_mode,
       SyncFileMetadata* metadata,
       FileChangeList* changes,
-      storage::ScopedFile* snapshot) {
+      storage::ScopedFile* snapshot,
+      base::OnceClosure quit_closure) {
     return base::BindOnce(&LocalFileSyncContextTest::StartPrepareForSync,
                           base::Unretained(this),
                           base::Unretained(file_system_context), url, sync_mode,
-                          metadata, changes, snapshot);
+                          metadata, changes, snapshot, std::move(quit_closure));
   }
-
   void DidPrepareForSync(SyncFileMetadata* metadata_out,
                          FileChangeList* changes_out,
                          storage::ScopedFile* snapshot_out,
+                         base::OnceClosure quit_closure,
                          SyncStatusCode status,
                          const LocalFileSyncInfo& sync_file_info,
                          storage::ScopedFile snapshot) {
@@ -135,7 +142,7 @@ class LocalFileSyncContextTest : public testing::Test {
     if (snapshot_out) {
       *snapshot_out = std::move(snapshot);
     }
-    base::RunLoop::QuitCurrentWhenIdleDeprecated();
+    std::move(quit_closure).Run();
   }
 
   SyncStatusCode ApplyRemoteChange(FileSystemContext* file_system_context,
@@ -155,23 +162,26 @@ class LocalFileSyncContextTest : public testing::Test {
     EXPECT_EQ(expected_file_type, metadata.file_type);
 
     status_ = SYNC_STATUS_UNKNOWN;
+    base::RunLoop loop;
     sync_context_->ApplyRemoteChange(
         file_system_context, change, local_path, url,
         base::BindOnce(&LocalFileSyncContextTest::DidApplyRemoteChange,
                        base::Unretained(this),
-                       base::RetainedRef(file_system_context), url));
-    base::RunLoop().Run();
+                       base::RetainedRef(file_system_context), url,
+                       loop.QuitWhenIdleClosure()));
+    loop.Run();
     return status_;
   }
 
   void DidApplyRemoteChange(FileSystemContext* file_system_context,
                             const FileSystemURL& url,
+                            base::OnceClosure quit_closure,
                             SyncStatusCode status) {
     status_ = status;
     sync_context_->FinalizeExclusiveSync(
         file_system_context, url,
         status == SYNC_STATUS_OK /* clear_local_changes */,
-        base::RunLoop::QuitCurrentWhenIdleClosureDeprecated());
+        std::move(quit_closure));
   }
 
   void StartModifyFileOnIOThread(CannedSyncableFileSystem* file_system,
@@ -402,14 +412,14 @@ TEST_F(LocalFileSyncContextTest, InitializeFileSystemContext) {
   FileSystemURLSet urls;
   file_system.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(base::Contains(urls, kURL));
+  EXPECT_TRUE(urls.contains(kURL));
 
   // Finishing the test.
   sync_context_->ShutdownOnUIThread();
   file_system.TearDown();
 }
 
-TEST_F(LocalFileSyncContextTest, CreateDefaultSyncableBucket) {
+TEST_F(LocalFileSyncContextTest, CreateDefaultTemporaryBucket) {
   CannedSyncableFileSystem file_system(GURL(kOrigin1), in_memory_env_.get(),
                                        io_task_runner_.get(),
                                        file_task_runner_.get());
@@ -423,20 +433,18 @@ TEST_F(LocalFileSyncContextTest, CreateDefaultSyncableBucket) {
   EXPECT_EQ(SYNC_STATUS_OK,
             file_system.MaybeInitializeFileSystemContext(sync_context_.get()));
 
-  // Opens the file_system, to verify a kSyncable bucket is created.
+  // Opens the file_system, to verify a bucket is created.
   EXPECT_EQ(base::File::FILE_OK, file_system.OpenFileSystem());
 
   base::test::TestFuture<storage::QuotaErrorOr<storage::BucketInfo>> future;
   file_system.quota_manager()->proxy()->GetBucketByNameUnsafe(
       blink::StorageKey::CreateFromStringForTesting(kOrigin1),
-      storage::kDefaultBucketName, blink::mojom::StorageType::kSyncable,
+      storage::kDefaultBucketName,
       base::SequencedTaskRunner::GetCurrentDefault(), future.GetCallback());
 
-  const auto result = future.Take();
-  ASSERT_TRUE(result.has_value());
-  EXPECT_EQ(result->name, storage::kDefaultBucketName);
-  EXPECT_EQ(result->type, blink::mojom::StorageType::kSyncable);
-  EXPECT_GT(result->id.value(), 0);
+  ASSERT_OK_AND_ASSIGN(const auto result, future.Take());
+  EXPECT_EQ(result.name, storage::kDefaultBucketName);
+  EXPECT_GT(result.id.value(), 0);
 
   // Finishing the test.
   sync_context_->ShutdownOnUIThread();
@@ -476,7 +484,7 @@ TEST_F(LocalFileSyncContextTest, MultipleFileSystemContexts) {
   FileSystemURLSet urls;
   file_system1.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(base::Contains(urls, kURL1));
+  EXPECT_TRUE(urls.contains(kURL1));
 
   // file_system1's tracker must have no change.
   urls.clear();
@@ -490,13 +498,13 @@ TEST_F(LocalFileSyncContextTest, MultipleFileSystemContexts) {
   urls.clear();
   file_system1.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(base::Contains(urls, kURL1));
+  EXPECT_TRUE(urls.contains(kURL1));
 
   // file_system2's tracker now must have the change for kURL2.
   urls.clear();
   file_system2.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(base::Contains(urls, kURL2));
+  EXPECT_TRUE(urls.contains(kURL2));
 
   SyncFileMetadata metadata;
   FileChangeList changes;
@@ -554,9 +562,9 @@ TEST_F(LocalFileSyncContextTest, PrepareSync_WriteDuringSync_Snapshot) {
 }
 
 // LocalFileSyncContextTest.PrepareSyncWhileWriting is flaky on android.
-// http://crbug.com/239793
+// http://crbug.com/41011793
 // It is also flaky on the TSAN v2 bots, and hangs other bots.
-// http://crbug.com/305905.
+// http://crbug.com/41064526.
 TEST_F(LocalFileSyncContextTest, DISABLED_PrepareSyncWhileWriting) {
   CannedSyncableFileSystem file_system(GURL(kOrigin1), in_memory_env_.get(),
                                        io_task_runner_.get(),
@@ -593,17 +601,19 @@ TEST_F(LocalFileSyncContextTest, DISABLED_PrepareSyncWhileWriting) {
   // on IO thread in this test.)
   metadata.file_type = SYNC_FILE_TYPE_UNKNOWN;
   changes.clear();
+  base::RunLoop loop;
   sync_context_->RegisterURLForWaitingSync(
-      kURL1, GetPrepareForSyncClosure(file_system.file_system_context(), kURL1,
-                                      LocalFileSyncContext::SYNC_EXCLUSIVE,
-                                      &metadata, &changes, nullptr));
+      kURL1,
+      GetPrepareForSyncClosure(file_system.file_system_context(), kURL1,
+                               LocalFileSyncContext::SYNC_EXCLUSIVE, &metadata,
+                               &changes, nullptr, loop.QuitClosure()));
 
   // Wait for the completion.
   EXPECT_EQ(base::File::FILE_OK, WaitUntilModifyFileIsDone());
 
   // The PrepareForSync must have been started; wait until DidPrepareForSync
   // is done.
-  base::RunLoop().Run();
+  loop.Run();
   ASSERT_FALSE(has_inflight_prepare_for_sync_);
 
   // Now PrepareForSync should have run and returned OK.
@@ -651,9 +661,9 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForDeletion) {
   FileSystemURLSet urls;
   file_system.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(3U, urls.size());
-  ASSERT_TRUE(base::Contains(urls, kFile));
-  ASSERT_TRUE(base::Contains(urls, kDir));
-  ASSERT_TRUE(base::Contains(urls, kChild));
+  ASSERT_TRUE(urls.contains(kFile));
+  ASSERT_TRUE(urls.contains(kDir));
+  ASSERT_TRUE(urls.contains(kChild));
   for (auto iter = urls.begin(); iter != urls.end(); ++iter) {
     file_system.ClearChangeForURLInTracker(*iter);
   }
@@ -800,7 +810,7 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForAddOrUpdate) {
   FileSystemURLSet urls;
   file_system.GetChangedURLsInTracker(&urls);
   ASSERT_EQ(1U, urls.size());
-  EXPECT_TRUE(base::Contains(urls, kFile1));
+  EXPECT_TRUE(urls.contains(kFile1));
   file_system.ClearChangeForURLInTracker(*urls.begin());
 
   // Prepare temporary files which represent the remote file data.
@@ -911,7 +921,7 @@ TEST_F(LocalFileSyncContextTest, ApplyRemoteChangeForAddOrUpdate_NoParent) {
             file_system.MaybeInitializeFileSystemContext(sync_context_.get()));
   ASSERT_EQ(base::File::FILE_OK, file_system.OpenFileSystem());
 
-  constexpr base::StringPiece kTestFileData = "Lorem ipsum!";
+  constexpr std::string_view kTestFileData = "Lorem ipsum!";
   const FileSystemURL kDir(file_system.URL("dir"));
   const FileSystemURL kFile(file_system.URL("dir/file"));
 

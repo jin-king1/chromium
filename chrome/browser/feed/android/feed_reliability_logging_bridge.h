@@ -37,10 +37,6 @@ class FeedReliabilityLoggingBridge : public ::feed::ReliabilityLoggingBridge {
                            base::TimeTicks timestamp) override;
   void LogActionsUploadRequestStart(NetworkRequestId id,
                                     base::TimeTicks timestamp) override;
-  void LogWebFeedRequestStart(NetworkRequestId id,
-                              base::TimeTicks timestamp) override;
-  void LogSingleWebFeedRequestStart(NetworkRequestId id,
-                                    base::TimeTicks timestamp) override;
   void LogRequestSent(NetworkRequestId id, base::TimeTicks timestamp) override;
   void LogResponseReceived(NetworkRequestId id,
                            int64_t server_receive_timestamp_ns,
@@ -56,13 +52,13 @@ class FeedReliabilityLoggingBridge : public ::feed::ReliabilityLoggingBridge {
   void LogLaunchFinishedAfterStreamUpdate(
       feedwire::DiscoverLaunchResult result) override;
   void LogLoadMoreStarted() override;
-  void LogLoadMoreIndicatorShown() override;
   void LogLoadMoreActionUploadRequestStarted() override;
   void LogLoadMoreRequestSent() override;
   void LogLoadMoreResponseReceived(int64_t server_receive_timestamp_ns,
                                    int64_t server_send_timestamp_ns) override;
   void LogLoadMoreRequestFinished(int combined_network_status_code) override;
   void LogLoadMoreEnded(bool success) override;
+  void ReportExperiments(const std::vector<int32_t>& experiment_ids) override;
 
  private:
   base::android::ScopedJavaGlobalRef<jobject> java_ref_;

@@ -27,16 +27,21 @@ const char AccessCodeCastMetrics::kHistogramDialogLoadTime[] =
     "AccessCodeCast.Ui.DialogLoadTime";
 const char AccessCodeCastMetrics::kHistogramDialogOpenLocation[] =
     "AccessCodeCast.Ui.DialogOpenLocation";
+const char AccessCodeCastMetrics::kHistogramFreezeCount[] =
+    "AccessCodeCast.Session.FreezeCount";
+const char AccessCodeCastMetrics::kHistogramFreezeDuration[] =
+    "AccessCodeCast.Session.FreezeDuration";
+const char AccessCodeCastMetrics::kHistogramNewDeviceRouteCreationDuration[] =
+    "AccessCodeCast.Session.NewDeviceRouteCreationDuration";
+
 const char AccessCodeCastMetrics::kHistogramRememberedDevicesCount[] =
     "AccessCodeCast.Discovery.RememberedDevicesCount";
 const char AccessCodeCastMetrics::kHistogramRouteDiscoveryTypeAndSource[] =
     "AccessCodeCast.Session.RouteDiscoveryTypeAndSource";
 const char AccessCodeCastMetrics::kHistogramRouteDuration[] =
     "AccessCodeCast.Session.RouteDuration";
-const char AccessCodeCastMetrics::kHistogramUiTabSwitcherUsageType[] =
-    "AccessCodeCast.Ui.TabSwitcherUsageType";
-const char AccessCodeCastMetrics::kHistogramUiTabSwitchingCount[] =
-    "AccessCodeCast.Ui.TabSwitchingCount";
+const char AccessCodeCastMetrics::kHistogramSavedDeviceRouteCreationDuration[] =
+    "AccessCodeCast.Session.SavedDeviceRouteCreationDuration";
 
 // static
 void AccessCodeCastMetrics::OnCastSessionResult(int route_request_result_code,
@@ -49,8 +54,9 @@ void AccessCodeCastMetrics::OnCastSessionResult(int route_request_result_code,
 // static
 void AccessCodeCastMetrics::RecordAccessCodeNotFoundCount(int count) {
   // Do not record if there were no incorrect codes.
-  if (count <= 0)
+  if (count <= 0) {
     return;
+  }
 
   base::UmaHistogramCounts100(kHistogramAccessCodeNotFoundCount, count);
 }
@@ -86,7 +92,7 @@ void AccessCodeCastMetrics::RecordAccessCodeRouteStarted(
             AccessCodeCastDiscoveryTypeAndSource::kSavedDeviceRemotePlayback;
         break;
       default:
-        NOTREACHED_NORETURN();
+        NOTREACHED();
     }
   } else { /* is_saved == false (A new device just added by access code) */
     switch (mode) {
@@ -107,7 +113,7 @@ void AccessCodeCastMetrics::RecordAccessCodeRouteStarted(
             AccessCodeCastDiscoveryTypeAndSource::kNewDeviceRemotePlayback;
         break;
       default:
-        NOTREACHED_NORETURN();
+        NOTREACHED();
     }
   }
 
@@ -144,6 +150,17 @@ void AccessCodeCastMetrics::RecordDialogOpenLocation(
 }
 
 // static
+void AccessCodeCastMetrics::RecordMirroringPauseCount(int count) {
+  base::UmaHistogramCounts100(kHistogramFreezeCount, count);
+}
+
+// static
+void AccessCodeCastMetrics::RecordMirroringPauseDuration(
+    base::TimeDelta duration) {
+  base::UmaHistogramLongTimes(kHistogramFreezeDuration, duration);
+}
+
+// static
 void AccessCodeCastMetrics::RecordRememberedDevicesCount(int count) {
   base::UmaHistogramCounts100(kHistogramRememberedDevicesCount, count);
 }
@@ -160,12 +177,17 @@ void AccessCodeCastMetrics::RecordRouteDuration(base::TimeDelta duration) {
 }
 
 // static
-void AccessCodeCastMetrics::RecordTabSwitchesCountInTabSession(int count) {
-  base::UmaHistogramCounts100(kHistogramUiTabSwitchingCount, count);
+void AccessCodeCastMetrics::RecordSavedDeviceConnectDuration(
+    base::TimeDelta duration) {
+  base::UmaHistogramMediumTimes(
+      /*name=*/kHistogramSavedDeviceRouteCreationDuration,
+      /*sample=*/duration);
 }
 
 // static
-void AccessCodeCastMetrics::RecordTabSwitcherUsageCase(
-    AccessCodeCastUiTabSwitcherUsage usage) {
-  base::UmaHistogramEnumeration(kHistogramUiTabSwitcherUsageType, usage);
+void AccessCodeCastMetrics::RecordNewDeviceConnectDuration(
+    base::TimeDelta duration) {
+  base::UmaHistogramMediumTimes(
+      /*name=*/kHistogramNewDeviceRouteCreationDuration,
+      /*sample=*/duration);
 }

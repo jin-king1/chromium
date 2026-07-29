@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/platform/graphics/compositing_reasons.h"
 
+#include <array>
+
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
@@ -12,14 +14,15 @@ namespace blink {
 namespace {
 
 #define V(name) #name,
-constexpr const char* kShortNames[] = {FOR_EACH_COMPOSITING_REASON(V)};
+constexpr auto kShortNames =
+    std::to_array<const char* const>({FOR_EACH_COMPOSITING_REASON(V)});
 #undef V
 
 struct ReasonAndDescription {
   CompositingReasons reason;
   const char* description;
 };
-constexpr ReasonAndDescription kReasonDescriptionMap[] = {
+constexpr auto kReasonDescriptionMap = std::to_array<ReasonAndDescription>({
     {CompositingReason::k3DTransform, "Has a 3d transform."},
     {CompositingReason::k3DScale, "Has a 3d scale."},
     {CompositingReason::k3DRotate, "Has a 3d rotate."},
@@ -42,15 +45,20 @@ constexpr ReasonAndDescription kReasonDescriptionMap[] = {
      "Has an active accelerated backdrop filter animation or transition."},
     {CompositingReason::kAffectedByOuterViewportBoundsDelta,
      "Is fixed position affected by outer viewport bounds delta."},
+    {CompositingReason::kAffectedBySafeAreaBottom,
+     "Is fixed position affected by safe area bottom."},
     {CompositingReason::kFixedPosition,
      "Is fixed position in a scrollable view."},
     {CompositingReason::kUndoOverscroll,
      "Is fixed position that should undo overscroll of the viewport."},
     {CompositingReason::kStickyPosition, "Is sticky position."},
-    {CompositingReason::kAnchorScroll,
-     "Is an element with anchor-scroll css property."},
+    {CompositingReason::kAnchorPosition,
+     "Is an anchor-positioned element translated by its anchor's scroll "
+     "offset."},
     {CompositingReason::kBackdropFilter, "Has a backdrop filter."},
     {CompositingReason::kBackdropFilterMask, "Is a mask for backdrop filter."},
+    {CompositingReason::kFixedBackdropInOverscrollAreaParent,
+     "Is a fixed backdrop inside an overscroll area parent scroller."},
     {CompositingReason::kRootScroller, "Is the document.rootScroller."},
     {CompositingReason::kViewport, "Is for the visual viewport."},
     {CompositingReason::kWillChangeTransform,
@@ -67,6 +75,12 @@ constexpr ReasonAndDescription kReasonDescriptionMap[] = {
      "Has a will-change: filter compositing hint."},
     {CompositingReason::kWillChangeBackdropFilter,
      "Has a will-change: backdrop-filter compositing hint."},
+    {CompositingReason::kWillChangeClipPath,
+     "Has a will-change: clip-path compositing hint."},
+    {CompositingReason::kWillChangeMixBlendMode,
+     "Has a will-change: mix-blend-mode compositing hint."},
+    {CompositingReason::kWillChangeMask,
+     "Has a will-change: mask compositing hint."},
     {CompositingReason::kWillChangeOther,
      "Has a will-change compositing hint other than transform, opacity, filter"
      " and backdrop-filter."},
@@ -83,10 +97,15 @@ constexpr ReasonAndDescription kReasonDescriptionMap[] = {
     {CompositingReason::kViewTransitionElement,
      "This element is shared during view transition."},
     {CompositingReason::kViewTransitionPseudoElement,
-     "This element is a part of a pseudo element tree representing the view "
+     "This element is a part of a pseudo-element tree representing the view "
      "transition."},
+    {CompositingReason::kViewTransitionElementDescendantWithClipPath,
+     "This element's ancestor is shared during view transition and it has a "
+     "clip-path"},
     {CompositingReason::kOverflowScrolling,
      "Is a scrollable overflow element using accelerated scrolling."},
+    {CompositingReason::kElementCapture,
+     "This element is undergoing element-level capture."},
     {CompositingReason::kOverlap, "Overlaps other composited content."},
     {CompositingReason::kBackfaceVisibilityHidden,
      "Has backface-visibility: hidden."},
@@ -97,13 +116,16 @@ constexpr ReasonAndDescription kReasonDescriptionMap[] = {
     {CompositingReason::kCanvas,
      "Is an accelerated canvas, or is a display list backed canvas that was "
      "promoted to a layer based on a performance heuristic."},
+    {CompositingReason::kCanvasChild,
+     "Is the direct child of a canvas with 'layoutSubtree' attribute."},
     {CompositingReason::kPlugin, "Is an accelerated plugin."},
     {CompositingReason::kScrollbar, "Is an accelerated scrollbar."},
     {CompositingReason::kLinkHighlight, "Is a tap highlight on a link."},
     {CompositingReason::kDevToolsOverlay, "Is DevTools overlay."},
     {CompositingReason::kViewTransitionContent,
      "The layer containing the contents of a view transition element."},
-};
+    {CompositingReason::kUnboundedElement, "Is an active unbounded element."},
+});
 
 }  // anonymous namespace
 
@@ -146,12 +168,8 @@ std::vector<const char*> CompositingReason::Descriptions(
 
 String CompositingReason::ToString(CompositingReasons reasons) {
   StringBuilder builder;
-  for (const char* name : ShortNames(reasons)) {
-    if (builder.length())
-      builder.Append(',');
-    builder.Append(name);
-  }
-  return builder.ToString();
+  builder.AppendRange(ShortNames(reasons), ",");
+  return builder.ReleaseString();
 }
 
 }  // namespace blink

@@ -8,9 +8,11 @@
 #include <utility>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/ash_pref_names.h"
 #include "base/check.h"
 #include "base/command_line.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -20,7 +22,6 @@
 #include "base/uuid.h"
 #include "base/values.h"
 #include "chrome/browser/ash/child_accounts/edu_coexistence_tos_store_utils.h"
-#include "chrome/browser/ash/login/login_pref_names.h"
 #include "chrome/browser/ash/policy/core/user_cloud_policy_manager_ash.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part.h"
@@ -41,6 +42,8 @@
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/sync/base/features.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "google_apis/gaia/gaia_constants.h"
 #include "google_apis/gaia/gaia_urls.h"
@@ -73,15 +76,17 @@ std::string GetEduCoexistenceURL() {
   base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
 
   // This should only be set during local development tests.
-  if (command_line->HasSwitch(kEduCoexistenceLoginURLSwitch))
+  if (command_line->HasSwitch(kEduCoexistenceLoginURLSwitch)) {
     return command_line->GetSwitchValueASCII(kEduCoexistenceLoginURLSwitch);
+  }
 
   return kEduCoexistenceLoginDefaultURL;
 }
 
 std::string GetSourceUI() {
-  if (session_manager::SessionManager::Get()->IsUserSessionBlocked())
+  if (session_manager::SessionManager::Get()->IsUserSessionBlocked()) {
     return kOobe;
+  }
   return kInSession;
 }
 
@@ -113,17 +118,20 @@ std::string GetDeviceIdForActiveUserProfile() {
   Profile* profile = ProfileManager::GetActiveUserProfile();
   const policy::UserCloudPolicyManagerAsh* policy_manager =
       profile->GetUserCloudPolicyManagerAsh();
-  if (!policy_manager)
+  if (!policy_manager) {
     return std::string();
+  }
 
   const policy::CloudPolicyCore* core = policy_manager->core();
   const policy::CloudPolicyStore* store = core->store();
-  if (!store)
+  if (!store) {
     return std::string();
+  }
 
   const enterprise_management::PolicyData* policy = store->policy();
-  if (!policy)
+  if (!policy) {
     return std::string();
+  }
 
   return policy->device_id();
 }
@@ -151,22 +159,19 @@ EduCoexistenceLoginHandler::EduCoexistenceLoginHandler(
   // Start observing IdentityManager.
   identity_manager->AddObserver(this);
 
-  OAuth2AccessTokenManager::ScopeSet scopes;
-  scopes.insert(GaiaConstants::kKidsSupervisionSetupChildOAuth2Scope);
-  scopes.insert(GaiaConstants::kAccountsReauthOAuth2Scope);
-  scopes.insert(GaiaConstants::kAuditRecordingOAuth2Scope);
-  scopes.insert(GaiaConstants::kClearCutOAuth2Scope);
-  scopes.insert(GaiaConstants::kKidManagementPrivilegedOAuth2Scope);
-
   // Start fetching oauth access token.
   access_token_fetcher_ =
       std::make_unique<signin::PrimaryAccountAccessTokenFetcher>(
-          "EduCoexistenceLoginHandler", identity_manager, scopes,
+          signin::OAuthConsumerId::kEduCoexistenceLoginHandler,
+          identity_manager,
           base::BindOnce(
               &EduCoexistenceLoginHandler::OnOAuthAccessTokensFetched,
               base::Unretained(this)),
           signin::PrimaryAccountAccessTokenFetcher::Mode::kWaitUntilAvailable,
-          signin::ConsentLevel::kSync);
+          base::FeatureList::IsEnabled(
+              syncer::kReplaceSyncPromosWithSignInPromos)
+              ? signin::ConsentLevel::kSignin
+              : signin::ConsentLevel::kSync);
 }
 
 EduCoexistenceLoginHandler::~EduCoexistenceLoginHandler() {
@@ -209,8 +214,9 @@ void EduCoexistenceLoginHandler::OnJavascriptDisallowed() {
 
 void EduCoexistenceLoginHandler::OnRefreshTokenUpdatedForAccount(
     const CoreAccountInfo& account_info) {
-  if (edu_account_email_.empty() || account_info.email != edu_account_email_)
+  if (edu_account_email_.empty() || account_info.email != edu_account_email_) {
     return;
+  }
 
   AllowJavascript();
 
@@ -255,7 +261,7 @@ void EduCoexistenceLoginHandler::OnOAuthAccessTokensFetched(
 }
 
 void EduCoexistenceLoginHandler::InitializeEduArgs(
-    const base::Value::List& args) {
+    const base::ListValue& args) {
   AllowJavascript();
 
   initialize_edu_args_callback_ = args[0].GetString();
@@ -276,7 +282,7 @@ void EduCoexistenceLoginHandler::InitializeEduArgs(
 void EduCoexistenceLoginHandler::SendInitializeEduArgs() {
   DCHECK(oauth_access_token_.has_value());
   DCHECK(initialize_edu_args_callback_.has_value());
-  base::Value::Dict params;
+  base::DictValue params;
 
   const std::string& app_locale = g_browser_process->GetApplicationLocale();
   params.Set("hl", app_locale);
@@ -295,9 +301,8 @@ void EduCoexistenceLoginHandler::SendInitializeEduArgs() {
              chrome::GetChannelName(chrome::WithExtendedStable(false)));
   params.Set("deviceId", GetDeviceIdForActiveUserProfile());
 
-  params.Set("signinTime", GetSigninTime().ToJsTimeIgnoringNull());
-  // TODO(crbug.com/1202135): Remove along with JS part.
-  params.Set("newOobeLayoutEnabled", true);
+  params.Set("signinTime",
+             GetSigninTime().InMillisecondsFSinceUnixEpochIgnoringNull());
 
   // If the secondary edu account is being reauthenticated, the email address
   // will be provided via the url of the webcontent. Example
@@ -319,25 +324,26 @@ void EduCoexistenceLoginHandler::SendInitializeEduArgs() {
 
   ResolveJavascriptCallback(base::Value(initialize_edu_args_callback_.value()),
                             params);
-  initialize_edu_args_callback_ = absl::nullopt;
+  initialize_edu_args_callback_ = std::nullopt;
 }
 
-void EduCoexistenceLoginHandler::ConsentValid(const base::Value::List& args) {
+void EduCoexistenceLoginHandler::ConsentValid(const base::ListValue& args) {
   AllowJavascript();
   DCHECK(!in_error_state_);
   EduCoexistenceStateTracker::Get()->OnWebUiStateChanged(
       web_ui(), EduCoexistenceStateTracker::FlowResult::kConsentValid);
 }
 
-void EduCoexistenceLoginHandler::ConsentLogged(const base::Value::List& args) {
-  if (args.size() == 0)
+void EduCoexistenceLoginHandler::ConsentLogged(const base::ListValue& args) {
+  if (args.size() == 0) {
     return;
+  }
 
   DCHECK(!in_error_state_);
 
   account_added_callback_ = args[0].GetString();
 
-  const base::Value::List& arguments = args[1].GetList();
+  const base::ListValue& arguments = args[1].GetList();
 
   edu_account_email_ = arguments[0].GetString();
   terms_of_service_version_number_ = arguments[1].GetString();
@@ -347,10 +353,11 @@ void EduCoexistenceLoginHandler::ConsentLogged(const base::Value::List& args) {
                                                      edu_account_email_);
 }
 
-void EduCoexistenceLoginHandler::OnError(const base::Value::List& args) {
+void EduCoexistenceLoginHandler::OnError(const base::ListValue& args) {
   AllowJavascript();
-  if (args.size() == 0)
+  if (args.size() == 0) {
     return;
+  }
   in_error_state_ = true;
   for (const base::Value& message : args) {
     DCHECK(message.is_string());

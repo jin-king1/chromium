@@ -8,7 +8,6 @@ details on the presubmit API built into depot_tools.
 """
 
 
-USE_PYTHON3 = True
 
 
 def CommonChecks(input_api, output_api):
@@ -18,14 +17,9 @@ def CommonChecks(input_api, output_api):
   # valuable and gives spurious errors.
   if input_api.sys.platform != 'win32':
     results += input_api.canned_checks.RunPylint(
-        input_api, output_api, pylintrc='pylintrc', version='2.6')
+        input_api, output_api, pylintrc='pylintrc', version='3.2')
     tests = input_api.canned_checks.GetUnitTestsInDirectory(
-        input_api,
-        output_api,
-        '.', [r'^.+_test\.py$'],
-        run_on_python2=False,
-        run_on_python3=True,
-        skip_shebang_check=True)
+        input_api, output_api, '.', [r'^.+_test\.py$'])
     results += input_api.RunTests(tests)
   return results
 

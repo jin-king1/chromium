@@ -8,18 +8,17 @@
 #include <string>
 #include <vector>
 
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "components/account_id/account_id.h"
 #include "components/account_manager_core/account.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "google_apis/gaia/gaia_id.h"
 
 class PrefRegistrySimple;
 class Profile;
 
 namespace account_manager {
-class AccountManagerFacade;
 class AccountManager;
 }
 
@@ -35,7 +34,6 @@ class EduCoexistenceConsentInvalidationController {
   EduCoexistenceConsentInvalidationController(
       Profile* profile,
       account_manager::AccountManager* account_manager,
-      account_manager::AccountManagerFacade* account_manager_facade,
       const AccountId& device_account_id);
   EduCoexistenceConsentInvalidationController(
       const EduCoexistenceConsentInvalidationController&) = delete;
@@ -60,14 +58,11 @@ class EduCoexistenceConsentInvalidationController {
   void TermsOfServicePrefChanged();
 
   void InvalidateEduAccounts(
-      const std::vector<std::string>& account_emails_to_invalidate,
+      const std::vector<GaiaId>& account_emails_to_invalidate,
       const std::vector<::account_manager::Account>& accounts);
 
-  const raw_ptr<Profile, ExperimentalAsh> profile_;
-  const raw_ptr<account_manager::AccountManager, ExperimentalAsh>
-      account_manager_;
-  const raw_ptr<account_manager::AccountManagerFacade, ExperimentalAsh>
-      account_manager_facade_;
+  const raw_ptr<Profile> profile_;
+  const raw_ptr<account_manager::AccountManager> account_manager_;
   const AccountId device_account_id_;
   PrefChangeRegistrar pref_change_registrar_;
   base::WeakPtrFactory<EduCoexistenceConsentInvalidationController>

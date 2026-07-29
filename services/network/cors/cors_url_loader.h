@@ -5,31 +5,42 @@
 #ifndef SERVICES_NETWORK_CORS_CORS_URL_LOADER_H_
 #define SERVICES_NETWORK_CORS_CORS_URL_LOADER_H_
 
+#include <optional>
+
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
-#include "base/types/strong_alias.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "net/cookies/cookie_setting_override.h"
+#include "net/cookies/cookie_util.h"
 #include "net/log/net_log_with_source.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "net/url_request/redirect_info.h"
 #include "services/network/cors/preflight_controller.h"
 #include "services/network/public/cpp/cors/cors_error_status.h"
 #include "services/network/public/cpp/cross_origin_embedder_policy.h"
+#include "services/network/public/cpp/originating_process_id.h"
 #include "services/network/public/mojom/client_security_state.mojom-forward.h"
 #include "services/network/public/mojom/devtools_observer.mojom.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_loader_completion_status.mojom.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
+namespace net {
+class SharedDictionary;
+}  // namespace net
+
 namespace network {
+namespace mojom {
+enum class SharedDictionaryError : int32_t;
+}  // namespace mojom
 
 class URLLoaderFactory;
 class NetworkContext;
@@ -39,8 +50,6 @@ class SharedDictionaryDataPipeWriter;
 namespace cors {
 
 class OriginAccessList;
-
-using HasFactoryOverride = base::StrongAlias<class HasFactoryOverrideTag, bool>;
 
 // Wrapper class that adds cross-origin resource sharing capabilities
 // (https://fetch.spec.whatwg.org/#http-cors-protocol), delegating requests as
@@ -54,13 +63,14 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   using DeleteCallback = base::OnceCallback<void(CorsURLLoader* loader)>;
 
   // Raw pointer arguments must outlive the returned instance.
+  // note: `url_loader_network_service_observer` must not be null.
   CorsURLLoader(
       mojo::PendingReceiver<mojom::URLLoader> loader_receiver,
-      int32_t process_id,
+      OriginatingProcessId process_id,
       int32_t request_id,
       uint32_t options,
       DeleteCallback delete_callback,
-      const ResourceRequest& resource_request,
+      ResourceRequest resource_request,
       bool ignore_isolated_world_origin,
       bool skip_cors_enabled_scheme_check,
       mojo::PendingRemote<mojom::URLLoaderClient> client,
@@ -68,14 +78,18 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
       mojom::URLLoaderFactory* network_loader_factory,
       URLLoaderFactory* sync_network_loader_factory,
       const OriginAccessList* origin_access_list,
-      bool allow_any_cors_exempt_header,
-      HasFactoryOverride has_factory_override,
       const net::IsolationInfo& isolation_info,
       mojo::PendingRemote<mojom::DevToolsObserver> devtools_observer,
       const mojom::ClientSecurityState* factory_client_security_state,
+      mojo::Remote<mojom::URLLoaderNetworkServiceObserver>*
+          url_loader_network_service_observer,
       const CrossOriginEmbedderPolicy& cross_origin_embedder_policy,
       scoped_refptr<SharedDictionaryStorage> shared_dictionary_storage,
-      NetworkContext* context);
+      raw_ptr<mojom::SharedDictionaryAccessObserver> shared_dictionary_observer,
+      NetworkContext* context,
+      std::optional<base::UnguessableToken> network_restrictions_id,
+      net::CookieSettingOverrides factory_cookie_setting_overrides,
+      net::CookieSettingOverrides devtools_cookie_setting_overrides);
 
   CorsURLLoader(const CorsURLLoader&) = delete;
   CorsURLLoader& operator=(const CorsURLLoader&) = delete;
@@ -88,21 +102,17 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
 
   // mojom::URLLoader overrides:
   void FollowRedirect(
-      const std::vector<std::string>& removed_headers,
-      const net::HttpRequestHeaders& modified_headers,
-      const net::HttpRequestHeaders& modified_cors_exempt_headers,
-      const absl::optional<GURL>& new_url) override;
+      network::HttpRequestHeadersUpdateParams headers_update_params,
+      const std::optional<GURL>& new_url) override;
   void SetPriority(net::RequestPriority priority,
                    int intra_priority_value) override;
-  void PauseReadingBodyFromNet() override;
-  void ResumeReadingBodyFromNet() override;
 
   // mojom::URLLoaderClient overrides:
   void OnReceiveEarlyHints(mojom::EarlyHintsPtr early_hints) override;
   void OnReceiveResponse(
       mojom::URLResponseHeadPtr head,
       mojo::ScopedDataPipeConsumerHandle body,
-      absl::optional<mojo_base::BigBuffer> cached_metadata) override;
+      std::optional<mojo_base::BigBuffer> cached_metadata) override;
   void OnReceiveRedirect(const net::RedirectInfo& redirect_info,
                          mojom::URLResponseHeadPtr head) override;
   void OnUploadProgress(int64_t current_position,
@@ -114,29 +124,33 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   static network::mojom::FetchResponseType CalculateResponseTaintingForTesting(
       const GURL& url,
       mojom::RequestMode request_mode,
-      const absl::optional<url::Origin>& origin,
-      const absl::optional<url::Origin>& isolated_world_origin,
+      const std::optional<url::Origin>& origin,
+      const std::optional<url::Origin>& isolated_world_origin,
       bool cors_flag,
       bool tainted_origin,
       const OriginAccessList& origin_access_list);
 
-  static absl::optional<CorsErrorStatus> CheckRedirectLocationForTesting(
+  static std::optional<CorsErrorStatus> CheckRedirectLocationForTesting(
       const GURL& url,
       mojom::RequestMode request_mode,
-      const absl::optional<url::Origin>& origin,
+      const std::optional<url::Origin>& origin,
       bool cors_flag,
       bool tainted);
 
  private:
+  // Helper function to get the `StorageAccessStatus` for the current `request_`
+  // and `isolation_info_`.
+  std::optional<net::cookie_util::StorageAccessStatus> GetStorageAccessStatus();
+
   void StartRequest();
 
   // Helper for `OnPreflightRequestComplete()`.
-  absl::optional<URLLoaderCompletionStatus> ConvertPreflightResult(
+  std::optional<URLLoaderCompletionStatus> ConvertPreflightResult(
       int net_error,
-      absl::optional<CorsErrorStatus> status);
+      std::optional<CorsErrorStatus> status);
 
   void OnPreflightRequestComplete(int net_error,
-                                  absl::optional<CorsErrorStatus> status,
+                                  std::optional<CorsErrorStatus> status,
                                   bool has_authorization_covered_by_wildcard);
   void StartNetworkRequest();
 
@@ -148,6 +162,13 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   // If `is_warning` is true, then the error is only reported as a warning.
   void ReportCorsErrorToDevTools(const CorsErrorStatus& status,
                                  bool is_warning = false);
+
+  // Reports an ORB error for `request_` to DevTools, if possible.
+  void ReportOrbErrorToDevTools();
+
+  // Reports an SharedDictionaryError for `request_` to DevTools, if possible.
+  void MaybeReportSharedDictionaryErrorToDevTools(
+      mojom::SharedDictionaryError error);
 
   // Handles OnComplete() callback.
   void HandleComplete(URLLoaderCompletionStatus status);
@@ -177,31 +198,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   // Returns a clone of the value returned by `GetClientSecurityState()`.
   mojom::ClientSecurityStatePtr CloneClientSecurityState() const;
 
-  // Returns whether preflight errors due exclusively to Private Network Access
-  // checks should be ignored.
-  //
-  // This is used to soft-launch Private Network Access preflights: we send
-  // preflights but do not require them to succeed.
-  //
-  // TODO(https://crbug.com/1268378): Remove this once preflight enforcement
-  // is enabled.
-  bool ShouldIgnorePrivateNetworkAccessErrors() const;
-
-  // Returns the PNA-specific behavior to apply to the next preflight request.
-  //
-  // This is used to soft-launch Private Network Access preflights: we send
-  // preflights but do not require them to succeed.
-  //
-  // TODO(https://crbug.com/1268378): Remove this once preflight enforcement
-  // is enabled.
-  PrivateNetworkAccessPreflightBehavior
-  GetPrivateNetworkAccessPreflightBehavior() const;
-
-  // Returns `pna_preflight_result_`'s value, then resets it.
-  mojom::PrivateNetworkAccessPreflightResult
-  TakePrivateNetworkAccessPreflightResult();
-
-  static absl::optional<std::string> GetHeaderString(
+  static std::optional<std::string> GetHeaderString(
       const mojom::URLResponseHead& response,
       const std::string& header_name);
 
@@ -210,7 +207,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   mojo::Receiver<mojom::URLLoader> receiver_;
 
   // We need to save these for redirect, and DevTools.
-  const int32_t process_id_;
+  const OriginatingProcessId process_id_;
   const int32_t request_id_;
   const uint32_t options_;
 
@@ -275,10 +272,6 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   // Flag to specify if the CORS-enabled scheme check should be applied.
   const bool skip_cors_enabled_scheme_check_;
 
-  const bool allow_any_cors_exempt_header_;
-
-  const HasFactoryOverride has_factory_override_;
-
   net::IsolationInfo isolation_info_;
 
   // The client security state set on the factory that created this loader.
@@ -292,38 +285,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
   raw_ptr<const mojom::ClientSecurityState> factory_client_security_state_ =
       nullptr;
 
-  // True when `network_loader_` is bound to a URLLoader that serves response
-  // from `memory_cache_`.
-  bool memory_cache_was_used_ = false;
+  // Observer for this request and any preflight requests we send ahead of it.
+  // Owned by the parent `CorsURLLoaderFactory`, never nullptr - though the
+  // pointee remote itself may be unbound.
+  raw_ptr<mojo::Remote<mojom::URLLoaderNetworkServiceObserver>>
+      url_loader_network_service_observer_;
 
   const CrossOriginEmbedderPolicy cross_origin_embedder_policy_;
 
   bool has_authorization_covered_by_wildcard_ = false;
-
-  // Whether the current preflight request is 1) solely sent for PNA, not for
-  // CORS and PNA at the same time, and 2) in warning mode.
-  //
-  // If set to true, then any and all errors raised by subsequent preflight
-  // requests are ignored.
-  //
-  // This is used to soft-launch Private Network Access preflights. In some
-  // cases, the only reason we send a preflight is because of Private Network
-  // Access. Errors that arise then would never have been noticed if we had not
-  // sent the preflight, so we ignore them all.
-  //
-  // INVARIANT: if this is true, then
-  // `ShouldIgnorePrivateNetworkAccessErrors()` is also true.
-  //
-  // TODO(https://crbug.com/1268378): Remove this along with
-  // `ShouldIgnorePrivateNetworkAccessErrors()`.
-  bool sending_pna_only_warning_preflight_ = false;
-
-  // The result of sending a PNA preflight, if any.
-  // Set when a PNA preflight completes. Reset and passed to
-  // `forwarding_client_` via `URLResponseHead` in `OnReceiveRedirect()` and
-  // `OnReceiveResponse()`.
-  mojom::PrivateNetworkAccessPreflightResult pna_preflight_result_ =
-      mojom::PrivateNetworkAccessPreflightResult::kNone;
 
   mojo::Remote<mojom::DevToolsObserver> devtools_observer_;
   base::WeakPtrFactory<mojo::Remote<mojom::DevToolsObserver>>
@@ -333,10 +303,16 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) CorsURLLoader
 
   const raw_ptr<NetworkContext> context_;
 
+  const std::optional<base::UnguessableToken> network_restrictions_id_;
+
   scoped_refptr<SharedDictionaryStorage> shared_dictionary_storage_;
+  scoped_refptr<net::SharedDictionary> shared_dictionary_;
+  raw_ptr<mojom::SharedDictionaryAccessObserver> shared_dictionary_observer_;
   std::unique_ptr<SharedDictionaryDataPipeWriter>
       shared_dictionary_data_pipe_writer_;
-  absl::optional<URLLoaderCompletionStatus> deferred_completion_status_;
+  std::optional<URLLoaderCompletionStatus> deferred_completion_status_;
+  const net::CookieSettingOverrides factory_cookie_setting_overrides_;
+  const net::CookieSettingOverrides devtools_cookie_setting_overrides_;
 
   // Used to provide weak pointers of this class for synchronously calling
   // URLLoaderClient methods. This should be reset any time

@@ -12,16 +12,16 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.Implementation;
-import org.robolectric.annotation.Implements;
 
 import org.chromium.base.LocaleUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.JniMocker;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.language.AppLanguagePromoDialog.LanguageItemAdapter;
 import org.chromium.chrome.browser.language.settings.LanguageItem;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.translate.FakeTranslateBridgeJni;
 import org.chromium.chrome.browser.translate.TranslateBridgeJni;
 
@@ -30,15 +30,13 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 
-/**
- * Tests for the AppPromoDialog class.
- */
+/** Tests for the AppPromoDialog class. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE,
-        shadows = {AppLanguagePromoDialogTest.ShadowChromeFeatureList.class})
+@Config(manifest = Config.NONE)
 public class AppLanguagePromoDialogTest {
-    @Rule
-    public JniMocker mJniMocker = new JniMocker();
+
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Mock private Profile mProfile;
 
     LanguageItem mFollowSystem;
     LanguageItem mLangAf;
@@ -50,28 +48,6 @@ public class AppLanguagePromoDialogTest {
     // List of potential UI languages.
     LinkedHashSet<LanguageItem> mUiLanguages;
 
-    /**
-     * Shadow class to control app language prompt features.
-     */
-    @Implements(ChromeFeatureList.class)
-    static class ShadowChromeFeatureList {
-        static boolean sEnableForceAppLanguagePrompt;
-        static boolean sEnableAppLanguagePrompt;
-        static boolean sEnableAppLanguagePromptULP;
-
-        @Implementation
-        public static boolean isEnabled(String featureName) {
-            if (featureName.equals(ChromeFeatureList.FORCE_APP_LANGUAGE_PROMPT)) {
-                return sEnableForceAppLanguagePrompt;
-            } else if (featureName.equals(ChromeFeatureList.APP_LANGUAGE_PROMPT)) {
-                return sEnableAppLanguagePrompt;
-            } else if (featureName.equals(ChromeFeatureList.APP_LANGUAGE_PROMPT_ULP)) {
-                return sEnableAppLanguagePromptULP;
-            }
-            return false;
-        }
-    }
-
     FakeLanguageBridgeJni mFakeLanguageBridge;
     FakeTranslateBridgeJni mFakeTranslateBridge;
 
@@ -82,8 +58,9 @@ public class AppLanguagePromoDialogTest {
         mLangAf = new LanguageItem("af", "Afrikaans", "Afrikaans", true);
         mLangAz = new LanguageItem("az", "Azerbaijani", "azərbaycan", true);
         mLangEnGb = new LanguageItem("en-GB", "English (UK)", "English (UK)", true);
-        mLangEnUs = new LanguageItem(
-                "en-US", "English (United States)", "English (United States", true);
+        mLangEnUs =
+                new LanguageItem(
+                        "en-US", "English (United States)", "English (United States", true);
         mLangEs = new LanguageItem("es", "Spanish", "español", true);
         mLangZu = new LanguageItem("zu", "Zulu", "isiZulu", true);
         mUiLanguages =
@@ -91,10 +68,10 @@ public class AppLanguagePromoDialogTest {
 
         // Setup fake translate and language preferences.
         mFakeTranslateBridge = new FakeTranslateBridgeJni();
-        mJniMocker.mock(TranslateBridgeJni.TEST_HOOKS, mFakeTranslateBridge);
+        TranslateBridgeJni.setInstanceForTesting(mFakeTranslateBridge);
 
         mFakeLanguageBridge = new FakeLanguageBridgeJni();
-        mJniMocker.mock(LanguageBridgeJni.TEST_HOOKS, mFakeLanguageBridge);
+        LanguageBridgeJni.setInstanceForTesting(mFakeLanguageBridge);
     }
 
     @After
@@ -108,79 +85,107 @@ public class AppLanguagePromoDialogTest {
     public void testGetTopLanguagesHelper() {
         // Current override language is mFollowSystem, System Language is en-US
         LinkedHashSet<LanguageItem> topLanguages =
-                AppLanguagePromoDialog.getTopLanguagesHelper(mUiLanguages,
+                AppLanguagePromoDialog.getTopLanguagesHelper(
+                        mUiLanguages,
                         new LinkedHashSet<>(Arrays.asList("af", "an", "en-US", "en-AU", "zu")),
-                        mFollowSystem, LocaleUtils.forLanguageTag("en-US"));
+                        mFollowSystem,
+                        LocaleUtils.forLanguageTag("en-US"));
         Assert.assertEquals(
                 new ArrayList<>(topLanguages), Arrays.asList(mFollowSystem, mLangAf, mLangZu));
 
         // Current override language is mFollowSystem, System Language is Zulu
-        topLanguages = AppLanguagePromoDialog.getTopLanguagesHelper(mUiLanguages,
-                new LinkedHashSet<>(Arrays.asList("en-US", "en-AU", "an", "af", "zu")),
-                mFollowSystem, LocaleUtils.forLanguageTag("zu"));
+        topLanguages =
+                AppLanguagePromoDialog.getTopLanguagesHelper(
+                        mUiLanguages,
+                        new LinkedHashSet<>(Arrays.asList("en-US", "en-AU", "an", "af", "zu")),
+                        mFollowSystem,
+                        LocaleUtils.forLanguageTag("zu"));
         Assert.assertEquals(
                 new ArrayList<>(topLanguages), Arrays.asList(mFollowSystem, mLangEnUs, mLangAf));
 
         // Current override language is en-US, System Language is en-US
-        topLanguages = AppLanguagePromoDialog.getTopLanguagesHelper(mUiLanguages,
-                new LinkedHashSet<>(Arrays.asList("zu", "af", "an", "en-AU", "en-US", "en-GB")),
-                mLangEnUs, LocaleUtils.forLanguageTag("en-US"));
-        Assert.assertEquals(new ArrayList<>(topLanguages),
+        topLanguages =
+                AppLanguagePromoDialog.getTopLanguagesHelper(
+                        mUiLanguages,
+                        new LinkedHashSet<>(
+                                Arrays.asList("zu", "af", "an", "en-AU", "en-US", "en-GB")),
+                        mLangEnUs,
+                        LocaleUtils.forLanguageTag("en-US"));
+        Assert.assertEquals(
+                new ArrayList<>(topLanguages),
                 Arrays.asList(mLangEnUs, mLangZu, mLangAf, mLangEnGb));
 
         // Current override language is Afrikaans, System Language is Zulu
-        topLanguages = AppLanguagePromoDialog.getTopLanguagesHelper(mUiLanguages,
-                new LinkedHashSet<>(Arrays.asList("an", "en-US", "en-AU", "zu", "af")), mLangAf,
-                LocaleUtils.forLanguageTag("zu"));
+        topLanguages =
+                AppLanguagePromoDialog.getTopLanguagesHelper(
+                        mUiLanguages,
+                        new LinkedHashSet<>(Arrays.asList("an", "en-US", "en-AU", "zu", "af")),
+                        mLangAf,
+                        LocaleUtils.forLanguageTag("zu"));
         Assert.assertEquals(
                 new ArrayList<>(topLanguages), Arrays.asList(mFollowSystem, mLangAf, mLangEnUs));
 
         // Current override language is Afrikaans, System Language is Afrikaans (South Africa)
-        topLanguages = AppLanguagePromoDialog.getTopLanguagesHelper(mUiLanguages,
-                new LinkedHashSet<>(Arrays.asList("af-ZA", "an", "zu", "en-US", "en-AU")), mLangAf,
-                LocaleUtils.forLanguageTag("af-ZA"));
+        topLanguages =
+                AppLanguagePromoDialog.getTopLanguagesHelper(
+                        mUiLanguages,
+                        new LinkedHashSet<>(Arrays.asList("af-ZA", "an", "zu", "en-US", "en-AU")),
+                        mLangAf,
+                        LocaleUtils.forLanguageTag("af-ZA"));
         Assert.assertEquals(
                 new ArrayList<>(topLanguages), Arrays.asList(mLangAf, mLangZu, mLangEnUs));
 
         // Current override language is en-US, System Language is Afrikaans (South Africa)
-        topLanguages = AppLanguagePromoDialog.getTopLanguagesHelper(mUiLanguages,
-                new LinkedHashSet<>(Arrays.asList("af-ZA", "af", "an", "en-US", "en-AU", "zu")),
-                mLangEnUs, LocaleUtils.forLanguageTag("af-ZA"));
+        topLanguages =
+                AppLanguagePromoDialog.getTopLanguagesHelper(
+                        mUiLanguages,
+                        new LinkedHashSet<>(
+                                Arrays.asList("af-ZA", "af", "an", "en-US", "en-AU", "zu")),
+                        mLangEnUs,
+                        LocaleUtils.forLanguageTag("af-ZA"));
         Assert.assertEquals(
                 new ArrayList<>(topLanguages), Arrays.asList(mFollowSystem, mLangEnUs, mLangZu));
 
         // Current override language is mFollowSystem, System Language is Afrikaans (South Africa)
-        topLanguages = AppLanguagePromoDialog.getTopLanguagesHelper(mUiLanguages,
-                new LinkedHashSet<>(Arrays.asList("af-ZA", "af", "an", "en-US", "en-AU", "zu")),
-                mFollowSystem, LocaleUtils.forLanguageTag("af-ZA"));
+        topLanguages =
+                AppLanguagePromoDialog.getTopLanguagesHelper(
+                        mUiLanguages,
+                        new LinkedHashSet<>(
+                                Arrays.asList("af-ZA", "af", "an", "en-US", "en-AU", "zu")),
+                        mFollowSystem,
+                        LocaleUtils.forLanguageTag("af-ZA"));
         Assert.assertEquals(
                 new ArrayList<>(topLanguages), Arrays.asList(mFollowSystem, mLangEnUs, mLangZu));
 
         // Test that country specific top languages are converted to their base language.
-        topLanguages = AppLanguagePromoDialog.getTopLanguagesHelper(mUiLanguages,
-                new LinkedHashSet<>(
-                        Arrays.asList("af-ZA", "af-NA", "an", "as", "en-US", "en-AU", "zu-XX")),
-                mFollowSystem, LocaleUtils.forLanguageTag("en-US"));
+        topLanguages =
+                AppLanguagePromoDialog.getTopLanguagesHelper(
+                        mUiLanguages,
+                        new LinkedHashSet<>(
+                                Arrays.asList(
+                                        "af-ZA", "af-NA", "an", "as", "en-US", "en-AU", "zu-XX")),
+                        mFollowSystem,
+                        LocaleUtils.forLanguageTag("en-US"));
         Assert.assertEquals(
                 new ArrayList<>(topLanguages), Arrays.asList(mFollowSystem, mLangAf, mLangZu));
     }
 
-    // Test getPotentialUILanguage
+    // Test getPotentialUiLanguage
     @Test
     @SmallTest
-    public void testGetPotentialUILanguage() {
+    public void testGetPotentialUiLanguage() {
         LinkedHashSet<String> uiLanguages =
                 new LinkedHashSet<>(Arrays.asList("af", "en-US", "en-GB", "es", "es-419"));
         Assert.assertEquals(
-                AppLanguagePromoDialog.getPotentialUILanguage("af-ZA", uiLanguages), "af");
+                "af", AppLanguagePromoDialog.getPotentialUiLanguage("af-ZA", uiLanguages));
         Assert.assertEquals(
-                AppLanguagePromoDialog.getPotentialUILanguage("en-GB", uiLanguages), "en-GB");
+                "en-GB", AppLanguagePromoDialog.getPotentialUiLanguage("en-GB", uiLanguages));
         Assert.assertEquals(
-                AppLanguagePromoDialog.getPotentialUILanguage("en-ZA", uiLanguages), "en");
+                "en", AppLanguagePromoDialog.getPotentialUiLanguage("en-ZA", uiLanguages));
         Assert.assertEquals(
-                AppLanguagePromoDialog.getPotentialUILanguage("es-AR", uiLanguages), "es");
+                "es", AppLanguagePromoDialog.getPotentialUiLanguage("es-AR", uiLanguages));
         Assert.assertEquals(
-                AppLanguagePromoDialog.getPotentialUILanguage("es-419", uiLanguages), "es-419");
+                "es-419", AppLanguagePromoDialog.getPotentialUiLanguage("es-419", uiLanguages));
     }
 
     // Test LanguageItemAdapter getItemCount
@@ -188,10 +193,11 @@ public class AppLanguagePromoDialogTest {
     @SmallTest
     public void testLanguageItemAdapterGetItemCount() {
         LanguageItemAdapter adapter =
-                makeLanguageItemAdapter(Arrays.asList(mLangAf, mLangAz), // top languages
+                makeLanguageItemAdapter(
+                        Arrays.asList(mLangAf, mLangAz), // top languages
                         Arrays.asList(mLangEnGb, mLangEnUs, mLangZu), // other languages,
                         mLangAf // current language
-                );
+                        );
 
         // Only the top languages plus "More languages" item are showing to start.
         Assert.assertEquals(3, adapter.getItemCount());
@@ -208,10 +214,11 @@ public class AppLanguagePromoDialogTest {
     @SmallTest
     public void testLanguageItemAdapterGetLanguageItemAt() {
         LanguageItemAdapter adapter =
-                makeLanguageItemAdapter(Arrays.asList(mLangAf, mLangAz), // top languages
+                makeLanguageItemAdapter(
+                        Arrays.asList(mLangAf, mLangAz), // top languages
                         Arrays.asList(mLangEnGb, mLangEnUs, mLangZu), // other languages,
                         mLangAf // current language
-                );
+                        );
 
         Assert.assertEquals(mLangAz, adapter.getLanguageItemAt(1)); // topLanguage
         Assert.assertEquals(mLangEnGb, adapter.getLanguageItemAt(3)); // otherLanguage
@@ -223,10 +230,11 @@ public class AppLanguagePromoDialogTest {
     @SmallTest
     public void testLanguageItemAdapterGetPositionForLanguageItem() {
         LanguageItemAdapter adapter =
-                makeLanguageItemAdapter(Arrays.asList(mLangAf, mLangAz), // top languages
+                makeLanguageItemAdapter(
+                        Arrays.asList(mLangAf, mLangAz), // top languages
                         Arrays.asList(mLangEnGb, mLangEnUs, mLangZu), // other languages,
                         mLangAf // current language
-                );
+                        );
 
         Assert.assertEquals(1, adapter.getPositionForLanguageItem(mLangAz)); // topLanguage
         Assert.assertEquals(3, adapter.getPositionForLanguageItem(mLangEnGb)); // otherLanguage
@@ -238,10 +246,11 @@ public class AppLanguagePromoDialogTest {
     @SmallTest
     public void testLanguageItemAdapterGetItemViewType() {
         LanguageItemAdapter adapter =
-                makeLanguageItemAdapter(Arrays.asList(mLangAf, mLangAz), // top languages
+                makeLanguageItemAdapter(
+                        Arrays.asList(mLangAf, mLangAz), // top languages
                         Arrays.asList(mLangEnGb, mLangEnUs, mLangZu), // other languages,
                         mLangAf // current language
-                );
+                        );
 
         // More Languages is showing to start
         Assert.assertEquals(AppLanguagePromoDialog.ItemType.LANGUAGE, adapter.getItemViewType(0));
@@ -264,10 +273,11 @@ public class AppLanguagePromoDialogTest {
     @SmallTest
     public void testLanguageItemAdapterSetSelectedLanguage() {
         LanguageItemAdapter adapter =
-                makeLanguageItemAdapter(Arrays.asList(mLangAf, mLangAz), // top languages
+                makeLanguageItemAdapter(
+                        Arrays.asList(mLangAf, mLangAz), // top languages
                         Arrays.asList(mLangEnGb, mLangEnUs, mLangZu), // other languages,
                         mLangAf // current language
-                );
+                        );
 
         Assert.assertTrue(adapter.isTopLanguageSelected());
         Assert.assertEquals(mLangAf, adapter.getSelectedLanguage());
@@ -283,44 +293,34 @@ public class AppLanguagePromoDialogTest {
     @Test
     @SmallTest
     public void testShouldShowPrompt() {
-        mFakeLanguageBridge.setULPLanguages(Arrays.asList("en-US"));
         final boolean online = true;
-        // With feature disabled prompt is not shown.
-        Assert.assertFalse(AppLanguagePromoDialog.shouldShowPrompt(online));
 
-        // With feature enabled ONLINE status is returned.
-        ShadowChromeFeatureList.sEnableAppLanguagePrompt = true;
-        Assert.assertTrue(AppLanguagePromoDialog.shouldShowPrompt(online));
-        Assert.assertFalse(AppLanguagePromoDialog.shouldShowPrompt(!online));
-
-        // With ULP match feature enabled the prompt should not be shown if the top ULP has a
-        // base match with the current default locale ("en-US" in tests).
-        ShadowChromeFeatureList.sEnableAppLanguagePromptULP = true;
+        // Prompt should not be shown if the top ULP has a base match with the current default
+        // locale ("en-US" in tests).
         mFakeLanguageBridge.setULPLanguages(Arrays.asList("en-AU"));
-        Assert.assertFalse(AppLanguagePromoDialog.shouldShowPrompt(online));
+        Assert.assertFalse(AppLanguagePromoDialog.shouldShowPrompt(mProfile, online));
         mFakeLanguageBridge.setULPLanguages(Arrays.asList("fr"));
-        Assert.assertTrue(AppLanguagePromoDialog.shouldShowPrompt(online));
+        Assert.assertTrue(AppLanguagePromoDialog.shouldShowPrompt(mProfile, online));
         mFakeLanguageBridge.setULPLanguages(Arrays.asList("fr", "en-US"));
-        Assert.assertTrue(AppLanguagePromoDialog.shouldShowPrompt(online));
+        Assert.assertTrue(AppLanguagePromoDialog.shouldShowPrompt(mProfile, online));
+
+        // Prompt should not be shown if not online.
+        Assert.assertFalse(AppLanguagePromoDialog.shouldShowPrompt(mProfile, !online));
 
         // Prompt should not be shown if ULP languages are empty.
         mFakeLanguageBridge.setULPLanguages(new ArrayList<>());
-        Assert.assertFalse(AppLanguagePromoDialog.shouldShowPrompt(online));
-
-        ShadowChromeFeatureList.sEnableAppLanguagePromptULP = false;
+        Assert.assertFalse(AppLanguagePromoDialog.shouldShowPrompt(mProfile, online));
 
         // Prompt is not shown if it has been shown before.
-        Assert.assertTrue(AppLanguagePromoDialog.shouldShowPrompt(online));
+        mFakeLanguageBridge.setULPLanguages(Arrays.asList("fr"));
+        Assert.assertTrue(AppLanguagePromoDialog.shouldShowPrompt(mProfile, online));
         mFakeTranslateBridge.setAppLanguagePromptShown(true);
-        Assert.assertFalse(AppLanguagePromoDialog.shouldShowPrompt(online));
-
-        // Prompt is shown if it is forced on for testing.
-        ShadowChromeFeatureList.sEnableForceAppLanguagePrompt = true;
-        Assert.assertTrue(AppLanguagePromoDialog.shouldShowPrompt(online));
+        Assert.assertFalse(AppLanguagePromoDialog.shouldShowPrompt(mProfile, online));
     }
 
     private static LanguageItemAdapter makeLanguageItemAdapter(
-            Collection<LanguageItem> topLanguages, Collection<LanguageItem> otherLanguages,
+            Collection<LanguageItem> topLanguages,
+            Collection<LanguageItem> otherLanguages,
             LanguageItem currentLanguage) {
         return new AppLanguagePromoDialog.LanguageItemAdapter(
                 topLanguages, otherLanguages, currentLanguage);

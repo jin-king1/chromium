@@ -10,8 +10,8 @@
 
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/simple_test_clock.h"
 #include "base/time/time.h"
@@ -107,6 +107,7 @@ class ClearStorageTaskTest : public ModelTaskTestBase {
   int total_cleared_times_;
   ClearStorageResult last_clear_storage_result_;
   std::unique_ptr<base::HistogramTester> histogram_tester_;
+  base::WeakPtrFactory<ClearStorageTaskTest> weak_ptr_factory_{this};
 };
 
 ClearStorageTaskTest::ClearStorageTaskTest()
@@ -114,7 +115,7 @@ ClearStorageTaskTest::ClearStorageTaskTest()
       total_cleared_times_(0),
       last_clear_storage_result_(ClearStorageResult::SUCCESS) {}
 
-ClearStorageTaskTest::~ClearStorageTaskTest() {}
+ClearStorageTaskTest::~ClearStorageTaskTest() = default;
 
 void ClearStorageTaskTest::SetUp() {
   ModelTaskTestBase::SetUp();
@@ -178,7 +179,7 @@ void ClearStorageTaskTest::RunClearStorageTask(const base::Time& start_time) {
   auto task = std::make_unique<ClearStorageTask>(
       store(), archive_manager(), start_time,
       base::BindOnce(&ClearStorageTaskTest::OnClearStorageDone,
-                     base::AsWeakPtr(this)));
+                     weak_ptr_factory_.GetWeakPtr()));
 
   RunTask(std::move(task));
 }

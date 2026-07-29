@@ -34,8 +34,8 @@ void TestMojoToKeyboardCode(
     const base::fixed_flat_map<MojoEnum, KeyboardCodeEnum, N>& enums) {
   for (auto enum_pair : enums) {
     KeyboardCodeEnum mojo_to_code;
-    EXPECT_TRUE((mojo::EnumTraits<MojoEnum, KeyboardCodeEnum>::FromMojom(
-        enum_pair.first, &mojo_to_code)));
+    mojo_to_code = mojo::EnumTraits<MojoEnum, KeyboardCodeEnum>::FromMojom(
+        enum_pair.first);
     EXPECT_EQ(mojo_to_code, enum_pair.second)
         << "enum " << enum_pair.first << " != " << enum_pair.second;
   }
@@ -57,7 +57,9 @@ TEST(AcceleratorKeysTraitsTest, SerializeAndDeserialize) {
        {mojom_vkey::kWlan, ui::KeyboardCode::VKEY_WLAN},
        {mojom_vkey::kF14, ui::KeyboardCode::VKEY_F14},
        {mojom_vkey::kPrivacyScreenToggle,
-        ui::KeyboardCode::VKEY_PRIVACY_SCREEN_TOGGLE}});
+        ui::KeyboardCode::VKEY_PRIVACY_SCREEN_TOGGLE},
+       {mojom_vkey::kAccessibility, ui::KeyboardCode::VKEY_ACCESSIBILITY},
+       {mojom_vkey::kDoNotDisturb, ui::KeyboardCode::VKEY_DO_NOT_DISTURB}});
 
   TestKeyboardCodeToMojo(enums);
   TestMojoToKeyboardCode(enums);

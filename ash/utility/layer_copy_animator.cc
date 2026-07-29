@@ -16,18 +16,16 @@ DEFINE_UI_CLASS_PROPERTY_TYPE(ash::LayerCopyAnimator*)
 namespace ash {
 namespace {
 
-DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(LayerCopyAnimator,
-                                   kLayerCopyAnimatorKey,
-                                   nullptr)
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(LayerCopyAnimator, kLayerCopyAnimatorKey)
 
 // CopyOutputRequest's callback may be called on the different thread during
 // shutdown, which results in the DCHECK failure in the weak ptr when
 // referenced.
 void MaybeLayerCopied(base::WeakPtr<LayerCopyAnimator> swc,
                       std::unique_ptr<ui::Layer> new_layer) {
-  if (!swc.MaybeValid())
-    return;
-  swc->OnLayerCopied(std::move(new_layer));
+  if (swc) {
+    swc->OnLayerCopied(std::move(new_layer));
+  }
 }
 
 }  // namespace
@@ -44,7 +42,7 @@ LayerCopyAnimator::LayerCopyAnimator(aura::Window* window) : window_(window) {
   // Copy request will not copy NOT_DRAWN and the result may be smaller than
   // requested layer.  Create a transparent layer to cover the entire layer.
   if (window_->layer()->type() == ui::LAYER_NOT_DRAWN) {
-    full_layer_.SetColor(SK_ColorTRANSPARENT);
+    full_layer_.SetColor(SkColors::kTransparent);
     full_layer_.SetBounds(gfx::Rect(window_->bounds().size()));
     window_->layer()->Add(&full_layer_);
     window_->layer()->StackAtBottom(&full_layer_);
@@ -116,7 +114,7 @@ void LayerCopyAnimator::OnWindowBoundsChanged(aura::Window* window,
 }
 
 void LayerCopyAnimator::RunAnimation() {
-  copied_layer_->SetFillsBoundsOpaquely(false);
+  CHECK_EQ(copied_layer_->type(), ui::LAYER_SOLID_COLOR);
 
   auto* parent_layer = window_->layer()->parent();
   parent_layer->Add(copied_layer_.get());

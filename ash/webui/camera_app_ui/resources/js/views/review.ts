@@ -4,9 +4,9 @@
 
 import {assertInstanceof} from '../assert.js';
 import * as dom from '../dom.js';
-import {I18nString} from '../i18n_string.js';
-import {pictureURL} from '../models/file_system.js';
-import {FileAccessEntry} from '../models/file_system_access_entry.js';
+import type {I18nString} from '../i18n_string.js';
+import {getObjectURL} from '../models/file_system.js';
+import type {FileAccessEntry} from '../models/file_system_access_entry.js';
 import * as nav from '../nav.js';
 import {ViewName} from '../type.js';
 import {instantiateTemplate, setupI18nElements} from '../util.js';
@@ -14,7 +14,7 @@ import {WaitableEvent} from '../waitable_event.js';
 
 import {View} from './view.js';
 
-interface UIArgs {
+interface UiArgs {
   text?: I18nString;
   label?: I18nString;
   icon?: string;
@@ -23,7 +23,7 @@ interface UIArgs {
 }
 
 /**
- * Available option show in this view.
+ * Available option shown in this view.
  */
 export class Option<T> {
   readonly exitValue?: T;
@@ -41,7 +41,7 @@ export class Option<T> {
    *     selected.
    * @param params.hasPopup Sets aria-haspopup for the option.
    */
-  constructor(readonly uiArgs: UIArgs, {exitValue, callback, hasPopup}: {
+  constructor(readonly uiArgs: UiArgs, {exitValue, callback, hasPopup}: {
     exitValue?: T,
     callback?: (() => void),
     hasPopup?: boolean,
@@ -90,9 +90,6 @@ export class Review extends View {
 
   private primaryBtn: HTMLButtonElement|null;
 
-  /**
-   * Constructs the review view.
-   */
   constructor(private readonly viewName: ViewName = ViewName.REVIEW) {
     super(viewName, {defaultFocusSelector: '.primary', dismissByEsc: true});
 
@@ -101,16 +98,15 @@ export class Review extends View {
     this.primaryBtn = null;
   }
 
-  /**
-   * Load the image element with given blob.
-   */
   protected async loadImage(image: HTMLImageElement, blob: Blob):
       Promise<void> {
     try {
       await new Promise<void>((resolve, reject) => {
         image.onload = () => resolve();
-        image.onerror = (e) =>
-            reject(new Error(`Failed to load review document image: ${e}`));
+        image.addEventListener('error', (e) => {
+          const msg = `Failed to load review document image: ${e.message}`;
+          reject(new Error(msg));
+        }, {once: true});
         image.src = URL.createObjectURL(blob);
       });
     } catch (e) {
@@ -119,9 +115,6 @@ export class Review extends View {
     }
   }
 
-  /**
-   * Sets the photo to be reviewed.
-   */
   async setReviewPhoto(blob: Blob): Promise<void> {
     this.image.hidden = false;
     this.video.hidden = true;
@@ -131,18 +124,26 @@ export class Review extends View {
   }
 
   /**
-   * Sets the video to be reviewed.
+   * Setup the video element's source for review.
+   *
+   * @return Function to cleanup the object URL. Make sure to call this function
+   * after the review is complete.
    */
-  async setReviewVideo(video: FileAccessEntry): Promise<void> {
+  async setReviewVideo(video: FileAccessEntry): Promise<() => void> {
     this.image.hidden = true;
     this.video.hidden = false;
-    const url = await pictureURL(video);
+    this.video.controls = true;
+    const url = await getObjectURL(video);
     this.video.src = url;
+    return () => {
+      URL.revokeObjectURL(url);
+      // When the video element's `controls` is true, the video element is
+      // focusable even when it is hidden. Set `controls` to false to make it
+      // not focusable. See b/301384798.
+      this.video.controls = false;
+    };
   }
 
-  /**
-   * Starts review.
-   */
   async startReview<T>(...optionGroups: Array<OptionGroup<T>>):
       Promise<T|null> {
     // Remove all existing button groups and buttons.

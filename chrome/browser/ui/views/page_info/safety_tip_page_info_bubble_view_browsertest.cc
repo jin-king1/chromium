@@ -2,37 +2,42 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/page_info/safety_tip_page_info_bubble_view.h"
+
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/functional/bind.h"
-#include "base/ranges/algorithm.h"
+#include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
-#include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/history/history_test_utils.h"
 #include "chrome/browser/lookalikes/lookalike_test_helper.h"
 #include "chrome/browser/lookalikes/lookalike_url_service.h"
+#include "chrome/browser/lookalikes/lookalike_url_service_factory.h"
 #include "chrome/browser/lookalikes/safety_tip_ui.h"
 #include "chrome/browser/lookalikes/safety_tip_ui_helper.h"
 #include "chrome/browser/lookalikes/safety_tip_web_contents_observer.h"
+#include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/contents_container_outline.h"
+#include "chrome/browser/ui/views/frame/contents_container_view.h"
+#include "chrome/browser/ui/views/frame/multi_contents_view.h"
 #include "chrome/browser/ui/views/location_bar/location_icon_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view.h"
 #include "chrome/browser/ui/views/page_info/page_info_bubble_view_base.h"
 #include "chrome/browser/ui/views/page_info/page_info_view_factory.h"
-#include "chrome/browser/ui/views/page_info/safety_tip_page_info_bubble_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -40,32 +45,23 @@
 #include "components/lookalikes/core/safety_tip_test_utils.h"
 #include "components/lookalikes/core/safety_tips.pb.h"
 #include "components/lookalikes/core/safety_tips_config.h"
-#include "components/page_info/core/features.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/security_interstitials/core/common_string_util.h"
 #include "components/security_state/core/security_state.h"
-#include "components/site_engagement/content/site_engagement_score.h"
 #include "components/site_engagement/content/site_engagement_service.h"
-#include "components/strings/grit/components_chromium_strings.h"
+#include "components/strings/grit/components_branded_strings.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/referrer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
-#include "content/public/test/url_loader_interceptor.h"
 #include "net/dns/mock_host_resolver.h"
-#include "net/test/embedded_test_server/http_request.h"
-#include "net/test/embedded_test_server/http_response.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
-#include "third_party/blink/public/common/features.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/events/test/test_event.h"
-#include "ui/gfx/range/range.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
@@ -175,7 +171,7 @@ void CloseWarningIgnore(views::Widget::ClosedReason reason) {
 
 // Sets the absolute Site Engagement |score| for the testing origin.
 void SetEngagementScore(Browser* browser, const GURL& url, double score) {
-  site_engagement::SiteEngagementService::Get(browser->profile())
+  site_engagement::SiteEngagementService::Get(browser->GetProfile())
       ->ResetBaseScoreForURL(url, score);
 }
 
@@ -183,7 +179,7 @@ void SetEngagementScore(Browser* browser, const GURL& url, double score) {
 void OpenPageInfoBubble(Browser* browser) {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
   LocationIconView* location_icon_view =
-      browser_view->toolbar()->location_bar()->location_icon_view();
+      browser_view->toolbar()->location_bar_view()->location_icon_view();
   ASSERT_TRUE(location_icon_view);
   ui::test::TestEvent event;
   location_icon_view->ShowBubble(event);
@@ -195,7 +191,7 @@ void OpenPageInfoBubble(Browser* browser) {
 
 // Switches the tab at |tab_index| to the foreground, and waits for the
 // OnVisibilityChanged safety tip check to complete.
-void SwitchToTabAndWait(const Browser* browser, int tab_index) {
+void SwitchToTabAndWait(Browser* browser, int tab_index) {
   base::RunLoop loop;
   auto* tab_strip = browser->tab_strip_model();
   auto* bg_tab = tab_strip->GetWebContentsAt(tab_index);
@@ -258,7 +254,7 @@ class SafetyTipPageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
 
     LookalikeTestHelper::SetUpLookalikeTestParams();
     // Check that the test top domain list contains google.
-    ASSERT_TRUE(IsTopDomain(lookalikes::GetDomainInfo("google.com")));
+    ASSERT_TRUE(url_formatter::IsTopDomain(GetURL("google.com")));
 
     InProcessBrowserTest::SetUpOnMainThread();
   }
@@ -266,7 +262,7 @@ class SafetyTipPageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
   void TearDownOnMainThread() override {
     InProcessBrowserTest::TearDownOnMainThread();
     LookalikeTestHelper::TearDownLookalikeTestParams();
-    LookalikeUrlService::Get(browser()->profile())
+    LookalikeUrlServiceFactory::GetForProfile(browser()->GetProfile())
         ->ResetWarningDismissedETLDPlusOnesForTesting();
   }
 
@@ -338,7 +334,7 @@ class SafetyTipPageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
 
       case security_state::SafetyTipStatus::kUnknown:
       case security_state::SafetyTipStatus::kNone:
-        NOTREACHED_NORETURN();
+        NOTREACHED();
     }
     content::WebContentsAddedObserver new_tab_observer;
     static_cast<views::StyledLabel*>(
@@ -375,8 +371,8 @@ class SafetyTipPageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
   // at the index in the UKM data specified by |expected_idx|.
   void CheckHeuristicsUkmRecord(const HeuristicsTestCase& test_case,
                                 size_t expected_idx) {
-    std::vector<const ukm::mojom::UkmEntry*> entries =
-        test_ukm_recorder_->GetEntriesByName(
+    std::vector<raw_ptr<const ukm::mojom::UkmEntry, VectorExperimental>>
+        entries = test_ukm_recorder_->GetEntriesByName(
             ukm::builders::Security_SafetyTip::kEntryName);
 
     EXPECT_LT(expected_idx, entries.size());
@@ -396,7 +392,10 @@ class SafetyTipPageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
   LookalikeTestHelper* test_helper() { return test_helper_.get(); }
 
  private:
-  base::test::ScopedFeatureList feature_list_;
+  // TODO(https://crbug.com/423465927): Explore a better approach to make the
+  // existing tests run with the prewarm feature enabled.
+  test::ScopedPrewarmFeatureList prewarm_feature_list_{
+      test::ScopedPrewarmFeatureList::PrewarmState::kDisabled};
   std::unique_ptr<ukm::TestAutoSetUkmRecorder> test_ukm_recorder_;
   std::unique_ptr<LookalikeTestHelper> test_helper_;
 };
@@ -417,7 +416,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        NoShowOnLowEngagementIncognito) {
   Browser* incognito_browser = Browser::Create(Browser::CreateParams(
-      browser()->profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
+      browser()->GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
       true));
   auto kNavigatedUrl = GetURL("site1.com");
   SetEngagementScore(incognito_browser, kNavigatedUrl, kLowEngagement);
@@ -447,7 +446,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        NoShowOnHighEngagementIncognito) {
   Browser* incognito_browser = Browser::Create(Browser::CreateParams(
-      browser()->profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
+      browser()->GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
       true));
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(incognito_browser, kNavigatedUrl, kHighEngagement);
@@ -492,13 +491,13 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest, NoShowOnError) {
 }
 
 // Ensure blocked sites get blocked in incognito.
-// TODO(crbug.com/1405351): Fix this test and re-enable.
+// TODO(crbug.com/40886576): Fix this test and re-enable.
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        DISABLED_ShowOnBlockIncognito) {
   auto kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   Browser* incognito_browser = Browser::Create(Browser::CreateParams(
-      browser()->profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
+      browser()->GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
       true));
   NavigateToURL(incognito_browser, kNavigatedUrl,
                 WindowOpenDisposition::CURRENT_TAB);
@@ -516,7 +515,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 }
 
 // Ensure same-document navigations don't close the Safety Tip.
-// Regression test for crbug.com/1137661
+// Regression test for crbug.com/40724906
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        StillShowAfterSameDocNav) {
   auto kNavigatedUrl = GetURL("accounts-google.com");
@@ -550,7 +549,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
       "g0ogle.com"};
 
   lookalikes::SetEnterpriseAllowlistForTesting(
-      browser()->profile()->GetPrefs(),
+      browser()->GetProfile()->GetPrefs(),
       {"accounts1-google.com", "bla.accounts2-google.com", "g0ogle.com"});
 
   for (auto* const url : kUrls) {
@@ -559,7 +558,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
     ASSERT_NO_FATAL_FAILURE(CheckPageInfoDoesNotShowSafetyTipInfo(browser()));
   }
 
-  // TODO(crbug.com/1401102): This shouldn't record a UKM.
+  // TODO(crbug.com/40884082): This shouldn't record a UKM.
   test_helper()->CheckSafetyTipUkmCount(2);
   test_helper()->CheckInterstitialUkmCount(0);
 }
@@ -606,8 +605,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
 // If the user clicks 'leave site', the warning should re-appear when the user
 // re-visits the page.
-// Flaky on Mac: https://crbug.com/1139955
-// Flaky in general, test depends on subtle timing, https://crbug.com/1142769
+// Flaky on Mac: https://crbug.com/40726304
+// Flaky in general, test depends on subtle timing, https://crbug.com/40727927
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        DISABLED_LeaveSiteStillWarnsAfter) {
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
@@ -699,7 +698,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
 // Background tabs shouldn't open a bubble initially, but should when they
 // become visible.
-// Fails on Mac for one parameter. https://crbug.com/1285242
+// Fails on Mac for one parameter. https://crbug.com/40814875
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_BubbleWaitsForVisible DISABLED_BubbleWaitsForVisible
 #else
@@ -722,7 +721,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 }
 
 // Background tabs that are errors shouldn't open a tip initially, and shouldn't
-// open when they become visible, either.  Test for crbug.com/1019228.
+// open when they become visible, either.  Test for crbug.com/40655830.
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        NoBubbleOnErrorEvenAfterVisible) {
   const GURL kNavigatedUrl =
@@ -800,7 +799,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   EXPECT_FALSE(IsUIShowing());
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoDoesNotShowSafetyTipInfo(browser()));
 
-  // TODO(crbug.com/1401102): Only one UKM should have been recorded, but
+  // TODO(crbug.com/40884082): Only one UKM should have been recorded, but
   // allowlisted domain also records one.
   test_helper()->CheckSafetyTipUkmCount(2);
   test_helper()->CheckInterstitialUkmCount(0);
@@ -857,7 +856,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   EXPECT_FALSE(IsUIShowing());
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoDoesNotShowSafetyTipInfo(browser()));
 
-  // TODO(crbug.com/1401102): This shouldn't record metrics.
+  // TODO(crbug.com/40884082): This shouldn't record metrics.
   test_helper()->CheckSafetyTipUkmCount(1);
   test_helper()->CheckInterstitialUkmCount(0);
 }
@@ -960,7 +959,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 IN_PROC_BROWSER_TEST_F(
     SafetyTipPageInfoBubbleViewBrowserTest,
     DoesntTriggerOnCharacterSwap_TopSiteWithDifferentRegistry) {
-  ASSERT_TRUE(IsTopDomain(lookalikes::GetDomainInfo("google.rs")));
+  ASSERT_TRUE(url_formatter::IsTopDomain(GetURL("google.rs")));
 
   base::HistogramTester histograms;
   // google.sr is within one character swap of google.rs which is a top domain.
@@ -1008,7 +1007,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 }
 
 // Tests that the SafetyTipShown histogram triggers correctly.
-// Flaky on all platforms: https://crbug.com/1139955
+// Flaky on all platforms: https://crbug.com/40726304
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        DISABLED_SafetyTipShownHistogram) {
   base::HistogramTester histograms;
@@ -1031,24 +1030,6 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   CloseWarningLeaveSite(browser());
 
   test_helper()->CheckSafetyTipUkmCount(1);
-  test_helper()->CheckInterstitialUkmCount(0);
-}
-
-// Tests that the SafetyTipIgnoredPageLoad histogram triggers correctly.
-IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
-                       SafetyTipIgnoredPageLoadHistogram) {
-  base::HistogramTester histograms;
-  auto kNavigatedUrl = GetURL("accounts-google.com");
-  SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
-
-  CloseWarningIgnore(views::Widget::ClosedReason::kCloseButtonClicked);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
-  histograms.ExpectBucketCount(
-      "Security.SafetyTips.SafetyTipIgnoredPageLoad",
-      security_state::SafetyTipStatus::kLookalikeIgnored, 1);
-  // UKM recorded twice because we revisited the same page.
-  test_helper()->CheckSafetyTipUkmCount(2);
   test_helper()->CheckInterstitialUkmCount(0);
 }
 
@@ -1218,7 +1199,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 }
 
 // Ensure that a metrics-only heuristic doesn't show up in PageInfo. Also
-// a regression test for crbug/1061244.
+// a regression test for crbug.com/40122365.
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        MetricsOnlyHeuristicDoesntShowInPageInfo) {
   // This URL will trigger Combo Squatting. Combo Squatting UI is disabled by
@@ -1265,7 +1246,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
     }
   }
 
-  size_t expected_event_count = base::ranges::count_if(
+  size_t expected_event_count = std::ranges::count_if(
       test_cases, [](const HeuristicsTestCase& test_case) {
         return test_case.expected_lookalike;
       });
@@ -1326,7 +1307,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
 // Tests that UKM data is only recorded after the safety tip warning is
 // dismissed or accepted, for the blocklist heuristic.
-// Flaky on all platforms: https://crbug.com/1139955
+// Flaky on all platforms: https://crbug.com/40726304
 IN_PROC_BROWSER_TEST_F(
     SafetyTipPageInfoBubbleViewBrowserTest,
     DISABLED_WarningDismissalCausesUkmRecordingForBlocklist) {
@@ -1426,7 +1407,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 // a combo squatting url is flagged with a hard-coded brand name.
 // This test case trigger `keyword` heuristic as well because of `google`
 // in the URL.
-// TODO(crbug.com/1343630): keyword (embedded keyword) heuristic should
+// TODO(crbug.com/40852479): keyword (embedded keyword) heuristic should
 // be removed from the code including CheckHeuristicsUkmRecord.
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        DontTriggerOnAllowlistedComboSquatting) {
@@ -1446,7 +1427,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   ASSERT_FALSE(IsUIShowing());
   histograms.ExpectTotalCount(kInterstitialHistogramName, 0);
 
-  // TODO(crbug.com/1401102): This shouldn't record a UKM.
+  // TODO(crbug.com/40884082): This shouldn't record a UKM.
   test_helper()->CheckSafetyTipUkmCount(1);
   test_helper()->CheckInterstitialUkmCount(0);
 }
@@ -1635,7 +1616,7 @@ class SafetyTipPageInfoBubbleViewPrerenderBrowserTest
 
   void SetUp() override {
     lookalikes::InitializeSafetyTipConfig();
-    prerender_helper_.SetUp(embedded_test_server());
+    prerender_helper_.RegisterServerRequestMonitor(embedded_test_server());
     InProcessBrowserTest::SetUp();
   }
 
@@ -1677,8 +1658,9 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewPrerenderBrowserTest,
   ASSERT_TRUE(safety_tip_observer->safety_tip_check_pending_for_testing());
   auto prerender_url = embedded_test_server()->GetURL("/simple.html");
   // Loads |prerender_url| in the prerenderer.
-  auto prerender_id = prerender_helper()->AddPrerender(prerender_url);
-  ASSERT_NE(content::RenderFrameHost::kNoFrameTreeNodeId, prerender_id);
+  content::PrerenderHostId prerender_id =
+      prerender_helper()->AddPrerender(prerender_url);
+  ASSERT_TRUE(prerender_id);
   content::test::PrerenderHostObserver host_observer(*web_contents(),
                                                      prerender_id);
   // Waits until SafetyTipWebContentsObserver calls the callback.
@@ -1707,8 +1689,10 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewPrerenderBrowserTest,
 }
 
 // Ensure prerender navigations don't close the Safety Tip.
+//
+// TODO(https://crbug.com/434744048): Re-enable after fixing flakiness.
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewPrerenderBrowserTest,
-                       StillShowAfterPrerenderNavigation) {
+                       DISABLED_StillShowAfterPrerenderNavigation) {
   // This domain is a lookalike of a top domain not in the top 500.
   const GURL kNavigatedUrl =
       embedded_test_server()->GetURL("accounts-google.com", "/title1.html");
@@ -1756,4 +1740,34 @@ class SafetyTipPageInfoBubbleViewDialogTest : public DialogBrowserTest {
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewDialogTest,
                        InvokeUi_Lookalike) {
   ShowAndVerifyUi();
+}
+
+IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
+                       ShowLookalikeDialog) {
+  // Create a split tab.
+  ASSERT_TRUE(AddTabAtIndex(0, GetURL("example.com"),
+                            ui::PageTransition::PAGE_TRANSITION_TYPED));
+  TabStripModel* const tab_strip_model = browser()->tab_strip_model();
+  tab_strip_model->ActivateTabAt(0);
+  tab_strip_model->AddToNewSplit(
+      {1}, split_tabs::SplitTabVisualData(),
+      split_tabs::SplitTabCreatedSource::kToolbarButton);
+
+  // Trigger bubble to show on the 0 indexed tab.
+  auto kNavigatedUrl = GetURL("accounts-google.com");
+  SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
+  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  EXPECT_TRUE(IsUIShowing());
+
+  // The highlight should show around the contents container for the 0th tab
+  // but not for the other tabs in the split.
+  const auto& contents_container_views =
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->multi_contents_view()
+          ->contents_container_views();
+  ASSERT_EQ(contents_container_views.size(), 2U);
+  EXPECT_TRUE(
+      contents_container_views[0]->contents_outline_view()->is_highlighted());
+  EXPECT_FALSE(
+      contents_container_views[1]->contents_outline_view()->is_highlighted());
 }

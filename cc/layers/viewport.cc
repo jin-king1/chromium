@@ -9,6 +9,7 @@
 #include "base/check.h"
 #include "base/memory/ptr_util.h"
 #include "cc/input/browser_controls_offset_manager.h"
+#include "cc/input/snap_selection_strategy.h"
 #include "cc/trees/layer_tree_host_impl.h"
 #include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/scroll_node.h"
@@ -41,7 +42,8 @@ Viewport::ScrollResult Viewport::ScrollBy(const gfx::Vector2dF& physical_delta,
                                           const gfx::Point& viewport_point,
                                           bool is_direct_manipulation,
                                           bool affect_browser_controls,
-                                          bool scroll_outer_viewport) {
+                                          bool scroll_outer_viewport,
+                                          bool is_inertial) {
   if (!OuterScrollNode())
     return ScrollResult();
 
@@ -49,14 +51,15 @@ Viewport::ScrollResult Viewport::ScrollBy(const gfx::Vector2dF& physical_delta,
 
   if (affect_browser_controls &&
       ShouldBrowserControlsConsumeScroll(physical_delta))
-    scroll_node_delta -= ScrollBrowserControls(physical_delta);
+    scroll_node_delta -= ScrollBrowserControls(physical_delta, is_inertial);
 
   gfx::Vector2dF pending_scroll_node_delta = scroll_node_delta;
 
   // Attempt to scroll inner viewport first.
-  pending_scroll_node_delta -= host_impl_->GetInputHandler().ScrollSingleNode(
+  gfx::Vector2dF inner_delta = host_impl_->GetInputHandler().ScrollSingleNode(
       *InnerScrollNode(), pending_scroll_node_delta, viewport_point,
       is_direct_manipulation);
+  pending_scroll_node_delta -= inner_delta;
 
   // Now attempt to scroll the outer viewport.
   gfx::Vector2dF outer_delta;
@@ -69,6 +72,7 @@ Viewport::ScrollResult Viewport::ScrollBy(const gfx::Vector2dF& physical_delta,
 
   ScrollResult result;
   result.outer_viewport_scrolled_delta = outer_delta;
+  result.inner_viewport_scrolled_delta = inner_delta;
   result.consumed_delta =
       physical_delta - AdjustOverscroll(pending_scroll_node_delta);
   result.content_scrolled_delta = scroll_node_delta - pending_scroll_node_delta;
@@ -91,6 +95,35 @@ bool Viewport::CanScroll(const ScrollNode& node,
   result |= host_impl_->GetInputHandler().CanConsumeDelta(scroll_state,
                                                           *OuterScrollNode());
   return result;
+}
+
+void Viewport::SnapIfNeeded() {
+  ScrollNode* scroll_node = OuterScrollNode();
+  if (!scroll_node || !scroll_node->snap_container_data.has_value()) {
+    return;
+  }
+
+  if (scroll_node == scroll_tree().CurrentlyScrollingNode()) {
+    // If there is an in-progress scroll gesture, InputHandler will take care of
+    // snapping at the end.
+    return;
+  }
+
+  SnapContainerData& data = scroll_node->snap_container_data.value();
+  gfx::PointF current_position = TotalScrollOffset();
+
+  SnapPositionData snap = data.FindSnapPosition(
+      *SnapSelectionStrategy::CreateForTargetElement(current_position));
+  if (snap.type == SnapPositionData::Type::kNone) {
+    return;
+  }
+
+  gfx::Vector2dF delta = snap.position - current_position;
+  delta.Scale(host_impl_->active_tree()->page_scale_factor_for_scroll());
+
+  ScrollBy(delta, /*viewport_point=*/gfx::Point(),
+           /*is_direct_manipulation=*/false, /*affect_browser_controls=*/false,
+           /*scroll_outer_viewport=*/true, /*is_inertial=*/false);
 }
 
 gfx::Vector2dF Viewport::ComputeClampedDelta(
@@ -128,10 +161,10 @@ gfx::SizeF Viewport::GetInnerViewportSizeExcludingScrollbars() const {
   ScrollbarSet scrollbars = host_impl_->ScrollbarsFor(outer_node->element_id);
   gfx::SizeF scrollbars_size;
   for (const auto* scrollbar : scrollbars) {
-    if (scrollbar->orientation() == ScrollbarOrientation::VERTICAL) {
+    if (scrollbar->orientation() == ScrollbarOrientation::kVertical) {
       scrollbars_size.set_width(scrollbar->bounds().width());
     } else {
-      DCHECK(scrollbar->orientation() == ScrollbarOrientation::HORIZONTAL);
+      DCHECK(scrollbar->orientation() == ScrollbarOrientation::kHorizontal);
       scrollbars_size.set_height(scrollbar->bounds().height());
     }
   }
@@ -201,6 +234,7 @@ Viewport::ScrollResult Viewport::ScrollAnimated(const gfx::Vector2dF& delta,
   pending_delta.Scale(scale_factor);
   result.consumed_delta = delta - pending_delta;
   result.outer_viewport_scrolled_delta = outer_delta;
+  result.inner_viewport_scrolled_delta = inner_delta;
   return result;
 }
 
@@ -298,9 +332,10 @@ bool Viewport::ShouldScroll(const ScrollNode& scroll_node) const {
          scroll_node.scrolls_outer_viewport;
 }
 
-gfx::Vector2dF Viewport::ScrollBrowserControls(const gfx::Vector2dF& delta) {
+gfx::Vector2dF Viewport::ScrollBrowserControls(const gfx::Vector2dF& delta,
+                                               bool is_inertial) {
   gfx::Vector2dF excess_delta =
-      host_impl_->browser_controls_manager()->ScrollBy(delta);
+      host_impl_->browser_controls_manager()->ScrollBy(delta, is_inertial);
 
   return delta - excess_delta;
 }

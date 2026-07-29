@@ -10,8 +10,8 @@
 #include "components/global_media_controls/public/constants.h"
 #include "components/global_media_controls/public/media_item_manager.h"
 #include "components/media_message_center/media_notification_util.h"
-#include "components/media_router/browser/presentation/presentation_service_delegate_impl.h"
 #include "content/public/browser/media_session.h"
+#include "content/public/browser/render_frame_host.h"
 #include "services/media_session/public/cpp/media_image_manager.h"
 #include "services/media_session/public/cpp/media_metadata.h"
 #include "ui/gfx/image/image_skia.h"
@@ -26,19 +26,18 @@ content::WebContents* GetWebContentsFromPresentationRequest(
   return content::WebContents::FromRenderFrameHost(rfh);
 }
 
-absl::optional<gfx::ImageSkia> GetCorrectColorTypeImage(
-    const SkBitmap& bitmap) {
+std::optional<gfx::ImageSkia> GetCorrectColorTypeImage(const SkBitmap& bitmap) {
   if (bitmap.info().colorType() == kN32_SkColorType) {
     return gfx::ImageSkia::CreateFrom1xBitmap(bitmap);
   }
   SkImageInfo color_type_info = bitmap.info().makeColorType(kN32_SkColorType);
   SkBitmap color_type_copy;
   if (!color_type_copy.tryAllocPixels(color_type_info)) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   if (!bitmap.readPixels(color_type_info, color_type_copy.getPixels(),
                          color_type_copy.rowBytes(), 0, 0)) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   return gfx::ImageSkia::CreateFrom1xBitmap(color_type_copy);
 }
@@ -80,13 +79,13 @@ PresentationRequestNotificationItem::PresentationRequestNotificationItem(
 }
 
 PresentationRequestNotificationItem::~PresentationRequestNotificationItem() {
-  if (provider_.is_bound()) {
-    provider_->HideItem();
+  if (provider_->is_bound()) {
+    (*provider_)->HideItem();
   }
 }
 
 void PresentationRequestNotificationItem::MediaSessionMetadataChanged(
-    const absl::optional<media_session::MediaMetadata>& metadata) {
+    const std::optional<media_session::MediaMetadata>& metadata) {
   metadata_ = metadata;
   UpdatePickerWithMetadata();
 }
@@ -106,10 +105,10 @@ void PresentationRequestNotificationItem::MediaSessionImagesChanged(
       global_media_controls::kMediaItemArtworkDesiredSize);
   bool should_synchronously_update_picker = false;
 
-  absl::optional<media_session::MediaImage> artwork_image;
+  std::optional<media_session::MediaImage> artwork_image;
   auto it = images.find(media_session::mojom::MediaSessionImageType::kArtwork);
   if (it == images.end()) {
-    artwork_image = absl::nullopt;
+    artwork_image = std::nullopt;
   } else {
     artwork_image = manager.SelectImage(it->second);
   }
@@ -125,10 +124,10 @@ void PresentationRequestNotificationItem::MediaSessionImagesChanged(
     should_synchronously_update_picker = true;
   }
 
-  absl::optional<media_session::MediaImage> favicon_image;
+  std::optional<media_session::MediaImage> favicon_image;
   it = images.find(media_session::mojom::MediaSessionImageType::kSourceIcon);
   if (it == images.end()) {
-    favicon_image = absl::nullopt;
+    favicon_image = std::nullopt;
   } else {
     favicon_image = manager.SelectImage(it->second);
   }
@@ -154,12 +153,13 @@ void PresentationRequestNotificationItem::SetMediaSessionForTest(
 }
 
 void PresentationRequestNotificationItem::UpdatePickerWithMetadata() {
-  if (!provider_.is_bound()) {
+  if (!provider_->is_bound()) {
     return;
   }
-  // If we have metadata from the media session, use that.
-  media_session::MediaMetadata data =
-      metadata_.value_or(media_session::MediaMetadata{});
+  media_session::MediaMetadata data;
+  if (metadata_.has_value() && ShouldShowMediaSessionMetadata()) {
+    data = *metadata_;
+  }
 
   if (media_message_center::IsOriginGoodForDisplay(request_.frame_origin)) {
     // `request_` has more accurate origin info than `metadata_` e.g. when the
@@ -174,30 +174,35 @@ void PresentationRequestNotificationItem::UpdatePickerWithMetadata() {
   if (web_contents && data.artist.empty()) {
     data.artist = web_contents->GetTitle();
   }
-  provider_->OnMetadataChanged(data);
+  (*provider_)->OnMetadataChanged(data);
 }
 
 void PresentationRequestNotificationItem::UpdatePickerWithImages() {
-  if (!provider_.is_bound()) {
+  if (!provider_->is_bound()) {
     return;
   }
-  provider_->OnArtworkImageChanged(artwork_image_);
-  if (!favicon_image_.isNull()) {
-    provider_->OnFaviconImageChanged(favicon_image_);
+
+  const bool should_show_metadata = ShouldShowMediaSessionMetadata();
+  (*provider_)
+      ->OnArtworkImageChanged(should_show_metadata ? artwork_image_
+                                                   : gfx::ImageSkia());
+
+  if (should_show_metadata && !favicon_image_.isNull()) {
+    (*provider_)->OnFaviconImageChanged(favicon_image_);
     return;
   }
-  // Otherwise, get one ourselves.
+
   auto* web_contents = GetWebContentsFromPresentationRequest(request_);
   if (web_contents) {
     favicon::FaviconDriver* favicon_driver =
         favicon::ContentFaviconDriver::FromWebContents(web_contents);
     if (favicon_driver) {
-      provider_->OnFaviconImageChanged(
-          favicon_driver->GetFavicon().AsImageSkia());
+      (*provider_)
+          ->OnFaviconImageChanged(favicon_driver->GetFavicon().AsImageSkia());
       return;
     }
   }
-  provider_->OnFaviconImageChanged(gfx::ImageSkia());
+  (*provider_)->OnFaviconImageChanged(gfx::ImageSkia());
 }
 
 void PresentationRequestNotificationItem::OnArtworkBitmap(
@@ -210,4 +215,22 @@ void PresentationRequestNotificationItem::OnFaviconBitmap(
     const SkBitmap& bitmap) {
   favicon_image_ = GetCorrectColorTypeImage(bitmap).value_or(gfx::ImageSkia());
   UpdatePickerWithImages();
+}
+
+bool PresentationRequestNotificationItem::ShouldShowMediaSessionMetadata()
+    const {
+  auto* web_contents = GetWebContentsFromPresentationRequest(request_);
+  if (!web_contents) {
+    return false;
+  }
+  auto* media_session = GetMediaSession(web_contents);
+  if (!media_session) {
+    return false;
+  }
+  content::RenderFrameHost* routed_frame = media_session->GetRoutedFrame();
+  if (!routed_frame) {
+    return true;
+  }
+  return routed_frame->GetLastCommittedOrigin().IsSameOriginWith(
+      request_.frame_origin);
 }

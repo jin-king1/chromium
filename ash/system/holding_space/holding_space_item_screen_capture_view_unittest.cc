@@ -8,6 +8,7 @@
 #include <set>
 
 #include "ash/public/cpp/holding_space/holding_space_constants.h"
+#include "ash/public/cpp/holding_space/holding_space_file.h"
 #include "ash/public/cpp/holding_space/holding_space_image.h"
 #include "ash/public/cpp/holding_space/holding_space_item.h"
 #include "ash/public/cpp/holding_space/holding_space_section.h"
@@ -20,6 +21,7 @@
 #include "ash/system/holding_space/holding_space_view_delegate.h"
 #include "components/vector_icons/vector_icons.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/view_utils.h"
@@ -65,7 +67,10 @@ class HoldingSpaceItemScreenCaptureViewTest
     ASSERT_TRUE(HoldingSpaceItem::IsScreenCaptureType(type));
 
     item_ = HoldingSpaceItem::CreateFileBackedItem(
-        type, base::FilePath("file_path"), GURL("filesystem:file_system_url"),
+        type,
+        HoldingSpaceFile(base::FilePath("file_path"),
+                         HoldingSpaceFile::FileSystemType::kTest,
+                         GURL("filesystem:file_system_url")),
         base::BindOnce(
             [](HoldingSpaceItem::Type type, const base::FilePath& file_path)
                 -> std::unique_ptr<HoldingSpaceImage> {
@@ -128,7 +133,9 @@ TEST_P(HoldingSpaceItemScreenCaptureViewTest, OverlayIcon) {
       *ui::ImageModel::FromVectorIcon(
            item()->type() == HoldingSpaceItem::Type::kScreenRecordingGif
                ? kGifIcon
-               : vector_icons::kPlayArrowIcon,
+           : ::features::IsRoundedIconsEnabled()
+               ? vector_icons::kPlayArrowFilledFlippableIcon
+               : vector_icons::kPlayArrowOldIcon,
            kColorAshButtonIconColor, kHoldingSpaceIconSize)
            .Rasterize(color_provider)
            .bitmap()));

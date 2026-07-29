@@ -23,6 +23,7 @@ absl_cc_library(
     ${ABSL_DEFAULT_COPTS}
   DEPS
     absl::config
+    absl::core_headers
   PUBLIC
 )
 
@@ -36,6 +37,7 @@ absl_cc_test(
   DEPS
     absl::algorithm
     absl::config
+    absl::hardening
     GTest::gmock_main
 )
 
@@ -48,6 +50,9 @@ absl_cc_library(
     ${ABSL_DEFAULT_COPTS}
   DEPS
     absl::algorithm
+    absl::hardening
+    absl::config
+    absl::iterator_traits_internal
     absl::core_headers
     absl::meta
   PUBLIC
@@ -62,9 +67,11 @@ absl_cc_test(
     ${ABSL_TEST_COPTS}
   DEPS
     absl::algorithm_container
-    absl::base
+    absl::config
     absl::core_headers
     absl::memory
+    absl::meta
+    absl::random_random
     absl::span
     GTest::gmock_main
 )

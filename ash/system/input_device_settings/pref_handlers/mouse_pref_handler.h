@@ -6,7 +6,7 @@
 #define ASH_SYSTEM_INPUT_DEVICE_SETTINGS_PREF_HANDLERS_MOUSE_PREF_HANDLER_H_
 
 #include "ash/ash_export.h"
-#include "ash/public/mojom/input_device_settings.mojom-forward.h"
+#include "ash/public/mojom/input_device_settings.mojom.h"
 
 class AccountId;
 class PrefService;
@@ -56,6 +56,20 @@ class ASH_EXPORT MousePrefHandler {
       const AccountId& account_id,
       const mojom::MousePolicies& mouse_policies,
       const mojom::Mouse& mouse) = 0;
+
+  // Updates the default settings with the settings from the given mouse. These
+  // settings are applied to other mice that are connected for the first time.
+  virtual void UpdateDefaultMouseSettings(
+      PrefService* pref_service,
+      const mojom::MousePolicies& mouse_policies,
+      const mojom::Mouse& mouse) = 0;
+
+  // Force refreshes the passed in mouse settings to match the defaults for the
+  // given `pref_service`.
+  virtual void ForceInitializeWithDefaultSettings(
+      PrefService* pref_service,
+      const mojom::MousePolicies& mouse_policies,
+      mojom::Mouse* mouse) = 0;
 };
 
 }  // namespace ash

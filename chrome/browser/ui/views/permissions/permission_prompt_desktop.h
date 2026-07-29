@@ -13,7 +13,8 @@
 #include "components/permissions/permission_prompt.h"
 
 class Browser;
-class LocationBarView;
+class BrowserWindowInterface;
+class LocationBar;
 
 namespace content {
 class WebContents;
@@ -24,8 +25,7 @@ class WebContents;
 // bar icon (the "quiet" prompt).
 class PermissionPromptDesktop : public permissions::PermissionPrompt {
  public:
-  PermissionPromptDesktop(Browser* browser,
-                          content::WebContents* web_contents,
+  PermissionPromptDesktop(content::WebContents* web_contents,
                           Delegate* delegate);
 
   PermissionPromptDesktop(const PermissionPromptDesktop&) = delete;
@@ -38,27 +38,39 @@ class PermissionPromptDesktop : public permissions::PermissionPrompt {
   TabSwitchingBehavior GetTabSwitchingBehavior() override;
   permissions::PermissionPromptDisposition GetPromptDisposition()
       const override = 0;
+  bool IsAskPrompt() const override;
+  std::optional<gfx::Rect> GetViewBoundsInScreen() const override;
+  bool ShouldFinalizeRequestAfterDecided() const override;
+  std::vector<permissions::ElementAnchoredBubbleVariant> GetPromptVariants()
+      const override;
+  std::optional<permissions::feature_params::PermissionElementPromptPosition>
+  GetPromptPosition() const override;
 
   virtual views::Widget* GetPromptBubbleWidgetForTesting();
 
  protected:
-  LocationBarView* GetLocationBarView();
+  LocationBar* GetLocationBar();
 
-  Browser* browser() const { return browser_; }
+  Browser* browser() const {
+    return browser_ ? browser_->GetBrowserForMigrationOnly() : nullptr;
+  }
+
   bool UpdateBrowser();
 
   permissions::PermissionPrompt::Delegate* delegate() const {
     return delegate_;
   }
+
   content::WebContents* web_contents() const { return web_contents_; }
 
  private:
   // The web contents whose location bar should show the quiet prompt.
   raw_ptr<content::WebContents> web_contents_;
 
+  // Delegate representing a permission request.
   const raw_ptr<permissions::PermissionPrompt::Delegate> delegate_;
 
-  raw_ptr<Browser> browser_;
+  raw_ptr<BrowserWindowInterface> browser_;
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_PERMISSIONS_PERMISSION_PROMPT_DESKTOP_H_

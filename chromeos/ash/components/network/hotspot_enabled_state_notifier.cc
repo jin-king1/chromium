@@ -8,16 +8,7 @@
 namespace ash {
 
 HotspotEnabledStateNotifier::HotspotEnabledStateNotifier() = default;
-
-HotspotEnabledStateNotifier::~HotspotEnabledStateNotifier() {
-  if (hotspot_state_handler_ && hotspot_state_handler_->HasObserver(this)) {
-    hotspot_state_handler_->RemoveObserver(this);
-  }
-
-  if (hotspot_controller_ && hotspot_controller_->HasObserver(this)) {
-    hotspot_controller_->RemoveObserver(this);
-  }
-}
+HotspotEnabledStateNotifier::~HotspotEnabledStateNotifier() = default;
 
 void HotspotEnabledStateNotifier::Init(
     HotspotStateHandler* hotspot_state_handler,
@@ -33,11 +24,18 @@ void HotspotEnabledStateNotifier::OnHotspotStatusChanged() {
     return;
   }
 
-  absl::optional<hotspot_config::mojom::DisableReason> disable_reason =
+  std::optional<hotspot_config::mojom::DisableReason> disable_reason =
       hotspot_state_handler_->GetDisableReason();
 
   if (!disable_reason) {
     NET_LOG(EVENT) << "Disable reason is not set in state handler";
+    return;
+  }
+
+  if (disable_reason.value() ==
+      hotspot_config::mojom::DisableReason::kUserInitiated) {
+    NET_LOG(EVENT) << "Skipping recording user initiated disable events "
+                      "reported from platform";
     return;
   }
 
@@ -46,9 +44,9 @@ void HotspotEnabledStateNotifier::OnHotspotStatusChanged() {
   }
 }
 
-void HotspotEnabledStateNotifier::OnHotspotTurnedOn(bool wifi_turned_off) {
+void HotspotEnabledStateNotifier::OnHotspotTurnedOn() {
   for (auto& observer : observers_) {
-    observer->OnHotspotTurnedOn(wifi_turned_off);
+    observer->OnHotspotTurnedOn();
   }
 }
 
@@ -62,11 +60,12 @@ void HotspotEnabledStateNotifier::OnHotspotTurnedOff(
 void HotspotEnabledStateNotifier::ObserveEnabledStateChanges(
     mojo::PendingRemote<hotspot_config::mojom::HotspotEnabledStateObserver>
         observer) {
-  if (hotspot_state_handler_ && !hotspot_state_handler_->HasObserver(this)) {
-    hotspot_state_handler_->AddObserver(this);
+  if (hotspot_state_handler_ &&
+      !hotspot_state_handler_observation_.IsObserving()) {
+    hotspot_state_handler_observation_.Observe(hotspot_state_handler_);
   }
-  if (hotspot_controller_ && !hotspot_controller_->HasObserver(this)) {
-    hotspot_controller_->AddObserver(this);
+  if (hotspot_controller_ && !hotspot_controller_observation_.IsObserving()) {
+    hotspot_controller_observation_.Observe(hotspot_controller_);
   }
   observers_.Add(std::move(observer));
 }

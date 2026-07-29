@@ -17,8 +17,8 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_simple_task_runner.h"
 #include "base/timer/mock_timer.h"
-#include "chromeos/ash/services/secure_channel/ble_constants.h"
 #include "chromeos/ash/services/secure_channel/data_with_timestamp.h"
+#include "chromeos/ash/services/secure_channel/public/cpp/shared/ble_constants.h"
 #include "device/bluetooth/bluetooth_advertisement.h"
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
 #include "device/bluetooth/test/mock_bluetooth_advertisement.h"
@@ -36,7 +36,7 @@ const char kId1[] = "id1";
 const char kId2[] = "id2";
 const char kId3[] = "id3";
 
-int64_t kTimeBetweenEachCommandMs = 200;
+constexpr int64_t kTimeBetweenEachCommandMs = 200;
 
 struct RegisterAdvertisementArgs {
   RegisterAdvertisementArgs(
@@ -423,7 +423,7 @@ class SecureChannelBleSynchronizerTest : public testing::Test {
 
   scoped_refptr<NiceMock<MockBluetoothAdapterWithAdvertisements>> mock_adapter_;
 
-  raw_ptr<base::MockOneShotTimer, ExperimentalAsh> mock_timer_;
+  raw_ptr<base::MockOneShotTimer, DanglingUntriaged> mock_timer_;
   base::SimpleTestClock test_clock_;
   scoped_refptr<base::TestSimpleTaskRunner> test_task_runner_;
 

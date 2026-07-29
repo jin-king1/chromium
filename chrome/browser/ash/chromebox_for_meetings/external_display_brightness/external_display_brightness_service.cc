@@ -57,8 +57,7 @@ bool ExternalDisplayBrightnessService::ServiceRequestReceived(
 }
 
 void ExternalDisplayBrightnessService::OnBindService(
-    mojo::ScopedMessagePipeHandle receiver_pipe,
-    const absl::optional<std::string>&) {
+    mojo::ScopedMessagePipeHandle receiver_pipe) {
   receivers_.Add(this, mojo::PendingReceiver<mojom::ExternalDisplayBrightness>(
                            std::move(receiver_pipe)));
 }
@@ -85,7 +84,7 @@ void ExternalDisplayBrightnessService::SetExternalDisplayALSBrightness(
 
 void ExternalDisplayBrightnessService::OnGetExternalDisplayALSBrightness(
     GetExternalDisplayALSBrightnessCallback callback,
-    absl::optional<bool> enabled) {
+    std::optional<bool> enabled) {
   std::move(callback).Run(enabled.value_or(false));
 }
 
@@ -106,7 +105,7 @@ void ExternalDisplayBrightnessService::SetExternalDisplayBrightnessPercent(
 
 void ExternalDisplayBrightnessService::OnGetExternalDisplayBrightnessPercent(
     GetExternalDisplayBrightnessPercentCallback callback,
-    absl::optional<double> percent) {
+    std::optional<double> percent) {
   std::move(callback).Run(percent.value_or(-1.0));
 }
 

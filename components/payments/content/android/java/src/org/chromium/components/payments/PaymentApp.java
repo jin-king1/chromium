@@ -4,14 +4,18 @@
 
 package org.chromium.components.payments;
 
-import android.graphics.drawable.Drawable;
+import static java.util.Collections.emptyList;
 
-import androidx.annotation.Nullable;
+import android.graphics.Bitmap;
+import android.graphics.drawable.Drawable;
 
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.autofill.EditableOption;
 import org.chromium.payments.mojom.PaymentDetailsModifier;
+import org.chromium.payments.mojom.PaymentEventResponseType;
 import org.chromium.payments.mojom.PaymentItem;
 import org.chromium.payments.mojom.PaymentMethodData;
 import org.chromium.payments.mojom.PaymentOptions;
@@ -23,24 +27,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * The base class for a single payment app, e.g., a payment handler.
- */
+/** The base class for a single payment app, e.g., a payment handler. */
+@NullMarked
 public abstract class PaymentApp extends EditableOption {
     /** Arbitrarily chosen maximum length of a payment app name. */
     private static final int APP_NAME_ELIDE_LENGTH = 64;
 
-    /**
-     * Whether complete and valid autofill data for merchant's request is available, e.g., if
-     * merchant specifies `requestPayerEmail: true`, then this variable is true only if the autofill
-     * data contains a valid email address. May be used in canMakePayment() for some types of
-     * app, such as AutofillPaymentInstrument.
-     */
-    protected boolean mHaveRequestedAutofillData;
-
-    /**
-     * The interface for the requester of payment details from the app.
-     */
+    /** The interface for the requester of payment details from the app. */
     public interface InstrumentDetailsCallback {
         /**
          * Called after retrieving payment details.
@@ -54,10 +47,34 @@ public abstract class PaymentApp extends EditableOption {
 
         /**
          * Called if unable to retrieve payment details.
+         *
+         * <p>TODO(crbug.com/473478138): Deprecated in favour of two-argument version. This version
+         * kept temporarily to allow Chrome for Android internal code to keep compiling. Remove this
+         * method once that dependency is removed.
+         *
          * @param errorMessage Developer-facing error message to be used when rejecting the promise
-         *                     returned from PaymentRequest.show().
+         *     returned from PaymentRequest.show().
          */
-        void onInstrumentDetailsError(String errorMessage);
+        default void onInstrumentDetailsError(String errorMessage) {
+            onInstrumentDetailsError(PaymentEventResponseType.PAYMENT_EVENT_REJECT, errorMessage);
+        }
+
+        /**
+         * Called if unable to retrieve payment details.
+         *
+         * <p>TODO(crbug.com/473478138): Temporarily default to allow a unittest in Chrome for
+         * Android internal code to keep compiling. Remove 'default' once the test overrides this
+         * method.
+         * <p>TODO(crbug.com/506994069): Pass PaymentAppError directly to
+         * InstrumentDetailsCallback.onInstrumentDetailsError instead of separate error type and
+         * message.
+         *
+         * @param error One of the {@link PaymentEventResponseType} values.
+         * @param errorMessage Developer-facing error message to be used when rejecting the promise
+         *     returned from PaymentRequest.show().
+         */
+        default void onInstrumentDetailsError(
+                @PaymentEventResponseType.EnumType int error, String errorMessage) {}
     }
 
     /** The interface for the requester to abort payment. */
@@ -70,7 +87,24 @@ public abstract class PaymentApp extends EditableOption {
         void onInstrumentAbortResult(boolean abortSucceeded);
     }
 
-    protected PaymentApp(String id, String label, String sublabel, Drawable icon) {
+    /**
+     * The interface for retrieving the label and icon of a PaymentEntityLogo.
+     *
+     * <p>This is a Secure Payment Confirmation specific interface.
+     */
+    public interface PaymentEntityLogo {
+        /**
+         * @return The accessibility label for the payment entity.
+         */
+        String getLabel();
+
+        /**
+         * @return The icon for the payment entity.
+         */
+        Bitmap getIcon();
+    }
+
+    protected PaymentApp(String id, String label, @Nullable String sublabel, Drawable icon) {
         super(id, maybeElide(removeLineTerminators(label)), sublabel, icon);
     }
 
@@ -134,40 +168,24 @@ public abstract class PaymentApp extends EditableOption {
         return getInstrumentMethodNames().contains(method);
     }
 
-    /**
-     * @return Whether the app can collect and return shipping address.
-     */
+    /** @return Whether the app can collect and return shipping address. */
     public boolean handlesShippingAddress() {
         return false;
     }
 
-    /**
-     * @return Whether the app can collect and return payer's name.
-     */
+    /** @return Whether the app can collect and return payer's name. */
     public boolean handlesPayerName() {
         return false;
     }
 
-    /**
-     * @return Whether the app can collect and return payer's email.
-     */
+    /** @return Whether the app can collect and return payer's email. */
     public boolean handlesPayerEmail() {
         return false;
     }
 
-    /**
-     * @return Whether the app can collect and return payer's phone.
-     */
+    /** @return Whether the app can collect and return payer's phone. */
     public boolean handlesPayerPhone() {
         return false;
-    }
-
-    /**
-     * @param haveRequestedAutofillData Whether complete and valid autofill data for merchant's
-     *                                  request is available.
-     */
-    public void setHaveRequestedAutofillData(boolean haveRequestedAutofillData) {
-        mHaveRequestedAutofillData = haveRequestedAutofillData;
     }
 
     /**
@@ -192,8 +210,10 @@ public abstract class PaymentApp extends EditableOption {
      * @param merchantName     The name of the merchant.
      * @param origin           The origin of this merchant.
      * @param iframeOrigin     The origin of the iframe that invoked PaymentRequest.
-     * @param certificateChain The site certificate chain of the merchant. Can be null for localhost
-     *                         or local file, which are secure contexts without SSL.
+     * @param certificateChain The site certificate chain of the merchant. Can be null when
+     *                         ANDROID_PAYMENT_INTENTS_OMIT_DEPRECATED_PARAMETERS is enabled or for
+     *                         localhost or local file, which are secure contexts without SSL. Each
+     *                         byte array cannot be null.
      * @param methodDataMap    The payment-method specific data for all applicable payment methods,
      *                         e.g., whether the app should be invoked in test or production, a
      *                         merchant identifier, or a public key.
@@ -204,11 +224,19 @@ public abstract class PaymentApp extends EditableOption {
      * @param shippingOptions  The shipping options of the PaymentRequest.
      * @param callback         The object that will receive the payment details.
      */
-    public void invokePaymentApp(String id, String merchantName, String origin, String iframeOrigin,
-            @Nullable byte[][] certificateChain, Map<String, PaymentMethodData> methodDataMap,
-            PaymentItem total, List<PaymentItem> displayItems,
-            Map<String, PaymentDetailsModifier> modifiers, PaymentOptions paymentOptions,
-            List<PaymentShippingOption> shippingOptions, InstrumentDetailsCallback callback) {}
+    public void invokePaymentApp(
+            String id,
+            String merchantName,
+            String origin,
+            String iframeOrigin,
+            byte @Nullable [][] certificateChain,
+            Map<String, PaymentMethodData> methodDataMap,
+            PaymentItem total,
+            List<PaymentItem> displayItems,
+            Map<String, PaymentDetailsModifier> modifiers,
+            PaymentOptions paymentOptions,
+            List<PaymentShippingOption> shippingOptions,
+            InstrumentDetailsCallback callback) {}
 
     /**
      * Update the payment information in response to payment method, shipping address, or shipping
@@ -239,12 +267,14 @@ public abstract class PaymentApp extends EditableOption {
      * @param callback The callback to return abort result.
      */
     public void abortPaymentApp(AbortCallback callback) {
-        PostTask.postTask(TaskTraits.UI_DEFAULT, new Runnable() {
-            @Override
-            public void run() {
-                callback.onInstrumentAbortResult(false);
-            }
-        });
+        PostTask.postTask(
+                TaskTraits.UI_DEFAULT,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        callback.onInstrumentAbortResult(false);
+                    }
+                });
     }
 
     /** Cleans up any resources held by the payment app. For example, closes server connections. */
@@ -254,8 +284,7 @@ public abstract class PaymentApp extends EditableOption {
      * @return The identifier for another payment app that should be hidden when this payment app is
      * present.
      */
-    @Nullable
-    public String getApplicationIdentifierToHide() {
+    public @Nullable String getApplicationIdentifierToHide() {
         return null;
     }
 
@@ -263,14 +292,11 @@ public abstract class PaymentApp extends EditableOption {
      * @return The set of identifier of other apps that would cause this app to be hidden, if any of
      * them are present, e.g., ["com.bobpay.production", "com.bobpay.beta"].
      */
-    @Nullable
-    public Set<String> getApplicationIdentifiersThatHideThisApp() {
+    public @Nullable Set<String> getApplicationIdentifiersThatHideThisApp() {
         return null;
     }
 
-    /**
-     * @return The ukm source id assigned to the payment app.
-     */
+    /** @return The ukm source id assigned to the payment app. */
     public long getUkmSourceId() {
         return 0;
     }
@@ -304,5 +330,13 @@ public abstract class PaymentApp extends EditableOption {
      */
     public PaymentResponse setAppSpecificResponseFields(PaymentResponse response) {
         return response;
+    }
+
+    /**
+     * @return The payment entities logos, an unmodifiable {@link List} (Secure Payment Confirmation
+     *     specific).
+     */
+    public List<PaymentEntityLogo> getPaymentEntitiesLogos() {
+        return emptyList();
     }
 }

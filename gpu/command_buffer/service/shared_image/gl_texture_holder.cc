@@ -4,24 +4,32 @@
 
 #include "gpu/command_buffer/service/shared_image/gl_texture_holder.h"
 
+#include <optional>
+
 #include "base/bits.h"
+#include "base/memory/raw_ptr.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/gl_repack_utils.h"
+#include "gpu/command_buffer/service/shared_image/shared_image_gl_utils.h"
 #include "gpu/command_buffer/service/skia_utils.h"
-#include "third_party/skia/include/core/SkPromiseImageTexture.h"
-#include "third_party/skia/include/gpu/GrContextThreadSafeProxy.h"
+#include "third_party/skia/include/gpu/ganesh/GrContextThreadSafeProxy.h"
+#include "third_party/skia/include/private/chromium/GrPromiseImageTexture.h"
+#include "ui/gl/gl_context.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_version_info.h"
 #include "ui/gl/progress_reporter.h"
 #include "ui/gl/scoped_binders.h"
+#include "ui/gl/scoped_gl_framebuffer.h"
+#include "ui/gl/scoped_make_current.h"
+#include "ui/gl/scoped_restore_texture.h"
 
 namespace gpu {
 namespace {
 
 // This value can't be cached as it may change for different contexts.
 bool SupportsUnpackSubimage() {
-  return gl::g_current_gl_version->is_es3_capable ||
+  return gl::g_current_gl_version->IsAtLeastGLES(3, 0) ||
          gl::g_current_gl_driver->ext.b_GL_EXT_unpack_subimage;
 }
 
@@ -33,7 +41,7 @@ bool SupportsPackSubimage() {
   // for that row.
   return false;
 #else
-  return gl::g_current_gl_version->is_es3_capable;
+  return gl::g_current_gl_version->IsAtLeastGLES(3, 0);
 #endif
 }
 
@@ -50,9 +58,12 @@ constexpr int ComputeBestAlignment(size_t bytes_per_pixel, size_t stride) {
   return bytes_per_pixel;
 }
 
+
+
 }  // anonymous namespace
 
 // static
+// TODO(hitawala): Check GLFormatCaps for format support.
 viz::SharedImageFormat GLTextureHolder::GetPlaneFormat(
     viz::SharedImageFormat format,
     int plane_index) {
@@ -61,15 +72,21 @@ viz::SharedImageFormat GLTextureHolder::GetPlaneFormat(
     return format;
   }
 
-  if (format == viz::MultiPlaneFormat::kNV12) {
-    return plane_index == 0 ? viz::SinglePlaneFormat::kR_8
-                            : viz::SinglePlaneFormat::kRG_88;
-  } else if (format == viz::MultiPlaneFormat::kYV12) {
-    return viz::SinglePlaneFormat::kR_8;
+  int num_channels = format.NumChannelsInPlane(plane_index);
+  DCHECK_LE(num_channels, 2);
+  switch (format.channel_format()) {
+    case viz::SharedImageFormat::ChannelFormat::k8:
+      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_88
+                               : viz::SinglePlaneFormat::kR_8;
+    case viz::SharedImageFormat::ChannelFormat::k10:
+    case viz::SharedImageFormat::ChannelFormat::k16:
+      return num_channels == 2 ? viz::SinglePlaneFormat::kRG_1616
+                               : viz::SinglePlaneFormat::kR_16;
+    case viz::SharedImageFormat::ChannelFormat::k16F:
+      CHECK_EQ(num_channels, 1);
+      return viz::SinglePlaneFormat::kR_F16;
   }
-
   NOTREACHED();
-  return viz::SinglePlaneFormat::kRGBA_8888;
 }
 
 GLTextureHolder::GLTextureHolder(viz::SharedImageFormat format,
@@ -83,24 +100,7 @@ GLTextureHolder::GLTextureHolder(viz::SharedImageFormat format,
   CHECK(format_.is_single_plane());
 }
 
-// TODO(kylechar): When `texture_` is removed with validating command decoder
-// move constructor/assignment can be defaulted.
-GLTextureHolder::GLTextureHolder(GLTextureHolder&& other) {
-  operator=(std::move(other));
-}
 
-GLTextureHolder& GLTextureHolder::operator=(GLTextureHolder&& other) {
-  format_ = other.format_;
-  size_ = other.size_;
-  is_passthrough_ = other.is_passthrough_;
-  context_lost_ = other.context_lost_;
-  texture_ = other.texture_;
-  other.texture_ = nullptr;
-  passthrough_texture_ = std::move(other.passthrough_texture_);
-  format_desc_ = other.format_desc_;
-  progress_reporter_ = other.progress_reporter_;
-  return *this;
-}
 
 GLTextureHolder::~GLTextureHolder() {
   if (is_passthrough_) {
@@ -129,34 +129,35 @@ void GLTextureHolder::Initialize(
     const std::string& debug_label) {
   DCHECK(!texture_ && !passthrough_texture_);
 
+  // Cache the current context and surface to ensure they can be made current
+  // during subsequent GL operations if needed.
+  context_ = gl::GLContext::GetCurrent();
+  CHECK(context_);
+
   format_desc_.target = GL_TEXTURE_2D;
   format_desc_.data_format = format_info.gl_format;
   format_desc_.data_type = format_info.gl_type;
   format_desc_.image_internal_format = format_info.image_internal_format;
   format_desc_.storage_internal_format = format_info.storage_internal_format;
 
-  GLTextureImageBackingHelper::MakeTextureAndSetParameters(
-      format_desc_.target, framebuffer_attachment_angle,
-      is_passthrough_ ? &passthrough_texture_ : nullptr,
-      is_passthrough_ ? nullptr : &texture_);
+  MakeTextureAndSetParameters(format_desc_.target, framebuffer_attachment_angle,
+                              is_passthrough_ ? &passthrough_texture_ : nullptr,
+                              is_passthrough_ ? nullptr : &texture_);
 
   if (is_passthrough_) {
     passthrough_texture_->SetEstimatedSize(format_.EstimatedSizeInBytes(size_));
-  } else {
-    // TODO(piman): We pretend the texture was created in an ES2 context, so
-    // that it can be used in other ES2 contexts, and so we have to pass
-    // gl_format as the internal format in the LevelInfo.
-    // https://crbug.com/628064
-    texture_->SetLevelInfo(format_desc_.target, 0, format_desc_.data_format,
-                           size_.width(), size_.height(), /*depth=*/1, 0,
-                           format_desc_.data_format, format_desc_.data_type,
-                           /*cleared_rect=*/gfx::Rect());
-    texture_->SetImmutable(true, format_info.supports_storage);
   }
 
   gl::GLApi* api = gl::g_current_gl_context;
-  GLTextureImageBackingHelper::ScopedRestoreTexture scoped_restore(
-      api, format_desc_.target, GetServiceId());
+  gl::ScopedRestoreTexture scoped_restore(api, format_desc_.target,
+                                          GetServiceId());
+
+  // Drain any pre-existing GL errors so the post-allocation check
+  // below is attributable to the storage call. Silently squelching
+  // these errors is unfortunate, but is done in order to mirror other
+  // allocation checks done in the command decoder.
+  while (api->glGetErrorFn() != GL_NO_ERROR) {
+  }
 
   // Initialize the texture storage/image parameters and upload initial pixels
   // if available.
@@ -198,19 +199,43 @@ void GLTextureHolder::Initialize(
   } else {
     ScopedUnpackState scoped_unpack_state(!pixel_data.empty());
     gl::ScopedProgressReporter scoped_progress_reporter(progress_reporter_);
+    const void* data = pixel_data.empty() ? nullptr : pixel_data.data();
     api->glTexImage2DFn(
         format_desc_.target, /*level=*/0, format_desc_.image_internal_format,
         size_.width(), size_.height(), /*border=*/0,
-        format_info.adjusted_format, format_desc_.data_type, pixel_data.data());
+        format_info.adjusted_format, format_desc_.data_type, data);
   }
 
   if (!is_passthrough_) {
+    // Only commit decoder-side LevelInfo / immutable state once the native
+    // allocation has succeeded. If the driver rejected the allocation (e.g.
+    // GL_OUT_OF_MEMORY), leaving LevelInfo at {0,0,0} ensures
+    // Texture::ValidForTexture rejects subsequent TexSubImage calls instead of
+    // forwarding oversized writes to a zero-storage native texture. This
+    // mirrors the fix in GLES2DecoderImpl::TexStorageImpl.
+    if (api->glGetErrorFn() == GL_NO_ERROR) {
+      // TODO(piman): We pretend the texture was created in an ES2 context, so
+      // that it can be used in other ES2 contexts, and so we have to pass
+      // gl_format as the internal format in the LevelInfo.
+      // https://crbug.com/628064
+      const gfx::Rect cleared_rect =
+          !pixel_data.empty() ? gfx::Rect(size_) : gfx::Rect();
+      texture_->SetLevelInfo(
+          format_desc_.target, /*level=*/0, format_desc_.data_format,
+          size_.width(), size_.height(), /*depth=*/1, /*border=*/0,
+          format_desc_.data_format, format_desc_.data_type, cleared_rect);
+      texture_->SetImmutable(true, format_info.supports_storage);
+    } else {
+      LOG(ERROR) << "GLTextureHolder: native storage allocation failed";
+    }
     // Must be set after initial pixel upload.
     texture_->SetCompatibilitySwizzle(format_info.swizzle);
   }
 
-  if (!debug_label.empty()) {
-    api->glObjectLabelFn(GL_TEXTURE, GetServiceId(), -1, debug_label.c_str());
+  // If the extension does not exist, do not pass debug label to avoid crashes.
+  if (!debug_label.empty() && gl::g_current_gl_driver->ext.b_GL_KHR_debug) {
+    api->glObjectLabelKHRFn(GL_TEXTURE, GetServiceId(), -1,
+                            debug_label.c_str());
   }
 }
 
@@ -219,6 +244,11 @@ void GLTextureHolder::InitializeWithTexture(
     scoped_refptr<gles2::TexturePassthrough> texture) {
   DCHECK(!texture_ && !passthrough_texture_);
   DCHECK(is_passthrough_);
+
+  // Cache the current context and surface to ensure they can be made current
+  // during subsequent GL operations if needed.
+  context_ = gl::GLContext::GetCurrent();
+  CHECK(context_);
 
   format_desc_ = format_desc;
   passthrough_texture_ = std::move(texture);
@@ -229,6 +259,11 @@ void GLTextureHolder::InitializeWithTexture(const GLFormatDesc& format_desc,
   DCHECK(!texture_ && !passthrough_texture_);
   DCHECK(!is_passthrough_);
 
+  // Cache the current context and surface to ensure they can be made current
+  // during subsequent GL operations if needed.
+  context_ = gl::GLContext::GetCurrent();
+  CHECK(context_);
+
   format_desc_ = format_desc;
   texture_ = texture;
 }
@@ -236,6 +271,17 @@ void GLTextureHolder::InitializeWithTexture(const GLFormatDesc& format_desc,
 bool GLTextureHolder::UploadFromMemory(const SkPixmap& pixmap) {
   DCHECK_EQ(pixmap.width(), size_.width());
   DCHECK_EQ(pixmap.height(), size_.height());
+
+  // Ensure the correct GL context and surface are current for the upload.
+  std::optional<ui::ScopedMakeCurrent> scoped_make_current;
+  if (!context_->IsCurrent(/*surface=*/nullptr)) {
+    scoped_make_current.emplace(context_.get(), context_->default_surface());
+    if (!scoped_make_current->IsContextCurrent()) {
+      LOG(ERROR)
+          << "GLTextureHolder::UploadFromMemory failed to make context current";
+      return false;
+    }
+  }
 
   const GLuint texture_id = GetServiceId();
   const GLenum gl_format = format_desc_.data_format;
@@ -273,7 +319,7 @@ bool GLTextureHolder::UploadFromMemory(const SkPixmap& pixmap) {
   bool result = gles2::GLES2Util::ComputeImageDataSizes(
       size_.width(), size_.height(), /*depth=*/1, gl_format, gl_type,
       gl_unpack_alignment, &expected_total_bytes, nullptr, &expected_stride);
-  DCHECK(result);
+  CHECK(result);
   DCHECK_GE(src_total_bytes, expected_total_bytes);
   DCHECK_GE(src_stride, expected_stride);
 
@@ -312,6 +358,17 @@ bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
   DCHECK_EQ(pixmap.width(), size_.width());
   DCHECK_EQ(pixmap.height(), size_.height());
 
+  // Ensure the correct GL context and surface are current for the readback.
+  std::optional<ui::ScopedMakeCurrent> scoped_make_current;
+  if (!context_->IsCurrent(/*surface=*/nullptr)) {
+    scoped_make_current.emplace(context_.get(), context_->default_surface());
+    if (!scoped_make_current->IsContextCurrent()) {
+      LOG(ERROR)
+          << "GLTextureHolder::ReadbackToMemory failed to make context current";
+      return false;
+    }
+  }
+
   const GLuint texture_id = GetServiceId();
   GLenum gl_format = format_desc_.data_format;
   GLenum gl_type = format_desc_.data_type;
@@ -328,9 +385,15 @@ bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
   }
 
   gl::GLApi* api = gl::g_current_gl_context;
-  GLuint framebuffer;
-  api->glGenFramebuffersEXTFn(1, &framebuffer);
-  gl::ScopedFramebufferBinder scoped_framebuffer_binder(framebuffer);
+  // ScopedGLFramebuffer must be declared before ScopedFramebufferBinder
+  // so that when this scope exits, ScopedFramebufferBinder is destroyed first
+  // (restoring the previous framebuffer binding) before the temporary FBO is
+  // deleted. Some drivers retain an internal reference to the previously bound
+  // FBO across bind transitions; deleting it while bound can trigger a
+  // driver UAF (see https://crbug.com/525317502).
+  auto temp_fbo = gl::CreateScopedGLFramebuffer(api);
+  gl::ScopedFramebufferBinder scoped_framebuffer_binder(temp_fbo.get());
+
   // This uses GL_FRAMEBUFFER instead of GL_READ_FRAMEBUFFER as the target for
   // GLES2 compatibility.
   api->glFramebufferTexture2DEXTFn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -382,7 +445,7 @@ bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
   bool result = gles2::GLES2Util::ComputeImageDataSizes(
       size_.width(), size_.height(), /*depth=*/1, gl_format, gl_type,
       gl_pack_alignment, &expected_total_bytes, nullptr, &expected_stride);
-  DCHECK(result);
+  CHECK(result);
   DCHECK_GE(pixmap.computeByteSize(), expected_total_bytes);
   DCHECK_GE(dst_stride, expected_stride);
 
@@ -409,8 +472,6 @@ bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
                         pixels);
   }
 
-  api->glDeleteFramebuffersEXTFn(1, &framebuffer);
-
   if (!unpack_buffer.empty()) {
     DCHECK_GT(dst_stride, expected_stride);
     UnpackPixelDataWithStride(size_, unpack_buffer, expected_stride, pixmap);
@@ -423,14 +484,14 @@ bool GLTextureHolder::ReadbackToMemory(const SkPixmap& pixmap) {
   return true;
 }
 
-sk_sp<SkPromiseImageTexture> GLTextureHolder::GetPromiseImage(
+sk_sp<GrPromiseImageTexture> GLTextureHolder::GetPromiseImage(
     SharedContextState* context_state) {
   GrBackendTexture backend_texture;
   GetGrBackendTexture(context_state->feature_info(), format_desc_.target, size_,
                       GetServiceId(), format_desc_.storage_internal_format,
                       context_state->gr_context()->threadSafeProxy(),
                       &backend_texture);
-  return SkPromiseImageTexture::Make(backend_texture);
+  return GrPromiseImageTexture::Make(backend_texture);
 }
 
 gfx::Rect GLTextureHolder::GetClearedRect() const {

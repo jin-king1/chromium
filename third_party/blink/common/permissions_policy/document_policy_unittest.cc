@@ -8,6 +8,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/permissions_policy/document_policy_features.h"
 #include "third_party/blink/public/mojom/permissions_policy/document_policy_feature.mojom.h"
+#include "third_party/blink/public/mojom/permissions_policy/policy_value.mojom.h"
 
 namespace blink {
 namespace {
@@ -70,21 +71,42 @@ TEST_F(DocumentPolicyTest, MergeFeatureState) {
 // IsPolicyCompatible should use default value for incoming policy when required
 // policy specifies a value for a feature and incoming policy is missing value
 // for that feature.
-TEST_F(DocumentPolicyTest, IsPolicyCompatible) {
-  mojom::DocumentPolicyFeature feature =
-      mojom::DocumentPolicyFeature::kLosslessImagesMaxBpp;
-  double default_policy_value =
-      GetDocumentPolicyFeatureInfoMap().at(feature).default_value.DoubleValue();
-  // Cap the default_policy_value, as it can be INF.
-  double strict_policy_value =
-      default_policy_value > 1.0 ? 1.0 : default_policy_value / 2;
+// TODO: This is not testable as only boolean features exist currently.
+// TEST_F(DocumentPolicyTest, IsPolicyCompatible) {
+//   mojom::DocumentPolicyFeature feature =
+//       mojom::DocumentPolicyFeature::kLosslessImagesMaxBpp;
+//   double default_policy_value =
+//       GetDocumentPolicyFeatureInfoMap().at(feature).default_value.DoubleValue();
+//   // Cap the default_policy_value, as it can be INF.
+//   double strict_policy_value =
+//       default_policy_value > 1.0 ? 1.0 : default_policy_value / 2;
+//
+//   EXPECT_FALSE(DocumentPolicy::IsPolicyCompatible(
+//       DocumentPolicyFeatureState{
+//           {feature, PolicyValue::CreateDecDouble(
+//                         strict_policy_value)}}, /* required policy */
+//       DocumentPolicyFeatureState{}              /* incoming policy */
+//       ));
+// }
 
-  EXPECT_FALSE(DocumentPolicy::IsPolicyCompatible(
-      DocumentPolicyFeatureState{
-          {feature, PolicyValue::CreateDecDouble(
-                        strict_policy_value)}}, /* required policy */
-      DocumentPolicyFeatureState{}              /* incoming policy */
-      ));
+// Verify that every Enum-typed Document Policy feature has a token mapping in
+// document_policy_enum_values.h. If this test crashes with NOTREACHED(), a
+// new Enum feature was added to document_policy_features.json5 without a
+// corresponding case in DocumentPolicyEnumValueToToken.
+TEST_F(DocumentPolicyTest, AllEnumFeaturesHaveTokenMappings) {
+  for (const auto& [feature, info] : GetDocumentPolicyFeatureInfoMap()) {
+    if (info.default_value.Type() != mojom::PolicyValueType::kEnum) {
+      continue;
+    }
+    // Use value 1 (the first valid token, e.g. "eager") rather than the
+    // default value 0 which intentionally has no token representation.
+    DocumentPolicyFeatureState state{{feature, PolicyValue::CreateEnum(1)}};
+    std::optional<std::string> serialized = DocumentPolicy::Serialize(state);
+    EXPECT_TRUE(serialized.has_value())
+        << "Enum feature " << static_cast<int>(feature)
+        << " failed to serialize. Add a mapping in "
+           "document_policy_enum_values.h.";
+  }
 }
 
 }  // namespace

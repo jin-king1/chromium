@@ -23,7 +23,9 @@ class PasswordUndoHelper {
   PasswordUndoHelper& operator=(const PasswordUndoHelper&) = delete;
 
   // Adds password to the undo action.
-  void PasswordRemoved(const password_manager::PasswordForm& form);
+  void PasswordRemoved(const PasswordForm& form);
+  // Adds backup password to the undo action.
+  void BackupPasswordRemoved(const PasswordForm& form);
 
   // Reverts last grouped deletion.
   void Undo();

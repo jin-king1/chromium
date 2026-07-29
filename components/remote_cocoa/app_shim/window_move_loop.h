@@ -5,11 +5,10 @@
 #ifndef COMPONENTS_REMOTE_COCOA_APP_SHIM_WINDOW_MOVE_LOOP_H_
 #define COMPONENTS_REMOTE_COCOA_APP_SHIM_WINDOW_MOVE_LOOP_H_
 
-#include "base/memory/raw_ptr.h"
-
 #import <Cocoa/Cocoa.h>
 
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "ui/gfx/mac/scoped_cocoa_disable_screen_updates.h"
 
@@ -44,6 +43,15 @@ class CocoaWindowMoveLoop {
   // Initial mouse location at the time before the CocoaWindowMoveLoop is
   // created.
   NSPoint initial_mouse_in_screen_;
+
+  // The baseline window frame before dragging, or the newly updated baseline
+  // frame if the window was resized or moved programmatically during the drag.
+  NSRect initial_frame_;
+
+  // The last window frame that was explicitly set by this move loop. Used to
+  // detect if the window frame was changed programmatically from outside of
+  // the move loop (e.g. by TabDragController to fit a new display work area).
+  NSRect last_set_frame_;
 
   // Pointer to a stack variable holding the exit reason.
   raw_ptr<LoopExitReason> exit_reason_ref_ = nullptr;

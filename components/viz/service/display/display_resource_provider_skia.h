@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/raw_ptr_exclusion.h"
 #include "components/viz/service/display/display_resource_provider.h"
 #include "components/viz/service/display/external_use_client.h"
 #include "components/viz/service/viz_service_export.h"
@@ -58,8 +57,6 @@ class VIZ_SERVICE_EXPORT DisplayResourceProviderSkia
     ExternalUseClient::ImageContext* LockResource(
         ResourceId resource_id,
         bool maybe_concurrent_reads,
-        bool is_video_plane,
-        sk_sp<SkColorSpace> override_color_space = nullptr,
         bool raw_draw_if_possible = false);
 
     // Unlock all locked resources with a |sync_token|.  The |sync_token| should
@@ -68,10 +65,12 @@ class VIZ_SERVICE_EXPORT DisplayResourceProviderSkia
     // verified.  All resources must be unlocked before destroying this class.
     void UnlockResources(const gpu::SyncToken& sync_token);
 
+    // Returns true if there are no resources currently locked.
+    bool empty() const { return resources_.empty(); }
+
    private:
-    // This field is not a raw_ptr<> because it was filtered by the rewriter
-    // for: #union
-    RAW_PTR_EXCLUSION DisplayResourceProviderSkia* const resource_provider_;
+    const raw_ptr<DisplayResourceProviderSkia, DanglingUntriaged>
+        resource_provider_;
     std::vector<std::pair<ResourceId, ChildResource*>> resources_;
   };
 
@@ -90,7 +89,7 @@ class VIZ_SERVICE_EXPORT DisplayResourceProviderSkia
 
  private:
   // DisplayResourceProvider overrides:
-  std::vector<ReturnedResource> DeleteAndReturnUnusedResourcesToChildImpl(
+  std::vector<ReturnedResourceViz> DeleteAndReturnUnusedResourcesToChildImpl(
       Child& child_info,
       DeleteStyle style,
       const std::vector<ResourceId>& unused) override;

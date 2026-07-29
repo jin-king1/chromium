@@ -115,7 +115,7 @@ class ProfileAuthDataTest : public testing::Test {
 
   content::BrowserTaskEnvironment task_environment_;
 
-  raw_ptr<network::NetworkService, ExperimentalAsh> network_service_;
+  raw_ptr<network::NetworkService> network_service_;
   TestingProfile login_browser_context_;
   TestingProfile user_browser_context_;
   std::unique_ptr<network::NetworkContext> login_network_context_;
@@ -144,19 +144,11 @@ void ProfileAuthDataTest::Transfer(
     bool transfer_auth_cookies_on_first_login,
     bool transfer_saml_auth_cookies_on_subsequent_login) {
   base::RunLoop run_loop;
-  ProfileAuthData::Transfer(login_browser_context_.GetDefaultStoragePartition(),
-                            user_browser_context_.GetDefaultStoragePartition(),
-                            transfer_auth_cookies_on_first_login,
-                            transfer_saml_auth_cookies_on_subsequent_login,
-                            run_loop.QuitClosure());
+  ProfileAuthData::Transfer(
+      login_browser_context_.GetDefaultStoragePartition(),
+      &user_browser_context_, transfer_auth_cookies_on_first_login,
+      transfer_saml_auth_cookies_on_subsequent_login, run_loop.QuitClosure());
   run_loop.Run();
-  if (!transfer_auth_cookies_on_first_login &&
-      !transfer_saml_auth_cookies_on_subsequent_login) {
-    // When only proxy auth state is being transferred, the completion callback
-    // is invoked before the transfer has actually completed. Spin the loop once
-    // more to allow the transfer to complete.
-    base::RunLoop().RunUntilIdle();
-  }
 }
 
 net::CookieList ProfileAuthDataTest::GetUserCookies() {
@@ -233,7 +225,7 @@ void ProfileAuthDataTest::PopulateBrowserContext(
           kSAMLIdPCookieDomainWithWildcard, std::string(), base::Time(),
           base::Time(), base::Time(), true, false,
           net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT,
-          false, absl::nullopt),
+          std::nullopt, /*status=*/nullptr),
       GURL(kSAMLIdPCookieURL), options, base::DoNothing());
 
   cookies->SetCanonicalCookie(
@@ -241,7 +233,7 @@ void ProfileAuthDataTest::PopulateBrowserContext(
           GURL(kSAMLIdPCookieURL), kCookieName, cookie_value, std::string(),
           std::string(), base::Time(), base::Time(), base::Time(), true, false,
           net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT,
-          false, absl::nullopt),
+          std::nullopt, /*status=*/nullptr),
       GURL(kSAMLIdPCookieURL), options, base::DoNothing());
 
   cookies->SetCanonicalCookie(
@@ -249,7 +241,7 @@ void ProfileAuthDataTest::PopulateBrowserContext(
           GURL(kGAIACookieURL), kCookieName, cookie_value, std::string(),
           std::string(), base::Time(), base::Time(), base::Time(), true, false,
           net::CookieSameSite::NO_RESTRICTION, net::COOKIE_PRIORITY_DEFAULT,
-          false, absl::nullopt),
+          std::nullopt, /*status=*/nullptr),
       GURL(kGAIACookieURL), options, base::DoNothing());
 }
 

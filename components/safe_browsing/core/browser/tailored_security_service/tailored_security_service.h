@@ -12,9 +12,11 @@
 #include <string>
 #include <vector>
 
+#include "base/auto_reset.h"
 #include "base/functional/callback_forward.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/time/time.h"
@@ -22,15 +24,20 @@
 #include "base/values.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "url/gurl.h"
+
+namespace network {
+class SharedURLLoaderFactory;
+}
 
 namespace signin {
 class IdentityManager;
 }
 
-namespace network {
-class SharedURLLoaderFactory;
+namespace syncer {
+class SyncService;
 }
 
 namespace safe_browsing {
@@ -78,12 +85,43 @@ class TailoredSecurityService : public KeyedService {
 
   using CompletionCallback = base::OnceCallback<void(Request*, bool success)>;
 
+  // RAII helper to manage the `is_handling_sync_notification_` flag. This is
+  // used to indicate that the service is in the middle of a Tailored Security
+  // flow. When this flag is set, generic Safe Browsing preference change
+  // notifications should be suppressed to avoid showing redundant or confusing
+  // UI.
+  class [[nodiscard]] ScopedSyncNotificationGuard {
+   public:
+    explicit ScopedSyncNotificationGuard(TailoredSecurityService& service);
+    ~ScopedSyncNotificationGuard();
+
+    ScopedSyncNotificationGuard(const ScopedSyncNotificationGuard&) = delete;
+    ScopedSyncNotificationGuard& operator=(const ScopedSyncNotificationGuard&) =
+        delete;
+
+   private:
+    base::AutoReset<bool> auto_reset_;
+  };
+
+  // Returns true if the Tailored Security Service is responsible for showing
+  // a notification for the current preference change. If this returns true,
+  // generic pref change notifications should be suppressed to avoid showing
+  // redundant or confusing UI.
+  static bool IsResponsibleForNotification(PrefService* prefs,
+                                           TailoredSecurityService* service);
+
   TailoredSecurityService(signin::IdentityManager* identity_manager,
+                          syncer::SyncService* sync_service,
                           PrefService* prefs);
   ~TailoredSecurityService() override;
 
   void AddObserver(TailoredSecurityServiceObserver* observer);
   void RemoveObserver(TailoredSecurityServiceObserver* observer);
+
+  // Returns true if the service is currently handling a sync notification.
+  bool is_handling_sync_notification() const {
+    return is_handling_sync_notification_;
+  }
 
   // Called to increment/decrement |active_query_request_|. When
   // |active_query_request_| goes from zero to nonzero, we begin querying the
@@ -130,7 +168,7 @@ class TailoredSecurityService : public KeyedService {
   size_t GetNumberOfPendingTailoredSecurityServiceRequests();
 
   // Extracts a JSON-encoded HTTP response into a dictionary.
-  static base::Value::Dict ReadResponse(Request* request);
+  static base::DictValue ReadResponse(Request* request);
 
   // Unpacks the response and calls `callback`. Called by a `Request` when a
   // tailored security service query sequence has completed. When `success` is
@@ -153,21 +191,37 @@ class TailoredSecurityService : public KeyedService {
   // callback.
   virtual void MaybeNotifySyncUser(bool is_enabled, base::Time previous_update);
 
+  // Returns whether the user has history sync enabled in preferences.
+  bool HistorySyncEnabledForUser();
+
   PrefService* prefs() { return prefs_; }
 
-  raw_ptr<signin::IdentityManager> identity_manager() {
-    return identity_manager_;
-  }
+  signin::IdentityManager* identity_manager() { return identity_manager_; }
 
   virtual scoped_refptr<network::SharedURLLoaderFactory>
   GetURLLoaderFactory() = 0;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(
+      TailoredSecurityServiceTest,
+      HistorySyncEnabledForUserReturnsFalseWhenSyncServiceIsNull);
+  FRIEND_TEST_ALL_PREFIXES(
+      TailoredSecurityServiceTest,
+      RetryLogicTimestampUpdateCallbackSetsStateToRetryNeeded);
+  FRIEND_TEST_ALL_PREFIXES(TailoredSecurityServiceTest,
+                           RetryLogicTimestampUpdateCallbackRecordsStartTime);
   friend class TailoredSecurityTabHelperTest;
 
-  // Stores pointer to IdentityManager instance. It must outlive the
-  // TailoredSecurityService and can be null during tests.
+  // Saves the supplied `TailoredSecurityRetryState` to preferences.
+  void SaveRetryState(TailoredSecurityRetryState state);
+
+  // Stores pointer to `IdentityManager` instance. It must outlive the
+  // `TailoredSecurityService` and can be null during tests.
   raw_ptr<signin::IdentityManager> identity_manager_;
+
+  // Stores pointer to `SyncService` instance. It must outlive the
+  // `TailoredSecurityService` and can be null during tests.
+  raw_ptr<syncer::SyncService> sync_service_;
 
   // Pending TailoredSecurity queries to be canceled if not complete by
   // profile shutdown.
@@ -200,6 +254,11 @@ class TailoredSecurityService : public KeyedService {
 
   // The preferences for the given profile.
   raw_ptr<PrefService> prefs_;
+
+  // Set during the Tailored Security flow to suppress redundant generic
+  // pref change notifications. See `ScopedSyncNotificationGuard` for details
+  // on how this is managed.
+  bool is_handling_sync_notification_ = false;
 
   // This is used to observe when sync users update their Tailored Security
   // setting.

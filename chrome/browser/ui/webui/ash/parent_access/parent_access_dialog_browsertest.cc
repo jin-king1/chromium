@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "ash/constants/webui_url_constants.h"
 #include "ash/shell.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
@@ -15,14 +16,13 @@
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_browsertest_base.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_metrics_utils.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_ui.mojom.h"
-#include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/ui_base_types.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/test/event_generator.h"
-#include "ui/gfx/native_widget_types.h"
 #include "url/gurl.h"
 
 namespace {
@@ -99,9 +99,10 @@ IN_PROC_BROWSER_TEST_P(ParentAccessDialogBrowserTest, ShowDialog) {
 
   // Verify that it is correctly configured.
   EXPECT_EQ(dialog->GetDialogContentURL().spec(),
-            chrome::kChromeUIParentAccessURL);
-  EXPECT_TRUE(dialog->ShouldShowCloseButton());
-  EXPECT_EQ(dialog->GetDialogModalType(), ui::ModalType::MODAL_TYPE_SYSTEM);
+            ash::kChromeUIParentAccessURL);
+  EXPECT_FALSE(dialog->ShouldShowDialogTitle());
+  EXPECT_FALSE(dialog->ShouldShowCloseButton());
+  EXPECT_EQ(dialog->GetDialogModalType(), ui::mojom::ModalType::kSystem);
 
   // Send ESCAPE keypress.  EventGenerator requires the root window, which has
   // to be fetched from the Ash shell.
@@ -122,7 +123,7 @@ IN_PROC_BROWSER_TEST_P(ParentAccessDialogBrowserTest, SetApproved) {
   expected_result.status = ParentAccessDialog::Result::Status::kApproved;
   expected_result.parent_access_token = "TEST_TOKEN";
   expected_result.parent_access_token_expire_timestamp =
-      base::Time::FromDoubleT(123456L);
+      base::Time::FromSecondsSinceUnixEpoch(123456L);
 
   ParentAccessDialog::Callback callback = base::BindLambdaForTesting(
       [&](std::unique_ptr<ParentAccessDialog::Result> result) -> void {
@@ -273,7 +274,7 @@ IN_PROC_BROWSER_TEST_P(ParentAccessDialogBrowserTest,
   histogram_tester.ExpectUniqueSample(
       parent_access::GetHistogramTitleForFlowType(
           parent_access::kParentAccessWidgetShowDialogErrorHistogramBase,
-          absl::nullopt),
+          std::nullopt),
       ParentAccessDialogProvider::ShowErrorType::kAlreadyVisible, 1);
   histogram_tester.ExpectUniqueSample(
       parent_access::GetHistogramTitleForFlowType(
@@ -354,7 +355,7 @@ IN_PROC_BROWSER_TEST_P(ParentAccessDialogRegularUserBrowserTest,
   histogram_tester.ExpectUniqueSample(
       parent_access::GetHistogramTitleForFlowType(
           parent_access::kParentAccessWidgetShowDialogErrorHistogramBase,
-          absl::nullopt),
+          std::nullopt),
       ParentAccessDialogProvider::ShowErrorType::kNotAChildUser, 1);
   histogram_tester.ExpectUniqueSample(
       parent_access::GetHistogramTitleForFlowType(

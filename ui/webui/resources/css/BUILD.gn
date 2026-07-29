@@ -4,6 +4,7 @@
 
 import("//tools/grit/preprocess_if_expr.gni")
 import("//ui/webui/resources/tools/generate_grd.gni")
+import("//ui/webui/webui_features.gni")
 
 include_polymer = !is_android && !is_ios
 
@@ -25,28 +26,17 @@ preprocess_if_expr("preprocess") {
   in_files = [
     "action_link.css",
     "chrome_shared.css",
-    "list.css",
-    "menu_button.css",
-    "menu.css",
     "spinner.css",
-    "text_defaults.css",
     "text_defaults_md.css",
-    "throbber.css",
+    "text_defaults.css",
     "widgets.css",
   ]
 
-  if (!is_chromeos_ash && !is_android) {
+  if (is_linux) {
     in_files += [ "roboto.css" ]
   }
 
-  if (include_polymer) {
+  if (include_polymer || is_desktop_android) {
     in_files += [ "md_colors.css" ]
-  }
-
-  if (is_chromeos) {
-    in_files += [
-      "os_header.css",
-      "overlay.css",
-    ]
   }
 }

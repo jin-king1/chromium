@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <math.h>
 #include <objbase.h>
+
+#include <math.h>
 #include <sapi.h>
 #include <stdint.h>
 #include <wrl/client.h>
@@ -15,7 +16,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_piece.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
@@ -26,8 +27,8 @@
 #include "base/threading/sequence_bound.h"
 #include "base/values.h"
 #include "base/win/scoped_co_mem.h"
-#include "base/win/sphelper.h"
 #include "content/browser/speech/tts_platform_impl.h"
+#include "content/browser/speech/tts_win_utils.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/tts_controller.h"
@@ -51,6 +52,35 @@ const wchar_t kLanguageValue[] = L"Language";
 // https://docs.microsoft.com/en-us/troubleshoot/windows-client/deployment/view-system-registry-with-64-bit-windows
 const wchar_t* kSPCategoryOneCoreVoices =
     L"HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech_OneCore\\Voices";
+
+// Local replacements for SDK <sphelper.h> helpers, avoiding ATL's CComPtr.
+HRESULT SpEnumTokens(const WCHAR* category_id,
+                     const WCHAR* req_attribs,
+                     const WCHAR* opt_attribs,
+                     IEnumSpObjectTokens** out_enum) {
+  Microsoft::WRL::ComPtr<ISpObjectTokenCategory> category;
+  HRESULT hr = ::CoCreateInstance(CLSID_SpObjectTokenCategory, nullptr,
+                                  CLSCTX_ALL, IID_PPV_ARGS(&category));
+  if (SUCCEEDED(hr)) {
+    hr = category->SetId(category_id, FALSE);
+  }
+  if (SUCCEEDED(hr)) {
+    hr = category->EnumTokens(req_attribs, opt_attribs, out_enum);
+  }
+  return hr;
+}
+
+HRESULT SpGetDescription(ISpObjectToken* token, PWSTR* description) {
+  // Try the language-specific description first, then fall back to the default.
+  LANGID lang_id = ::GetUserDefaultUILanguage();
+  std::wstring lang_hex =
+      base::ASCIIToWide(base::StringPrintf("%04X", lang_id));
+  HRESULT hr = token->GetStringValue(lang_hex.c_str(), description);
+  if (FAILED(hr)) {
+    hr = token->GetStringValue(nullptr, description);
+  }
+  return hr;
+}
 
 // This COM interface is receiving the TTS events on the ISpVoice asynchronous
 // worker thread and is emitting a notification task
@@ -290,6 +320,7 @@ void TtsPlatformImplBackgroundWorker::ProcessSpeech(
   // TODO(dmazzoni): convert SSML to SAPI xml. http://crbug.com/88072
 
   std::wstring utterance = base::UTF8ToWide(parsed_utterance);
+  RemoveXml(utterance);
   std::wstring merged_utterance = prefix + utterance + suffix;
 
   utterance_id_ = utterance_id;
@@ -450,7 +481,7 @@ void TtsPlatformImplBackgroundWorker::GetVoices(
       int lcid_value;
       base::HexStringToInt(base::WideToUTF8(language.get()), &lcid_value);
       LCID lcid = MAKELCID(lcid_value, SORT_DEFAULT);
-      WCHAR locale_name[LOCALE_NAME_MAX_LENGTH] = {0};
+      WCHAR locale_name[LOCALE_NAME_MAX_LENGTH] = {};
       LCIDToLocaleName(lcid, locale_name, LOCALE_NAME_MAX_LENGTH, 0);
       voice.lang = base::WideToUTF8(locale_name);
     }

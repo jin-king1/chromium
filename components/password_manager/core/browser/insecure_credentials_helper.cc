@@ -12,8 +12,9 @@
 #include "base/memory/raw_ptr.h"
 #include "components/password_manager/core/browser/password_form.h"
 #include "components/password_manager/core/browser/password_reuse_detector.h"
-#include "components/password_manager/core/browser/password_store_consumer.h"
-#include "components/password_manager/core/browser/password_store_interface.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/password_manager/core/browser/password_store/password_store_consumer.h"
+#include "components/password_manager/core/browser/password_store/password_store_interface.h"
 
 namespace password_manager {
 
@@ -31,10 +32,10 @@ class InsecureCredentialsHelper : public PasswordStoreConsumer {
   void RemovePhishedCredentials(const MatchingReusedCredential& credential);
 
  private:
-  using LoginsResult = std::vector<std::unique_ptr<PasswordForm>>;
-
   // PasswordStoreConsumer:
-  void OnGetPasswordStoreResults(LoginsResult results) override;
+  void OnGetPasswordStoreResultsOrErrorFrom(
+      PasswordStoreInterface* store,
+      LoginsResultOrError results_or_error) override;
 
   void AddPhishedCredentialsInternal(const MatchingReusedCredential& credential,
                                      LoginsResult results);
@@ -59,8 +60,7 @@ InsecureCredentialsHelper::~InsecureCredentialsHelper() = default;
 void InsecureCredentialsHelper::AddPhishedCredentials(
     const MatchingReusedCredential& credential) {
   PasswordFormDigest digest = {PasswordForm::Scheme::kHtml,
-                               credential.signon_realm,
-                               GURL(credential.signon_realm)};
+                               credential.signon_realm, credential.url};
   operation_ =
       base::BindOnce(&InsecureCredentialsHelper::AddPhishedCredentialsInternal,
                      base::Owned(this), credential);
@@ -70,16 +70,21 @@ void InsecureCredentialsHelper::AddPhishedCredentials(
 void InsecureCredentialsHelper::RemovePhishedCredentials(
     const MatchingReusedCredential& credential) {
   PasswordFormDigest digest = {PasswordForm::Scheme::kHtml,
-                               credential.signon_realm,
-                               GURL(credential.signon_realm)};
+                               credential.signon_realm, credential.url};
   operation_ = base::BindOnce(
       &InsecureCredentialsHelper::RemovePhishedCredentialsInternal,
       base::Owned(this), credential);
   store_->GetLogins(digest, weak_ptr_factory_.GetWeakPtr());
 }
 
-void InsecureCredentialsHelper::OnGetPasswordStoreResults(
-    LoginsResult results) {
+void InsecureCredentialsHelper::OnGetPasswordStoreResultsOrErrorFrom(
+    PasswordStoreInterface* store,
+    LoginsResultOrError results_or_error) {
+  if (std::holds_alternative<PasswordStoreBackendError>(results_or_error)) {
+    std::move(operation_).Run({});
+    return;
+  }
+  auto results = std::get<LoginsResult>(std::move(results_or_error));
   std::move(operation_).Run(std::move(results));
 }
 
@@ -87,14 +92,15 @@ void InsecureCredentialsHelper::AddPhishedCredentialsInternal(
     const MatchingReusedCredential& credential,
     LoginsResult results) {
   for (auto& form : results) {
-    if (form->username_value == credential.username) {
-      if (form->password_issues.find(InsecureType::kPhished) ==
-          form->password_issues.end()) {
-        form->password_issues.insert(
+    if (form.signon_realm == credential.signon_realm &&
+        form.username_value == credential.username) {
+      if (form.password_issues.find(InsecureType::kPhished) ==
+          form.password_issues.end()) {
+        form.password_issues.insert(
             {InsecureType::kPhished,
              InsecurityMetadata(base::Time::Now(), IsMuted(false),
                                 TriggerBackendNotification(false))});
-        store_->UpdateLogin(*form);
+        store_->UpdateLogin(std::move(form));
       }
     }
   }
@@ -104,11 +110,12 @@ void InsecureCredentialsHelper::RemovePhishedCredentialsInternal(
     const MatchingReusedCredential& credential,
     LoginsResult results) {
   for (auto& form : results) {
-    if (form->username_value == credential.username) {
-      if (form->password_issues.find(InsecureType::kPhished) !=
-          form->password_issues.end()) {
-        form->password_issues.erase(InsecureType::kPhished);
-        store_->UpdateLogin(*form);
+    if (form.signon_realm == credential.signon_realm &&
+        form.username_value == credential.username) {
+      if (form.password_issues.find(InsecureType::kPhished) !=
+          form.password_issues.end()) {
+        form.password_issues.erase(InsecureType::kPhished);
+        store_->UpdateLogin(std::move(form));
       }
     }
   }

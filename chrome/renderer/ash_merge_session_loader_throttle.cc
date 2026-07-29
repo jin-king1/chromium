@@ -10,9 +10,35 @@
 #include "base/functional/bind.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/renderer/chrome_render_thread_observer.h"
+#include "components/google/core/common/google_util.h"
 #include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "third_party/blink/public/mojom/loader/resource_load_info.mojom-shared.h"
+
+namespace {
+bool ShouldDelayUrl(const GURL& url) {
+  // TODO(b/320891641) - We should ideally call
+  // `ash::merge_session_throttling_utils::ShouldDelayUrl()` but can't because
+  // of include dependencies issues. Figure out how to extract the common
+  // components.
+  // We need to throttle requests to Google web properties while cookie minting
+  // is in progress (Signalled by
+  // `chromeos_listener_->IsMergeSessionRunning()`). If we do not do this, users
+  // will get a "Sign in to Google" prompt while visiting Google web properties
+  // - which is not the expected user experience on ChromeOS / Ash. Users expect
+  // a Single Sign On experience on ChromeOS - i.e. when they sign-in to
+  // ChromeOS at the ChromeOS login screen, they expect to be signed into Google
+  // web properties inside their session. Since there can be a delay in minting
+  // Google cookies on the user's behalf - and they can navigate to Google web
+  // properties in the browser while cookies are being minted, we need to
+  // throttle these requests. At the same time, we do not want to throttle
+  // requests for non-Google web properties (see http://b/315072145 [note:
+  // Google-internal link, but the context matches what's described in this
+  // comment]).
+  return google_util::IsGoogleDomainUrl(url, google_util::ALLOW_SUBDOMAIN,
+                                        google_util::ALLOW_NON_STANDARD_PORTS);
+}
+}  // namespace
 
 // static
 base::TimeDelta AshMergeSessionLoaderThrottle::GetMergeSessionTimeout() {
@@ -38,6 +64,10 @@ bool AshMergeSessionLoaderThrottle::MaybeDeferForMergeSession(
     return false;
   }
 
+  if (!ShouldDelayUrl(url)) {
+    return false;
+  }
+
   chromeos_listener_->RunWhenMergeSessionFinished(std::move(resume_callback));
   return true;
 }
@@ -60,9 +90,7 @@ void AshMergeSessionLoaderThrottle::WillRedirectRequest(
     net::RedirectInfo* redirect_info,
     const network::mojom::URLResponseHead& /* response_head */,
     bool* defer,
-    std::vector<std::string>* to_be_removed_headers,
-    net::HttpRequestHeaders* modified_headers,
-    net::HttpRequestHeaders* modified_cors_exempt_headers) {
+    network::HttpRequestHeadersUpdateParams* headers_update_params) {
   if (is_xhr_ && redirect_info->new_url.SchemeIsHTTPOrHTTPS() &&
       MaybeDeferForMergeSession(
           redirect_info->new_url,

@@ -7,11 +7,14 @@
 #include <cstdint>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <vector>
 
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/tablet_mode.h"
 #include "ash/shell.h"
+#include "ash/system/diagnostics/diagnostics_log_controller.h"
+#include "ash/system/diagnostics/fake_diagnostics_browser_delegate.h"
 #include "ash/system/diagnostics/keyboard_input_log.h"
 #include "ash/system/diagnostics/log_test_helpers.h"
 #include "ash/test/ash_test_base.h"
@@ -21,6 +24,7 @@
 #include "ash/webui/diagnostics_ui/mojom/input_data_provider.mojom.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
@@ -49,12 +53,14 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/events/ash/event_rewriter_ash.h"
+#include "ui/events/ash/fake_event_rewriter_ash_delegate.h"
 #include "ui/events/ash/keyboard_capability.h"
 #include "ui/events/devices/device_data_manager.h"
 #include "ui/events/devices/device_data_manager_test_api.h"
+#include "ui/events/devices/input_device.h"
+#include "ui/events/devices/keyboard_device.h"
 #include "ui/events/devices/touch_device_transform.h"
 #include "ui/events/devices/touchscreen_device.h"
 #include "ui/events/keycodes/dom/dom_code.h"
@@ -108,6 +114,21 @@ constexpr mojom::TopRowKey kInternalJinlonTopRowKeys[] = {
     mojom::TopRowKey::kVolumeMute,
     mojom::TopRowKey::kVolumeDown,
     mojom::TopRowKey::kVolumeUp};
+
+constexpr ui::TopRowActionKey kInternalJinlonActionKeys[] = {
+    ui::TopRowActionKey::kBack,
+    ui::TopRowActionKey::kRefresh,
+    ui::TopRowActionKey::kFullscreen,
+    ui::TopRowActionKey::kOverview,
+    ui::TopRowActionKey::kScreenshot,
+    ui::TopRowActionKey::kScreenBrightnessDown,
+    ui::TopRowActionKey::kScreenBrightnessUp,
+    ui::TopRowActionKey::kPrivacyScreenToggle,
+    ui::TopRowActionKey::kKeyboardBacklightDown,
+    ui::TopRowActionKey::kKeyboardBacklightUp,
+    ui::TopRowActionKey::kVolumeMute,
+    ui::TopRowActionKey::kVolumeDown,
+    ui::TopRowActionKey::kVolumeUp};
 
 // One possible variant of a Dell configuration
 constexpr mojom::TopRowKey kInternalDellTopRowKeys[] = {
@@ -242,7 +263,8 @@ class FakeDeviceManager : public ui::DeviceManager {
 };
 
 class FakeInputDataEventWatcher;
-typedef std::map<uint32_t, FakeInputDataEventWatcher*> watchers_t;
+typedef std::map<uint32_t, raw_ptr<FakeInputDataEventWatcher, CtnExperimental>>
+    watchers_t;
 
 // Fake evdev watcher class that lets us manually post input
 // events into an InputDataProvider; this keeps an external
@@ -281,7 +303,7 @@ class FakeInputDataEventWatcher : public InputDataEventWatcher {
 
  private:
   base::WeakPtr<KeyboardInputDataEventWatcher::Dispatcher> dispatcher_;
-  const raw_ref<watchers_t, ExperimentalAsh> watchers_;
+  const raw_ref<watchers_t> watchers_;
 };
 
 // Utility to construct FakeInputDataEventWatcher for InputDataProvider.
@@ -304,7 +326,7 @@ class FakeInputDataEventWatcherFactory : public EventWatcherFactory {
   }
 
  private:
-  const raw_ref<watchers_t, ExperimentalAsh> watchers_;
+  const raw_ref<watchers_t> watchers_;
 };
 
 // A mock observer that records device change events emitted from an
@@ -437,6 +459,7 @@ class FakeInputDeviceInfoHelper : public InputDeviceInfoHelper {
     ui::DeviceCapabilities device_caps;
     const std::string base_name = path.BaseName().value();
     auto info = std::make_unique<InputDeviceInformation>();
+    std::unique_ptr<ui::KeyboardCapability::KeyboardInfo> keyboard_info;
 
     if (base_name == "event0") {
       device_caps = ui::kLinkKeyboard;
@@ -482,6 +505,16 @@ class FakeInputDeviceInfoHelper : public InputDeviceInfoHelper {
       info->keyboard_top_row_layout =
           ui::KeyboardCapability::KeyboardTopRowLayout::kKbdTopRowLayoutCustom;
       info->keyboard_scan_codes = kInternalJinlonScanCodes;
+
+      keyboard_info = std::make_unique<ui::KeyboardCapability::KeyboardInfo>();
+      keyboard_info->device_type =
+          ui::KeyboardCapability::DeviceType::kDeviceInternalKeyboard;
+      keyboard_info->top_row_action_keys.assign(
+          std::begin(kInternalJinlonActionKeys),
+          std::end(kInternalJinlonActionKeys));
+      keyboard_info->top_row_layout =
+          ui::KeyboardCapability::KeyboardTopRowLayout::kKbdTopRowLayoutCustom;
+      keyboard_info->top_row_scan_codes = kInternalJinlonScanCodes;
       EXPECT_EQ(7, id);
     } else if (base_name == "event8") {
       device_caps = ui::kMicrosoftBluetoothNumberPad;
@@ -511,6 +544,18 @@ class FakeInputDeviceInfoHelper : public InputDeviceInfoHelper {
       info->keyboard_scan_codes = kInternalJinlonScanCodes;
       // Set 0xC4 to be F8.
       info->keyboard_scan_codes[7] = 0xC4;
+
+      keyboard_info = std::make_unique<ui::KeyboardCapability::KeyboardInfo>();
+      keyboard_info->device_type =
+          ui::KeyboardCapability::DeviceType::kDeviceInternalKeyboard;
+      keyboard_info->top_row_action_keys.assign(
+          std::begin(kInternalJinlonActionKeys),
+          std::end(kInternalJinlonActionKeys));
+      keyboard_info->top_row_layout =
+          ui::KeyboardCapability::KeyboardTopRowLayout::kKbdTopRowLayoutCustom;
+      keyboard_info->top_row_scan_codes = kInternalJinlonScanCodes;
+      keyboard_info->top_row_scan_codes[7] = 0xC4;
+      keyboard_info->top_row_action_keys[7] = ui::TopRowActionKey::kUnknown;
       EXPECT_EQ(11, id);
     } else if (base_name == "event12") {
       device_caps = ui::kMorphiusTabletModeSwitch;
@@ -525,6 +570,13 @@ class FakeInputDeviceInfoHelper : public InputDeviceInfoHelper {
     } else if (base_name == "event14") {
       device_caps = ui::kBaskingTouchScreen;
       EXPECT_EQ(14, id);
+    } else if (base_name == "event15") {
+      device_caps = ui::kSplitModifierKeyboard;
+      info->keyboard_type =
+          ui::KeyboardCapability::DeviceType::kDeviceInternalKeyboard;
+      info->keyboard_top_row_layout =
+          ui::KeyboardCapability::KeyboardTopRowLayout::kKbdTopRowLayoutCustom;
+      EXPECT_EQ(15, id);
     } else if (base_name == kSillyDeviceName) {
       // Simulate a device that is properly described, but has a malformed
       // device name.
@@ -547,49 +599,16 @@ class FakeInputDeviceInfoHelper : public InputDeviceInfoHelper {
         InputDataProvider::ConnectionTypeFromInputDeviceType(
             info->event_device_info.device_type());
 
+    if (keyboard_info) {
+      Shell::Get()
+          ->keyboard_capability()
+          ->DisableKeyboardInfoTrimmingForTesting();
+      Shell::Get()->keyboard_capability()->SetKeyboardInfoForTesting(
+          ui::KeyboardDevice(info->input_device), std::move(*keyboard_info));
+    }
+
     return info;
   }
-};
-
-// Test implementation of ui::EventRewriterAsh::Delegate used to check that
-// modifier key rewrites are suppressed appropriately in InputDataProvider.
-class TestEventRewriterAshDelegate : public ui::EventRewriterAsh::Delegate {
- public:
-  // ui::EventRewriterAsh::Delegate:
-  bool RewriteModifierKeys() override {
-    return !suppress_modifier_key_rewrites_;
-  }
-  void SuppressModifierKeyRewrites(bool should_supress) override {
-    suppress_modifier_key_rewrites_ = should_supress;
-  }
-
-  // Not used, only to satisfy interface.
-  bool RewriteMetaTopRowKeyComboEvents(int device_id) const override {
-    return true;
-  }
-  void SuppressMetaTopRowKeyComboRewrites(bool should_suppress) override {}
-  absl::optional<ui::mojom::ModifierKey> GetKeyboardRemappedModifierValue(
-      int device_id,
-      ui::mojom::ModifierKey modifier_key,
-      const std::string& pref_name) const override {
-    return absl::nullopt;
-  }
-  bool TopRowKeysAreFunctionKeys(int device_id) const override { return false; }
-  bool IsExtensionCommandRegistered(ui::KeyboardCode key_code,
-                                    int flags) const override {
-    return false;
-  }
-  bool IsSearchKeyAcceleratorReserved() const override { return false; }
-  bool NotifyDeprecatedRightClickRewrite() override { return false; }
-  bool NotifyDeprecatedSixPackKeyRewrite(ui::KeyboardCode key_code) override {
-    return false;
-  }
-  void RecordEventRemappedToRightClick() override {}
-  void RecordSixPackEventRewrite(ui::KeyboardCode key_code,
-                                 bool alt_based) override {}
-
- protected:
-  bool suppress_modifier_key_rewrites_ = false;
 };
 
 // Our modifications to InputDataProvider that carries around its own
@@ -605,7 +624,6 @@ class TestInputDataProvider : public InputDataProvider {
             widget->GetNativeWindow(),
             std::make_unique<FakeDeviceManager>(),
             std::make_unique<FakeInputDataEventWatcherFactory>(watchers),
-            /*keyboard_input_log_ptr=*/nullptr,
             Shell::Get()->accelerator_controller(),
             event_rewriter_delegate),
         attached_widget_(widget),
@@ -619,13 +637,13 @@ class TestInputDataProvider : public InputDataProvider {
   // The widget represents the tab that input diagnostics would normally be
   // shown in. This is allocated outside this class so it won't
   // be destroyed early. (See next item.)
-  raw_ptr<views::Widget, ExperimentalAsh> attached_widget_;
+  raw_ptr<views::Widget> attached_widget_;
   // Keep a list of watchers for each evdev in the provider. This is a
   // reference to an instance outside of this class, as the lifetime of the
   // list needs to exceed the destruction of this test class, and can only be
   // cleaned up once all watchers have been destroyed by the base
   // InputDataProvider, which occurs after our destruction.
-  const raw_ref<watchers_t, ExperimentalAsh> watchers_;
+  const raw_ref<watchers_t> watchers_;
 };
 
 class InputDataProviderTest : public AshTestBase {
@@ -646,8 +664,6 @@ class InputDataProviderTest : public AshTestBase {
     AshTestSuite::LoadTestResources();
     AshTestBase::SetUp();
 
-    event_rewriter_delegate_ = std::make_unique<TestEventRewriterAshDelegate>();
-
     // Note: some init for creating widgets is performed in base SetUp
     // instead of the constructor, so our init must also be delayed until
     // SetUp, so we can safely invoke CreateTestWidget().
@@ -657,9 +673,12 @@ class InputDataProviderTest : public AshTestBase {
     system::StatisticsProvider::SetTestProvider(&statistics_provider_);
 
     fake_udev_ = std::make_unique<testing::FakeUdevLoader>();
-    widget_ = CreateTestWidget();
+    widget_ =
+        CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
     provider_ = std::make_unique<TestInputDataProvider>(
-        widget_.get(), watchers_, event_rewriter_delegate_.get());
+        widget_.get(), watchers_, &event_rewriter_delegate_);
+    DiagnosticsLogController::Initialize(
+        std::make_unique<FakeDiagnosticsBrowserDelegate>());
 
     // Apply these early, in SetUp; delaying until
     // FakeInputDeviceInfoHelper::GetDeviceInfo() is not appropriate, as
@@ -695,7 +714,7 @@ class InputDataProviderTest : public AshTestBase {
   }
 
   bool ModifierRewritesAreSuppressed() {
-    return !event_rewriter_delegate_->RewriteModifierKeys();
+    return !event_rewriter_delegate_.RewriteModifierKeys();
   }
 
  protected:
@@ -714,7 +733,8 @@ class InputDataProviderTest : public AshTestBase {
     size_t i;
 
     i = 0;
-    for (auto* iter = list.begin(); iter != list.end(); iter++, i++) {
+    for (auto* iter = list.begin(); iter != list.end();
+         UNSAFE_TODO(iter++), i++) {
       (*provider_->watchers_)[id]->PostKeyEvent(iter->down, iter->key.key_code,
                                                 iter->key.at_scan_code);
     }
@@ -723,7 +743,8 @@ class InputDataProviderTest : public AshTestBase {
     ASSERT_EQ(std::size(list), fake_observer->events_.size());
 
     i = 0;
-    for (auto* iter = list.begin(); iter != list.end(); iter++, i++) {
+    for (auto* iter = list.begin(); iter != list.end();
+         UNSAFE_TODO(iter++), i++) {
       EXPECT_EQ(
           *fake_observer->events_[i].second,
           mojom::KeyEvent(/*id=*/id,
@@ -762,8 +783,8 @@ class InputDataProviderTest : public AshTestBase {
     const std::string sys_path = device_name + "-" + device_caps.path;
 
     fake_udev_->AddFakeDevice(device_caps.name, sys_path.c_str(),
-                              /*subsystem=*/"input", /*devnode=*/absl::nullopt,
-                              /*devtype=*/absl::nullopt,
+                              /*subsystem=*/"input", /*devnode=*/std::nullopt,
+                              /*devtype=*/std::nullopt,
                               std::move(sysfs_attributes),
                               std::move(sysfs_properties));
   }
@@ -774,8 +795,8 @@ class InputDataProviderTest : public AshTestBase {
   std::unique_ptr<views::Widget> widget_;
   // All evdev watchers in use by provider_.
   watchers_t watchers_;
+  ui::test::FakeEventRewriterAshDelegate event_rewriter_delegate_;
   std::unique_ptr<TestInputDataProvider> provider_;
-  std::unique_ptr<TestEventRewriterAshDelegate> event_rewriter_delegate_;
 
  private:
   std::unique_ptr<base::test::ScopedFeatureList> scoped_feature_list_;
@@ -800,13 +821,12 @@ TEST_F(InputDataProviderTest, GetConnectedDevices_DeviceInfoMapping) {
   provider_->OnDeviceEvent(event3);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
-  const auto& touch_devices = future.Get<1>();
+  mojom::ConnectedDevicesPtr connected_devices = future.Take();
+  const auto& keyboards = connected_devices->keyboards;
+  const auto& touch_devices = connected_devices->touch_devices;
 
   ASSERT_EQ(1ul, keyboards.size());
   // The stylus device should be filtered out, hence only 2 touch devices.
@@ -830,15 +850,85 @@ TEST_F(InputDataProviderTest, GetConnectedDevices_DeviceInfoMapping) {
   EXPECT_EQ("Atmel maXTouch Touchscreen", touchscreen->name);
 }
 
+TEST_F(InputDataProviderTest, GetConnectedDevices_HasInternalKeyboard) {
+  // Initialize one internal keyboard in DeviceDataManager.
+  std::vector<ui::KeyboardDevice> keyboard_devices;
+  keyboard_devices.push_back(
+      ui::KeyboardDevice(kDeviceId1, ui::InputDeviceType::INPUT_DEVICE_INTERNAL,
+                         "Internal Keyboard"));
+  ui::DeviceDataManagerTestApi().SetKeyboardDevices(keyboard_devices);
+
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
+  provider_->GetConnectedDevices(future.GetCallback());
+
+  // The return values are supposed to be not ready since GetConnectedDevices()
+  // function will wait for the internal keyboard to be added.
+  ASSERT_FALSE(future.IsReady());
+
+  // Add an internal keyboard.
+  ui::DeviceEvent event(ui::DeviceEvent::DeviceType::INPUT,
+                        ui::DeviceEvent::ActionType::ADD,
+                        base::FilePath("/dev/input/event5"));
+  provider_->OnDeviceEvent(event);
+  base::RunLoop().RunUntilIdle();
+
+  ASSERT_TRUE(future.IsReady());
+  ASSERT_EQ(1ul, future.Take()->keyboards.size());
+}
+
+TEST_F(InputDataProviderTest, GetConnectedDevices_SplitModifierKeyboard) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kModifierSplit);
+
+  // Initialize one split modifier keyboard in DeviceDataManager.
+  std::vector<ui::KeyboardDevice> keyboard_devices;
+  keyboard_devices.emplace_back(
+      kDeviceId1, ui::InputDeviceType::INPUT_DEVICE_INTERNAL,
+      "Split Modifier Keyboard", /*has_assistant_key=*/true,
+      /*has_function_key=*/true);
+  ui::DeviceDataManagerTestApi().SetKeyboardDevices(keyboard_devices);
+
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
+  provider_->GetConnectedDevices(future.GetCallback());
+
+  // The return values are supposed to be ready since GetConnectedDevices()
+  // function won't wait for the split modifier keyboard to be added.
+  ASSERT_TRUE(future.IsReady());
+}
+
+TEST_F(InputDataProviderTest, FilterOutSplitModifierKeyboardWithoutConfig) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kModifierSplit);
+
+  // Initialize one split modifier keyboard in DeviceDataManager.
+  std::vector<ui::KeyboardDevice> keyboard_devices;
+  keyboard_devices.emplace_back(
+      kDeviceId1, ui::InputDeviceType::INPUT_DEVICE_INTERNAL,
+      "Split Modifier Keyboard", /*has_assistant_key=*/true,
+      /*has_function_key=*/true);
+  ui::DeviceDataManagerTestApi().SetKeyboardDevices(keyboard_devices);
+
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
+  provider_->GetConnectedDevices(future.GetCallback());
+
+  // Add an split modifier keyboard.
+  ui::DeviceEvent event(ui::DeviceEvent::DeviceType::INPUT,
+                        ui::DeviceEvent::ActionType::ADD,
+                        base::FilePath("/dev/input/event15"));
+  provider_->OnDeviceEvent(event);
+  base::RunLoop().RunUntilIdle();
+
+  ASSERT_EQ(0ul, future.Take()->keyboards.size());
+}
+
 TEST_F(InputDataProviderTest, GetConnectedDevices_AddEventAfterFirstCall) {
   {
-    base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                           std::vector<mojom::TouchDeviceInfoPtr>>
-        future;
+    base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
     provider_->GetConnectedDevices(future.GetCallback());
 
-    const auto& keyboards = future.Get<0>();
-    const auto& touch_devices = future.Get<1>();
+    mojom::ConnectedDevicesPtr connected_devices = future.Take();
+    const auto& keyboards = connected_devices->keyboards;
+    const auto& touch_devices = connected_devices->touch_devices;
     ASSERT_EQ(0ul, keyboards.size());
     ASSERT_EQ(0ul, touch_devices.size());
   }
@@ -850,13 +940,12 @@ TEST_F(InputDataProviderTest, GetConnectedDevices_AddEventAfterFirstCall) {
   base::RunLoop().RunUntilIdle();
 
   {
-    base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                           std::vector<mojom::TouchDeviceInfoPtr>>
-        future;
+    base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
     provider_->GetConnectedDevices(future.GetCallback());
 
-    const auto& keyboards = future.Get<0>();
-    const auto& touch_devices = future.Get<1>();
+    mojom::ConnectedDevicesPtr connected_devices = future.Take();
+    const auto& keyboards = connected_devices->keyboards;
+    const auto& touch_devices = connected_devices->touch_devices;
 
     ASSERT_EQ(1ul, keyboards.size());
     const mojom::KeyboardInfoPtr& keyboard = keyboards[0];
@@ -881,13 +970,12 @@ TEST_F(InputDataProviderTest, GetConnectedDevices_AddUnusualDevices) {
   provider_->OnDeviceEvent(event1);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
-  const auto& touch_devices = future.Get<1>();
+  mojom::ConnectedDevicesPtr connected_devices = future.Take();
+  const auto& keyboards = connected_devices->keyboards;
+  const auto& touch_devices = connected_devices->touch_devices;
 
   ASSERT_EQ(2ul, keyboards.size());
   ASSERT_EQ(0ul, touch_devices.size());
@@ -915,13 +1003,12 @@ TEST_F(InputDataProviderTest, GetConnectedDevices_Remove) {
   base::RunLoop().RunUntilIdle();
 
   {
-    base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                           std::vector<mojom::TouchDeviceInfoPtr>>
-        future;
+    base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
     provider_->GetConnectedDevices(future.GetCallback());
 
-    const auto& keyboards = future.Get<0>();
-    const auto& touch_devices = future.Get<1>();
+    mojom::ConnectedDevicesPtr connected_devices = future.Take();
+    const auto& keyboards = connected_devices->keyboards;
+    const auto& touch_devices = connected_devices->touch_devices;
 
     ASSERT_EQ(1ul, keyboards.size());
     EXPECT_EQ(4u, keyboards[0]->id);
@@ -941,13 +1028,12 @@ TEST_F(InputDataProviderTest, GetConnectedDevices_Remove) {
   base::RunLoop().RunUntilIdle();
 
   {
-    base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                           std::vector<mojom::TouchDeviceInfoPtr>>
-        future;
+    base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
     provider_->GetConnectedDevices(future.GetCallback());
 
-    const auto& keyboards = future.Get<0>();
-    const auto& touch_devices = future.Get<1>();
+    mojom::ConnectedDevicesPtr connected_devices = future.Take();
+    const auto& keyboards = connected_devices->keyboards;
+    const auto& touch_devices = connected_devices->touch_devices;
 
     EXPECT_EQ(0ul, keyboards.size());
     EXPECT_EQ(0ul, touch_devices.size());
@@ -969,12 +1055,11 @@ TEST_F(InputDataProviderTest, GetConnectedDevices_NoExternalKeyboards) {
   provider_->OnDeviceEvent(add_external_event);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(1ul, keyboards.size());
 
@@ -1005,12 +1090,11 @@ TEST_F(InputDataProviderTest, KeyboardPhysicalLayoutDetection) {
   provider_->OnDeviceEvent(event3);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(4ul, keyboards.size());
 
@@ -1079,12 +1163,11 @@ TEST_F(InputDataProviderTest, KeyboardRegionDetection) {
   provider_->OnDeviceEvent(event_external);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(2ul, keyboards.size());
 
@@ -1092,7 +1175,7 @@ TEST_F(InputDataProviderTest, KeyboardRegionDetection) {
   EXPECT_EQ("jp", internal_keyboard->region_code);
 
   const mojom::KeyboardInfoPtr& external_keyboard = keyboards[1];
-  EXPECT_EQ(absl::nullopt, external_keyboard->region_code);
+  EXPECT_EQ(std::nullopt, external_keyboard->region_code);
 }
 
 TEST_F(InputDataProviderTest, KeyboardRegionDetection_Failure) {
@@ -1104,17 +1187,16 @@ TEST_F(InputDataProviderTest, KeyboardRegionDetection_Failure) {
   provider_->OnDeviceEvent(event_internal);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(1ul, keyboards.size());
 
   const mojom::KeyboardInfoPtr& internal_keyboard = keyboards[0];
-  EXPECT_EQ(absl::nullopt, internal_keyboard->region_code);
+  EXPECT_EQ(std::nullopt, internal_keyboard->region_code);
 }
 
 TEST_F(InputDataProviderTest, KeyboardAssistantKeyDetection) {
@@ -1128,11 +1210,10 @@ TEST_F(InputDataProviderTest, KeyboardAssistantKeyDetection) {
   provider_->OnDeviceEvent(eve_event);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(2ul, keyboards.size());
 
@@ -1156,11 +1237,10 @@ TEST_F(InputDataProviderTest, KeyboardNumberPadDetectionInternal) {
   provider_->OnDeviceEvent(link_event);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(1ul, keyboards.size());
 
@@ -1179,12 +1259,11 @@ TEST_F(InputDataProviderTest, KeyboardTopRightKey_Clamshell) {
   provider_->OnDeviceEvent(event_keyboard);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(1ul, keyboards.size());
 
@@ -1205,12 +1284,11 @@ TEST_F(InputDataProviderTest, KeyboardTopRightKey_Convertible_ModeSwitchFirst) {
   provider_->OnDeviceEvent(event_keyboard);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(1ul, keyboards.size());
 
@@ -1232,12 +1310,11 @@ TEST_F(InputDataProviderTest, KeyboardTopRightKey_Convertible_KeyboardFirst) {
   provider_->OnDeviceEvent(event_mode_switch);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(1ul, keyboards.size());
 
@@ -1254,12 +1331,10 @@ TEST_F(InputDataProviderTest, KeyboardTopRightKey_Detachable) {
   provider_->OnDeviceEvent(event_keyboard);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
-
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(1ul, keyboards.size());
 
@@ -1377,12 +1452,11 @@ TEST_F(InputDataProviderTest, GetKeyboardMechanicalLayout_Unknown1) {
   base::RunLoop().RunUntilIdle();
 
   {
-    base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                           std::vector<mojom::TouchDeviceInfoPtr>>
-        future;
+    base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
     provider_->GetConnectedDevices(future.GetCallback());
 
-    const auto& keyboards = future.Get<0>();
+    mojom::ConnectedDevicesPtr result = future.Take();
+    const auto& keyboards = result->keyboards;
 
     ASSERT_EQ(1ul, keyboards.size());
 
@@ -1407,12 +1481,11 @@ TEST_F(InputDataProviderTest, GetKeyboardMechanicalLayout_Unknown2) {
   base::RunLoop().RunUntilIdle();
 
   {
-    base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                           std::vector<mojom::TouchDeviceInfoPtr>>
-        future;
+    base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
     provider_->GetConnectedDevices(future.GetCallback());
 
-    const auto& keyboards = future.Get<0>();
+    mojom::ConnectedDevicesPtr result = future.Take();
+    const auto& keyboards = result->keyboards;
 
     ASSERT_EQ(1ul, keyboards.size());
 
@@ -1636,7 +1709,8 @@ TEST_F(InputDataProviderTest, KeyObservationDisconnect) {
 TEST_F(InputDataProviderTest, KeyObservationObeysFocusSwitching) {
   std::unique_ptr<FakeKeyboardObserver> fake_observer =
       std::make_unique<FakeKeyboardObserver>();
-  std::unique_ptr<views::Widget> other_widget = CreateTestWidget();
+  std::unique_ptr<views::Widget> other_widget =
+      CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
 
   // Provider's widget must be active and visible.
   provider_->attached_widget_->Show();
@@ -1899,12 +1973,13 @@ TEST_F(InputDataProviderTest, KeyObservationMultipleProviders) {
   // Create a second InputDataProvider, with a separate window/widget,
   // as would happen if multiple instances of the SWA were created.
   watchers_t provider2_watchers;
-  auto provider2_widget = CreateTestWidget();
+  auto provider2_widget =
+      CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
 
   std::unique_ptr<TestInputDataProvider> provider2_ =
       std::make_unique<TestInputDataProvider>(provider2_widget.get(),
                                               provider2_watchers,
-                                              event_rewriter_delegate_.get());
+                                              &event_rewriter_delegate_);
   auto& provider1_ = provider_;
 
   std::unique_ptr<FakeKeyboardObserver> fake_observer1 =
@@ -2029,7 +2104,8 @@ TEST_F(InputDataProviderTest, KeyObservationMultipleProviders) {
   fake_observer2->events_.clear();
 
   // Activate a new widget, ensuring neither previous window is active.
-  auto widget3 = CreateTestWidget();
+  auto widget3 =
+      CreateTestWidget(views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET);
   widget3->Activate();
   base::RunLoop().RunUntilIdle();
 
@@ -2115,12 +2191,11 @@ TEST_F(InputDataProviderTest, KeyObservationTopRowUnknownAction) {
   provider_->OnDeviceEvent(event0);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      future;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> future;
   provider_->GetConnectedDevices(future.GetCallback());
 
-  const auto& keyboards = future.Get<0>();
+  mojom::ConnectedDevicesPtr result = future.Take();
+  const auto& keyboards = result->keyboards;
 
   ASSERT_EQ(1ul, keyboards.size());
   const mojom::KeyboardInfoPtr& keyboard = keyboards[0];
@@ -2233,9 +2308,9 @@ TEST_F(InputDataProviderTest, KeyboardInputLog) {
   base::FilePath log_path;
   EXPECT_TRUE(temp_dir.CreateUniqueTempDir());
   log_path = temp_dir.GetPath();
-  KeyboardInputLog log(log_path);
   const auto full_log_path = log_path.AppendASCII("keyboard_input.log");
-  provider_->SetLogForTesting(&log);
+  DiagnosticsLogController::Get()->SetKeyboardInputLogForTesting(
+      std::make_unique<KeyboardInputLog>(log_path));
   std::unique_ptr<FakeKeyboardObserver> fake_observer =
       std::make_unique<FakeKeyboardObserver>();
 
@@ -2565,20 +2640,19 @@ TEST_F(InputDataProviderTest, MoveAppToTestingScreen) {
   provider_->OnDeviceEvent(event1);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      getConnectedDevicesFuture;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> getConnectedDevicesFuture;
   provider_->GetConnectedDevices(getConnectedDevicesFuture.GetCallback());
 
-  const auto& keyboards = getConnectedDevicesFuture.Get<0>();
-  const auto& touch_devices = getConnectedDevicesFuture.Get<1>();
+  mojom::ConnectedDevicesPtr result = getConnectedDevicesFuture.Take();
+  const auto& keyboards = result->keyboards;
+  const auto& touch_devices = result->touch_devices;
 
   ASSERT_EQ(0ul, keyboards.size());
   ASSERT_EQ(2ul, touch_devices.size());
 
   // Set up three fake displays.
   UpdateDisplay("500x400, 600x400, 800x600");
-  display::Screen* screen = display::Screen::GetScreen();
+  display::Screen* screen = display::Screen::Get();
   const int64_t primary_display_id = screen->GetAllDisplays()[0].id();
   const int64_t secondary_display_id = screen->GetAllDisplays()[1].id();
   const int64_t third_display_id = screen->GetAllDisplays()[2].id();
@@ -2632,20 +2706,19 @@ TEST_F(InputDataProviderTest, MoveAppBackToPreviousScreen) {
   provider_->OnDeviceEvent(event0);
   base::RunLoop().RunUntilIdle();
 
-  base::test::TestFuture<std::vector<mojom::KeyboardInfoPtr>,
-                         std::vector<mojom::TouchDeviceInfoPtr>>
-      getConnectedDevicesFuture;
+  base::test::TestFuture<mojom::ConnectedDevicesPtr> getConnectedDevicesFuture;
   provider_->GetConnectedDevices(getConnectedDevicesFuture.GetCallback());
 
-  const auto& keyboards = getConnectedDevicesFuture.Get<0>();
-  const auto& touch_devices = getConnectedDevicesFuture.Get<1>();
+  mojom::ConnectedDevicesPtr result = getConnectedDevicesFuture.Take();
+  const auto& keyboards = result->keyboards;
+  const auto& touch_devices = result->touch_devices;
 
   ASSERT_EQ(0ul, keyboards.size());
   ASSERT_EQ(1ul, touch_devices.size());
 
   // Set up two fake displays.
   UpdateDisplay("500x400, 600x400");
-  display::Screen* screen = display::Screen::GetScreen();
+  display::Screen* screen = display::Screen::Get();
   const int64_t primary_display_id = screen->GetAllDisplays()[0].id();
   const int64_t secondary_display_id = screen->GetAllDisplays()[1].id();
 

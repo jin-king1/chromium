@@ -7,6 +7,7 @@
 #include <string>
 
 #include "base/metrics/histogram_macros.h"
+#include "base/no_destructor.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -25,14 +26,12 @@ PrefMetricsService::PrefMetricsService(Profile* profile)
   RecordLaunchPrefs();
 }
 
-PrefMetricsService::~PrefMetricsService() {
-}
+PrefMetricsService::~PrefMetricsService() = default;
 
 // static
 void PrefMetricsService::RecordHomePageLaunchMetrics(bool show_home_button,
                                                      bool homepage_is_ntp,
                                                      const GURL& homepage_url) {
-  UMA_HISTOGRAM_BOOLEAN("Settings.ShowHomeButton2", show_home_button);
   if (show_home_button) {
     UMA_HISTOGRAM_BOOLEAN("Settings.GivenShowHomeButton_HomePageIsNewTabPage2",
                           homepage_is_ntp);
@@ -46,9 +45,9 @@ void PrefMetricsService::RecordHomePageLaunchMetrics(bool show_home_button,
   // pages, e.g. plus.google.com).
   if (!homepage_is_ntp) {
     if (homepage_url.is_valid()) {
-      UMA_HISTOGRAM_ENUMERATION("Settings.HomePageEngineType2",
-                                SearchEngineUtils::GetEngineType(homepage_url),
-                                SEARCH_ENGINE_MAX);
+      UMA_HISTOGRAM_ENUMERATION(
+          "Settings.HomePageEngineType2",
+          search_engine_utils::GetEngineType(homepage_url), SEARCH_ENGINE_MAX);
     }
   }
 }
@@ -75,7 +74,7 @@ void PrefMetricsService::RecordLaunchPrefs() {
   if (SessionStartupPref(
           SessionStartupPref::PrefValueToType(restore_on_startup))
           .ShouldOpenUrls()) {
-    const base::Value::List& url_list =
+    const base::ListValue& url_list =
         prefs_->GetList(prefs::kURLsToRestoreOnStartup);
     // Similarly, check startup pages for known search engine TLD+1s.
     for (const base::Value& i : url_list) {
@@ -83,9 +82,9 @@ void PrefMetricsService::RecordLaunchPrefs() {
       if (url_text) {
         GURL start_url(*url_text);
         if (start_url.is_valid()) {
-          UMA_HISTOGRAM_ENUMERATION("Settings.StartupPageEngineTypes2",
-                                    SearchEngineUtils::GetEngineType(start_url),
-                                    SEARCH_ENGINE_MAX);
+          UMA_HISTOGRAM_ENUMERATION(
+              "Settings.StartupPageEngineTypes2",
+              search_engine_utils::GetEngineType(start_url), SEARCH_ENGINE_MAX);
         }
       }
     }
@@ -95,7 +94,8 @@ void PrefMetricsService::RecordLaunchPrefs() {
 
 // static
 PrefMetricsService::Factory* PrefMetricsService::Factory::GetInstance() {
-  return base::Singleton<PrefMetricsService::Factory>::get();
+  static base::NoDestructor<PrefMetricsService::Factory> instance;
+  return instance.get();
 }
 
 // static
@@ -120,13 +120,13 @@ PrefMetricsService::Factory::Factory()
   DependsOn(TemplateURLServiceFactory::GetInstance());
 }
 
-PrefMetricsService::Factory::~Factory() {
-}
+PrefMetricsService::Factory::~Factory() = default;
 
-KeyedService* PrefMetricsService::Factory::BuildServiceInstanceFor(
+std::unique_ptr<KeyedService>
+PrefMetricsService::Factory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   Profile* profile = Profile::FromBrowserContext(context);
-  return new PrefMetricsService(profile);
+  return std::make_unique<PrefMetricsService>(profile);
 }
 
 bool PrefMetricsService::Factory::ServiceIsCreatedWithBrowserContext() const {

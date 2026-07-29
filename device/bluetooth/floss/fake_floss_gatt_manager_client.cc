@@ -16,7 +16,9 @@ FakeFlossGattManagerClient::~FakeFlossGattManagerClient() = default;
 void FakeFlossGattManagerClient::Init(dbus::Bus* bus,
                                       const std::string& service_name,
                                       const int adapter_index,
+                                      base::Version version,
                                       base::OnceClosure on_ready) {
+  version_ = version;
   std::move(on_ready).Run();
 }
 
@@ -41,11 +43,11 @@ void FakeFlossGattManagerClient::AddService(ResponseCallback<Void> callback,
   }
 
   int32_t instance_id = added_service.instance_id;
-  if (services_.find(instance_id) != services_.end()) {
+  if (services_.contains(instance_id)) {
     GattServerServiceAdded(GattStatus::kError, added_service);
     return;
   }
-  DCHECK(!base::Contains(services_, instance_id));
+  DCHECK(!services_.contains(instance_id));
   services_[instance_id] = added_service;
 
   GattServerServiceAdded(GattStatus::kSuccess, added_service);
@@ -55,11 +57,11 @@ void FakeFlossGattManagerClient::RemoveService(ResponseCallback<Void> callback,
                                                int32_t handle) {
   std::move(callback).Run(DBusResult<Void>({}));
 
-  if (services_.find(handle) == services_.end()) {
+  if (!services_.contains(handle)) {
     GattServerServiceRemoved(GattStatus::kError, handle);
     return;
   }
-  DCHECK(base::Contains(services_, handle));
+  DCHECK(services_.contains(handle));
   services_.erase(handle);
 
   GattServerServiceRemoved(GattStatus::kSuccess, handle);

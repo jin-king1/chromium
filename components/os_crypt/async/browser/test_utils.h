@@ -7,19 +7,32 @@
 
 #include <memory>
 
+#include "base/memory/scoped_refptr.h"
 #include "components/os_crypt/async/browser/os_crypt_async.h"
+#include "components/os_crypt/async/common/test_encryptor.h"
 
 namespace os_crypt_async {
 
+// These key prefixes can be used, if necessary, by tests to verify that the
+// data encrypted with OSCrypt Async matches the correct key expected.
+inline constexpr char kDefaultTestKeyPrefix[] = "k1";
+inline constexpr char kOsCryptSyncCompatibleTestKeyPrefix[] = "k2";
+
 // Obtain a test OSCryptAsync. This OSCryptAsync will vend test Encryptors that
-// perform encryption/decryption using a random test key.
-std::unique_ptr<OSCryptAsync> GetTestOSCryptAsyncForTesting();
+// perform encryption/decryption using a random test key. In unit tests without
+// a full task environment, `is_sync_for_unittests` can be set to true.
+std::unique_ptr<OSCryptAsync> GetTestOSCryptAsyncForTesting(
+    bool is_sync_for_unittests = false);
 
 // Obtain a test Encryptor. This Encryptor will perform encryption using a
 // random key. The key for test Encryptors is different each time this function
 // is called, and different from the ones vended from the test OSCryptAsync
 // above.
-Encryptor GetTestEncryptorForTesting();
+scoped_refptr<TestEncryptor> GetTestEncryptorForTesting();
+
+// Obtain a test Encryptor that doesn't have any encryption keys. This
+// Encryptor will fail all encryption/decryption operations.
+scoped_refptr<TestEncryptor> GetTestEncryptorWithoutKeysForTesting();
 
 }  // namespace os_crypt_async
 

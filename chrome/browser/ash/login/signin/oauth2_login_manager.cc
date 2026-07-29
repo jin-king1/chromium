@@ -85,7 +85,12 @@ void OAuth2LoginManager::ContinueSessionRestore() {
 
   CheckIfTokensHaveBeenLoaded();
 
-  account_reconcilor_observation_.Observe(GetAccountReconcilor());
+  // ContinueSessionRestore could be called multiple times when network
+  // connection changes. Only add observation once.
+  if (!account_reconcilor_observation_.IsObserving()) {
+    account_reconcilor_observation_.Observe(GetAccountReconcilor());
+  }
+
   const signin_metrics::AccountReconcilorState state =
       GetAccountReconcilor()->GetState();
   if (IsTerminalState(state)) {
@@ -189,7 +194,6 @@ void OAuth2LoginManager::OnStateChanged(
     case signin_metrics::AccountReconcilorState::kScheduled:
     case signin_metrics::AccountReconcilorState::kInactive:
       NOTREACHED();
-      break;
   }
 
   RecordSessionRestoreOutcome(session_restore_outcome, session_restore_state);

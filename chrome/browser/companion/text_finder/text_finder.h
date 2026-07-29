@@ -23,7 +23,7 @@ namespace companion {
 // the mojo connection upon finishing searching, to remove the annotation
 // agent. In the follow-up, we will implement a new type of annotation agent
 // that only performs text search without highlighting text.
-// See crbug.com/1430306.
+// See crbug.com/40901665.
 class TextFinder : public blink::mojom::AnnotationAgentHost {
  public:
   // The callback type invoked when text search in the renderer is finished. The
@@ -47,8 +47,11 @@ class TextFinder : public blink::mojom::AnnotationAgentHost {
   // blink::mojom::AnnotationAgentHost implementation.
   // Calls `did_finish_callback_` and then removes the annotation agent in the
   // renderer process to remove the visual highlight effect.
-  // If not found, `rect` is empty.
-  void DidFinishAttachment(const gfx::Rect& rect) override;
+  // If not found, `rect` is empty. `attachment_result` has the the details why
+  // the annotation is not found.
+  void DidFinishAttachment(
+      const gfx::Rect& rect,
+      blink::mojom::AttachmentResult attachment_result) override;
 
   // Set a callback called upon finishing finding.
   void SetDidFinishHandler(FinishedCallback callback);

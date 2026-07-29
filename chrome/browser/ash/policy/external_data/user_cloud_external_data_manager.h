@@ -7,7 +7,7 @@
 
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/ash/policy/external_data/cloud_external_data_manager_base.h"
 #include "components/policy/core/common/policy_details.h"
 
@@ -61,7 +61,7 @@ class UserCloudExternalDataManager : public CloudExternalDataManagerBase {
   // * Post a task to the |backend_task_runner_| that will destroy the
   //   |resource_cache_|.
   // Because of this destruction sequence, a scoped_ptr cannot be used.
-  raw_ptr<ResourceCache, DanglingUntriaged | ExperimentalAsh> resource_cache_;
+  raw_ptr<ResourceCache, DanglingUntriaged> resource_cache_;
 };
 
 }  // namespace policy

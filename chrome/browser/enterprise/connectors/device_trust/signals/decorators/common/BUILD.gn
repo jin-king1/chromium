@@ -2,9 +2,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//build/config/chromeos/ui_mode.gni")
-
 source_set("common") {
+  configs += [ "//components/enterprise:extra_warnings" ]
+
   public = [
     "common_signals_decorator.h",
     "metrics_utils.h",
@@ -20,11 +20,10 @@ source_set("common") {
 
   public_deps = [
     "//base",
-    "//chrome/browser/enterprise/connectors/device_trust/attestation/common:types",
+    "//components/enterprise/device_trust/core/attestation:types",
   ]
 
   deps = [
-    "//chrome/browser/enterprise/signals:utils",
     "//components/device_signals/core/common",
     "//components/policy/core/common",
     "//components/version_info",
@@ -34,6 +33,8 @@ source_set("common") {
 
 source_set("test_support") {
   testonly = true
+  configs += [ "//components/enterprise:extra_warnings" ]
+
   sources = [
     "mock_signals_decorator.cc",
     "mock_signals_decorator.h",
@@ -41,24 +42,25 @@ source_set("test_support") {
 
   public_deps = [
     ":common",
-    "//chrome/browser/enterprise/connectors/device_trust/attestation/common:types",
+    "//components/enterprise/device_trust/core/attestation:types",
     "//testing/gmock",
   ]
 }
 
 source_set("unit_tests") {
   testonly = true
+  configs += [ "//components/enterprise:extra_warnings" ]
+
   sources = [ "common_signals_decorator_unittest.cc" ]
 
   deps = [
     ":common",
     "//base/test:test_support",
     "//build:branding_buildflags",
-    "//build:chromeos_buildflags",
-    "//chrome/browser/enterprise/connectors/device_trust/attestation/common:types",
     "//chrome/common:constants",
     "//components/component_updater",
     "//components/device_signals/core/common",
+    "//components/enterprise/device_trust/core/attestation:types",
     "//components/policy/content",
     "//components/policy/core/browser",
     "//components/prefs:test_support",
@@ -68,7 +70,7 @@ source_set("unit_tests") {
     "//third_party/abseil-cpp:absl",
   ]
 
-  if (is_chromeos_ash) {
+  if (is_chromeos) {
     deps += [ "//chromeos/ash/components/system" ]
   }
 }

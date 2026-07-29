@@ -7,11 +7,13 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/display/fake/fake_display_snapshot.h"
+#include "ui/display/manager/test/fake_display_snapshot.h"
 
 namespace display {
 
@@ -74,12 +76,20 @@ class DisplayPortObserverTest : public testing::Test {
         nullptr,
         base::BindLambdaForTesting([&](const std::vector<uint32_t>& port_nums) {
           cached_port_nums_ = port_nums;
+          callback_run_ = true;
         }));
 
     ASSERT_TRUE(scoped_temp_dir_.CreateUniqueTempDir());
     temp_dir_ = scoped_temp_dir_.GetPath();
 
+    DisplayPortObserver::SetAllowedSysPathRootForTesting(temp_dir_);
+
     Test::SetUp();
+  }
+
+  void TearDown() override {
+    DisplayPortObserver::SetAllowedSysPathRootForTesting(base::FilePath());
+    Test::TearDown();
   }
 
  protected:
@@ -88,6 +98,7 @@ class DisplayPortObserverTest : public testing::Test {
   base::ScopedTempDir scoped_temp_dir_;
   base::test::TaskEnvironment task_environment_;
   std::vector<uint32_t> cached_port_nums_;
+  bool callback_run_ = false;
 };
 
 TEST_F(DisplayPortObserverTest, OnNoDisplayConnected) {
@@ -98,12 +109,14 @@ TEST_F(DisplayPortObserverTest, OnNoDisplayConnected) {
   ASSERT_TRUE(CreateFakeDpConn(temp_dir_.Append("card0-DP-4"), 284, 3));
 
   // Only internal display with an id not dedicated to any DP connector
-  std::vector<DisplaySnapshot*> display_states;
+  std::vector<raw_ptr<DisplaySnapshot, VectorExperimental>> display_states;
   auto display_state = CreateDisplaySnapshot(236, temp_dir_);
   display_states.push_back(display_state.get());
 
-  display_port_observer_->OnDisplayModeChanged(std::move(display_states));
-  task_environment_.RunUntilIdle();
+  callback_run_ = false;
+  display_port_observer_->OnDisplayConfigurationChanged(
+      std::move(display_states));
+  ASSERT_TRUE(base::test::RunUntil([&]() { return callback_run_; }));
 
   EXPECT_TRUE(cached_port_nums_.empty());
 }
@@ -116,7 +129,7 @@ TEST_F(DisplayPortObserverTest, OnMultipleDisplaysConnected) {
   ASSERT_TRUE(CreateFakeDpConn(temp_dir_.Append("card0-DP-4"), 284, 3));
 
   // 2 displays on port 0 and 1 display on port 2
-  std::vector<DisplaySnapshot*> display_states;
+  std::vector<raw_ptr<DisplaySnapshot, VectorExperimental>> display_states;
   auto display_state1 = CreateDisplaySnapshot(256, temp_dir_);
   display_states.push_back(display_state1.get());
 
@@ -126,11 +139,47 @@ TEST_F(DisplayPortObserverTest, OnMultipleDisplaysConnected) {
   auto display_state3 = CreateDisplaySnapshot(275, temp_dir_);
   display_states.push_back(display_state3.get());
 
-  display_port_observer_->OnDisplayModeChanged(std::move(display_states));
-  task_environment_.RunUntilIdle();
+  callback_run_ = false;
+  display_port_observer_->OnDisplayConfigurationChanged(
+      std::move(display_states));
+  ASSERT_TRUE(base::test::RunUntil([&]() { return callback_run_; }));
 
   const std::vector<uint32_t> kExpectedPortNums{0, 0, 2};
   EXPECT_EQ(kExpectedPortNums, cached_port_nums_);
+}
+
+TEST_F(DisplayPortObserverTest, OnSysPathOutsideAllowedRootIgnored) {
+  base::ScopedTempDir other_temp_dir;
+  ASSERT_TRUE(other_temp_dir.CreateUniqueTempDir());
+  ASSERT_TRUE(
+      CreateFakeDpConn(other_temp_dir.GetPath().Append("card0-DP-1"), 256, 7));
+
+  std::vector<raw_ptr<DisplaySnapshot, VectorExperimental>> display_states;
+  auto display_state = CreateDisplaySnapshot(256, other_temp_dir.GetPath());
+  display_states.push_back(display_state.get());
+
+  callback_run_ = false;
+  display_port_observer_->OnDisplayConfigurationChanged(
+      std::move(display_states));
+  ASSERT_TRUE(base::test::RunUntil([&]() { return callback_run_; }));
+
+  EXPECT_TRUE(cached_port_nums_.empty());
+}
+
+TEST_F(DisplayPortObserverTest, OnSysPathReferencingParentIgnored) {
+  ASSERT_TRUE(CreateFakeDpConn(temp_dir_.Append("card0-DP-1"), 256, 7));
+
+  std::vector<raw_ptr<DisplaySnapshot, VectorExperimental>> display_states;
+  auto display_state =
+      CreateDisplaySnapshot(256, temp_dir_.Append("foo").Append(".."));
+  display_states.push_back(display_state.get());
+
+  callback_run_ = false;
+  display_port_observer_->OnDisplayConfigurationChanged(
+      std::move(display_states));
+  ASSERT_TRUE(base::test::RunUntil([&]() { return callback_run_; }));
+
+  EXPECT_TRUE(cached_port_nums_.empty());
 }
 
 }  // namespace display

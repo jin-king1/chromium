@@ -50,7 +50,7 @@ class SecurityStyleTestObserver : public content::WebContentsObserver {
   SecurityStyleTestObserver& operator=(const SecurityStyleTestObserver&) =
       delete;
 
-  ~SecurityStyleTestObserver() override {}
+  ~SecurityStyleTestObserver() override = default;
 
   void DidChangeVisibleSecurityState() override { run_loop_.Quit(); }
 
@@ -62,14 +62,14 @@ class SecurityStyleTestObserver : public content::WebContentsObserver {
 
 class SecurityStatePageLoadMetricsBrowserTest : public InProcessBrowserTest {
  public:
-  SecurityStatePageLoadMetricsBrowserTest() {}
+  SecurityStatePageLoadMetricsBrowserTest() = default;
 
   SecurityStatePageLoadMetricsBrowserTest(
       const SecurityStatePageLoadMetricsBrowserTest&) = delete;
   SecurityStatePageLoadMetricsBrowserTest& operator=(
       const SecurityStatePageLoadMetricsBrowserTest&) = delete;
 
-  ~SecurityStatePageLoadMetricsBrowserTest() override {}
+  ~SecurityStatePageLoadMetricsBrowserTest() override = default;
 
   void PreRunTestOnMainThread() override {
     InProcessBrowserTest::PreRunTestOnMainThread();
@@ -133,7 +133,7 @@ class SecurityStatePageLoadMetricsBrowserTest : public InProcessBrowserTest {
                           int64_t expected_value) {
     // Find last entry matching |url|.
     const ukm::mojom::UkmEntry* last = nullptr;
-    for (auto* entry :
+    for (const ukm::mojom::UkmEntry* entry :
          test_ukm_recorder_->GetEntriesByName(UkmEntry::kEntryName)) {
       auto* source = test_ukm_recorder_->GetSourceForSourceId(entry->source_id);
       if (source && source->url() == url)
@@ -294,8 +294,10 @@ IN_PROC_BROWSER_TEST_F(SecurityStatePageLoadMetricsBrowserTest,
     run_loop.Run();
 
     // The UKM isn't recorded until the page is destroyed.
-    ASSERT_TRUE(browser()->tab_strip_model()->CloseWebContentsAt(
-        1, TabCloseTypes::CLOSE_NONE));
+    int previous_tab_count = browser()->tab_strip_model()->count();
+    browser()->tab_strip_model()->CloseWebContentsAt(1,
+                                                     TabCloseTypes::CLOSE_NONE);
+    ASSERT_EQ(previous_tab_count - 1, browser()->tab_strip_model()->count());
 
     histogram_tester.ExpectTotalCount(
         kSiteEngagementHistogramPrefix + (test_case.expect_safety_tip
@@ -527,8 +529,8 @@ IN_PROC_BROWSER_TEST_F(SecurityStatePageLoadMetricsBrowserTest,
       0);
 }
 
-// Regression test for crbug.com/942326, where foreground duration was not being
-// updated unless the tab was hidden.
+// Regression test for crbug.com/41447085, where foreground duration was not
+// being updated unless the tab was hidden.
 IN_PROC_BROWSER_TEST_F(SecurityStatePageLoadMetricsBrowserTest,
                        NonZeroForegroundTime) {
   StartHttpServer();
@@ -580,7 +582,7 @@ class SecurityStatePageLoadMetricsPrerenderBrowserTest
   ~SecurityStatePageLoadMetricsPrerenderBrowserTest() override = default;
 
   void SetUp() override {
-    prerender_helper_.SetUp(embedded_test_server());
+    prerender_helper_.RegisterServerRequestMonitor(embedded_test_server());
     SecurityStatePageLoadMetricsBrowserTest::SetUp();
   }
 
@@ -604,7 +606,8 @@ IN_PROC_BROWSER_TEST_F(
 
   // Loads a page in the prerender.
   GURL prerender_url = https_test_server()->GetURL("/title2.html");
-  const int host_id = prerender_helper()->AddPrerender(prerender_url);
+  const content::PrerenderHostId host_id =
+      prerender_helper()->AddPrerender(prerender_url);
   content::test::PrerenderHostObserver host_observer(*GetWebContents(),
                                                      host_id);
   EXPECT_FALSE(host_observer.was_activated());

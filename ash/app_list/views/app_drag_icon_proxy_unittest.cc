@@ -11,11 +11,11 @@
 #include "ash/test/ash_test_base.h"
 #include "base/test/bind.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/geometry/rect_conversions.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/transform.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/widget/widget.h"
 
 namespace ash {
@@ -44,7 +44,7 @@ TEST_F(AppDragIconProxyTest, UpdatingLocationRespectsIconOffset) {
   const gfx::Size image_size = gfx::Size(50, 50);
   auto drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetPrimaryRootWindow(),
-      ash::image_util::CreateEmptyImage(image_size),
+      ash::image_util::CreateEmptyImage(image_size), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(100, 200),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/1.0f,
@@ -71,7 +71,7 @@ TEST_F(AppDragIconProxyTest, SecondaryDisplay) {
   const gfx::Size image_size = gfx::Size(50, 50);
   auto drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetRootWindowForDisplayId(GetSecondaryDisplay().id()),
-      ash::image_util::CreateEmptyImage(gfx::Size(50, 50)),
+      ash::image_util::CreateEmptyImage(gfx::Size(50, 50)), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(1100, 200),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/1.0f,
@@ -97,7 +97,7 @@ TEST_F(AppDragIconProxyTest, ScaledBounds) {
   const gfx::Size image_size = gfx::Size(50, 50);
   auto drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetPrimaryRootWindow(),
-      ash::image_util::CreateEmptyImage(image_size),
+      ash::image_util::CreateEmptyImage(image_size), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(200, 400),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/2.0f,
@@ -116,7 +116,7 @@ TEST_F(AppDragIconProxyTest, BlurSetsRoundedCorners) {
   // Create a folder icon proxy because only folder icons have background blur.
   auto drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetPrimaryRootWindow(),
-      ash::image_util::CreateEmptyImage(image_size),
+      ash::image_util::CreateEmptyImage(image_size), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(100, 200),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/1.0f,
@@ -133,7 +133,7 @@ TEST_F(AppDragIconProxyTest, BlurSetsRoundedCorners) {
   // Test that background corner radii are scaled with the image.
   drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetPrimaryRootWindow(),
-      ash::image_util::CreateEmptyImage(image_size),
+      ash::image_util::CreateEmptyImage(image_size), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(100, 200),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/2.0f,
@@ -152,7 +152,7 @@ TEST_F(AppDragIconProxyTest, AnimateBoundsForClosure) {
   const gfx::Size image_size = gfx::Size(50, 50);
   auto drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetPrimaryRootWindow(),
-      ash::image_util::CreateEmptyImage(image_size),
+      ash::image_util::CreateEmptyImage(image_size), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(100, 200),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/1.0f,
@@ -160,8 +160,8 @@ TEST_F(AppDragIconProxyTest, AnimateBoundsForClosure) {
   EXPECT_EQ(gfx::Rect(gfx::Point(65, 155), gfx::Size(50, 50)),
             drag_icon_proxy->GetBoundsInScreen());
 
-  ui::ScopedAnimationDurationScaleMode non_zero_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   base::RunLoop run_loop;
   gfx::Rect target_bounds = gfx::Rect(gfx::Point(50, 50), gfx::Size(10, 10));
@@ -188,7 +188,7 @@ TEST_F(AppDragIconProxyTest, CloseAnimationCallbackCalledWithZeroAnimation) {
   const gfx::Size image_size = gfx::Size(50, 50);
   auto drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetPrimaryRootWindow(),
-      ash::image_util::CreateEmptyImage(gfx::Size(50, 50)),
+      ash::image_util::CreateEmptyImage(gfx::Size(50, 50)), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(100, 200),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/1.0f,
@@ -196,8 +196,8 @@ TEST_F(AppDragIconProxyTest, CloseAnimationCallbackCalledWithZeroAnimation) {
   EXPECT_EQ(gfx::Rect(gfx::Point(65, 155), gfx::Size(50, 50)),
             drag_icon_proxy->GetBoundsInScreen());
 
-  ui::ScopedAnimationDurationScaleMode non_zero_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
 
   bool animation_callback_called = false;
   gfx::Rect target_bounds = gfx::Rect(gfx::Point(50, 50), gfx::Size(10, 10));
@@ -221,7 +221,7 @@ TEST_F(AppDragIconProxyTest,
   const gfx::Size image_size = gfx::Size(50, 50);
   auto drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetPrimaryRootWindow(),
-      ash::image_util::CreateEmptyImage(image_size),
+      ash::image_util::CreateEmptyImage(image_size), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(100, 200),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/1.0f,
@@ -229,8 +229,8 @@ TEST_F(AppDragIconProxyTest,
   EXPECT_EQ(gfx::Rect(gfx::Point(65, 155), gfx::Size(50, 50)),
             drag_icon_proxy->GetBoundsInScreen());
 
-  ui::ScopedAnimationDurationScaleMode non_zero_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Animate the drag image layer transform, so
   // `AnimateToBoundsAndCloseWidget()` interrupts an animation.
@@ -279,7 +279,7 @@ TEST_F(AppDragIconProxyTest, ProxyResetDuringCloseAnimation) {
   const gfx::Size image_size = gfx::Size(50, 50);
   auto drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetPrimaryRootWindow(),
-      ash::image_util::CreateEmptyImage(image_size),
+      ash::image_util::CreateEmptyImage(image_size), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(100, 200),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/1.0f,
@@ -287,8 +287,8 @@ TEST_F(AppDragIconProxyTest, ProxyResetDuringCloseAnimation) {
   EXPECT_EQ(gfx::Rect(gfx::Point(65, 155), gfx::Size(50, 50)),
             drag_icon_proxy->GetBoundsInScreen());
 
-  ui::ScopedAnimationDurationScaleMode non_zero_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   bool animation_callback_called = false;
   gfx::Rect target_bounds = gfx::Rect(gfx::Point(50, 50), gfx::Size(10, 10));
@@ -308,7 +308,7 @@ TEST_F(AppDragIconProxyTest, UpdatePositionDuringCloseIsNoOp) {
   const gfx::Size image_size = gfx::Size(50, 50);
   auto drag_icon_proxy = std::make_unique<AppDragIconProxy>(
       Shell::GetPrimaryRootWindow(),
-      ash::image_util::CreateEmptyImage(image_size),
+      ash::image_util::CreateEmptyImage(image_size), gfx::ImageSkia(),
       /*pointer_location_in_screen=*/gfx::Point(100, 200),
       /*pointer_offset_from_center=*/gfx::Vector2d(10, 20),
       /*scale_factor=*/1.0f,
@@ -316,8 +316,8 @@ TEST_F(AppDragIconProxyTest, UpdatePositionDuringCloseIsNoOp) {
   EXPECT_EQ(gfx::Rect(gfx::Point(65, 155), gfx::Size(50, 50)),
             drag_icon_proxy->GetBoundsInScreen());
 
-  ui::ScopedAnimationDurationScaleMode non_zero_duration_mode(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode non_zero_duration_mode(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   base::RunLoop run_loop;
   gfx::Rect target_bounds = gfx::Rect(gfx::Point(50, 50), gfx::Size(10, 10));

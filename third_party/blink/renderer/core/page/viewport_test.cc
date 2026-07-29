@@ -28,6 +28,7 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
@@ -49,7 +50,7 @@
 #include "third_party/blink/renderer/core/testing/sim/sim_request.h"
 #include "third_party/blink/renderer/core/testing/sim/sim_test.h"
 #include "third_party/blink/renderer/platform/geometry/length.h"
-#include "third_party/blink/renderer/platform/testing/histogram_tester.h"
+#include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/url_loader_mock_factory.h"
@@ -74,16 +75,16 @@ class ViewportTest : public testing::Test {
     // TODO(crbug.com/751425): We should use the mock functionality
     // via the WebViewHelper instance in each test case.
     url_test_helpers::RegisterMockedURLLoadFromBase(
-        WebString::FromUTF8(base_url_), test::CoreTestDataPath(),
-        WebString::FromUTF8(file_name));
+        WebString::FromUtf8(base_url_), test::CoreTestDataPath(),
+        WebString::FromUtf8(file_name));
   }
 
   void RegisterMockedChromeURLLoad(const std::string& file_name) {
     // TODO(crbug.com/751425): We should use the mock functionality
     // via the WebViewHelper instance in each test case.
     url_test_helpers::RegisterMockedURLLoadFromBase(
-        WebString::FromUTF8(chrome_url_), test::CoreTestDataPath(),
-        WebString::FromUTF8(file_name));
+        WebString::FromUtf8(chrome_url_), test::CoreTestDataPath(),
+        WebString::FromUtf8(file_name));
   }
 
   void ExecuteScript(WebLocalFrame* frame, const WebString& code) {
@@ -91,6 +92,7 @@ class ViewportTest : public testing::Test {
     blink::test::RunPendingTasks();
   }
 
+  test::TaskEnvironment task_environment_;
   std::string base_url_;
   std::string chrome_url_;
 
@@ -113,7 +115,7 @@ static PageScaleConstraints RunViewportTest(Page* page,
       ->SetFrameRect(gfx::Rect(gfx::Point(), initial_viewport_size));
   ViewportDescription description = page->GetViewportDescription();
   PageScaleConstraints constraints = description.Resolve(
-      gfx::SizeF(initial_viewport_size), Length::Fixed(980));
+      gfx::SizeF(initial_viewport_size), ViewportLength::Fixed(980));
 
   constraints.FitToContentsWidth(constraints.layout_size.width(),
                                  initial_width);
@@ -3106,7 +3108,7 @@ class ViewportHistogramsTest : public SimTest {
     blink::test::RunPendingTasks();
   }
 
-  HistogramTester histogram_tester_;
+  base::HistogramTester histogram_tester_;
 };
 
 TEST_F(ViewportHistogramsTest, NoOpOnWhenViewportDisabled) {
@@ -3320,8 +3322,9 @@ TEST_F(ViewportMetaSimTest, VirtualKeyboardUpdateContent) {
   ASSERT_EQ(WebView().VirtualKeyboardModeForTesting(),
             ui::mojom::blink::VirtualKeyboardMode::kResizesContent);
 
-  Element* meta = GetDocument().QuerySelector("[name=viewport]");
-  meta->setAttribute(html_names::kContentAttr, "interactive-widget=bad-value");
+  Element* meta = GetDocument().QuerySelector(AtomicString("[name=viewport]"));
+  meta->setAttribute(html_names::kContentAttr,
+                     AtomicString("interactive-widget=bad-value"));
 
   EXPECT_EQ(WebView().VirtualKeyboardModeForTesting(),
             ui::mojom::blink::VirtualKeyboardMode::kUnset);

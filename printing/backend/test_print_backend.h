@@ -13,10 +13,6 @@
 #include "printing/backend/print_backend.h"
 #include "printing/mojom/print.mojom.h"
 
-#if BUILDFLAG(IS_WIN)
-#include "base/types/expected.h"
-#endif  // BUILDFLAG(IS_WIN)
-
 namespace printing {
 
 // PrintBackend which doesn't interact with the OS and responses
@@ -39,18 +35,14 @@ class TestPrintBackend : public PrintBackend {
   mojom::ResultCode GetPrinterCapsAndDefaults(
       const std::string& printer_name,
       PrinterCapsAndDefaults* printer_info) override;
-  absl::optional<gfx::Rect> GetPaperPrintableArea(
+  std::optional<gfx::Rect> GetPaperPrintableArea(
       const std::string& printer_name,
       const std::string& paper_vendor_id,
       const gfx::Size& paper_size_um) override;
 #endif
-  std::string GetPrinterDriverInfo(const std::string& printer_name) override;
-  bool IsValidPrinter(const std::string& printer_name) override;
-#if BUILDFLAG(IS_WIN)
-  base::expected<std::string, mojom::ResultCode>
-  GetXmlPrinterCapabilitiesForXpsDriver(
+  std::vector<std::string> GetPrinterDriverInfo(
       const std::string& printer_name) override;
-#endif  // BUILDFLAG(IS_WIN)
+  bool IsValidPrinter(const std::string& printer_name) override;
 
   // Methods for test setup:
 
@@ -58,14 +50,14 @@ class TestPrintBackend : public PrintBackend {
   void SetDefaultPrinterName(const std::string& printer_name);
 
   // Adds a printer to satisfy IsValidPrinter(), EnumeratePrinters(),
-  // GetPrinterBasicInfo(), GetPrinterSemanticCapsAndDefaults(), and
-  // GetXmlPrinterCapabilitiesForXpsDriver(). While `caps` can be null, it will
-  // cause queries for the capabilities to fail, and thus is likely not of
-  // interest for most tests.  IsValidPrinter() will still show true even if
-  // `caps` is null, which provides the benefit of simulating a printer that
-  // exists in the system but cannot be queried. `info` can be null, which will
-  // result in queries for basic info to fail. Calling EnumeratePrinters() will
-  // include the identified `printer_name` even if either parameter is null.
+  // GetPrinterBasicInfo(), and GetPrinterSemanticCapsAndDefaults().
+  // While `caps` can be null, it will cause queries for the capabilities to
+  // fail, and thus is likely not of interest for most tests.  IsValidPrinter()
+  // will still show true even if `caps` is null, which provides the benefit of
+  // simulating a printer that exists in the system but cannot be queried.
+  // `info` can be null, which will result in queries for basic info to fail.
+  // Calling EnumeratePrinters() will include the identified `printer_name` even
+  // if either parameter is null.
   void AddValidPrinter(const std::string& printer_name,
                        std::unique_ptr<PrinterSemanticCapsAndDefaults> caps,
                        std::unique_ptr<PrinterBasicInfo> info);
@@ -76,16 +68,6 @@ class TestPrintBackend : public PrintBackend {
   // Adds a printer which will fail with an access-denied permission error for
   // calls specific to a particular `printer_name`.
   void AddAccessDeniedPrinter(const std::string& printer_name);
-
-#if BUILDFLAG(IS_WIN)
-  // Sets the XML capabilities of an existing printer to be used by
-  // GetXmlPrinterCapabilitiesForXpsDriver(). `printer_name` must be a valid
-  // name of an added printer. Passing an empty `capabilities_xml` will cause
-  // GetXmlPrinterCapabilitiesForXpsDriver() to fail, otherwise any string will
-  // succeed.
-  void SetXmlCapabilitiesForPrinter(const std::string& printer_name,
-                                    const std::string& capabilities_xml);
-#endif  // BUILDFLAG(IS_WIN)
 
  protected:
   ~TestPrintBackend() override;
@@ -105,9 +87,6 @@ class TestPrintBackend : public PrintBackend {
     std::unique_ptr<PrinterSemanticCapsAndDefaults> caps;
     std::unique_ptr<PrinterBasicInfo> info;
     bool blocked_by_permissions = false;
-#if BUILDFLAG(IS_WIN)
-    std::string capabilities_xml;
-#endif  // BUILDFLAG(IS_WIN)
   };
 
   std::string default_printer_name_;

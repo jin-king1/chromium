@@ -20,7 +20,8 @@ GeneratedPrefs* GeneratedPrefsFactory::GetForBrowserContext(
 
 // static
 GeneratedPrefsFactory* GeneratedPrefsFactory::GetInstance() {
-  return base::Singleton<GeneratedPrefsFactory>::get();
+  static base::NoDestructor<GeneratedPrefsFactory> instance;
+  return instance.get();
 }
 
 GeneratedPrefsFactory::GeneratedPrefsFactory()
@@ -29,20 +30,22 @@ GeneratedPrefsFactory::GeneratedPrefsFactory()
           // Use |context| even if it is off-the-record/incognito.
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOwnInstance)
-              // TODO(crbug.com/1418376): Check if this service is needed in
-              // Guest mode.
               .WithGuest(ProfileSelection::kOwnInstance)
+              // TODO(crbug.com/41488885): Check if this service is needed for
+              // Ash Internals.
+              .WithAshInternals(ProfileSelection::kOwnInstance)
               .Build()) {}
 
-GeneratedPrefsFactory::~GeneratedPrefsFactory() {}
+GeneratedPrefsFactory::~GeneratedPrefsFactory() = default;
 
 bool GeneratedPrefsFactory::ServiceIsNULLWhileTesting() const {
   return true;
 }
 
-KeyedService* GeneratedPrefsFactory::BuildServiceInstanceFor(
+std::unique_ptr<KeyedService>
+GeneratedPrefsFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* profile) const {
-  return new GeneratedPrefs(static_cast<Profile*>(profile));
+  return std::make_unique<GeneratedPrefs>(static_cast<Profile*>(profile));
 }
 
 }  // namespace settings_private

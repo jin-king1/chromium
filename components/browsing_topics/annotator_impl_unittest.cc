@@ -4,6 +4,8 @@
 
 #include "components/browsing_topics/annotator_impl.h"
 
+#include <vector>
+
 #include "base/containers/flat_map.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -13,20 +15,23 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "components/optimization_guide/core/delivery/model_info.h"
+#include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
+#include "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_model_provider.h"
-#include "components/optimization_guide/core/test_model_info_builder.h"
-#include "components/optimization_guide/core/test_optimization_guide_model_provider.h"
 #include "components/optimization_guide/proto/models.pb.h"
 #include "components/optimization_guide/proto/page_topics_model_metadata.pb.h"
 #include "components/optimization_guide/proto/page_topics_override_list.pb.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/zlib/google/compression_utils.h"
 
 namespace browsing_topics {
 
 namespace {
+
+const int kTaxonomyVersionV2 = 2;
 
 const char kPageTopicsModelMetadataTypeUrl[] =
     "type.googleapis.com/"
@@ -39,15 +44,15 @@ class ModelObserverTracker
  public:
   void AddObserverForOptimizationTargetModel(
       optimization_guide::proto::OptimizationTarget target,
-      const absl::optional<optimization_guide::proto::Any>& model_metadata,
+      const std::optional<optimization_guide::proto::Any>& model_metadata,
+      scoped_refptr<base::SequencedTaskRunner> model_task_runner,
       optimization_guide::OptimizationTargetModelObserver* observer) override {
     registered_model_metadata_.insert_or_assign(target, model_metadata);
   }
 
   bool DidRegisterForTarget(
       optimization_guide::proto::OptimizationTarget target,
-      absl::optional<optimization_guide::proto::Any>* out_model_metadata)
-      const {
+      std::optional<optimization_guide::proto::Any>* out_model_metadata) const {
     auto it = registered_model_metadata_.find(target);
     if (it == registered_model_metadata_.end()) {
       return false;
@@ -58,7 +63,7 @@ class ModelObserverTracker
 
  private:
   base::flat_map<optimization_guide::proto::OptimizationTarget,
-                 absl::optional<optimization_guide::proto::Any>>
+                 std::optional<optimization_guide::proto::Any>>
       registered_model_metadata_;
 };
 
@@ -67,14 +72,14 @@ class TestAnnotatorImpl : public AnnotatorImpl {
   TestAnnotatorImpl(
       optimization_guide::OptimizationGuideModelProvider* model_provider,
       scoped_refptr<base::SequencedTaskRunner> background_task_runner,
-      const absl::optional<optimization_guide::proto::Any>& model_metadata)
+      const std::optional<optimization_guide::proto::Any>& model_metadata)
       : AnnotatorImpl(model_provider, background_task_runner, model_metadata) {}
   ~TestAnnotatorImpl() override = default;
 
   void ExecuteModelWithInput(ExecutionCallback callback,
                              const std::string& input) override {
     inputs_.push_back(input);
-    std::move(callback).Run(absl::nullopt);
+    std::move(callback).Run(std::nullopt);
   }
 
   const std::vector<std::string>& inputs() const { return inputs_; }
@@ -98,7 +103,7 @@ class BrowsingTopicsAnnotatorImplTest : public testing::Test {
     annotator_ = std::make_unique<TestAnnotatorImpl>(
         model_observer_tracker_.get(),
         base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()}),
-        /*model_metadata=*/absl::nullopt);
+        /*model_metadata=*/std::nullopt);
   }
 
   void TearDown() override {
@@ -107,24 +112,28 @@ class BrowsingTopicsAnnotatorImplTest : public testing::Test {
     RunUntilIdle();
   }
 
-  void SendModelToAnnotator(
-      const absl::optional<optimization_guide::proto::Any>& model_metadata) {
+  void SendModelToAnnotatorSkipWaiting(
+      const std::optional<optimization_guide::proto::Any>& model_metadata) {
     base::FilePath source_root_dir;
-    base::PathService::Get(base::DIR_SOURCE_ROOT, &source_root_dir);
+    base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &source_root_dir);
     base::FilePath model_file_path =
         source_root_dir.AppendASCII("components")
             .AppendASCII("test")
             .AppendASCII("data")
             .AppendASCII("browsing_topics")
             .AppendASCII("golden_data_model.tflite");
-    std::unique_ptr<optimization_guide::ModelInfo> model_info =
-        optimization_guide::TestModelInfoBuilder()
-            .SetModelFilePath(model_file_path)
-            .SetModelMetadata(model_metadata)
-            .Build();
+    optimization_guide::ModelInfo model_info = {
+        .model_file_path = model_file_path,
+        .model_metadata = model_metadata,
+    };
     annotator()->OnModelUpdated(
         optimization_guide::proto::OPTIMIZATION_TARGET_PAGE_TOPICS_V2,
-        *model_info);
+        model_info);
+  }
+
+  void SendModelToAnnotator(
+      const std::optional<optimization_guide::proto::Any>& model_metadata) {
+    SendModelToAnnotatorSkipWaiting(model_metadata);
 
     base::RunLoop run_loop;
     annotator()->NotifyWhenModelAvailable(run_loop.QuitClosure());
@@ -139,7 +148,7 @@ class BrowsingTopicsAnnotatorImplTest : public testing::Test {
 
   void RunUntilIdle() { task_environment_.RunUntilIdle(); }
 
- private:
+ protected:
   base::test::TaskEnvironment task_environment_;
   base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<ModelObserverTracker> model_observer_tracker_;
@@ -151,6 +160,7 @@ TEST_F(
     GetContentModelAnnotationsFromOutputNonNumericAndLowWeightCategoriesPruned) {
   optimization_guide::proto::PageTopicsModelMetadata model_metadata;
   model_metadata.set_version(123);
+  model_metadata.set_taxonomy_version(kTaxonomyVersionV2);
   auto* category_params = model_metadata.mutable_output_postprocessing_params()
                               ->mutable_category_params();
   category_params->set_max_categories(4);
@@ -168,7 +178,7 @@ TEST_F(
       {"0", 0.0001}, {"1", 0.1}, {"not an int", 0.9}, {"2", 0.2}, {"3", 0.3},
   };
 
-  absl::optional<std::vector<int32_t>> categories =
+  std::optional<std::vector<int32_t>> categories =
       annotator()->ExtractCategoriesFromModelOutput(model_output);
   ASSERT_TRUE(categories);
   EXPECT_THAT(*categories, testing::UnorderedElementsAre(1, 2, 3));
@@ -178,6 +188,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest,
        GetContentModelAnnotationsFromOutputNoneWeightTooStrong) {
   optimization_guide::proto::PageTopicsModelMetadata model_metadata;
   model_metadata.set_version(123);
+  model_metadata.set_taxonomy_version(kTaxonomyVersionV2);
   auto* category_params = model_metadata.mutable_output_postprocessing_params()
                               ->mutable_category_params();
   category_params->set_max_categories(4);
@@ -197,7 +208,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest,
       {"1", 0.2},
   };
 
-  absl::optional<std::vector<int32_t>> categories =
+  std::optional<std::vector<int32_t>> categories =
       annotator()->ExtractCategoriesFromModelOutput(model_output);
   EXPECT_FALSE(categories);
 }
@@ -206,6 +217,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest,
        GetContentModelAnnotationsFromOutputNoneInTopButNotStrongSoPruned) {
   optimization_guide::proto::PageTopicsModelMetadata model_metadata;
   model_metadata.set_version(123);
+  model_metadata.set_taxonomy_version(kTaxonomyVersionV2);
   auto* category_params = model_metadata.mutable_output_postprocessing_params()
                               ->mutable_category_params();
   category_params->set_max_categories(4);
@@ -223,7 +235,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest,
       {"-2", 0.1}, {"0", 0.3}, {"1", 0.2}, {"2", 0.4}, {"3", 0.05},
   };
 
-  absl::optional<std::vector<int32_t>> categories =
+  std::optional<std::vector<int32_t>> categories =
       annotator()->ExtractCategoriesFromModelOutput(model_output);
   ASSERT_TRUE(categories);
   EXPECT_THAT(*categories, testing::UnorderedElementsAre(0, 1, 2));
@@ -233,6 +245,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest,
        GetContentModelAnnotationsFromOutputPrunedAfterNormalization) {
   optimization_guide::proto::PageTopicsModelMetadata model_metadata;
   model_metadata.set_version(123);
+  model_metadata.set_taxonomy_version(kTaxonomyVersionV2);
   auto* category_params = model_metadata.mutable_output_postprocessing_params()
                               ->mutable_category_params();
   category_params->set_max_categories(4);
@@ -253,7 +266,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest,
       {"3", 0.05},
   };
 
-  absl::optional<std::vector<int32_t>> categories =
+  std::optional<std::vector<int32_t>> categories =
       annotator()->ExtractCategoriesFromModelOutput(model_output);
   ASSERT_TRUE(categories);
   EXPECT_THAT(*categories, testing::UnorderedElementsAre(0, 1, 2));
@@ -263,6 +276,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest,
 TEST_F(BrowsingTopicsAnnotatorImplTest, NoneCategoryBelowMinWeight) {
   optimization_guide::proto::PageTopicsModelMetadata model_metadata;
   model_metadata.set_version(123);
+  model_metadata.set_taxonomy_version(kTaxonomyVersionV2);
   auto* category_params = model_metadata.mutable_output_postprocessing_params()
                               ->mutable_category_params();
   category_params->set_max_categories(4);
@@ -280,7 +294,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest, NoneCategoryBelowMinWeight) {
       {"-2", 0.001}, {"0", 0.001}, {"1", 0.25}, {"2", 0.4}, {"3", 0.05},
   };
 
-  absl::optional<std::vector<int32_t>> categories =
+  std::optional<std::vector<int32_t>> categories =
       annotator()->ExtractCategoriesFromModelOutput(model_output);
   ASSERT_TRUE(categories);
   EXPECT_THAT(*categories, testing::UnorderedElementsAre(1, 2));
@@ -350,6 +364,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest, HostPreprocessingV2) {
   any_metadata.set_type_url(kPageTopicsModelMetadataTypeUrl);
   optimization_guide::proto::PageTopicsModelMetadata model_metadata;
   model_metadata.set_version(kTopicsModelVersion);
+  model_metadata.set_taxonomy_version(kTaxonomyVersionV2);
   model_metadata.SerializeToString(any_metadata.mutable_value());
 
   SendModelToAnnotator(any_metadata);
@@ -404,6 +419,7 @@ TEST_F(BrowsingTopicsAnnotatorImplTest, PreprocessingNewVersion) {
   any_metadata.set_type_url(kPageTopicsModelMetadataTypeUrl);
   optimization_guide::proto::PageTopicsModelMetadata model_metadata;
   model_metadata.set_version(kTopicsModelVersion + 1);
+  model_metadata.set_taxonomy_version(kTaxonomyVersionV2);
   model_metadata.SerializeToString(any_metadata.mutable_value());
 
   SendModelToAnnotator(any_metadata);
@@ -426,6 +442,55 @@ TEST_F(BrowsingTopicsAnnotatorImplTest, PreprocessingNewVersion) {
     EXPECT_EQ(raw_host, got_input);
     EXPECT_EQ(processed_host, annotator()->inputs().back());
   }
+}
+
+TEST_F(BrowsingTopicsAnnotatorImplTest,
+       SameTaxonomyVersions_ModelUpdateSuccess) {
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitWithFeaturesAndParameters(
+      /*enabled_features=*/
+      {{blink::features::kBrowsingTopicsParameters,
+        {{"taxonomy_version", "12345"}}}},
+      /*disabled_features=*/{
+          optimization_guide::features::kPreventLongRunningPredictionModels});
+
+  optimization_guide::proto::PageTopicsModelMetadata model_metadata;
+  model_metadata.set_taxonomy_version(12345);
+
+  optimization_guide::proto::Any any_metadata;
+  any_metadata.set_type_url(
+      "type.googleapis.com/com.foo.PageTopicsModelMetadata");
+  model_metadata.SerializeToString(any_metadata.mutable_value());
+
+  SendModelToAnnotatorSkipWaiting(any_metadata);
+
+  std::optional<optimization_guide::ModelInfo> model_info =
+      annotator()->GetBrowsingTopicsModelInfo();
+  EXPECT_TRUE(model_info);
+}
+
+TEST_F(BrowsingTopicsAnnotatorImplTest,
+       TaxonomyConfiguredVersion1ServerVersionEmpty_ModelUpdateSuccess) {
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitWithFeaturesAndParameters(
+      /*enabled_features=*/
+      {{blink::features::kBrowsingTopicsParameters,
+        {{"taxonomy_version", "1"}}}},
+      /*disabled_features=*/{
+          optimization_guide::features::kPreventLongRunningPredictionModels});
+
+  optimization_guide::proto::PageTopicsModelMetadata model_metadata;
+
+  optimization_guide::proto::Any any_metadata;
+  any_metadata.set_type_url(
+      "type.googleapis.com/com.foo.PageTopicsModelMetadata");
+  model_metadata.SerializeToString(any_metadata.mutable_value());
+
+  SendModelToAnnotatorSkipWaiting(any_metadata);
+
+  std::optional<optimization_guide::ModelInfo> model_info =
+      annotator()->GetBrowsingTopicsModelInfo();
+  EXPECT_TRUE(model_info);
 }
 
 class BrowsingTopicsAnnotatorOverrideListTest
@@ -453,9 +518,10 @@ class BrowsingTopicsAnnotatorOverrideListTest
   }
 
   void SendModelWithAdditionalFilesToAnnotator(
-      const base::flat_set<base::FilePath>& additional_files) {
+      const std::vector<base::FilePath>& additional_files) {
     optimization_guide::proto::PageTopicsModelMetadata model_metadata;
     model_metadata.set_version(123);
+    model_metadata.set_taxonomy_version(kTaxonomyVersionV2);
 
     optimization_guide::proto::Any any_metadata;
     any_metadata.set_type_url(
@@ -463,7 +529,7 @@ class BrowsingTopicsAnnotatorOverrideListTest
     model_metadata.SerializeToString(any_metadata.mutable_value());
 
     base::FilePath source_root_dir;
-    base::PathService::Get(base::DIR_SOURCE_ROOT, &source_root_dir);
+    base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &source_root_dir);
     base::FilePath model_file_path =
         source_root_dir.AppendASCII("components")
             .AppendASCII("test")
@@ -472,15 +538,14 @@ class BrowsingTopicsAnnotatorOverrideListTest
             // These tests don't need a valid model to execute as we don't care
             // about the model output or execution.
             .AppendASCII("model_doesnt_exist.tflite");
-    std::unique_ptr<optimization_guide::ModelInfo> model_info =
-        optimization_guide::TestModelInfoBuilder()
-            .SetModelFilePath(model_file_path)
-            .SetModelMetadata(any_metadata)
-            .SetAdditionalFiles(additional_files)
-            .Build();
+    optimization_guide::ModelInfo model_info = {
+        .model_file_path = model_file_path,
+        .additional_files = additional_files,
+        .model_metadata = any_metadata,
+    };
     annotator()->OnModelUpdated(
         optimization_guide::proto::OPTIMIZATION_TARGET_PAGE_TOPICS_V2,
-        *model_info);
+        model_info);
 
     base::RunLoop run_loop;
     annotator()->NotifyWhenModelAvailable(run_loop.QuitClosure());

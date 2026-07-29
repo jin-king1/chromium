@@ -4,9 +4,12 @@
 
 #include "third_party/blink/renderer/modules/mediacapturefromelement/html_media_element_capture.h"
 
+#include <variant>
+
+#include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "base/task/single_thread_task_runner.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "media/base/media_switches.h"
 #include "third_party/blink/public/mojom/mediastream/media_devices.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
 #include "third_party/blink/public/platform/task_type.h"
@@ -23,7 +26,6 @@
 #include "third_party/blink/renderer/modules/mediacapturefromelement/html_video_element_capturer_source.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_constraints_util.h"
-#include "third_party/blink/renderer/modules/mediastream/media_stream_track_impl.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_utils.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_video_capturer_source.h"
 #include "third_party/blink/renderer/modules/mediastream/media_stream_video_track.h"
@@ -64,12 +66,12 @@ bool AddVideoTrackToMediaStream(
           WebPlatformMediaStreamSource::SourceStoppedCallback(),
           std::move(video_source));
   auto* media_stream_video_source_ptr = media_stream_video_source.get();
-  const String track_id(WTF::CreateCanonicalUUIDString());
+  const String track_id = CreateCanonicalUuidString();
   auto* media_stream_source = MakeGarbageCollected<MediaStreamSource>(
       track_id, MediaStreamSource::kTypeVideo, track_id, is_remote,
       std::move(media_stream_video_source));
   media_stream_source->SetCapabilities(ComputeCapabilitiesForVideoSource(
-      track_id, preferred_formats, mojom::blink::FacingMode::NONE,
+      track_id, preferred_formats, mojom::blink::FacingMode::kNone,
       false /* is_device_capture */));
   descriptor->AddRemoteTrack(MediaStreamVideoTrack::CreateVideoTrack(
       media_stream_video_source_ptr,
@@ -105,7 +107,7 @@ void CreateHTMLAudioElementCapturer(
   DCHECK(descriptor);
   DCHECK(web_media_player);
 
-  const String track_id = WTF::CreateCanonicalUUIDString();
+  const String track_id = CreateCanonicalUuidString();
 
   MediaStreamAudioSource* const media_stream_audio_source =
       HtmlAudioElementCapturerSource::CreateFromWebMediaPlayerImpl(
@@ -121,9 +123,10 @@ void CreateHTMLAudioElementCapturer(
 
   MediaStreamSource::Capabilities capabilities;
   capabilities.device_id = track_id;
-  capabilities.echo_cancellation.emplace_back(false);
+  capabilities.echo_cancellation.emplace_back(EchoCancellationMode::kDisabled);
   capabilities.auto_gain_control.emplace_back(false);
   capabilities.noise_suppression.emplace_back(false);
+  capabilities.voice_isolation.emplace_back(false);
   capabilities.sample_size = {
       media::SampleFormatToBitsPerChannel(media::kSampleFormatS16),  // min
       media::SampleFormatToBitsPerChannel(media::kSampleFormatS16)   // max
@@ -197,20 +200,18 @@ void MediaElementEventListener::Invoke(ExecutionContext* context,
     }
     auto variant = media_element_->GetSrcObjectVariant();
     // The load type check above, should prevent this from failing:
-    DCHECK(absl::holds_alternative<MediaStreamDescriptor*>(variant));
+    DCHECK(std::holds_alternative<MediaStreamDescriptor*>(variant));
     MediaStreamDescriptor* const descriptor =
-        absl::get<MediaStreamDescriptor*>(variant);
+        std::get<MediaStreamDescriptor*>(variant);
     DCHECK(descriptor);
     for (unsigned i = 0; i < descriptor->NumberOfAudioComponents(); i++) {
-      media_stream_->AddTrackAndFireEvents(
-          MediaStreamTrackImpl::CreateCloningComponent(
-              context, descriptor->AudioComponent(i)),
+      media_stream_->AddTrackByComponentAndFireEvents(
+          descriptor->AudioComponent(i),
           MediaStreamDescriptorClient::DispatchEventTiming::kScheduled);
     }
     for (unsigned i = 0; i < descriptor->NumberOfVideoComponents(); i++) {
-      media_stream_->AddTrackAndFireEvents(
-          MediaStreamTrackImpl::CreateCloningComponent(
-              context, descriptor->VideoComponent(i)),
+      media_stream_->AddTrackByComponentAndFireEvents(
+          descriptor->VideoComponent(i),
           MediaStreamDescriptorClient::DispatchEventTiming::kScheduled);
     }
     UpdateSources(context);
@@ -218,7 +219,7 @@ void MediaElementEventListener::Invoke(ExecutionContext* context,
   }
 
   auto* descriptor = MakeGarbageCollected<MediaStreamDescriptor>(
-      WTF::CreateCanonicalUUIDString(), MediaStreamComponentVector(),
+      CreateCanonicalUuidString(), MediaStreamComponentVector(),
       MediaStreamComponentVector());
 
   if (media_element_->HasVideo()) {
@@ -234,19 +235,22 @@ void MediaElementEventListener::Invoke(ExecutionContext* context,
         media_element_->GetWebMediaPlayer(),
         media_element_->GetExecutionContext()->GetTaskRunner(
             TaskType::kInternalMediaRealTime));
+    if (base::FeatureList::IsEnabled(media::kRenderMutedAudio)) {
+      media_element_->GetWebMediaPlayer()->SetRenderMutedAudio(true);
+    }
   }
 
   MediaStreamComponentVector video_components = descriptor->VideoComponents();
   for (auto component : video_components) {
-    media_stream_->AddTrackAndFireEvents(
-        MediaStreamTrackImpl::CreateCloningComponent(context, component),
+    media_stream_->AddTrackByComponentAndFireEvents(
+        component,
         MediaStreamDescriptorClient::DispatchEventTiming::kScheduled);
   }
 
   MediaStreamComponentVector audio_components = descriptor->AudioComponents();
   for (auto component : audio_components) {
-    media_stream_->AddTrackAndFireEvents(
-        MediaStreamTrackImpl::CreateCloningComponent(context, component),
+    media_stream_->AddTrackByComponentAndFireEvents(
+        component,
         MediaStreamDescriptorClient::DispatchEventTiming::kScheduled);
   }
 
@@ -319,7 +323,7 @@ MediaStream* HTMLMediaElementCapture::captureStream(
   }
 
   auto* descriptor = MakeGarbageCollected<MediaStreamDescriptor>(
-      WTF::CreateCanonicalUUIDString(), MediaStreamComponentVector(),
+      CreateCanonicalUuidString(), MediaStreamComponentVector(),
       MediaStreamComponentVector());
 
   // Create() duplicates the MediaStreamTracks inside |descriptor|.
@@ -334,23 +338,11 @@ MediaStream* HTMLMediaElementCapture::captureStream(
   if (element.GetLoadType() == WebMediaPlayer::kLoadTypeMediaStream) {
     auto variant = element.GetSrcObjectVariant();
     // The load type check above, should prevent this from failing:
-    DCHECK(absl::holds_alternative<MediaStreamDescriptor*>(variant));
+    DCHECK(std::holds_alternative<MediaStreamDescriptor*>(variant));
     MediaStreamDescriptor* const element_descriptor =
-        absl::get<MediaStreamDescriptor*>(variant);
+        std::get<MediaStreamDescriptor*>(variant);
     DCHECK(element_descriptor);
-
-    MediaStreamTrackVector audio_tracks;
-    for (auto component : element_descriptor->AudioComponents()) {
-      audio_tracks.push_back(
-          MediaStreamTrackImpl::CreateCloningComponent(context, component));
-    }
-    MediaStreamTrackVector video_tracks;
-    for (auto component : element_descriptor->VideoComponents()) {
-      video_tracks.push_back(
-          MediaStreamTrackImpl::CreateCloningComponent(context, component));
-    }
-    return MediaStream::Create(context, element_descriptor, audio_tracks,
-                               video_tracks);
+    return MediaStream::Create(context, element_descriptor);
   }
 
   LocalFrame* frame = ToLocalFrameIfNotDetached(script_state->GetContext());
@@ -366,6 +358,10 @@ MediaStream* HTMLMediaElementCapture::captureStream(
                                    element.GetWebMediaPlayer(),
                                    element.GetExecutionContext()->GetTaskRunner(
                                        TaskType::kInternalMediaRealTime));
+
+    if (base::FeatureList::IsEnabled(media::kRenderMutedAudio)) {
+      element.GetWebMediaPlayer()->SetRenderMutedAudio(true);
+    }
   }
   listener->UpdateSources(context);
 

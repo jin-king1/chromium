@@ -2,22 +2,50 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+from __future__ import annotations
+
 import collections
 import copy
 import json
 import os
+from typing import Iterable, Optional
 import unittest
+from pathlib import Path
+import sys
 
+# Add tools/perf to sys.path
+FILE_PATH = Path(__file__).resolve()
+sys.path.append(str(FILE_PATH.parents[1]))
+
+from core import path_util
+
+path_util.AddTelemetryToPath()
+
+from core import bot_platforms
 from core import sharding_map_generator
 
 
-class FakeBenchmarkConfig(object):
-  def __init__(self, name, stories, repeat):
-    self.name = name
-    self.stories = stories
-    self.repeat = repeat
-    self.abridged = False
-    self.is_telemetry = True
+class FakeBenchmark:
+
+  def __init__(self, name):
+    self._name = name
+
+  def Name(self):
+    return self._name
+
+
+class FakeBenchmarkConfig(bot_platforms.TelemetryConfig):
+
+  def __init__(self,
+               name: str,
+               stories: Iterable[str],
+               repeat: Optional[int] = None):
+    super().__init__(FakeBenchmark(name), repeat=repeat, abridged=False)
+    self._stories: tuple[str, ...] = tuple(stories)
+
+  @property
+  def stories(self) -> tuple[str, ...]:
+    return self._stories
 
 
 class TestShardingMapGenerator(unittest.TestCase):
@@ -25,18 +53,18 @@ class TestShardingMapGenerator(unittest.TestCase):
   def _generate_test_data(self, times):
     timing_data = []
     benchmarks_data = []
-    for i, _ in enumerate(times):
-      b = FakeBenchmarkConfig('benchmark_' + str(i), [], 1)
-      benchmarks_data.append(b)
-      story_times = times[i]
-      for j, _ in enumerate(story_times):
-        benchmark_name = 'benchmark_' + str(i)
+    for i, story_times in enumerate(times):
+      benchmark_name = 'benchmark_' + str(i)
+      stories = []
+      for j, duration in enumerate(story_times):
         story_name = 'story_' + str(j)
-        b.stories.append(story_name)
+        stories.append(story_name)
         timing_data.append({
-           'name': benchmark_name + '/' + story_name,
-           'duration': story_times[j]
+            'name': benchmark_name + '/' + story_name,
+            'duration': duration
         })
+      b = FakeBenchmarkConfig(benchmark_name, stories, 1)
+      benchmarks_data.append(b)
     return benchmarks_data, timing_data
 
   def testGenerateAndTestShardingMap(self):
@@ -61,19 +89,23 @@ class TestShardingMapGenerator(unittest.TestCase):
     # stories tend to not be repeated.
     timing_data = []
     benchmarks_data = [
-        FakeBenchmarkConfig(
-            'a_benchmark', ['a_1', 'a_2', 'a_3', 'a_4'], 2),
-        FakeBenchmarkConfig(
-            'b_benchmark', ['b_1', 'b_2', 'b_3', 'b_4'], 1),
-        FakeBenchmarkConfig(
-            'c_benchmark', ['c_1', 'c_2', 'c_3', 'c_4'], 1),
+        FakeBenchmarkConfig('a_benchmark',
+                            stories=['a_1', 'a_2', 'a_3', 'a_4'],
+                            repeat=2),
+        FakeBenchmarkConfig('b_benchmark',
+                            stories=['b_1', 'b_2', 'b_3', 'b_4'],
+                            repeat=1),
+        FakeBenchmarkConfig('c_benchmark',
+                            stories=['c_1', 'c_2', 'c_3', 'c_4'],
+                            repeat=1),
     ]
     sharding_map = sharding_map_generator.generate_sharding_map(
         benchmarks_data, timing_data, 3, None)
     self.assertEqual(
         sharding_map['0']['benchmarks'],
         collections.OrderedDict([('a_benchmark', {
-            'abridged': False
+            'abridged': False,
+            'pageset_repeat': 2,
         })]))
     self.assertEqual(
         sharding_map['1']['benchmarks'],
@@ -84,6 +116,27 @@ class TestShardingMapGenerator(unittest.TestCase):
         sharding_map['2']['benchmarks'],
         collections.OrderedDict([('c_benchmark', {
             'abridged': False
+        })]))
+
+  def testGenerateShardingMapsWithPagesetRepeatOverride(self):
+    timing_data = []
+    benchmarks_data = [
+        FakeBenchmarkConfig('a_benchmark',
+                            stories=['a_1', 'a_2', 'a_3', 'a_4'],
+                            repeat=2),
+        FakeBenchmarkConfig('b_benchmark',
+                            stories=['b_1', 'b_2', 'b_3', 'b_4'],
+                            repeat=1),
+    ]
+    sharding_map = sharding_map_generator.generate_sharding_map(
+        benchmarks_data, timing_data, 1, None)
+    self.assertEqual(
+        sharding_map['0']['benchmarks'],
+        collections.OrderedDict([('a_benchmark', {
+            'abridged': False,
+            'pageset_repeat': 2,
+        }), ('b_benchmark', {
+            'abridged': False,
         })]))
 
   def testGeneratePerfSharding(self):
@@ -176,3 +229,25 @@ class TestShardingMapGenerator(unittest.TestCase):
     self.assertIn('benchmark_1', sharding_map['2']['benchmarks'])
     self.assertIn('benchmark_1', sharding_map['3']['benchmarks'])
     self.assertIn('benchmark_1', sharding_map['4']['benchmarks'])
+
+  def testGenerateShardingMapWithCrossbench(self):
+    benchmarks_data, timing_data, = self._generate_test_data(
+        [[10, 20, 30], [65, 55, 5, 45], [50, 40, 30, 20, 10]])
+    benchmarks_data.append(
+        bot_platforms.CrossbenchConfig('cb_benchmark_0',
+                                       'cb_benchmark_0_name',
+                                       flags=['--my_arg']))
+    sharding_map = sharding_map_generator.generate_sharding_map(
+        benchmarks_data, timing_data, 3, None)
+    self.assertIn('crossbench', sharding_map['2'])
+    self.assertIn('cb_benchmark_0', sharding_map['2']['crossbench'])
+    self.assertEqual(
+        'cb_benchmark_0_name',
+        sharding_map['2']['crossbench']['cb_benchmark_0']['crossbench_name'])
+    self.assertEqual(
+        ['--my_arg', '--enable-field-trials'],
+        sharding_map['2']['crossbench']['cb_benchmark_0']['arguments'])
+
+
+if __name__ == '__main__':
+  unittest.main()

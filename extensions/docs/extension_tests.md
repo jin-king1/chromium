@@ -26,10 +26,10 @@ anything that requires both a renderer and a browser (such as an extension
 process running and the browser process handling its input).
 
 ### Browser Tests
-Browser tests in Chromium (such as the `browser_tests` and
-`extensions_browsertests` targets) are multi-process, and instantiate a "real"
-browser.  That is, the majority of the environment is set up, and it much more
-closely resembles an environment that the Chrome browser normally operates in.
+Browser tests in Chromium (such as the `browser_tests` target) are
+multi-process, and instantiate a "real" browser.  That is, the majority of the
+environment is set up, and it much more closely resembles an environment that
+the Chrome browser normally operates in.
 
 Browser tests are useful when a test needs multi-process integration.  This is
 typically “browser + renderer”, such as when you need to exercise the behavior
@@ -87,7 +87,7 @@ is primarily useful in unit tests.
 ```c++
 scoped_refptr<const Extension> extension =
     ExtensionBuilder("my extension name")
-        .AddPermission("tabs")
+        .AddAPIPermission("tabs")
         .AddContentScript("script.js", {"*://*.example/*"})
         .SetVersion("1.0")
         .Build();
@@ -332,7 +332,7 @@ TEST_F(FrobulationApiUnitTest, CallingFrobulateKicksOffFrobulation) {
   Browser* browser = CreateTestBrowser();
   auto frobulate_function =
       base::MakeRefCounted<FrobulationFrobulateFunction>();
-  absl::optional<base::Value> result(
+  std::optional<base::Value> result(
       api_test_utils::RunFunctionAndReturnSingleResult(
           frobulate_function.get(), R"([{"speed": 10, "target": "foo"}])",
           browser));

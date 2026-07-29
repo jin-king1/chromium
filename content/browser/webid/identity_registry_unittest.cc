@@ -12,9 +12,9 @@
 #include "url/gurl.h"
 #include "url/origin.h"
 
-using ::testing::NiceMock;
+namespace content::webid {
 
-namespace content {
+using ::testing::NiceMock;
 
 namespace {
 
@@ -28,7 +28,15 @@ class TestFederatedIdentityModalDialogViewDelegate
  public:
   bool closed_{false};
 
-  void NotifyClose() override { closed_ = true; }
+  void OnClose() override { closed_ = true; }
+
+  base::WeakPtr<TestFederatedIdentityModalDialogViewDelegate> GetWeakPtr() {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
+
+ private:
+  base::WeakPtrFactory<TestFederatedIdentityModalDialogViewDelegate>
+      weak_ptr_factory_{this};
 };
 
 class IdentityRegistryTest : public RenderViewHostImplTestHarness {
@@ -42,12 +50,16 @@ class IdentityRegistryTest : public RenderViewHostImplTestHarness {
     test_delegate_ =
         std::make_unique<TestFederatedIdentityModalDialogViewDelegate>();
 
-    IdentityRegistry::CreateForWebContents(web_contents(), test_delegate_.get(),
-                                           url::Origin::Create(GURL(kIdpUrl)));
+    IdentityRegistry::CreateForWebContents(
+        web_contents(), test_delegate_->GetWeakPtr(), GURL(kIdpUrl));
     identity_registry_ = IdentityRegistry::FromWebContents(web_contents());
 
     static_cast<TestWebContents*>(web_contents())
         ->NavigateAndCommit(GURL(kRpUrl), ui::PAGE_TRANSITION_LINK);
+  }
+  void TearDown() override {
+    identity_registry_ = nullptr;
+    RenderViewHostImplTestHarness::TearDown();
   }
 
   std::unique_ptr<TestFederatedIdentityModalDialogViewDelegate> test_delegate_;
@@ -58,7 +70,7 @@ class IdentityRegistryTest : public RenderViewHostImplTestHarness {
 // be closed.
 TEST_F(IdentityRegistryTest, NotifierAndRegistrySameOrigin) {
   EXPECT_FALSE(test_delegate_->closed_);
-  identity_registry_->Notify(url::Origin::Create(GURL(kIdpUrl)));
+  identity_registry_->NotifyClose(url::Origin::Create(GURL(kIdpUrl)));
   EXPECT_TRUE(test_delegate_->closed_);
 }
 
@@ -66,9 +78,9 @@ TEST_F(IdentityRegistryTest, NotifierAndRegistrySameOrigin) {
 // remain open.
 TEST_F(IdentityRegistryTest, NotifierAndRegistryCrossOrigin) {
   EXPECT_FALSE(test_delegate_->closed_);
-  identity_registry_->Notify(
+  identity_registry_->NotifyClose(
       url::Origin::Create(GURL("https://cross-origin.example")));
   EXPECT_FALSE(test_delegate_->closed_);
 }
 
-}  // namespace content
+}  // namespace content::webid

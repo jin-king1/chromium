@@ -10,7 +10,6 @@
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/ash/crostini/ansible/ansible_management_service.h"
 #include "chrome/browser/ash/crostini/crostini_installer_ui_delegate.h"
 #include "chrome/browser/ash/crostini/crostini_manager.h"
 #include "chrome/browser/ash/crostini/crostini_types.mojom-forward.h"
@@ -72,8 +71,6 @@ class CrostiniInstaller : public KeyedService,
     // at the top of this enum.
   };
 
-  static CrostiniInstaller* GetForProfile(Profile* profile);
-
   explicit CrostiniInstaller(Profile* profile);
 
   CrostiniInstaller(const CrostiniInstaller&) = delete;
@@ -108,8 +105,6 @@ class CrostiniInstaller : public KeyedService,
     skip_launching_terminal_for_testing_ = true;
   }
 
-  static void EnsureFactoryBuilt();
-
  private:
   enum class State {
     IDLE,
@@ -129,12 +124,12 @@ class CrostiniInstaller : public KeyedService,
   void RecordSetupResult(SetupResult result);
 
   void OnCrostiniRestartFinished(crostini::CrostiniResult result);
-  void OnAvailableDiskSpace(absl::optional<int64_t> bytes);
+  void OnAvailableDiskSpace(std::optional<int64_t> bytes);
 
   void OnCrostiniRemovedAfterConfigurationFailed(
       crostini::CrostiniResult result);
 
-  raw_ptr<Profile, ExperimentalAsh> profile_;
+  raw_ptr<Profile> profile_;
 
   State state_ = State::IDLE;
   crostini::mojom::InstallerState installing_state_;

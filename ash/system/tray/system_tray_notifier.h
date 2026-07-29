@@ -10,6 +10,7 @@
 #include "ash/ash_export.h"
 #include "base/functional/callback_forward.h"
 #include "base/observer_list.h"
+#include "base/scoped_observation_traits.h"
 
 namespace ash {
 
@@ -17,6 +18,7 @@ class IMEObserver;
 class NetworkObserver;
 class ScreenSecurityObserver;
 class SystemTrayObserver;
+class TrayBubbleView;
 class VirtualKeyboardObserver;
 
 namespace mojom {
@@ -59,6 +61,14 @@ class ASH_EXPORT SystemTrayNotifier {
   void RemoveSystemTrayObserver(SystemTrayObserver* observer);
   void NotifyFocusOut(bool reverse);
   void NotifySystemTrayBubbleShown();
+  void NotifyImeMenuTrayBubbleShown();
+
+  // Status area anchored bubble.
+  void NotifyStatusAreaAnchoredBubbleVisibilityChanged(
+      TrayBubbleView* tray_bubble,
+      bool visible);
+
+  void NotifyTrayBubbleBoundsChanged(TrayBubbleView* tray_bubble);
 
   // Virtual keyboard.
   void AddVirtualKeyboardObserver(VirtualKeyboardObserver* observer);
@@ -70,11 +80,33 @@ class ASH_EXPORT SystemTrayNotifier {
   base::ObserverList<NetworkObserver>::Unchecked network_observers_;
   base::ObserverList<ScreenSecurityObserver>::Unchecked
       screen_security_observers_;
-  base::ObserverList<SystemTrayObserver>::Unchecked system_tray_observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      SystemTrayObserver,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>
+      system_tray_observers_;
   base::ObserverList<VirtualKeyboardObserver>::Unchecked
       virtual_keyboard_observers_;
 };
 
 }  // namespace ash
+
+namespace base {
+
+template <>
+struct ScopedObservationTraits<ash::SystemTrayNotifier,
+                               ash::SystemTrayObserver> {
+  static void AddObserver(ash::SystemTrayNotifier* source,
+                          ash::SystemTrayObserver* observer) {
+    source->AddSystemTrayObserver(observer);
+  }
+  static void RemoveObserver(ash::SystemTrayNotifier* source,
+                             ash::SystemTrayObserver* observer) {
+    source->RemoveSystemTrayObserver(observer);
+  }
+};
+
+}  // namespace base
 
 #endif  // ASH_SYSTEM_TRAY_SYSTEM_TRAY_NOTIFIER_H_

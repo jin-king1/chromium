@@ -4,18 +4,16 @@
 
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_item.h"
 
-#import "base/mac/foundation_util.h"
-#import "ios/chrome/browser/shared/ui/table_view/chrome_table_view_styler.h"
+#import "base/apple/foundation_util.h"
+#import "ios/chrome/browser/shared/ui/table_view/content_configuration/table_view_cell_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+#import "ui/base/l10n/l10n_util_mac.h"
 
 namespace {
 using TableViewTextItemTest = PlatformTest;
@@ -28,16 +26,17 @@ TEST_F(TableViewTextItemTest, TextLabels) {
   TableViewTextItem* item = [[TableViewTextItem alloc] initWithType:0];
   item.text = text;
 
-  id cell = [[[item cellClass] alloc] init];
-  ASSERT_TRUE([cell isMemberOfClass:[TableViewTextCell class]]);
+  LegacyTableViewCell* cell = [[[item cellClass] alloc] init];
+  ASSERT_TRUE([cell isMemberOfClass:[LegacyTableViewCell class]]);
+  [item configureCell:cell];
 
-  TableViewTextCell* textCell =
-      base::mac::ObjCCastStrict<TableViewTextCell>(cell);
-  EXPECT_FALSE(textCell.textLabel.text);
+  ASSERT_TRUE([cell.contentConfiguration
+      isMemberOfClass:TableViewCellContentConfiguration.class]);
+  TableViewCellContentConfiguration* configuration =
+      base::apple::ObjCCastStrict<TableViewCellContentConfiguration>(
+          cell.contentConfiguration);
 
-  ChromeTableViewStyler* styler = [[ChromeTableViewStyler alloc] init];
-  [item configureCell:textCell withStyler:styler];
-  EXPECT_NSEQ(text, textCell.textLabel.text);
+  EXPECT_NSEQ(text, configuration.title);
 }
 
 // Tests that item's text is shown as masked string in UILabel after a call to
@@ -49,38 +48,43 @@ TEST_F(TableViewTextItemTest, MaskedTextLabels) {
   item.text = text;
   item.masked = YES;
 
-  id cell = [[[item cellClass] alloc] init];
-  ASSERT_TRUE([cell isMemberOfClass:[TableViewTextCell class]]);
+  LegacyTableViewCell* cell = [[[item cellClass] alloc] init];
+  ASSERT_TRUE([cell isMemberOfClass:[LegacyTableViewCell class]]);
+  [item configureCell:cell];
 
-  TableViewTextCell* textCell =
-      base::mac::ObjCCastStrict<TableViewTextCell>(cell);
-  EXPECT_FALSE(textCell.textLabel.text);
+  ASSERT_TRUE([cell.contentConfiguration
+      isMemberOfClass:TableViewCellContentConfiguration.class]);
+  TableViewCellContentConfiguration* configuration =
+      base::apple::ObjCCastStrict<TableViewCellContentConfiguration>(
+          cell.contentConfiguration);
 
-  ChromeTableViewStyler* styler = [[ChromeTableViewStyler alloc] init];
-  [item configureCell:textCell withStyler:styler];
-  EXPECT_NSEQ(kMaskedPassword, textCell.textLabel.text);
+  EXPECT_NSEQ(kMaskedPassword, configuration.title);
+  EXPECT_NSEQ(l10n_util::GetNSString(IDS_IOS_SETTINGS_PASSWORD_HIDDEN_LABEL),
+              cell.accessibilityLabel);
 }
 
-TEST_F(TableViewTextItemTest, ConfigureLabelColorWithProperty) {
-  TableViewTextItem* item = [[TableViewTextItem alloc] initWithType:0];
-  UIColor* textColor = UIColor.blueColor;
-  item.textColor = textColor;
-  TableViewTextCell* cell = [[[item cellClass] alloc] init];
-  ASSERT_TRUE([cell isMemberOfClass:[TableViewTextCell class]]);
+// Tests that item's text is attributed with a different font when using
+// headlineFont.
+TEST_F(TableViewTextItemTest, HeadlineFont) {
+  NSString* text = @"Cell text";
 
-  ChromeTableViewStyler* styler = [[ChromeTableViewStyler alloc] init];
-  UIColor* testColor = UIColor.redColor;
-  styler.tableViewBackgroundColor = testColor;
-  [item configureCell:cell withStyler:styler];
-  EXPECT_NSEQ(textColor, cell.textLabel.textColor);
-  EXPECT_NSNE(testColor, cell.textLabel.textColor);
-}
-
-TEST_F(TableViewTextItemTest, ConfigureLabelColorWithDefaultColor) {
   TableViewTextItem* item = [[TableViewTextItem alloc] initWithType:0];
-  TableViewTextCell* cell = [[[item cellClass] alloc] init];
-  ASSERT_TRUE([cell isMemberOfClass:[TableViewTextCell class]]);
-  ChromeTableViewStyler* styler = [[ChromeTableViewStyler alloc] init];
-  [item configureCell:cell withStyler:styler];
-  EXPECT_NSEQ([UIColor colorNamed:kTextPrimaryColor], cell.textLabel.textColor);
+  item.text = text;
+  item.useHeadlineFont = YES;
+
+  LegacyTableViewCell* cell = [[[item cellClass] alloc] init];
+  ASSERT_TRUE([cell isMemberOfClass:[LegacyTableViewCell class]]);
+  [item configureCell:cell];
+
+  ASSERT_TRUE([cell.contentConfiguration
+      isMemberOfClass:TableViewCellContentConfiguration.class]);
+  TableViewCellContentConfiguration* configuration =
+      base::apple::ObjCCastStrict<TableViewCellContentConfiguration>(
+          cell.contentConfiguration);
+
+  EXPECT_NSEQ(text, configuration.attributedTitle.string);
+  UIFont* font = [configuration.attributedTitle attribute:NSFontAttributeName
+                                                  atIndex:0
+                                           effectiveRange:nil];
+  EXPECT_NSEQ([UIFont preferredFontForTextStyle:UIFontTextStyleHeadline], font);
 }

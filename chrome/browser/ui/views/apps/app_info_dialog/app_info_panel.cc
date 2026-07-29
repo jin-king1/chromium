@@ -4,8 +4,8 @@
 
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_panel.h"
 
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/apps/app_info_dialog/app_info_label.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "extensions/common/extension.h"
@@ -21,13 +21,12 @@ namespace {
 
 // The spacing between the key and the value labels in the Details section.
 const int kSpacingBetweenKeyAndStartOfValue = 3;
-}
+}  // namespace
 
 AppInfoPanel::AppInfoPanel(Profile* profile, const extensions::Extension* app)
     : profile_(profile), app_(app) {}
 
-AppInfoPanel::~AppInfoPanel() {
-}
+AppInfoPanel::~AppInfoPanel() = default;
 
 void AppInfoPanel::Close() {
   GetWidget()->Close();
@@ -79,5 +78,5 @@ std::unique_ptr<views::View> AppInfoPanel::CreateKeyValueField(
   return horizontal_stack;
 }
 
-BEGIN_METADATA(AppInfoPanel, views::View)
+BEGIN_METADATA(AppInfoPanel)
 END_METADATA

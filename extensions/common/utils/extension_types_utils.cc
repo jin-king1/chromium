@@ -4,6 +4,10 @@
 
 #include "extensions/common/utils/extension_types_utils.h"
 
+#include "base/notreached.h"
+#include "extensions/common/api/extension_types.h"
+#include "extensions/common/mojom/execution_world.mojom-shared.h"
+
 namespace extensions {
 
 mojom::RunLocation ConvertRunLocation(api::extension_types::RunAt run_at) {
@@ -18,7 +22,6 @@ mojom::RunLocation ConvertRunLocation(api::extension_types::RunAt run_at) {
   }
 
   NOTREACHED();
-  return mojom::RunLocation::kDocumentIdle;
 }
 
 api::extension_types::RunAt ConvertRunLocationForAPI(
@@ -39,7 +42,6 @@ api::extension_types::RunAt ConvertRunLocationForAPI(
   }
 
   NOTREACHED();
-  return api::extension_types::RunAt::kDocumentIdle;
 }
 
 mojom::ExecutionWorld ConvertExecutionWorld(
@@ -51,6 +53,9 @@ mojom::ExecutionWorld ConvertExecutionWorld(
       break;  // Default to mojom::ExecutionWorld::kIsolated.
     case api::extension_types::ExecutionWorld::kMain:
       execution_world = mojom::ExecutionWorld::kMain;
+      break;
+    case api::extension_types::ExecutionWorld::kUserScript:
+      execution_world = mojom::ExecutionWorld::kUserScript;
   }
 
   return execution_world;
@@ -64,11 +69,10 @@ api::extension_types::ExecutionWorld ConvertExecutionWorldForAPI(
     case mojom::ExecutionWorld::kMain:
       return api::extension_types::ExecutionWorld::kMain;
     case mojom::ExecutionWorld::kUserScript:
-      NOTREACHED() << "UserScript worlds are not supported in this API.";
+      return api::extension_types::ExecutionWorld::kUserScript;
   }
 
   NOTREACHED();
-  return api::extension_types::ExecutionWorld::kIsolated;
 }
 
 }  // namespace extensions

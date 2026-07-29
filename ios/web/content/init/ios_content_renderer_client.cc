@@ -12,7 +12,7 @@ IOSContentRendererClient::IOSContentRendererClient() = default;
 IOSContentRendererClient::~IOSContentRendererClient() = default;
 
 void IOSContentRendererClient::RenderThreadStarted() {
-  // TODO(crbug.com/1423527): Create and register a v8::Extension for receiving
+  // TODO(crbug.com/40260088): Create and register a v8::Extension for receiving
   // messages from JavaScript.
 }
 
@@ -27,13 +27,41 @@ void IOSContentRendererClient::RunScriptsAtDocumentStart(
     content::RenderFrame* render_frame) {
   js_injection::JsCommunication* communication =
       js_injection::JsCommunication::Get(render_frame);
-  communication->RunScriptsAtDocumentStart();
+  communication->RunScripts(
+      js_injection::mojom::DocumentInjectionTime::kDocumentStart);
 }
 
 void IOSContentRendererClient::RunScriptsAtDocumentEnd(
     content::RenderFrame* render_frame) {
-  // TODO(crbug.com/1423527): Inject document end scripts from
-  // JavaScriptFeatures.
+  js_injection::JsCommunication* communication =
+      js_injection::JsCommunication::Get(render_frame);
+  communication->RunScripts(
+      js_injection::mojom::DocumentInjectionTime::kDocumentEnd);
+}
+
+void IOSContentRendererClient::PrepareErrorPage(
+    content::RenderFrame* render_frame,
+    const blink::WebURLError& error,
+    const std::string& http_method,
+    content::mojom::AlternativeErrorPageOverrideInfoPtr
+        alternative_error_page_info,
+    std::string* error_html) {
+  if (error_html) {
+    *error_html = "This is an error page";
+  }
+}
+
+void IOSContentRendererClient::PrepareErrorPageForHttpStatusError(
+    content::RenderFrame* render_frame,
+    const blink::WebURLError& error,
+    const std::string& http_method,
+    int http_status,
+    content::mojom::AlternativeErrorPageOverrideInfoPtr
+        alternative_error_page_info,
+    std::string* error_html) {
+  if (error_html) {
+    *error_html = "This is an http status error page";
+  }
 }
 
 }  // namespace web

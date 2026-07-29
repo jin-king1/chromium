@@ -3,11 +3,14 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/extensions/blocklist_factory.h"
-#include "chrome/browser/extensions/blocklist.h"
-#include "chrome/browser/profiles/profile.h"
+
+#include "extensions/browser/blocklist.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_prefs_factory.h"
 #include "extensions/browser/extensions_browser_client.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using content::BrowserContext;
 
@@ -21,7 +24,8 @@ Blocklist* BlocklistFactory::GetForBrowserContext(BrowserContext* context) {
 
 // static
 BlocklistFactory* BlocklistFactory::GetInstance() {
-  return base::Singleton<BlocklistFactory>::get();
+  static base::NoDestructor<BlocklistFactory> instance;
+  return instance.get();
 }
 
 BlocklistFactory::BlocklistFactory()
@@ -30,18 +34,22 @@ BlocklistFactory::BlocklistFactory()
           // Redirected in incognito.
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kRedirectedToOriginal)
-              // TODO(crbug.com/1418376): Check if this service is needed in
-              // Guest mode.
+              // TODO(crbug.com/40257657): Audit whether these should be
+              // redirected or should have their own instance.
               .WithGuest(ProfileSelection::kRedirectedToOriginal)
+              // TODO(crbug.com/41488885): Check if this service is needed for
+              // Ash Internals.
+              .WithAshInternals(ProfileSelection::kRedirectedToOriginal)
               .Build()) {
-  DependsOn(extensions::ExtensionPrefsFactory::GetInstance());
+  DependsOn(ExtensionPrefsFactory::GetInstance());
 }
 
-BlocklistFactory::~BlocklistFactory() {}
+BlocklistFactory::~BlocklistFactory() = default;
 
-KeyedService* BlocklistFactory::BuildServiceInstanceFor(
+std::unique_ptr<KeyedService>
+BlocklistFactory::BuildServiceInstanceForBrowserContext(
     BrowserContext* context) const {
-  return new Blocklist(Profile::FromBrowserContext(context)->GetPrefs());
+  return std::make_unique<Blocklist>(context);
 }
 
 }  // namespace extensions

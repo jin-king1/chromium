@@ -5,10 +5,10 @@
 package org.chromium.chrome.browser.toolbar.adaptive;
 
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
 
 import android.content.res.Configuration;
 import android.content.res.Resources;
@@ -19,36 +19,32 @@ import androidx.test.filters.MediumTest;
 
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.TestRule;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
-import org.robolectric.annotation.Implementation;
-import org.robolectric.annotation.Implements;
 
-import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.ChromeRobolectricTestRunner;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
-import org.chromium.chrome.browser.app.tabmodel.TabWindowManagerSingleton;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
+import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicKeyedService;
+import org.chromium.chrome.browser.glic.GlicKeyedServiceFactory;
+import org.chromium.chrome.browser.price_tracking.PriceTrackingFeatures;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.MockTab;
-import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
-import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.chrome.browser.toolbar.ButtonDataProvider;
+import org.chromium.chrome.browser.toolbar.optional_button.ButtonDataProvider;
 import org.chromium.chrome.browser.toolbar.top.OptionalBrowsingModeButtonController;
 import org.chromium.chrome.browser.toolbar.top.TopToolbarCoordinator;
-import org.chromium.chrome.test.util.browser.Features;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabCreatorManager;
 import org.chromium.chrome.test.util.browser.tabmodel.MockTabModelSelector;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.ui.display.DisplayAndroidManager;
 import org.chromium.url.JUnitTestGURLs;
-import org.chromium.url.ShadowGURL;
 
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -57,44 +53,16 @@ import java.util.NoSuchElementException;
  * Robolectric tests running {@link OptionalNewTabButtonController} in a {@link
  * ChromeTabbedActivity}.
  */
-@Config(shadows = {OptionalNewTabButtonControllerActivityTest.ShadowDelegate.class,
-                ShadowGURL.class})
-@RunWith(BaseRobolectricTestRunner.class)
-@Features.EnableFeatures({ChromeFeatureList.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_V2})
-@CommandLineFlags.
-Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE, ChromeSwitches.DISABLE_NATIVE_INITIALIZATION,
-        "enable-features=" + ChromeFeatureList.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_V2
-                + "<FakeStudyName",
-        "force-fieldtrials=FakeStudyName/Enabled",
-        "force-fieldtrial-params=FakeStudyName.Enabled:min_version_adaptive/0"})
+@RunWith(ChromeRobolectricTestRunner.class)
+@EnableFeatures(
+        ChromeFeatureList.ADAPTIVE_BUTTON_IN_TOP_TOOLBAR_CUSTOMIZATION_V2
+                + ":min_version_adaptive/0")
+@DisableFeatures(ChromeFeatureList.ANDROID_BOTTOM_BAR)
+@CommandLineFlags.Add({
+    ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE,
+    ChromeSwitches.DISABLE_NATIVE_INITIALIZATION
+})
 public class OptionalNewTabButtonControllerActivityTest {
-    @Rule
-    public TestRule mProcessor = new Features.JUnitProcessor();
-
-    /**
-     * Shadow of {@link OptionalNewTabButtonController.Delegate}. Injects testing values into every
-     * instance of {@link OptionalNewTabButtonController}.
-     */
-    @Implements(OptionalNewTabButtonController.Delegate.class)
-    public static class ShadowDelegate {
-        private static MockTabCreatorManager sTabCreatorManager;
-        private static MockTabModelSelector sTabModelSelector;
-
-        protected static void reset() {
-            sTabModelSelector = null;
-            sTabCreatorManager = null;
-        }
-
-        @Implementation
-        protected TabCreatorManager getTabCreatorManager() {
-            return sTabCreatorManager;
-        }
-
-        @Implementation
-        protected TabModelSelector getTabModelSelector() {
-            return sTabModelSelector;
-        }
-    }
 
     private ActivityScenario<ChromeTabbedActivity> mActivityScenario;
     private AdaptiveToolbarButtonController mAdaptiveButtonController;
@@ -102,105 +70,116 @@ public class OptionalNewTabButtonControllerActivityTest {
 
     @Before
     public void setUp() {
+        Profile originalProfile = Mockito.mock(Profile.class);
+        Profile incognitoProfile = Mockito.mock(Profile.class);
+        when(originalProfile.getOriginalProfile()).thenReturn(originalProfile);
+        when(incognitoProfile.isOffTheRecord()).thenReturn(true);
+
+        PriceTrackingFeatures.setPriceAnnotationsEnabledForTesting(false);
+
+        GlicKeyedService glicKeyedService = Mockito.mock(GlicKeyedService.class);
+        GlicKeyedServiceFactory.setForTesting(glicKeyedService);
+        GlicEnabling.setEnabledForTesting(false);
+
         // Avoid leaking state from the previous test.
-        resetStaticState();
         AdaptiveToolbarStatePredictor.setToolbarStateForTesting(
                 AdaptiveToolbarButtonVariant.NEW_TAB);
         // To bypass a direct call to AdaptiveToolbarStatePredictor#readFromSegmentationPlatform for
         // UMA.
         AdaptiveToolbarStatePredictor.setSegmentationResultsForTesting(
-                new Pair<>(true, AdaptiveToolbarButtonVariant.NEW_TAB));
-        MockTabModelSelector tabModelSelector = new MockTabModelSelector(
-                /*tabCount=*/1, /*incognitoTabCount=*/0, (id, incognito) -> {
-                    Tab tab = spy(MockTab.createAndInitialize(id, incognito));
-                    doReturn(Mockito.mock(WebContents.class)).when(tab).getWebContents();
-                    return tab;
-                });
-        assertNull(ShadowDelegate.sTabModelSelector);
-        assertNull(ShadowDelegate.sTabCreatorManager);
-        ShadowDelegate.sTabModelSelector = tabModelSelector;
-        ShadowDelegate.sTabCreatorManager = new MockTabCreatorManager(tabModelSelector);
-        mTab = (MockTab) tabModelSelector.getCurrentTab();
-        mTab.setGurlOverrideForTesting(JUnitTestGURLs.getGURL(JUnitTestGURLs.EXAMPLE_URL));
+                new Pair<>(true, List.of(AdaptiveToolbarButtonVariant.NEW_TAB)));
+        MockTabModelSelector tabModelSelector =
+                new MockTabModelSelector(
+                        originalProfile,
+                        incognitoProfile,
+                        /* tabCount= */ 1,
+                        /* incognitoTabCount= */ 0,
+                        (id, incognito) -> {
+                            Profile profile = incognito ? incognitoProfile : originalProfile;
+                            MockTab tab = spy(MockTab.createAndInitialize(id, profile));
+                            doReturn(Mockito.mock(WebContents.class)).when(tab).getWebContents();
+                            return tab;
+                        });
+        OptionalNewTabButtonController.setActiveTabSupplierForTesting(
+                tabModelSelector::getCurrentTab);
+        OptionalNewTabButtonController.setTabCreatorManagerForTesting(
+                new MockTabCreatorManager(tabModelSelector));
+        mTab = tabModelSelector.getCurrentTab();
+        mTab.setGurlOverrideForTesting(JUnitTestGURLs.EXAMPLE_URL);
 
         mActivityScenario = ActivityScenario.launch(ChromeTabbedActivity.class);
-        mActivityScenario.onActivity(activity -> {
-            mAdaptiveButtonController = getAdaptiveButton(getOptionalButtonController(activity));
-            mAdaptiveButtonController.onFinishNativeInitialization();
-        });
+        mActivityScenario.onActivity(
+                activity -> {
+                    mAdaptiveButtonController =
+                            getAdaptiveButton(getOptionalButtonController(activity));
+                    mAdaptiveButtonController.setProfile(originalProfile);
+                });
     }
 
     @After
     public void tearDown() {
         mActivityScenario.close();
-        resetStaticState();
-    }
-
-    private static void resetStaticState() {
-        ShadowDelegate.reset();
-        // DisplayAndroidManager will reuse the Display between tests. This can cause
-        // AsyncInitializationActivity#applyOverrides to set incorrect smallestWidth.
-        DisplayAndroidManager.resetInstanceForTesting();
-        TabWindowManagerSingleton.resetTabModelSelectorFactoryForTesting();
-        AdaptiveToolbarStatePredictor.setToolbarStateForTesting(null);
     }
 
     @Test
     @MediumTest
     @Config(qualifiers = "w390dp-h820dp-land")
     public void testAlwaysShownOnPhone() {
-        mActivityScenario.onActivity(activity -> {
-            assertTrue(mAdaptiveButtonController.get(mTab).canShow());
+        mActivityScenario.onActivity(
+                activity -> {
+                    assertTrue(mAdaptiveButtonController.get(mTab).canShow());
 
-            applyQualifiers(activity, "+port");
+                    applyQualifiers(activity, "+port");
 
-            assertTrue(mAdaptiveButtonController.get(mTab).canShow());
-        });
+                    assertTrue(mAdaptiveButtonController.get(mTab).canShow());
+                });
     }
 
     @Test
     @MediumTest
     @Config(qualifiers = "w600dp-h820dp")
     public void testNeverShownOnTablet() {
-        mActivityScenario.onActivity(activity -> {
-            assertFalse(mAdaptiveButtonController.get(mTab).canShow());
+        mActivityScenario.onActivity(
+                activity -> {
+                    assertFalse(mAdaptiveButtonController.get(mTab).canShow());
 
-            // Rotating a tablet should not change canShow.
-            applyQualifiers(activity, "+land");
+                    // Rotating a tablet should not change canShow.
+                    applyQualifiers(activity, "+land");
 
-
-            assertFalse(mAdaptiveButtonController.get(mTab).canShow());
-        });
+                    assertFalse(mAdaptiveButtonController.get(mTab).canShow());
+                });
     }
 
     @Test
     @MediumTest
     @Config(qualifiers = "w400dp-h600dp")
     public void testNightMode() {
-        mActivityScenario.onActivity(activity -> {
-            assertTrue(mAdaptiveButtonController.get(mTab).canShow());
+        mActivityScenario.onActivity(
+                activity -> {
+                    assertTrue(mAdaptiveButtonController.get(mTab).canShow());
 
-            // Unrelated qualifiers should not change canShow. This covers an early return from
-            // onConfigurationChanged.
-            applyQualifiers(activity, "+night");
+                    // Unrelated qualifiers should not change canShow. This covers an early return
+                    // from onConfigurationChanged.
+                    applyQualifiers(activity, "+night");
 
-            assertTrue(mAdaptiveButtonController.get(mTab).canShow());
-        });
+                    assertTrue(mAdaptiveButtonController.get(mTab).canShow());
+                });
     }
 
     @Test
     @MediumTest
     @Config(qualifiers = "w400dp-h600dp")
     public void testNtp() {
-        mActivityScenario.onActivity(activity -> {
-            assertTrue(mAdaptiveButtonController.get(mTab).canShow());
+        mActivityScenario.onActivity(
+                activity -> {
+                    assertTrue(mAdaptiveButtonController.get(mTab).canShow());
 
-            mTab.setGurlOverrideForTesting(JUnitTestGURLs.getGURL(JUnitTestGURLs.NTP_URL));
-            assertFalse(mAdaptiveButtonController.get(mTab).canShow());
+                    mTab.setGurlOverrideForTesting(JUnitTestGURLs.NTP_URL);
+                    assertFalse(mAdaptiveButtonController.get(mTab).canShow());
 
-            mTab.setGurlOverrideForTesting(JUnitTestGURLs.getGURL(JUnitTestGURLs.EXAMPLE_URL));
-            assertTrue(mAdaptiveButtonController.get(mTab).canShow());
-        });
+                    mTab.setGurlOverrideForTesting(JUnitTestGURLs.EXAMPLE_URL);
+                    assertTrue(mAdaptiveButtonController.get(mTab).canShow());
+                });
     }
 
     private static OptionalBrowsingModeButtonController getOptionalButtonController(

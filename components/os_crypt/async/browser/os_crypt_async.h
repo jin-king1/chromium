@@ -5,24 +5,26 @@
 #ifndef COMPONENTS_OS_CRYPT_ASYNC_BROWSER_OS_CRYPT_ASYNC_H_
 #define COMPONENTS_OS_CRYPT_ASYNC_BROWSER_OS_CRYPT_ASYNC_H_
 
+#include <list>
 #include <memory>
+#include <optional>
 #include <vector>
 
-#include "base/callback_list.h"
 #include "base/component_export.h"
 #include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "base/types/expected.h"
 #include "components/os_crypt/async/browser/key_provider.h"
 #include "components/os_crypt/async/common/encryptor.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace os_crypt_async {
 
 // This class is responsible for vending Encryptor instances.
 class COMPONENT_EXPORT(OS_CRYPT_ASYNC) OSCryptAsync {
  public:
-  using InitCallback = base::OnceCallback<void(Encryptor, bool result)>;
+  using InitCallback = base::OnceCallback<void(scoped_refptr<Encryptor>)>;
 
   // Higher precedence providers will be used for encryption over lower
   // preference ones.
@@ -37,8 +39,7 @@ class COMPONENT_EXPORT(OS_CRYPT_ASYNC) OSCryptAsync {
   // also signals that it can be used for encryption by returning `true` from
   // the `UseForEncryption` interface method will be used for encryption.
   //
-  // If no providers are available for encryption, legacy OSCrypt will be used
-  // for encryption.
+  // If no providers are available for encryption, encryption will fail.
   //
   // Any provider that supplies a Key, regardless of their precedence or whether
   // or not they signal `UseForEncryption`, will make that Key available for
@@ -57,29 +58,31 @@ class COMPONENT_EXPORT(OS_CRYPT_ASYNC) OSCryptAsync {
   // Obtain an Encryptor instance. Can be called multiple times, each one will
   // get a valid instance once the initialization has completed, on the
   // `callback`. Must be called on the same sequence that the OSCryptAsync
-  // object was created on. Destruction of the `base::CallbackListSubscription`
-  // will cause the callback not to run, see `base/callback_list.h`.
-  [[nodiscard]] virtual base::CallbackListSubscription GetInstance(
-      InitCallback callback);
+  // object was created on.
+  // The callback might be executed before this function returns, if the
+  // Encryptor is already available.
+  virtual void GetInstance(InitCallback callback);
 
  private:
   using ProviderIterator =
       std::vector<std::unique_ptr<KeyProvider>>::const_iterator;
-
-  void CallbackHelper(InitCallback callback) const;
   void HandleKey(ProviderIterator current,
                  const std::string& tag,
-                 absl::optional<Encryptor::Key> key);
+                 base::expected<Encryptor::Key, KeyProvider::KeyError> key);
+  // Sets the `encryptor_instance_` and reports metrics.
+  void SetEncryptorInstance(scoped_refptr<Encryptor> encryptor);
 
-  std::unique_ptr<Encryptor> encryptor_instance_
+  scoped_refptr<Encryptor> encryptor_instance_
       GUARDED_BY_CONTEXT(sequence_checker_);
   bool is_initialized_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
   bool is_initializing_ GUARDED_BY_CONTEXT(sequence_checker_) = false;
   const std::vector<std::unique_ptr<KeyProvider>> providers_
       GUARDED_BY_CONTEXT(sequence_checker_);
-  base::OnceClosureList callbacks_ GUARDED_BY_CONTEXT(sequence_checker_);
+  std::list<base::OnceClosure> callbacks_ GUARDED_BY_CONTEXT(sequence_checker_);
   Encryptor::KeyRing key_ring_ GUARDED_BY_CONTEXT(sequence_checker_);
   std::string provider_for_encryption_ GUARDED_BY_CONTEXT(sequence_checker_);
+  size_t number_of_failing_key_providers_
+      GUARDED_BY_CONTEXT(sequence_checker_) = 0;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

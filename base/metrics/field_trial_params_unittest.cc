@@ -4,6 +4,8 @@
 
 #include "base/metrics/field_trial_params.h"
 
+#include <memory>
+
 #include "base/feature_list.h"
 #include "base/metrics/field_trial.h"
 #include "base/metrics/field_trial_param_associator.h"
@@ -45,7 +47,7 @@ class FieldTrialParamsTest : public ::testing::Test {
   void CreateFeatureWithTrial(const Feature& feature,
                               FeatureList::OverrideState override_state,
                               FieldTrial* trial) {
-    std::unique_ptr<FeatureList> feature_list(new FeatureList);
+    auto feature_list = std::make_unique<FeatureList>();
     feature_list->RegisterFieldTrialOverride(feature.name, override_state,
                                              trial);
     scoped_feature_list_.InitWithFeatureList(std::move(feature_list));
@@ -59,13 +61,13 @@ TEST_F(FieldTrialParamsTest, AssociateFieldTrialParams) {
   const std::string kTrialName = "AssociateFieldTrialParams";
 
   {
-    std::map<std::string, std::string> params;
+    FieldTrialParams params;
     params["a"] = "10";
     params["b"] = "test";
     ASSERT_TRUE(AssociateFieldTrialParams(kTrialName, "A", params));
   }
   {
-    std::map<std::string, std::string> params;
+    FieldTrialParams params;
     params["a"] = "5";
     ASSERT_TRUE(AssociateFieldTrialParams(kTrialName, "B", params));
   }
@@ -75,7 +77,7 @@ TEST_F(FieldTrialParamsTest, AssociateFieldTrialParams) {
   EXPECT_EQ(std::string(), GetFieldTrialParamValue(kTrialName, "b"));
   EXPECT_EQ(std::string(), GetFieldTrialParamValue(kTrialName, "x"));
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   EXPECT_TRUE(GetFieldTrialParams(kTrialName, &params));
   EXPECT_EQ(1U, params.size());
   EXPECT_EQ("5", params["a"]);
@@ -85,7 +87,7 @@ TEST_F(FieldTrialParamsTest, AssociateFieldTrialParams_Fail) {
   const std::string kTrialName = "AssociateFieldTrialParams_Fail";
   const std::string kGroupName = "A";
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "10";
   ASSERT_TRUE(AssociateFieldTrialParams(kTrialName, kGroupName, params));
   params["a"] = "1";
@@ -102,7 +104,7 @@ TEST_F(FieldTrialParamsTest, AssociateFieldTrialParams_TrialActiveFail) {
   FieldTrialList::CreateFieldTrial(kTrialName, "A");
   ASSERT_EQ("A", FieldTrialList::FindFullName(kTrialName));
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "10";
   EXPECT_FALSE(AssociateFieldTrialParams(kTrialName, "B", params));
   EXPECT_FALSE(AssociateFieldTrialParams(kTrialName, "A", params));
@@ -116,7 +118,7 @@ TEST_F(FieldTrialParamsTest, AssociateFieldTrialParams_DoesntActivateTrial) {
   scoped_refptr<FieldTrial> trial(CreateFieldTrial(kTrialName, 100, "A"));
   ASSERT_FALSE(FieldTrialList::IsTrialActive(kTrialName));
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "10";
   EXPECT_TRUE(AssociateFieldTrialParams(kTrialName, "A", params));
   ASSERT_FALSE(FieldTrialList::IsTrialActive(kTrialName));
@@ -125,7 +127,7 @@ TEST_F(FieldTrialParamsTest, AssociateFieldTrialParams_DoesntActivateTrial) {
 TEST_F(FieldTrialParamsTest, GetFieldTrialParams_NoTrial) {
   const std::string kTrialName = "GetFieldTrialParams_NoParams";
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   EXPECT_FALSE(GetFieldTrialParams(kTrialName, &params));
   EXPECT_EQ(std::string(), GetFieldTrialParamValue(kTrialName, "x"));
   EXPECT_EQ(std::string(), GetFieldTrialParamValue(kTrialName, "y"));
@@ -136,7 +138,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParams_NoParams) {
 
   FieldTrialList::CreateFieldTrial(kTrialName, "A");
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   EXPECT_FALSE(GetFieldTrialParams(kTrialName, &params));
   EXPECT_EQ(std::string(), GetFieldTrialParamValue(kTrialName, "x"));
   EXPECT_EQ(std::string(), GetFieldTrialParamValue(kTrialName, "y"));
@@ -149,7 +151,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParams_ActivatesTrial) {
   scoped_refptr<FieldTrial> trial(CreateFieldTrial(kTrialName, 100, "A"));
   ASSERT_FALSE(FieldTrialList::IsTrialActive(kTrialName));
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   EXPECT_FALSE(GetFieldTrialParams(kTrialName, &params));
   ASSERT_TRUE(FieldTrialList::IsTrialActive(kTrialName));
 }
@@ -161,7 +163,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParamValue_ActivatesTrial) {
   scoped_refptr<FieldTrial> trial(CreateFieldTrial(kTrialName, 100, "A"));
   ASSERT_FALSE(FieldTrialList::IsTrialActive(kTrialName));
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   EXPECT_EQ(std::string(), GetFieldTrialParamValue(kTrialName, "x"));
   ASSERT_TRUE(FieldTrialList::IsTrialActive(kTrialName));
 }
@@ -170,7 +172,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParamsByFeature) {
   const std::string kTrialName = "GetFieldTrialParamsByFeature";
   static BASE_FEATURE(kFeature, "TestFeature", FEATURE_DISABLED_BY_DEFAULT);
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["x"] = "1";
   AssociateFieldTrialParams(kTrialName, "A", params);
   scoped_refptr<FieldTrial> trial(CreateFieldTrial(kTrialName, 100, "A"));
@@ -178,7 +180,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParamsByFeature) {
   CreateFeatureWithTrial(kFeature, FeatureList::OVERRIDE_ENABLE_FEATURE,
                          trial.get());
 
-  std::map<std::string, std::string> actualParams;
+  FieldTrialParams actualParams;
   EXPECT_TRUE(GetFieldTrialParamsByFeature(kFeature, &actualParams));
   EXPECT_EQ(params, actualParams);
 }
@@ -187,7 +189,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParamValueByFeature) {
   const std::string kTrialName = "GetFieldTrialParamsByFeature";
   static BASE_FEATURE(kFeature, "TestFeature", FEATURE_DISABLED_BY_DEFAULT);
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["x"] = "1";
   AssociateFieldTrialParams(kTrialName, "A", params);
   scoped_refptr<FieldTrial> trial(CreateFieldTrial(kTrialName, 100, "A"));
@@ -195,7 +197,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParamValueByFeature) {
   CreateFeatureWithTrial(kFeature, FeatureList::OVERRIDE_ENABLE_FEATURE,
                          trial.get());
 
-  std::map<std::string, std::string> actualParams;
+  FieldTrialParams actualParams;
   EXPECT_EQ(params["x"], GetFieldTrialParamValueByFeature(kFeature, "x"));
 }
 
@@ -203,7 +205,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParamsByFeature_Disable) {
   const std::string kTrialName = "GetFieldTrialParamsByFeature";
   static BASE_FEATURE(kFeature, "TestFeature", FEATURE_DISABLED_BY_DEFAULT);
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["x"] = "1";
   AssociateFieldTrialParams(kTrialName, "A", params);
   scoped_refptr<FieldTrial> trial(CreateFieldTrial(kTrialName, 100, "A"));
@@ -211,7 +213,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParamsByFeature_Disable) {
   CreateFeatureWithTrial(kFeature, FeatureList::OVERRIDE_DISABLE_FEATURE,
                          trial.get());
 
-  std::map<std::string, std::string> actualParams;
+  FieldTrialParams actualParams;
   EXPECT_FALSE(GetFieldTrialParamsByFeature(kFeature, &actualParams));
 }
 
@@ -219,7 +221,7 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParamValueByFeature_Disable) {
   const std::string kTrialName = "GetFieldTrialParamsByFeature";
   static BASE_FEATURE(kFeature, "TestFeature", FEATURE_DISABLED_BY_DEFAULT);
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["x"] = "1";
   AssociateFieldTrialParams(kTrialName, "A", params);
   scoped_refptr<FieldTrial> trial(CreateFieldTrial(kTrialName, 100, "A"));
@@ -227,7 +229,6 @@ TEST_F(FieldTrialParamsTest, GetFieldTrialParamValueByFeature_Disable) {
   CreateFeatureWithTrial(kFeature, FeatureList::OVERRIDE_DISABLE_FEATURE,
                          trial.get());
 
-  std::map<std::string, std::string> actualParams;
   EXPECT_EQ(std::string(), GetFieldTrialParamValueByFeature(kFeature, "x"));
 }
 
@@ -242,7 +243,7 @@ TEST_F(FieldTrialParamsTest, FeatureParamString) {
   static const FeatureParam<std::string> e{&kFeature, "e", "default"};
   static const FeatureParam<std::string> f{&kFeature, "f", ""};
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "";
   params["b"] = "non-default";
   params["c"] = "non-default";
@@ -255,7 +256,7 @@ TEST_F(FieldTrialParamsTest, FeatureParamString) {
   CreateFeatureWithTrial(kFeature, FeatureList::OVERRIDE_ENABLE_FEATURE,
                          trial.get());
 
-  EXPECT_EQ("default", a.Get());  // empty
+  EXPECT_EQ("", a.Get());  // empty
   EXPECT_EQ("non-default", b.Get());
   EXPECT_EQ("non-default", c.Get());
   EXPECT_EQ("", d.Get());         // empty
@@ -279,7 +280,7 @@ TEST_F(FieldTrialParamsTest, FeatureParamInt) {
   static const FeatureParam<int> d{&kFeature, "d", 0};
   static const FeatureParam<int> e{&kFeature, "e", 0};
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "1";
   params["b"] = "1.5";
   params["c"] = "foo";
@@ -321,7 +322,7 @@ TEST_F(FieldTrialParamsTest, FeatureParamDouble) {
   static const FeatureParam<double> e{&kFeature, "e", 0.0};
   static const FeatureParam<double> f{&kFeature, "f", 0.0};
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "1";
   params["b"] = "1.5";
   params["c"] = "1.0e-10";
@@ -367,7 +368,7 @@ TEST_F(FieldTrialParamsTest, FeatureParamBool) {
   static const FeatureParam<bool> e{&kFeature, "e", true};
   static const FeatureParam<bool> f{&kFeature, "f", true};
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "true";
   params["b"] = "false";
   params["c"] = "1";
@@ -380,12 +381,23 @@ TEST_F(FieldTrialParamsTest, FeatureParamBool) {
   CreateFeatureWithTrial(kFeature, FeatureList::OVERRIDE_ENABLE_FEATURE,
                          trial.get());
 
+  EXPECT_EQ(true, GetFieldTrialParamByFeatureAsBool(kFeature, "a", false));
+  EXPECT_EQ(false, GetFieldTrialParamByFeatureAsBool(kFeature, "b", false));
+  EXPECT_EQ(false, GetFieldTrialParamByFeatureAsBool(kFeature, "c",
+                                                     false));  // invalid
+  EXPECT_EQ(true,
+            GetFieldTrialParamByFeatureAsBool(kFeature, "d", true));  // invalid
+  EXPECT_EQ(true,
+            GetFieldTrialParamByFeatureAsBool(kFeature, "e", true));  // empty
+  EXPECT_EQ(true,
+            GetFieldTrialParamByFeatureAsBool(kFeature, "f", true));  // empty
+
   EXPECT_TRUE(a.Get());
   EXPECT_FALSE(b.Get());
-  EXPECT_EQ(false, c.Get());  // invalid
-  EXPECT_EQ(true, d.Get());   // invalid
-  EXPECT_TRUE(e.Get());       // empty
-  EXPECT_TRUE(f.Get());       // empty
+  EXPECT_FALSE(c.Get());  // invalid
+  EXPECT_TRUE(d.Get());   // invalid
+  EXPECT_TRUE(e.Get());   // empty
+  EXPECT_TRUE(f.Get());   // empty
 }
 
 TEST_F(FieldTrialParamsTest, FeatureParamBool_Disable) {
@@ -405,7 +417,7 @@ TEST_F(FieldTrialParamsTest, FeatureParamTimeDelta) {
   static const FeatureParam<TimeDelta> e{&kFeature, "e", TimeDelta()};
   static const FeatureParam<TimeDelta> f{&kFeature, "f", TimeDelta()};
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "1.5s";
   params["b"] = "1h2m";
   params["c"] = "1";
@@ -417,6 +429,19 @@ TEST_F(FieldTrialParamsTest, FeatureParamTimeDelta) {
 
   CreateFeatureWithTrial(kFeature, FeatureList::OVERRIDE_ENABLE_FEATURE,
                          trial.get());
+
+  EXPECT_EQ(Seconds(1.5),
+            GetFieldTrialParamByFeatureAsTimeDelta(kFeature, "a", TimeDelta()));
+  EXPECT_EQ(Minutes(62),
+            GetFieldTrialParamByFeatureAsTimeDelta(kFeature, "b", TimeDelta()));
+  EXPECT_EQ(TimeDelta(), GetFieldTrialParamByFeatureAsTimeDelta(
+                             kFeature, "c", TimeDelta()));  // invalid
+  EXPECT_EQ(TimeDelta(), GetFieldTrialParamByFeatureAsTimeDelta(
+                             kFeature, "d", TimeDelta()));  // invalid
+  EXPECT_EQ(TimeDelta(), GetFieldTrialParamByFeatureAsTimeDelta(
+                             kFeature, "e", TimeDelta()));  // empty
+  EXPECT_EQ(TimeDelta(), GetFieldTrialParamByFeatureAsTimeDelta(
+                             kFeature, "f", TimeDelta()));  // empty
 
   EXPECT_EQ(a.Get(), Seconds(1.5));
   EXPECT_EQ(b.Get(), Minutes(62));
@@ -447,7 +472,7 @@ TEST_F(FieldTrialParamsTest, FeatureParamEnum) {
   static const FeatureParam<Hand> e{&kFeature, "e", PAPER, &hands};
   static const FeatureParam<Hand> f{&kFeature, "f", SCISSORS, &hands};
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "rock";
   params["b"] = "paper";
   params["c"] = "scissors";
@@ -459,6 +484,19 @@ TEST_F(FieldTrialParamsTest, FeatureParamEnum) {
 
   CreateFeatureWithTrial(kFeature, FeatureList::OVERRIDE_ENABLE_FEATURE,
                          trial.get());
+
+  EXPECT_EQ(ROCK,
+            GetFieldTrialParamByFeatureAsEnum(kFeature, "a", ROCK, hands));
+  EXPECT_EQ(PAPER,
+            GetFieldTrialParamByFeatureAsEnum(kFeature, "b", ROCK, hands));
+  EXPECT_EQ(SCISSORS,
+            GetFieldTrialParamByFeatureAsEnum(kFeature, "c", ROCK, hands));
+  EXPECT_EQ(ROCK, GetFieldTrialParamByFeatureAsEnum(kFeature, "d", ROCK,
+                                                    hands));  // invalid
+  EXPECT_EQ(PAPER, GetFieldTrialParamByFeatureAsEnum(kFeature, "e", PAPER,
+                                                     hands));  // empty
+  EXPECT_EQ(SCISSORS, GetFieldTrialParamByFeatureAsEnum(
+                          kFeature, "f", SCISSORS, hands));  // not registered
 
   EXPECT_EQ(ROCK, a.Get());
   EXPECT_EQ(PAPER, b.Get());
@@ -483,7 +521,7 @@ TEST_F(FieldTrialParamsTest, FeatureParamEnumClass) {
   static const FeatureParam<UI> e{&kFeature, "e", UI::TWO_D, &uis};
   static const FeatureParam<UI> f{&kFeature, "f", UI::THREE_D, &uis};
 
-  std::map<std::string, std::string> params;
+  FieldTrialParams params;
   params["a"] = "1d";
   params["b"] = "2d";
   params["c"] = "3d";
@@ -495,6 +533,22 @@ TEST_F(FieldTrialParamsTest, FeatureParamEnumClass) {
 
   CreateFeatureWithTrial(kFeature, FeatureList::OVERRIDE_ENABLE_FEATURE,
                          trial.get());
+
+  EXPECT_EQ(UI::ONE_D,
+            GetFieldTrialParamByFeatureAsEnum(kFeature, "a", UI::ONE_D, uis));
+  EXPECT_EQ(UI::TWO_D,
+            GetFieldTrialParamByFeatureAsEnum(kFeature, "b", UI::ONE_D, uis));
+  EXPECT_EQ(UI::THREE_D,
+            GetFieldTrialParamByFeatureAsEnum(kFeature, "c", UI::ONE_D, uis));
+  EXPECT_EQ(UI::ONE_D,
+            GetFieldTrialParamByFeatureAsEnum(kFeature, "d", UI::ONE_D,
+                                              uis));  // invalid
+  EXPECT_EQ(UI::TWO_D,
+            GetFieldTrialParamByFeatureAsEnum(kFeature, "e", UI::TWO_D,
+                                              uis));  // empty
+  EXPECT_EQ(UI::THREE_D,
+            GetFieldTrialParamByFeatureAsEnum(kFeature, "f", UI::THREE_D,
+                                              uis));  // not registered
 
   EXPECT_EQ(UI::ONE_D, a.Get());
   EXPECT_EQ(UI::TWO_D, b.Get());

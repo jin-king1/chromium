@@ -123,7 +123,6 @@ bool IsFeatureAllowed(mojom::Feature feature, const PrefService* pref_service) {
 
     case mojom::Feature::kPhoneHubCameraRoll:
       return features::IsPhoneHubEnabled() &&
-             features::IsPhoneHubCameraRollEnabled() &&
              pref_service->GetBoolean(kPhoneHubCameraRollAllowedPrefName);
 
     case mojom::Feature::kPhoneHubNotifications:
@@ -144,7 +143,6 @@ bool IsFeatureAllowed(mojom::Feature feature, const PrefService* pref_service) {
 
     default:
       NOTREACHED();
-      return false;
   }
 }
 
@@ -178,7 +176,6 @@ bool IsDefaultFeatureEnabledValue(mojom::Feature feature,
           ->IsDefaultValue();
     case mojom::Feature::kWifiSync:
       NOTREACHED();
-      return false;
     case mojom::Feature::kEche:
       return pref_service->FindPreference(kEcheEnabledPrefName)
           ->IsDefaultValue();

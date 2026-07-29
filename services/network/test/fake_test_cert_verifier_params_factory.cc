@@ -39,9 +39,7 @@ FakeTestCertVerifierParamsFactory::GetCertVerifierParams() {
 
 void FakeTestCertVerifierParamsFactory::Verify(
     const ::net::CertVerifier::RequestParams& params,
-    uint32_t netlog_source_type,
-    uint32_t netlog_source_id,
-    base::TimeTicks netlog_source_start_time,
+    const net::NetLogSource& net_log_source,
     mojo::PendingRemote<cert_verifier::mojom::CertVerifierRequest>
         cert_verifier_request) {
   mojo::Remote<cert_verifier::mojom::CertVerifierRequest> request(
@@ -50,4 +48,15 @@ void FakeTestCertVerifierParamsFactory::Verify(
   result.verified_cert = params.certificate();
   request->Complete(std::move(result), net::OK);
 }
+
+void FakeTestCertVerifierParamsFactory::Verify2QwacBinding(
+    const std::string& binding,
+    const std::string& hostname,
+    const scoped_refptr<net::X509Certificate>& tls_cert,
+    const net::NetLogSource& net_log_source,
+    base::OnceCallback<void(const scoped_refptr<net::X509Certificate>&)>
+        callback) {
+  std::move(callback).Run(nullptr);
+}
+
 }  // namespace network

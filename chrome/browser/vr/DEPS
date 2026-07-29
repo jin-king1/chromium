@@ -1,11 +1,10 @@
 include_rules = [
   "+cc/animation",
-  "+cc/base",
   "+cc/test",
-  "+cc/trees",
   "+chrome/android/features/vr/jni_headers",
   "+components/webxr",
   "+device/vr",
+  "+third_party/jni_zero",
   # The third_party version of openxr_platform depends on certain platform
   # headers being included before it, so we disallow direct dependency on it.
   # Places needing to take a dependency on code in openxr_platform.h should
@@ -18,7 +17,7 @@ include_rules = [
 # Test files may access VRService as they will either move with it, or we can
 # expose test-specific interfaces if needed.
 specific_include_rules = {
-  ".*test.*\.cc": [
+  ".*test.*\\.cc": [
     "+device/vr/test/test_hook.h",
   ]
 }

@@ -7,8 +7,10 @@
 #include "base/rand_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
 #include "components/sessions/core/serialized_navigation_entry_test_helper.h"
 #include "components/sync/protocol/sync_enums.pb.h"
+#include "components/sync_sessions/features.h"
 #include "components/sync_sessions/mock_sync_sessions_client.h"
 #include "components/sync_sessions/test_matchers.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -18,12 +20,14 @@ using testing::AssertionFailure;
 using testing::AssertionResult;
 using testing::AssertionSuccess;
 using testing::ElementsAre;
+using testing::Eq;
 using testing::IsEmpty;
 using testing::IsNull;
 using testing::Ne;
 using testing::NotNull;
 using testing::Pointee;
 using testing::Return;
+using testing::UnorderedElementsAre;
 
 namespace sync_sessions {
 
@@ -31,8 +35,11 @@ namespace {
 
 const char kValidUrl[] = "http://www.example.com";
 const char kSessionName[] = "sessionname";
-const sync_pb::SyncEnums::DeviceType kDeviceType =
-    sync_pb::SyncEnums_DeviceType_TYPE_PHONE;
+// Monday, September 2, 2024 13:31:31 GMT+2.
+const base::Time kSessionStartTime =
+    base::Time::FromSecondsSinceUnixEpoch(1725283891);
+const syncer::DeviceInfo::DeviceType kDeviceType =
+    syncer::DeviceInfo::DeviceType::kPhone;
 const syncer::DeviceInfo::FormFactor kFormFactor =
     syncer::DeviceInfo::FormFactor::kPhone;
 const char kTag[] = "tag";
@@ -56,6 +63,11 @@ const SessionID kTab7 = SessionID::FromSerializedValue(75);
 
 MATCHER_P(HasSessionTag, expected_tag, "") {
   return arg->GetSessionTag() == expected_tag;
+}
+
+MATCHER_P2(MatchesScreenshot, expected_tag, expected_node_id, "") {
+  return arg.session_tag() == expected_tag &&
+         arg.tab_node_id() == expected_node_id && arg.has_tab_screenshot();
 }
 
 }  // namespace
@@ -145,6 +157,47 @@ class SyncedSessionTrackerTest : public testing::Test {
       is_tab_node_unsynced_cb_;
   SyncedSessionTracker tracker_;
 };
+
+TEST_F(SyncedSessionTrackerTest, ShouldTrackScreenshots) {
+  base::test::ScopedFeatureList scoped_feature_list{kSyncTabScreenshots};
+
+  const std::string kTag1 = "tag1";
+  const int kTabNodeId1 = 5;
+  const int kTabNodeId2 = 6;
+  const int kUnknownTabNodeId = 99;
+
+  tracker_.OnTabNodeSeen(kTag1, kTabNodeId1, kTab1);
+  tracker_.OnTabNodeSeen(kTag1, kTabNodeId2, kTab2);
+
+  ASSERT_FALSE(tracker_.TabNodeHasScreenshot(kTag1, kTabNodeId1));
+  ASSERT_FALSE(tracker_.TabNodeHasScreenshot(kTag1, kTabNodeId2));
+
+  tracker_.SetTabNodeHasScreenshot(kTag1, kTabNodeId1, true);
+  EXPECT_TRUE(tracker_.TabNodeHasScreenshot(kTag1, kTabNodeId1));
+  EXPECT_FALSE(tracker_.TabNodeHasScreenshot(kTag1, kTabNodeId2));
+
+  tracker_.SetTabNodeHasScreenshot(kTag1, kTabNodeId2, true);
+  EXPECT_TRUE(tracker_.TabNodeHasScreenshot(kTag1, kTabNodeId1));
+  EXPECT_TRUE(tracker_.TabNodeHasScreenshot(kTag1, kTabNodeId2));
+
+  // Unknown sessions cannot have screenshots.
+  tracker_.SetTabNodeHasScreenshot("unknown_tag", kTabNodeId1, true);
+  EXPECT_FALSE(tracker_.TabNodeHasScreenshot("unknown_tag", kTabNodeId1));
+
+  // Unknown (unassociated) tab nodes can have screenshots. This is important so
+  // that orphaned screenshots can be tracked (and eventually cleaned up).
+  tracker_.SetTabNodeHasScreenshot(kTag1, kUnknownTabNodeId, true);
+  EXPECT_TRUE(tracker_.TabNodeHasScreenshot(kTag1, kUnknownTabNodeId));
+
+  // Deleting a tab should clear its screenshot tracking.
+  tracker_.DeleteForeignTab(kTag1, kTabNodeId1);
+  EXPECT_FALSE(tracker_.TabNodeHasScreenshot(kTag1, kTabNodeId1));
+  EXPECT_TRUE(tracker_.TabNodeHasScreenshot(kTag1, kTabNodeId2));
+
+  // Deleting the session should clear everything.
+  tracker_.DeleteForeignSession(kTag1);
+  EXPECT_FALSE(tracker_.TabNodeHasScreenshot(kTag1, kTabNodeId2));
+}
 
 TEST_F(SyncedSessionTrackerTest, GetSession) {
   SyncedSession* session1 = tracker_.GetSession(kTag);
@@ -261,15 +314,18 @@ TEST_F(SyncedSessionTrackerTest, LookupAllForeignSessions) {
 }
 
 TEST_F(SyncedSessionTrackerTest, LookupSessionWindows) {
-  std::vector<const sessions::SessionWindow*> windows;
-  ASSERT_FALSE(tracker_.LookupSessionWindows(kTag, &windows));
+  std::vector<const sessions::SessionWindow*> windows =
+      tracker_.LookupSessionWindows(kTag);
+  EXPECT_TRUE(windows.empty());
   tracker_.GetSession(kTag);
   tracker_.PutWindowInSession(kTag, kWindow1);
   tracker_.PutWindowInSession(kTag, kWindow2);
+  tracker_.PutTabInWindow(kTag, kWindow1, kTab1);
+  tracker_.PutTabInWindow(kTag, kWindow2, kTab2);
   tracker_.GetSession(kTag2);
   tracker_.PutWindowInSession(kTag2, kWindow1);
   tracker_.PutWindowInSession(kTag2, kWindow2);
-  ASSERT_TRUE(tracker_.LookupSessionWindows(kTag, &windows));
+  windows = tracker_.LookupSessionWindows(kTag);
   ASSERT_EQ(2U, windows.size());  // Only windows from kTag session.
   ASSERT_NE((sessions::SessionWindow*)nullptr, windows[0]);
   ASSERT_NE((sessions::SessionWindow*)nullptr, windows[1]);
@@ -312,7 +368,7 @@ TEST_F(SyncedSessionTrackerTest, Complex) {
   ASSERT_EQ(2U, tracker_.num_synced_sessions());
   SyncedSession* session3 = tracker_.GetSession(kTag3);
   session3->SetDeviceTypeAndFormFactor(
-      sync_pb::SyncEnums_DeviceType_TYPE_LINUX,
+      syncer::DeviceInfo::DeviceType::kLinux,
       syncer::DeviceInfo::FormFactor::kDesktop);
   ASSERT_EQ(3U, tracker_.num_synced_sessions());
 
@@ -332,10 +388,10 @@ TEST_F(SyncedSessionTrackerTest, Complex) {
   ASSERT_EQ(tabs1[2], tracker_.LookupSessionTab(kTag, kTab3));
   ASSERT_THAT(tracker_.LookupSessionTab(kTag, kTab4), IsNull());
 
-  std::vector<const sessions::SessionWindow*> windows;
-  ASSERT_TRUE(tracker_.LookupSessionWindows(kTag, &windows));
+  std::vector<const sessions::SessionWindow*> windows =
+      tracker_.LookupSessionWindows(kTag);
   ASSERT_EQ(1U, windows.size());
-  ASSERT_TRUE(tracker_.LookupSessionWindows(kTag2, &windows));
+  windows = tracker_.LookupSessionWindows(kTag2);
   ASSERT_EQ(0U, windows.size());
 
   // The sessions don't have valid tabs, lookup should not succeed.
@@ -362,7 +418,7 @@ TEST_F(SyncedSessionTrackerTest, ManyGetTabs) {
     for (int i = 0; i < kMaxAttempts; ++i) {
       // More attempts than tabs means we'll sometimes get the same tabs,
       // sometimes have to allocate new tabs.
-      int rand_tab_num = base::RandInt(0, kMaxTabs);
+      int rand_tab_num = base::RandIntInclusive(0, kMaxTabs);
       sessions::SessionTab* tab = tracker_.GetTab(
           tag, SessionID::FromSerializedValue(rand_tab_num + 1));
       ASSERT_TRUE(tab);
@@ -813,16 +869,48 @@ TEST_F(SyncedSessionTrackerTest, ReassociateTabOldMappedNewUnmapped) {
 TEST_F(SyncedSessionTrackerTest, UpdateTrackerWithHeader) {
   sync_pb::SessionSpecifics header;
   header.set_session_tag(kTag);
+  header.mutable_header()->set_session_start_time_unix_epoch_millis(
+      kSessionStartTime.InMillisecondsSinceUnixEpoch());
   header.mutable_header()->add_window()->set_window_id(kWindow1.id());
   header.mutable_header()->mutable_window(0)->add_tab(kTab1.id());
   header.mutable_header()->mutable_window(0)->add_tab(kTab2.id());
   UpdateTrackerWithSpecifics(header, base::Time::Now(), &tracker_);
 
+  EXPECT_THAT(tracker_.LookupSession(kTag)->GetStartTime(),
+              Eq(kSessionStartTime));
   EXPECT_THAT(
       tracker_.LookupSession(kTag),
       MatchesSyncedSession(kTag, {{kWindow1.id(), {kTab1.id(), kTab2.id()}}}));
   EXPECT_THAT(tracker_.LookupSessionTab(kTag, kTab1), NotNull());
   EXPECT_THAT(tracker_.LookupSessionTab(kTag, kTab2), NotNull());
+}
+
+TEST_F(SyncedSessionTrackerTest, UpdateTrackerWithHeader_PreferredDeviceName) {
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(
+      kSyncSessionsUsePreferredDisplayName);
+
+  constexpr char kOriginalClientName[] = "XPS 13";
+  constexpr char kDeviceInfoClientName[] = "Dell Computer";
+
+  // By default (no device info name available), it should use the raw client
+  // name.
+  sync_pb::SessionSpecifics header;
+  header.set_session_tag(kTag);
+  header.mutable_header()->set_client_name(kOriginalClientName);
+  UpdateTrackerWithSpecifics(header, base::Time::Now(), &tracker_);
+
+  EXPECT_THAT(tracker_.LookupSession(kTag),
+              MatchesSyncedSession(kTag, kOriginalClientName, _));
+
+  // Now set up the mock to return a preferred name.
+  ON_CALL(sessions_client_, GetSessionDisplayNameFromDeviceInfo(kTag))
+      .WillByDefault(Return(kDeviceInfoClientName));
+
+  // Trigger the update again. It should now use the preferred name.
+  UpdateTrackerWithSpecifics(header, base::Time::Now(), &tracker_);
+  EXPECT_THAT(tracker_.LookupSession(kTag),
+              MatchesSyncedSession(kTag, kDeviceInfoClientName, _));
 }
 
 TEST_F(SyncedSessionTrackerTest, UpdateTrackerWithIdenticalHeader) {
@@ -980,7 +1068,7 @@ TEST_F(SyncedSessionTrackerTest, UpdateTrackerWithTwoTabsSameId) {
   EXPECT_THAT(tracker_.LookupSession(kTag),
               MatchesSyncedSession(kTag, /*window_id_to_tabs*/ {}));
   EXPECT_THAT(tracker_.LookupTabNodeIds(kTag),
-              ElementsAre(kTabNode1, kTabNode2));
+              UnorderedElementsAre(kTabNode1, kTabNode2));
 
   const sessions::SessionTab* tracked_tab =
       tracker_.LookupSessionTab(kTag, kTab1);
@@ -991,6 +1079,7 @@ TEST_F(SyncedSessionTrackerTest, UpdateTrackerWithTwoTabsSameId) {
 
 TEST_F(SyncedSessionTrackerTest, SerializeTrackerToSpecifics) {
   tracker_.InitLocalSession(kTag, kSessionName, kDeviceType, kFormFactor);
+  tracker_.SetLocalSessionStartTime(kSessionStartTime);
   tracker_.PutWindowInSession(kTag, kWindow1);
   tracker_.GetSession(kTag)->windows[kWindow1]->window_type =
       sync_pb::SyncEnums_BrowserType_TYPE_TABBED;
@@ -1008,9 +1097,10 @@ TEST_F(SyncedSessionTrackerTest, SerializeTrackerToSpecifics) {
   base::MockCallback<base::RepeatingCallback<void(
       const std::string& session_name, sync_pb::SessionSpecifics* specifics)>>
       callback;
-  EXPECT_CALL(callback, Run(kSessionName,
-                            Pointee(MatchesHeader(kTag, {kWindow1.id()},
-                                                  {kTab1.id(), kTab2.id()}))));
+  EXPECT_CALL(callback,
+              Run(kSessionName, Pointee(MatchesHeader(
+                                    kTag, kSessionStartTime, {kWindow1.id()},
+                                    {kTab1.id(), kTab2.id()}))));
   EXPECT_CALL(callback, Run(kSessionName,
                             Pointee(MatchesTab(kTag, kWindow1.id(), kTab1.id(),
                                                kTabNode1, /*urls=*/_))));
@@ -1026,28 +1116,81 @@ TEST_F(SyncedSessionTrackerTest, SerializeTrackerToSpecifics) {
   EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(&callback));
 
   // Serialize the header only.
-  EXPECT_CALL(callback, Run(kSessionName,
-                            Pointee(MatchesHeader(kTag, {kWindow1.id()},
-                                                  {kTab1.id(), kTab2.id()}))));
+  EXPECT_CALL(callback,
+              Run(kSessionName, Pointee(MatchesHeader(
+                                    kTag, kSessionStartTime, {kWindow1.id()},
+                                    {kTab1.id(), kTab2.id()}))));
   SerializePartialTrackerToSpecifics(
-      tracker_, {{kTag, {TabNodePool::kInvalidTabNodeID}}}, callback.Get());
+      tracker_, {{kTag, {TabNodePool::kInvalidTabNodeID}}}, {}, callback.Get());
   EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(&callback));
 
   // Serialize a known and associated tab.
   EXPECT_CALL(callback, Run(kSessionName,
                             Pointee(MatchesTab(kTag, kWindow1.id(), kTab1.id(),
                                                kTabNode1, /*urls=*/_))));
-  SerializePartialTrackerToSpecifics(tracker_, {{kTag, {kTabNode1}}},
+  SerializePartialTrackerToSpecifics(tracker_, {{kTag, {kTabNode1}}}, {},
                                      callback.Get());
   EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(&callback));
 
   // Attempt to serialize unknown entities.
   EXPECT_CALL(callback, Run).Times(0);
-  SerializePartialTrackerToSpecifics(tracker_, {{kTag, {kTabNode5}}},
+  SerializePartialTrackerToSpecifics(tracker_, {{kTag, {kTabNode5}}}, {},
                                      callback.Get());
   SerializePartialTrackerToSpecifics(
-      tracker_, {{kTag2, {TabNodePool::kInvalidTabNodeID, kTabNode1}}},
+      tracker_, {{kTag2, {TabNodePool::kInvalidTabNodeID, kTabNode1}}}, {},
       callback.Get());
+}
+
+TEST_F(SyncedSessionTrackerTest,
+       SerializePartialTrackerToSpecifics_TabAndScreenshot) {
+  base::test::ScopedFeatureList scoped_feature_list{kSyncTabScreenshots};
+
+  tracker_.InitLocalSession(kTag, kSessionName, kDeviceType, kFormFactor);
+  tracker_.SetLocalSessionStartTime(kSessionStartTime);
+  tracker_.PutWindowInSession(kTag, kWindow1);
+  tracker_.PutTabInWindow(kTag, kWindow1, kTab1);
+  tracker_.ReassociateLocalTab(kTabNode1, kTab1);
+
+  // Set that this tab node has a screenshot.
+  tracker_.SetTabNodeHasScreenshot(kTag, kTabNode1, /*has_screenshot=*/true);
+
+  base::MockCallback<base::RepeatingCallback<void(
+      const std::string& session_name, sync_pb::SessionSpecifics* specifics)>>
+      callback;
+
+  // Case 1: Request the tab only.
+  EXPECT_CALL(callback, Run(kSessionName,
+                            Pointee(MatchesTab(kTag, kWindow1.id(), kTab1.id(),
+                                               kTabNode1, /*urls=*/_))));
+  EXPECT_CALL(callback,
+              Run(kSessionName, Pointee(MatchesScreenshot(kTag, kTabNode1))))
+      .Times(0);
+
+  SerializePartialTrackerToSpecifics(tracker_, {{kTag, {kTabNode1}}}, {},
+                                     callback.Get());
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(&callback));
+
+  // Case 2: Request the screenshot only.
+  EXPECT_CALL(callback, Run(kSessionName,
+                            Pointee(MatchesTab(kTag, kWindow1.id(), kTab1.id(),
+                                               kTabNode1, /*urls=*/_))))
+      .Times(0);
+  EXPECT_CALL(callback,
+              Run(kSessionName, Pointee(MatchesScreenshot(kTag, kTabNode1))));
+
+  SerializePartialTrackerToSpecifics(tracker_, {}, {{kTag, {kTabNode1}}},
+                                     callback.Get());
+  EXPECT_TRUE(testing::Mock::VerifyAndClearExpectations(&callback));
+
+  // Case 3: Request both.
+  EXPECT_CALL(callback, Run(kSessionName,
+                            Pointee(MatchesTab(kTag, kWindow1.id(), kTab1.id(),
+                                               kTabNode1, /*urls=*/_))));
+  EXPECT_CALL(callback,
+              Run(kSessionName, Pointee(MatchesScreenshot(kTag, kTabNode1))));
+
+  SerializePartialTrackerToSpecifics(tracker_, {{kTag, {kTabNode1}}},
+                                     {{kTag, {kTabNode1}}}, callback.Get());
 }
 
 TEST_F(SyncedSessionTrackerTest, SerializeTrackerToSpecificsWithEmptyHeader) {

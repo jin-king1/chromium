@@ -32,7 +32,7 @@ class VIZ_SERVICE_EXPORT OverlayStrategyUnderlay
 
   // If |allow_nonopaque_overlays| is true, then we don't require that the
   // the candidate is_opaque.
-  OverlayStrategyUnderlay(
+  explicit OverlayStrategyUnderlay(
       OverlayProcessorUsingStrategy* capability_checker,
       OpaqueMode opaque_mode = OpaqueMode::RequireOpaqueCandidates);
 
@@ -43,35 +43,26 @@ class VIZ_SERVICE_EXPORT OverlayStrategyUnderlay
 
   void Propose(
       const SkM44& output_color_matrix,
-      const OverlayProcessorInterface::FilterOperationsMap& render_pass_filters,
-      const OverlayProcessorInterface::FilterOperationsMap&
-          render_pass_backdrop_filters,
-      DisplayResourceProvider* resource_provider,
+      const DisplayResourceProvider* resource_provider,
       AggregatedRenderPassList* render_pass_list,
       SurfaceDamageRectList* surface_damage_rect_list,
-      const PrimaryPlane* primary_plane,
-      std::vector<OverlayProposedCandidate>* candidates,
-      std::vector<gfx::Rect>* content_bounds) override;
+      const std::optional<OverlayCandidate>& primary_plane,
+      std::vector<OverlayProposedCandidate>* candidates) override;
 
   bool Attempt(
       const SkM44& output_color_matrix,
-      const OverlayProcessorInterface::FilterOperationsMap& render_pass_filters,
-      const OverlayProcessorInterface::FilterOperationsMap&
-          render_pass_backdrop_filters,
-      DisplayResourceProvider* resource_provider,
+      const DisplayResourceProvider* resource_provider,
       AggregatedRenderPassList* render_pass_list,
       SurfaceDamageRectList* surface_damage_rect_list,
-      const PrimaryPlane* primary_plane,
+      const std::optional<OverlayCandidate>& primary_plane,
       OverlayCandidateList* candidates,
-      std::vector<gfx::Rect>* content_bounds,
       const OverlayProposedCandidate& proposed_candidate) override;
 
   void CommitCandidate(const OverlayProposedCandidate& proposed_candidate,
                        AggregatedRenderPass* render_pass) override;
 
   void AdjustOutputSurfaceOverlay(
-      OverlayProcessorInterface::OutputSurfaceOverlayPlane*
-          output_surface_plane) override;
+      std::optional<OverlayCandidate>& output_surface_plane) override;
 
   OverlayStrategy GetUMAEnum() const override;
 

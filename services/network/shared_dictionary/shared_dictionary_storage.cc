@@ -4,15 +4,25 @@
 
 #include "services/network/shared_dictionary/shared_dictionary_storage.h"
 
+#include <algorithm>
+#include <optional>
+#include <string_view>
+#include <vector>
+
+#include "base/feature_list.h"
 #include "base/strings/pattern.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
+#include "components/url_pattern/simple_url_pattern_matcher.h"
 #include "net/base/io_buffer.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/structured_headers.h"
+#include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/request_destination.h"
+#include "services/network/public/mojom/fetch_api.mojom.h"
+#include "services/network/public/mojom/shared_dictionary_error.mojom.h"
 #include "services/network/shared_dictionary/shared_dictionary_constants.h"
 #include "services/network/shared_dictionary/shared_dictionary_writer.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 #include "url/scheme_host_port.h"
 
@@ -20,68 +30,144 @@ namespace network {
 
 namespace {
 
-class UseAsDictionaryHeaderInfo {
+constexpr std::string_view kDefaultTypeRaw = "raw";
+
+class DictionaryHeaderInfo {
  public:
-  UseAsDictionaryHeaderInfo(std::string match,
-                            absl::optional<base::TimeDelta> expiration,
-                            absl::optional<std::vector<std::string>> algorithms)
+  DictionaryHeaderInfo(std::string match,
+                       std::set<network::mojom::RequestDestination> match_dest,
+                       std::string type,
+                       std::string id,
+                       std::optional<base::TimeDelta> ttl)
       : match(std::move(match)),
-        expiration(expiration),
-        algorithms(std::move(algorithms)) {}
-  ~UseAsDictionaryHeaderInfo() = default;
+        match_dest(std::move(match_dest)),
+        type(std::move(type)),
+        id(std::move(id)),
+        ttl(std::move(ttl)) {}
+  ~DictionaryHeaderInfo() = default;
 
   std::string match;
-  absl::optional<base::TimeDelta> expiration;
-  absl::optional<std::vector<std::string>> algorithms;
+  std::set<network::mojom::RequestDestination> match_dest;
+  std::string type;
+  std::string id;
+  std::optional<base::TimeDelta> ttl;
 };
 
-absl::optional<UseAsDictionaryHeaderInfo> ParseUseAsDictionaryHeaderInfo(
-    const net::HttpResponseHeaders& headers) {
-  std::string use_as_dictionary_header;
-  if (!headers.GetNormalizedHeader(
-          shared_dictionary::kUseAsDictionaryHeaderName,
-          &use_as_dictionary_header)) {
-    return absl::nullopt;
+base::TimeDelta CalculateExpiration(const net::HttpResponseHeaders& headers,
+                                    const base::Time request_time,
+                                    const base::Time response_time,
+                                    const std::optional<base::TimeDelta>& ttl) {
+  // An explicit "ttl" value overrides the calculated expiration from the HTTP
+  // caching headers.
+  if (ttl) {
+    return ttl.value();
   }
-  absl::optional<net::structured_headers::Dictionary> dictionary =
+  // Use the freshness lifetime calculated from the response header.
+  net::HttpResponseHeaders::FreshnessLifetimes lifetimes =
+      headers.GetFreshnessLifetimes(response_time);
+  // We calculate `expires_value` which is a delta from the response time to
+  // the expiration time. So we get the age of the response on the response
+  // time by setting `current_time` argument to `response_time`.
+  base::TimeDelta age_on_response_time =
+      headers.GetCurrentAge(request_time, response_time,
+                            /*current_time=*/response_time);
+  // We can use `freshness + staleness - current_age` as the expiration time.
+  return lifetimes.freshness + lifetimes.staleness - age_on_response_time;
+}
+
+base::expected<DictionaryHeaderInfo, mojom::SharedDictionaryError>
+ParseDictionaryHeaderInfo(const std::string& use_as_dictionary_header) {
+  std::optional<net::structured_headers::Dictionary> dictionary =
       net::structured_headers::ParseDictionary(use_as_dictionary_header);
   if (!dictionary) {
-    return absl::nullopt;
+    return base::unexpected(
+        mojom::SharedDictionaryError::kWriteErrorInvalidStructuredHeader);
   }
 
-  absl::optional<std::string> match_value;
-  absl::optional<base::TimeDelta> expires_value;
-  absl::optional<std::vector<std::string>> algorithms_value;
+  std::optional<std::string> match_value;
+  // Maybe we don't need to support multiple match-dest.
+  // https://github.com/httpwg/http-extensions/issues/2722
+  std::set<network::mojom::RequestDestination> match_dest_values;
+  std::string type_value = std::string(kDefaultTypeRaw);
+  std::string id_value;
+  std::optional<base::TimeDelta> ttl;
   for (const auto& entry : dictionary.value()) {
     if (entry.first == shared_dictionary::kOptionNameMatch) {
       if ((entry.second.member.size() != 1u) ||
           !entry.second.member.front().item.is_string()) {
-        return absl::nullopt;
+        return base::unexpected(
+            mojom::SharedDictionaryError::kWriteErrorNonStringMatchField);
       }
       match_value = entry.second.member.front().item.GetString();
-    } else if (entry.first == shared_dictionary::kOptionNameExpires) {
+    } else if (entry.first == shared_dictionary::kOptionNameMatchDest) {
+      if (!entry.second.member_is_inner_list) {
+        // `match-dest` must be a list.
+        return base::unexpected(
+            mojom::SharedDictionaryError::kWriteErrorNonListMatchDestField);
+      }
+      for (const auto& item : entry.second.member) {
+        if (!item.item.is_string()) {
+          return base::unexpected(mojom::SharedDictionaryError::
+                                      kWriteErrorNonStringInMatchDestList);
+        }
+        // We use the empty string "" for RequestDestination::kEmpty in
+        // `match-dest`.
+        std::optional<mojom::RequestDestination> dest_value =
+            RequestDestinationFromString(
+                item.item.GetString(),
+                EmptyRequestDestinationOption::kUseTheEmptyString);
+        if (dest_value) {
+          match_dest_values.insert(*dest_value);
+        }
+      }
+      // A list that is entirely made up of unknown destinations will never
+      // match anything.
+      if (!entry.second.member.empty() && match_dest_values.empty()) {
+        return base::unexpected(
+            mojom::SharedDictionaryError::kWriteErrorInvalidMatchDestList);
+      }
+    } else if (entry.first == shared_dictionary::kOptionNameType) {
+      if ((entry.second.member.size() != 1u) ||
+          !entry.second.member.front().item.is_token()) {
+        return base::unexpected(
+            mojom::SharedDictionaryError::kWriteErrorNonTokenTypeField);
+      }
+      type_value = entry.second.member.front().item.GetString();
+    } else if (entry.first == shared_dictionary::kOptionNameId) {
+      if ((entry.second.member.size() != 1u) ||
+          !entry.second.member.front().item.is_string()) {
+        return base::unexpected(
+            mojom::SharedDictionaryError::kWriteErrorNonStringIdField);
+      }
+      id_value = entry.second.member.front().item.GetString();
+      if (id_value.size() > shared_dictionary::kDictionaryIdMaxLength) {
+        return base::unexpected(
+            mojom::SharedDictionaryError::kWriteErrorTooLongIdField);
+      }
+    } else if (entry.first == shared_dictionary::kOptionNameTTL &&
+               base::FeatureList::IsEnabled(
+                   features::kCompressionDictionaryTTL)) {
       if ((entry.second.member.size() != 1u) ||
           !entry.second.member.front().item.is_integer()) {
-        return absl::nullopt;
+        return base::unexpected(
+            mojom::SharedDictionaryError::kWriteErrorNonIntegerTTLField);
       }
-      expires_value =
-          base::Seconds(entry.second.member.front().item.GetInteger());
-    } else if (entry.first == shared_dictionary::kOptionNameAlgorithms) {
-      std::vector<std::string> tmp_vec;
-      for (const auto& algorithms_item : entry.second.member) {
-        if (!algorithms_item.item.is_token()) {
-          return absl::nullopt;
-        }
-        tmp_vec.push_back(algorithms_item.item.GetString());
+      int64_t ttl_seconds = entry.second.member.front().item.GetInteger();
+      if (ttl_seconds <= 0) {
+        return base::unexpected(
+            mojom::SharedDictionaryError::kWriteErrorInvalidTTLField);
       }
-      algorithms_value = std::move(tmp_vec);
+      ttl = base::Seconds(ttl_seconds);
     }
   }
   if (!match_value) {
-    return absl::nullopt;
+    return base::unexpected(
+        mojom::SharedDictionaryError::kWriteErrorNoMatchField);
   }
-  return UseAsDictionaryHeaderInfo(*match_value, std::move(expires_value),
-                                   std::move(algorithms_value));
+
+  return DictionaryHeaderInfo(
+      std::move(*match_value), std::move(match_dest_values),
+      std::move(type_value), std::move(id_value), std::move(ttl));
 }
 
 }  // namespace
@@ -90,31 +176,103 @@ SharedDictionaryStorage::SharedDictionaryStorage() = default;
 
 SharedDictionaryStorage::~SharedDictionaryStorage() = default;
 
-scoped_refptr<SharedDictionaryWriter>
+// static
+base::expected<scoped_refptr<SharedDictionaryWriter>,
+               mojom::SharedDictionaryError>
 SharedDictionaryStorage::MaybeCreateWriter(
+    const std::string& use_as_dictionary_header,
+    bool shared_dictionary_writer_enabled,
+    SharedDictionaryStorage* storage,
+    mojom::RequestMode request_mode,
+    mojom::FetchResponseType response_tainting,
     const GURL& url,
-    base::Time response_time,
-    const net::HttpResponseHeaders& headers) {
-  absl::optional<UseAsDictionaryHeaderInfo> info =
-      ParseUseAsDictionaryHeaderInfo(headers);
-  if (!info) {
-    return nullptr;
+    const base::Time request_time,
+    const base::Time response_time,
+    const net::HttpResponseHeaders& headers,
+    bool was_fetched_via_cache,
+    base::OnceCallback<bool()> access_allowed_check_callback) {
+  // Supports storing dictionaries if the request was fetched by cors enabled
+  // mode request or same-origin mode request or no-cors mode same origin
+  // request.
+  switch (request_mode) {
+    case mojom::RequestMode::kSameOrigin:
+      break;
+    case mojom::RequestMode::kNoCors:
+      // Basic `response_tainting` for no-cors request means that the response
+      // is from same origin without any cross origin redirect.
+      if (response_tainting != mojom::FetchResponseType::kBasic) {
+        return base::unexpected(
+            mojom::SharedDictionaryError::kWriteErrorCossOriginNoCorsRequest);
+      }
+      break;
+    case mojom::RequestMode::kCors:
+      break;
+    case mojom::RequestMode::kCorsWithForcedPreflight:
+      break;
+    case mojom::RequestMode::kNavigate:
+      break;
   }
-  base::TimeDelta expiration = shared_dictionary::kDefaultExpiration;
-  if (info->expiration) {
-    expiration = *info->expiration;
+  if (!shared_dictionary_writer_enabled) {
+    return base::unexpected(
+        mojom::SharedDictionaryError::kWriteErrorFeatureDisabled);
   }
-  if (info->algorithms) {
-    // Currently we only support support sha-256.
-    // TODO(crbug.com/1413922): Investigate the spec and decide whether to
-    // support non lowercase token or not.
-    if (std::find(info->algorithms->begin(), info->algorithms->end(),
-                  "sha-256") == info->algorithms->end()) {
-      return nullptr;
-    }
+  if (!storage) {
+    // CorsURLLoader passes a null `storage`, when the request is not from
+    // secure context.
+    return base::unexpected(
+        mojom::SharedDictionaryError::kWriteErrorNonSecureContext);
+  }
+  // Opaque response tainting requests should not trigger dictionary
+  // registration.
+  CHECK_NE(mojom::FetchResponseType::kOpaque, response_tainting);
+
+  base::expected<DictionaryHeaderInfo, mojom::SharedDictionaryError> info =
+      ParseDictionaryHeaderInfo(use_as_dictionary_header);
+  if (!info.has_value()) {
+    return base::unexpected(info.error());
   }
 
-  return CreateWriter(url, response_time, expiration, info->match);
+  base::TimeDelta expiration =
+      CalculateExpiration(headers, request_time, response_time, info->ttl);
+  if (expiration <= base::TimeDelta()) {
+    return base::unexpected(
+        mojom::SharedDictionaryError::kWriteErrorExpiredResponse);
+  }
+
+  if (info->type != kDefaultTypeRaw) {
+    // Currently we only support `raw` type.
+    return base::unexpected(
+        mojom::SharedDictionaryError::kWriteErrorUnsupportedType);
+  }
+  base::Time last_fetch_time = base::Time::Now();
+  // Do not write an existing shared dictionary from the HTTP caches to the
+  // shared dictionary storage. Note that IsAlreadyRegistered() can return false
+  // even when `was_fetched_via_cache` is true. This is because the shared
+  // dictionary storage has its own cache eviction logic, which is different
+  // from the HTTP Caches's eviction logic.
+  if (was_fetched_via_cache &&
+      storage->UpdateLastFetchTimeIfAlreadyRegistered(
+          url, response_time, expiration, info->match, info->match_dest,
+          info->id, info->ttl, last_fetch_time)) {
+    return base::unexpected(
+        mojom::SharedDictionaryError::kWriteErrorAlreadyRegistered);
+  }
+
+  if (!std::move(access_allowed_check_callback).Run()) {
+    return base::unexpected(
+        mojom::SharedDictionaryError::kWriteErrorDisallowedBySettings);
+  }
+
+  auto matcher_create_result =
+      url_pattern::SimpleUrlPatternMatcher::Create(info->match, &url);
+  if (!matcher_create_result.has_value()) {
+    return base::unexpected(
+        mojom::SharedDictionaryError::kWriteErrorInvalidMatchField);
+  }
+
+  return storage->CreateWriter(url, last_fetch_time, response_time, expiration,
+                               info->match, info->match_dest, info->id,
+                               std::move(matcher_create_result.value()));
 }
 
 }  // namespace network

@@ -5,7 +5,7 @@
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chromeos/chai_assert.js';
 
 import {waitUntil} from '../common/js/test_error_reporting.js';
-import {XfNudge} from '../widgets/xf_nudge.js';
+import type {XfNudge} from '../widgets/xf_nudge.js';
 
 import {NudgeContainer, nudgeInfo, NudgeType} from './nudge_container.js';
 
@@ -136,7 +136,7 @@ export async function testShowWorksOnlyWhenAProperAnchorIsAvailable(
  * Tests that the enter key dismisses the nudge.
  */
 export async function testEnterKeyHidesNudge(done: () => void) {
-  nudgeInfo[NudgeType.TEST_NUDGE].dismissText = '';
+  nudgeInfo[NudgeType.TEST_NUDGE].selfDismiss = false;
   await createAndShowTestNudge();
 
   const keyDownEvent = new KeyboardEvent('keydown', {key: 'Enter'});
@@ -225,20 +225,67 @@ export async function testNudgeIsNotShownIfExpiryPeriodElapsed(
 }
 
 /**
- * Tests the nudge is dismissed by the dismiss button, when it has a
- * dismissText.
+ * Tests the nudge is dismissed by clicking on the nudge.
  */
 export async function testNudgeDismissButton(done: () => void) {
-  nudgeInfo[NudgeType.TEST_NUDGE].dismissText = 'Ok';
+  nudgeInfo[NudgeType.TEST_NUDGE].selfDismiss = true;
   await createAndShowTestNudge();
 
-  const button = nudgeElement?.shadowRoot!.getElementById('dismiss')!;
+  // Click and wait it to dismiss.
+  nudgeElement!.dispatchEvent(new PointerEvent('pointerdown'));
+
+  // Reposition to hidden.
+  await waitUntilRepositionsUninitialised();
   assertTrue(
-      button.getBoundingClientRect().width > 0,
-      'Dismiss button should be visible');
+      await nudgeContainer!.checkSeen(NudgeType.TEST_NUDGE),
+      'check nudge has been seen');
+
+  done();
+}
+
+/**
+ * Tests the nudge is dismissed by clicking on the anchor.
+ */
+export async function testNudgeDismissAnchor(done: () => void) {
+  nudgeInfo[NudgeType.TEST_NUDGE].selfDismiss = true;
+  await createAndShowTestNudge();
 
   // Click and wait it to dismiss.
-  button.click();
+  const anchor = nudgeInfo[NudgeType.TEST_NUDGE].anchor();
+  anchor!.dispatchEvent(new PointerEvent('pointerdown'));
+
+  // Reposition to hidden.
+  await waitUntilRepositionsUninitialised();
+  assertTrue(
+      await nudgeContainer!.checkSeen(NudgeType.TEST_NUDGE),
+      'check nudge has been seen');
+
+  done();
+}
+
+/**
+ * Tests the nudge using the dismissOnKeyDown().
+ */
+export async function testNudgeDismissKeyDown(done: () => void) {
+  nudgeInfo[NudgeType.TEST_NUDGE].selfDismiss = true;
+  nudgeInfo[NudgeType.TEST_NUDGE].dismissOnKeyDown =
+      (_, event: KeyboardEvent) => {
+        // In tests we can send the keydown directly to the nudge.
+        if (event.target === nudgeElement) {
+          return true;
+        }
+        return false;
+      };
+  await createAndShowTestNudge();
+
+  // Send a keydown somewhere else, should not dismiss.
+  document.body.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true}));
+  assertFalse(
+      await nudgeContainer!.checkSeen(NudgeType.TEST_NUDGE),
+      `nudge shouldn't be dismissed by keydown on <body>`);
+
+  // Send keydown to the nudge.
+  nudgeElement!.dispatchEvent(new KeyboardEvent('keydown', {bubbles: true}));
 
   // Reposition to hidden.
   await waitUntilRepositionsUninitialised();

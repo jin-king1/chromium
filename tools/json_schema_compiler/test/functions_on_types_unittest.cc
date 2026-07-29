@@ -8,41 +8,44 @@
 #include <vector>
 
 #include "base/values.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace functions_on_types = test::api::functions_on_types;
 
 TEST(JsonSchemaCompilerFunctionsOnTypesTest, StorageAreaGetParamsCreate) {
   {
-    base::Value::List params_value;
-    absl::optional<functions_on_types::StorageArea::Get::Params> params(
+    base::ListValue params_value;
+    std::optional<functions_on_types::StorageArea::Get::Params> params(
         functions_on_types::StorageArea::Get::Params::Create(params_value));
     ASSERT_TRUE(params);
     EXPECT_FALSE(params->keys);
   }
   {
-    base::Value::List params_value;
+    base::ListValue params_value;
     params_value.Append(9);
-    absl::optional<functions_on_types::StorageArea::Get::Params> params(
+    std::optional<functions_on_types::StorageArea::Get::Params> params(
         functions_on_types::StorageArea::Get::Params::Create(params_value));
     EXPECT_FALSE(params);
   }
   {
-    base::Value::List params_value;
+    base::ListValue params_value;
     params_value.Append("test");
-    absl::optional<functions_on_types::StorageArea::Get::Params> params(
+    std::optional<functions_on_types::StorageArea::Get::Params> params(
         functions_on_types::StorageArea::Get::Params::Create(params_value));
     ASSERT_TRUE(params);
     ASSERT_TRUE(params->keys);
     EXPECT_EQ("test", *params->keys->as_string);
   }
   {
-    base::Value::Dict keys_object_value;
+    base::DictValue keys_object_value;
     keys_object_value.Set("integer", 5);
     keys_object_value.Set("string", "string");
-    base::Value::List params_value;
+    base::ListValue params_value;
     params_value.Append(keys_object_value.Clone());
-    absl::optional<functions_on_types::StorageArea::Get::Params> params(
+    std::optional<functions_on_types::StorageArea::Get::Params> params(
         functions_on_types::StorageArea::Get::Params::Create(params_value));
     ASSERT_TRUE(params);
     ASSERT_TRUE(params->keys);
@@ -63,11 +66,11 @@ TEST(JsonSchemaCompilerFunctionsOnTypesTest, StorageAreaGetResultCreate) {
 }
 
 TEST(JsonSchemaCompilerFunctionsOnTypesTest, ChromeSettingGetParamsCreate) {
-  base::Value::Dict details_value;
+  base::DictValue details_value;
   details_value.Set("incognito", true);
-  base::Value::List params_value;
+  base::ListValue params_value;
   params_value.Append(std::move(details_value));
-  absl::optional<functions_on_types::ChromeSetting::Get::Params> params(
+  std::optional<functions_on_types::ChromeSetting::Get::Params> params(
       functions_on_types::ChromeSetting::Get::Params::Create(params_value));
   EXPECT_TRUE(params.has_value());
   EXPECT_TRUE(*params->details.incognito);

@@ -27,7 +27,7 @@ void PrintingSubmitJobFunction::GetQuotaLimitHeuristics(
 }
 
 ExtensionFunction::ResponseAction PrintingSubmitJobFunction::Run() {
-  absl::optional<api::printing::SubmitJob::Params> params =
+  std::optional<api::printing::SubmitJob::Params> params =
       api::printing::SubmitJob::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
   PrintingAPIHandler::Get(browser_context())
@@ -40,9 +40,9 @@ ExtensionFunction::ResponseAction PrintingSubmitJobFunction::Run() {
 }
 
 void PrintingSubmitJobFunction::OnPrintJobSubmitted(
-    absl::optional<api::printing::SubmitJobStatus> status,
-    absl::optional<std::string> job_id,
-    absl::optional<std::string> error) {
+    std::optional<api::printing::SubmitJobStatus> status,
+    std::optional<std::string> job_id,
+    std::optional<std::string> error) {
   if (error.has_value()) {
     Respond(Error(error.value()));
     return;
@@ -57,15 +57,16 @@ void PrintingSubmitJobFunction::OnPrintJobSubmitted(
 PrintingCancelJobFunction::~PrintingCancelJobFunction() = default;
 
 ExtensionFunction::ResponseAction PrintingCancelJobFunction::Run() {
-  absl::optional<api::printing::CancelJob::Params> params =
+  std::optional<api::printing::CancelJob::Params> params =
       api::printing::CancelJob::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
-  absl::optional<std::string> error =
+  std::optional<std::string> error =
       PrintingAPIHandler::Get(browser_context())
           ->CancelJob(extension_id(), params->job_id);
 
-  if (error.has_value())
+  if (error.has_value()) {
     return RespondNow(Error(error.value()));
+  }
   return RespondNow(NoArguments());
 }
 
@@ -96,7 +97,7 @@ void PrintingGetPrinterInfoFunction::GetQuotaLimitHeuristics(
 }
 
 ExtensionFunction::ResponseAction PrintingGetPrinterInfoFunction::Run() {
-  absl::optional<api::printing::GetPrinterInfo::Params> params =
+  std::optional<api::printing::GetPrinterInfo::Params> params =
       api::printing::GetPrinterInfo::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
   PrintingAPIHandler::Get(browser_context())
@@ -109,9 +110,9 @@ ExtensionFunction::ResponseAction PrintingGetPrinterInfoFunction::Run() {
 }
 
 void PrintingGetPrinterInfoFunction::OnPrinterInfoRetrieved(
-    absl::optional<base::Value> capabilities,
-    absl::optional<api::printing::PrinterStatus> status,
-    absl::optional<std::string> error) {
+    std::optional<base::Value> capabilities,
+    std::optional<api::printing::PrinterStatus> status,
+    std::optional<std::string> error) {
   if (error.has_value()) {
     Respond(Error(error.value()));
     return;
@@ -129,6 +130,21 @@ void PrintingGetPrinterInfoFunction::OnPrinterInfoRetrieved(
   DCHECK(status.has_value());
   response.status = status.value();
   Respond(WithArguments(response.ToValue()));
+}
+
+PrintingGetJobStatusFunction::~PrintingGetJobStatusFunction() = default;
+
+ExtensionFunction::ResponseAction PrintingGetJobStatusFunction::Run() {
+  std::optional<api::printing::GetJobStatus::Params> params(
+      api::printing::GetJobStatus::Params::Create(args()));
+  EXTENSION_FUNCTION_VALIDATE(params);
+  base::expected<api::printing::JobStatus, std::string> result =
+      PrintingAPIHandler::Get(browser_context())
+          ->GetJobStatus(extension_id(), params->job_id);
+  if (result.has_value()) {
+    return RespondNow(WithArguments(ToString(result.value())));
+  }
+  return RespondNow(Error(result.error()));
 }
 
 }  // namespace extensions

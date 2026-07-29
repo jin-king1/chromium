@@ -14,10 +14,6 @@
 #import "ios/web/public/js_messaging/script_message.h"
 #import "ios/web/public/js_messaging/web_frames_manager.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace {
 const char kContextMenuJavaScriptFeatureKeyName[] =
     "context_menu_java_script_feature";
@@ -26,22 +22,20 @@ const char kAllFramesContextMenuScript[] = "all_frames_context_menu";
 const char kMainFrameContextMenuScript[] = "main_frame_context_menu";
 
 const char kFindElementResultHandlerName[] = "FindElementResultHandler";
-}
+}  // namespace
 
 namespace web {
 
 ContextMenuJavaScriptFeature::ContextMenuJavaScriptFeature()
-    : JavaScriptFeature(
-          ContentWorld::kIsolatedWorld,
-          {FeatureScript::CreateWithFilename(
-               kAllFramesContextMenuScript,
-               FeatureScript::InjectionTime::kDocumentStart,
-               FeatureScript::TargetFrames::kAllFrames),
-           FeatureScript::CreateWithFilename(
-               kMainFrameContextMenuScript,
-               FeatureScript::InjectionTime::kDocumentStart,
-               FeatureScript::TargetFrames::kMainFrame)},
-          {web::java_script_features::GetCommonJavaScriptFeature()}) {}
+    : JavaScriptFeature(ContentWorld::kIsolatedWorld,
+                        {FeatureScript::CreateWithFilename(
+                             kAllFramesContextMenuScript,
+                             FeatureScript::InjectionTime::kDocumentStart,
+                             FeatureScript::TargetFrames::kAllFrames),
+                         FeatureScript::CreateWithFilename(
+                             kMainFrameContextMenuScript,
+                             FeatureScript::InjectionTime::kDocumentStart,
+                             FeatureScript::TargetFrames::kMainFrame)}) {}
 ContextMenuJavaScriptFeature::~ContextMenuJavaScriptFeature() = default;
 
 // static
@@ -64,22 +58,19 @@ void ContextMenuJavaScriptFeature::GetElementAtPoint(
     WebState* web_state,
     std::string requestID,
     CGPoint point,
-    CGSize web_content_size,
     ElementDetailsCallback callback) {
   callbacks_[requestID] = std::move(callback);
 
   WebFrame* main_frame = GetWebFramesManager(web_state)->GetMainWebFrame();
-  std::vector<base::Value> parameters;
-  parameters.push_back(base::Value(requestID));
-  parameters.push_back(base::Value(point.x));
-  parameters.push_back(base::Value(point.y));
-  parameters.push_back(base::Value(web_content_size.width));
-  parameters.push_back(base::Value(web_content_size.height));
+  base::ListValue parameters;
+  parameters.Append(requestID);
+  parameters.Append(point.x);
+  parameters.Append(point.y);
   CallJavaScriptFunction(main_frame, "contextMenu.findElementAtPoint",
                          parameters);
 }
 
-absl::optional<std::string>
+std::optional<std::string>
 ContextMenuJavaScriptFeature::GetScriptMessageHandlerName() const {
   return kFindElementResultHandlerName;
 }
@@ -87,11 +78,11 @@ ContextMenuJavaScriptFeature::GetScriptMessageHandlerName() const {
 void ContextMenuJavaScriptFeature::ScriptMessageReceived(
     WebState* web_state,
     const ScriptMessage& message) {
-  if (!message.body()) {
+  if (!message.legacy_body()) {
     // Ignore malformed responses.
     return;
   }
-  const auto* dict = message.body()->GetIfDict();
+  const auto* dict = message.legacy_body()->GetIfDict();
   if (!dict) {
     // Ignore malformed responses.
     return;
@@ -113,11 +104,15 @@ void ContextMenuJavaScriptFeature::ScriptMessageReceived(
     return;
   }
 
-  web::ContextMenuParams params =
+  std::optional<web::ContextMenuParams> params =
       web::ContextMenuParamsFromElementDictionary(*dict);
-  params.is_main_frame = message.is_main_frame();
+  if (!params) {
+    return;
+  }
+  params->is_main_frame = message.is_main_frame();
+  params->frame_security_origin = message.security_origin();
 
-  std::move(callback).Run(*request_id, params);
+  std::move(callback).Run(*request_id, *params);
 }
 
 }  // namespace web

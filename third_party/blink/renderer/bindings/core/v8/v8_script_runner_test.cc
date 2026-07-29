@@ -22,7 +22,9 @@
 #include "third_party/blink/renderer/platform/loader/fetch/cached_metadata.h"
 #include "third_party/blink/renderer/platform/loader/fetch/script_cached_metadata_handler.h"
 #include "third_party/blink/renderer/platform/loader/fetch/url_loader/cached_metadata_handler.h"
-#include "third_party/blink/renderer/platform/testing/testing_platform_support_with_mock_scheduler.h"
+#include "third_party/blink/renderer/platform/loader/fetch/webui_bundled_cached_metadata_handler.h"
+#include "third_party/blink/renderer/platform/testing/task_environment.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_utf8_adaptor.h"
@@ -44,23 +46,16 @@ class V8ScriptRunnerTest : public testing::Test {
     counter_++;
   }
 
-  WTF::String Code() const {
+  String Code() const {
     // Simple function for testing. Note:
     // - Add counter to trick V8 code cache.
     // - Pad counter to 1000 digits, to trick minimal cacheability threshold.
-    return WTF::String::Format("a = function() { 1 + 1; } // %01000d\n",
-                               counter_);
+    return String::Format("a = function() { 1 + 1; } // %01000d\n", counter_);
   }
-  WTF::String DifferentCode() const {
-    return WTF::String::Format("a = function() { 1 + 12; } // %01000d\n",
-                               counter_);
+  String DifferentCode() const {
+    return String::Format("a = function() { 1 + 12; } // %01000d\n", counter_);
   }
-  KURL Url() const {
-    return KURL(WTF::String::Format(code_cache_with_hashing_scheme_
-                                        ? "codecachewithhashing://bla.com/bla%d"
-                                        : "http://bla.com/bla%d",
-                                    counter_));
-  }
+  KURL Url() const { return KURL(StrCat({url_, String::Number(counter_)})); }
   unsigned TagForCodeCache(CachedMetadataHandler* cache_handler) const {
     return V8CodeCache::TagForCodeCache(cache_handler);
   }
@@ -131,26 +126,27 @@ class V8ScriptRunnerTest : public testing::Test {
     return true;
   }
 
-  ScriptResource* CreateEmptyResource() {
+  ScriptResource* CreateEmptyResource(v8::Isolate* isolate) {
     ScriptResource* resource =
-        ScriptResource::CreateForTest(NullURL(), UTF8Encoding());
+        ScriptResource::CreateForTest(isolate, NullUrl(), Utf8Encoding());
     return resource;
   }
 
-  ScriptResource* CreateResource(const WTF::TextEncoding& encoding,
+  ScriptResource* CreateResource(v8::Isolate* isolate,
+                                 const TextEncoding& encoding,
                                  Vector<uint8_t> serialized_metadata,
-                                 absl::optional<String> code = {}) {
-    return CreateResource(
-        encoding,
-        base::make_span(serialized_metadata.data(), serialized_metadata.size()),
-        code);
+                                 std::optional<String> code = {}) {
+    return CreateResource(isolate, encoding, base::span(serialized_metadata),
+                          code);
   }
 
   ScriptResource* CreateResource(
-      const WTF::TextEncoding& encoding,
+      v8::Isolate* isolate,
+      const TextEncoding& encoding,
       base::span<const uint8_t> serialized_metadata = {},
-      absl::optional<String> code = {}) {
-    ScriptResource* resource = ScriptResource::CreateForTest(Url(), encoding);
+      std::optional<String> code = {}) {
+    ScriptResource* resource =
+        ScriptResource::CreateForTest(isolate, Url(), encoding);
     if (!code)
       code = Code();
     ResourceResponse response(Url());
@@ -159,8 +155,8 @@ class V8ScriptRunnerTest : public testing::Test {
     if (serialized_metadata.size() != 0) {
       resource->SetSerializedCachedMetadata(serialized_metadata);
     }
-    StringUTF8Adaptor code_utf8(code.value());
-    resource->AppendData(code_utf8.data(), code_utf8.size());
+    StringUtf8Adaptor code_utf8(code.value());
+    resource->AppendData(code_utf8);
     resource->FinishForTest();
 
     return resource;
@@ -173,11 +169,9 @@ class V8ScriptRunnerTest : public testing::Test {
   Vector<uint8_t> CreateCachedData() {
     V8TestingScope scope;
     ClassicScript* classic_script =
-        CreateScript(CreateResource(UTF8Encoding()));
+        CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
     // Set timestamp to simulate a warm run.
-    ScriptCachedMetadataHandler* cache_handler =
-        static_cast<ScriptCachedMetadataHandler*>(
-            classic_script->CacheHandler());
+    CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
     ExecutionContext* execution_context =
         ExecutionContext::From(scope.GetScriptState());
     SetCacheTimeStamp(
@@ -196,9 +190,7 @@ class V8ScriptRunnerTest : public testing::Test {
     // Copy the serialized data to return it at an independent vector.
     base::span<const uint8_t> serialized_data_view =
         cached_metadata->SerializedData();
-    Vector<uint8_t> ret;
-    ret.AppendRange(serialized_data_view.begin(), serialized_data_view.end());
-    return ret;
+    return Vector<uint8_t>(serialized_data_view);
   }
 
   // TODO(leszeks): Change this from needing an explicit quit callback to
@@ -209,45 +201,13 @@ class V8ScriptRunnerTest : public testing::Test {
 
  protected:
   static int counter_;
-  bool code_cache_with_hashing_scheme_ = false;
+  String url_ = "http://bla.com/bla";
+  test::TaskEnvironment task_environment_;
   base::test::ScopedFeatureList feature_list_;
   base::RunLoop run_loop_;
 };
 
 int V8ScriptRunnerTest::counter_ = 0;
-
-class HistogramCounter {
- public:
-  explicit HistogramCounter(const base::HistogramTester& tester)
-      : tester_(tester) {}
-
-  int32_t GetTotal() { return GetSamples()->TotalCount(); }
-
-  int32_t GetPresent() { return GetCount(StateOnGet::kPresent); }
-
-  int32_t GetDataTypeMismatch() {
-    return GetCount(StateOnGet::kDataTypeMismatch);
-  }
-
-  int32_t GetWasNeverPresent() {
-    return GetCount(StateOnGet::kWasNeverPresent);
-  }
-
-  int32_t GetDiscarded() { return GetCount(StateOnGet::kWasDiscarded); }
-
- private:
-  std::unique_ptr<base::HistogramSamples> GetSamples() {
-    return tester_.GetHistogramSamplesSinceCreation(
-        "Memory.Renderer.BlinkCachedMetadataGetResult");
-  }
-
-  int32_t GetCount(StateOnGet state) {
-    static_assert((std::is_same<int, base::HistogramBase::Sample>::value), "");
-    return GetSamples()->GetCount(static_cast<int>(state));
-  }
-
-  const base::HistogramTester& tester_;
-};
 
 TEST_F(V8ScriptRunnerTest, resourcelessShouldPass) {
   V8TestingScope scope;
@@ -263,13 +223,15 @@ TEST_F(V8ScriptRunnerTest, resourcelessShouldPass) {
 }
 
 TEST_F(V8ScriptRunnerTest, emptyResourceDoesNotHaveCacheHandler) {
-  ScriptResource* resource = CreateEmptyResource();
+  V8TestingScope scope;
+  ScriptResource* resource = CreateEmptyResource(scope.GetIsolate());
   EXPECT_FALSE(resource->CacheHandler());
 }
 
 TEST_F(V8ScriptRunnerTest, codeOption) {
   V8TestingScope scope;
-  ClassicScript* classic_script = CreateScript(CreateResource(UTF8Encoding()));
+  ClassicScript* classic_script =
+      CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
   CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
   ExecutionContext* execution_context =
       ExecutionContext::From(scope.GetScriptState());
@@ -284,14 +246,15 @@ TEST_F(V8ScriptRunnerTest, codeOption) {
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
   // The cached data is associated with the encoding.
   ScriptResource* another_resource =
-      CreateResource(UTF16LittleEndianEncoding());
+      CreateResource(scope.GetIsolate(), Utf16LittleEndianEncoding());
   EXPECT_FALSE(cache_handler->GetCachedMetadata(
       TagForCodeCache(another_resource->CacheHandler())));
 }
 
 TEST_F(V8ScriptRunnerTest, consumeCodeOption) {
   V8TestingScope scope;
-  ClassicScript* classic_script = CreateScript(CreateResource(UTF8Encoding()));
+  ClassicScript* classic_script =
+      CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
   // Set timestamp to simulate a warm run.
   CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
   ExecutionContext* execution_context =
@@ -313,7 +276,7 @@ TEST_F(V8ScriptRunnerTest, consumeCodeOption) {
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);
@@ -327,13 +290,14 @@ TEST_F(V8ScriptRunnerTest, consumeCodeOption) {
 
 TEST_F(V8ScriptRunnerTest, produceAndConsumeCodeOption) {
   V8TestingScope scope;
-  ClassicScript* classic_script = CreateScript(CreateResource(UTF8Encoding()));
+  ClassicScript* classic_script =
+      CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
   CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
 
   // Cold run - should set the timestamp.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForTimeStamp(cache_handler)));
   EXPECT_FALSE(
       cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
@@ -341,7 +305,7 @@ TEST_F(V8ScriptRunnerTest, produceAndConsumeCodeOption) {
   // Warm run - should produce code cache.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
 
   // Hot run - should consume code cache.
@@ -349,7 +313,7 @@ TEST_F(V8ScriptRunnerTest, produceAndConsumeCodeOption) {
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);
@@ -361,34 +325,19 @@ TEST_F(V8ScriptRunnerTest, produceAndConsumeCodeOption) {
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
 }
 
-TEST_F(V8ScriptRunnerTest, cacheRequestedBeforeProduced) {
-  V8TestingScope scope;
-  ClassicScript* classic_script = CreateScript(CreateResource(UTF8Encoding()));
-  CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
-  base::HistogramTester tester;
-  HistogramCounter counter(tester);
-  EXPECT_FALSE(
-      cache_handler->GetCachedMetadata(TagForTimeStamp(cache_handler)));
-  EXPECT_EQ(1, counter.GetTotal());
-  EXPECT_EQ(1, counter.GetWasNeverPresent());
-}
-
 TEST_F(V8ScriptRunnerTest, cacheDataTypeMismatch) {
   V8TestingScope scope;
-  ClassicScript* classic_script = CreateScript(CreateResource(UTF8Encoding()));
+  ClassicScript* classic_script =
+      CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
   CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
   EXPECT_FALSE(
       cache_handler->GetCachedMetadata(TagForTimeStamp(cache_handler)));
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForTimeStamp(cache_handler)));
-  base::HistogramTester tester;
-  HistogramCounter counter(tester);
   EXPECT_FALSE(
       cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
-  EXPECT_EQ(1, counter.GetTotal());
-  EXPECT_EQ(1, counter.GetDataTypeMismatch());
 }
 
 TEST_F(V8ScriptRunnerTest, successfulCodeCacheWithHashing) {
@@ -397,19 +346,20 @@ TEST_F(V8ScriptRunnerTest, successfulCodeCacheWithHashing) {
   // TODO(crbug.com/1329535): Remove if threaded preload scanner doesn't launch.
   // This is needed because the preload scanner creates a thread when loading a
   // page.
-  WTF::SetIsBeforeThreadCreatedForTest();
+  SetIsBeforeThreadCreatedForTest();
 #endif
   SchemeRegistry::RegisterURLSchemeAsCodeCacheWithHashing(
       "codecachewithhashing");
-  code_cache_with_hashing_scheme_ = true;
-  ClassicScript* classic_script = CreateScript(CreateResource(UTF8Encoding()));
+  url_ = "codecachewithhashing://bla.com/bla";
+  ClassicScript* classic_script =
+      CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
   CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
   EXPECT_TRUE(cache_handler->HashRequired());
 
   // Cold run - should set the timestamp.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForTimeStamp(cache_handler)));
   EXPECT_FALSE(
       cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
@@ -417,7 +367,7 @@ TEST_F(V8ScriptRunnerTest, successfulCodeCacheWithHashing) {
   // Warm run - should produce code cache.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script,
-                            mojom::blink::V8CacheOptions::kDefault));
+                            mojom::blink::V8CacheOptions::kCode));
   EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
 
   // Hot run - should consume code cache.
@@ -425,7 +375,7 @@ TEST_F(V8ScriptRunnerTest, successfulCodeCacheWithHashing) {
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);
@@ -443,14 +393,14 @@ TEST_F(V8ScriptRunnerTest, codeCacheWithFailedHashCheck) {
   // TODO(crbug.com/1329535): Remove if threaded preload scanner doesn't launch.
   // This is needed because the preload scanner creates a thread when loading a
   // page.
-  WTF::SetIsBeforeThreadCreatedForTest();
+  SetIsBeforeThreadCreatedForTest();
 #endif
   SchemeRegistry::RegisterURLSchemeAsCodeCacheWithHashing(
       "codecachewithhashing");
-  code_cache_with_hashing_scheme_ = true;
+  url_ = "codecachewithhashing://bla.com/bla";
 
   ClassicScript* classic_script_1 =
-      CreateScript(CreateResource(UTF8Encoding()));
+      CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
   ScriptCachedMetadataHandlerWithHashing* cache_handler_1 =
       static_cast<ScriptCachedMetadataHandlerWithHashing*>(
           classic_script_1->CacheHandler());
@@ -459,16 +409,19 @@ TEST_F(V8ScriptRunnerTest, codeCacheWithFailedHashCheck) {
   // Cold run - should set the timestamp.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script_1,
-                            mojom::blink::V8CacheOptions::kDefault));
-  EXPECT_TRUE(
-      cache_handler_1->GetCachedMetadata(TagForTimeStamp(cache_handler_1)));
-  EXPECT_FALSE(
-      cache_handler_1->GetCachedMetadata(TagForCodeCache(cache_handler_1)));
+                            mojom::blink::V8CacheOptions::kCode));
+  EXPECT_TRUE(cache_handler_1->GetCachedMetadata(
+      TagForTimeStamp(cache_handler_1),
+      CachedMetadataHandler::kCrashIfUnchecked));
+  EXPECT_FALSE(cache_handler_1->GetCachedMetadata(
+      TagForCodeCache(cache_handler_1),
+      CachedMetadataHandler::kCrashIfUnchecked));
 
   // A second script with matching script text, using the state of
   // the ScriptCachedMetadataHandler from the first script.
-  ClassicScript* classic_script_2 = CreateScript(CreateResource(
-      UTF8Encoding(), cache_handler_1->GetSerializedCachedMetadata()));
+  ClassicScript* classic_script_2 = CreateScript(
+      CreateResource(scope.GetIsolate(), Utf8Encoding(),
+                     cache_handler_1->GetSerializedCachedMetadata()));
   ScriptCachedMetadataHandlerWithHashing* cache_handler_2 =
       static_cast<ScriptCachedMetadataHandlerWithHashing*>(
           classic_script_2->CacheHandler());
@@ -477,15 +430,16 @@ TEST_F(V8ScriptRunnerTest, codeCacheWithFailedHashCheck) {
   // Warm run - should produce code cache.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script_2,
-                            mojom::blink::V8CacheOptions::kDefault));
-  EXPECT_TRUE(
-      cache_handler_2->GetCachedMetadata(TagForCodeCache(cache_handler_2)));
+                            mojom::blink::V8CacheOptions::kCode));
+  EXPECT_TRUE(cache_handler_2->GetCachedMetadata(
+      TagForCodeCache(cache_handler_2),
+      CachedMetadataHandler::kCrashIfUnchecked));
 
   // A third script with different script text, using the state of
   // the ScriptCachedMetadataHandler from the second script.
   ClassicScript* classic_script_3 = CreateScript(CreateResource(
-      UTF8Encoding(), cache_handler_2->GetSerializedCachedMetadata(),
-      DifferentCode()));
+      scope.GetIsolate(), Utf8Encoding(),
+      cache_handler_2->GetSerializedCachedMetadata(), DifferentCode()));
   ScriptCachedMetadataHandlerWithHashing* cache_handler_3 =
       static_cast<ScriptCachedMetadataHandlerWithHashing*>(
           classic_script_3->CacheHandler());
@@ -496,16 +450,19 @@ TEST_F(V8ScriptRunnerTest, codeCacheWithFailedHashCheck) {
   // be updated back to a timestamp like it would during a cold run.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script_3,
-                            mojom::blink::V8CacheOptions::kDefault));
-  EXPECT_TRUE(
-      cache_handler_3->GetCachedMetadata(TagForTimeStamp(cache_handler_3)));
-  EXPECT_FALSE(
-      cache_handler_3->GetCachedMetadata(TagForCodeCache(cache_handler_3)));
+                            mojom::blink::V8CacheOptions::kCode));
+  EXPECT_TRUE(cache_handler_3->GetCachedMetadata(
+      TagForTimeStamp(cache_handler_3),
+      CachedMetadataHandler::kCrashIfUnchecked));
+  EXPECT_FALSE(cache_handler_3->GetCachedMetadata(
+      TagForCodeCache(cache_handler_3),
+      CachedMetadataHandler::kCrashIfUnchecked));
 
   // A fourth script with matching script text, using the state of
   // the ScriptCachedMetadataHandler from the third script.
-  ClassicScript* classic_script_4 = CreateScript(CreateResource(
-      UTF8Encoding(), cache_handler_3->GetSerializedCachedMetadata()));
+  ClassicScript* classic_script_4 = CreateScript(
+      CreateResource(scope.GetIsolate(), Utf8Encoding(),
+                     cache_handler_3->GetSerializedCachedMetadata()));
   ScriptCachedMetadataHandlerWithHashing* cache_handler_4 =
       static_cast<ScriptCachedMetadataHandlerWithHashing*>(
           classic_script_4->CacheHandler());
@@ -515,11 +472,13 @@ TEST_F(V8ScriptRunnerTest, codeCacheWithFailedHashCheck) {
   // content has changed again.
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script_4,
-                            mojom::blink::V8CacheOptions::kDefault));
-  EXPECT_TRUE(
-      cache_handler_4->GetCachedMetadata(TagForTimeStamp(cache_handler_4)));
-  EXPECT_FALSE(
-      cache_handler_4->GetCachedMetadata(TagForCodeCache(cache_handler_4)));
+                            mojom::blink::V8CacheOptions::kCode));
+  EXPECT_TRUE(cache_handler_4->GetCachedMetadata(
+      TagForTimeStamp(cache_handler_4),
+      CachedMetadataHandler::kCrashIfUnchecked));
+  EXPECT_FALSE(cache_handler_4->GetCachedMetadata(
+      TagForCodeCache(cache_handler_4),
+      CachedMetadataHandler::kCrashIfUnchecked));
 }
 
 namespace {
@@ -555,7 +514,8 @@ TEST_F(V8ScriptRunnerTest, successfulOffThreadCodeCache) {
   V8TestingScope scope;
 
   // Hot run - should start an off-thread code cache consumption.
-  ScriptResource* resource = CreateResource(UTF8Encoding(), cached_data);
+  ScriptResource* resource =
+      CreateResource(scope.GetIsolate(), Utf8Encoding(), cached_data);
   EXPECT_TRUE(V8CodeCache::HasCodeCache(resource->CacheHandler()));
   ClassicScript* classic_script = CreateScript(resource);
   EXPECT_NE(classic_script->CacheConsumer(), nullptr);
@@ -572,22 +532,173 @@ TEST_F(V8ScriptRunnerTest, successfulOffThreadCodeCache) {
 
   EXPECT_TRUE(consumer_client->cache_consume_finished());
 
-  base::HistogramTester tester;
-  HistogramCounter counter(tester);
   v8::ScriptCompiler::CompileOptions compile_options;
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
       V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
                                      *classic_script);
-  EXPECT_EQ(1, counter.GetTotal());
-  EXPECT_EQ(1, counter.GetPresent());
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script, compile_options, no_cache_reason,
                             produce_cache_options));
-  EXPECT_EQ(2, counter.GetTotal());
-  EXPECT_EQ(2, counter.GetPresent());
-  EXPECT_EQ(0, counter.GetDiscarded());
+}
+
+class TestingPlatformForWebUIBundledCodeCache : public TestingPlatformSupport {
+ public:
+  // TestingPlatformSupport:
+  std::optional<int> GetWebUIBundledCodeCacheResourceId(
+      const GURL& resource_url) override {
+    // Flag all chrome resources as having code cache metadata
+    // available in the resource bundle.
+    return 1;
+  }
+};
+
+// Fixture to test the webui bundled code cache feature.
+class WebUIBundledCodeCacheV8ScriptRunnerTest : public V8ScriptRunnerTest {
+ public:
+  // V8ScriptRunnerTest:
+  void SetUp() override {
+    V8ScriptRunnerTest::SetUp();
+#if DCHECK_IS_ON()
+    SetIsBeforeThreadCreatedForTest();
+#endif
+    SchemeRegistry::RegisterURLSchemeAsWebUIBundledBytecode("chrome");
+
+    // Update `url_` so generated resources are created with the appropriate
+    // webui bundled code caching scheme.
+    url_ = "chrome://example/script.js";
+  }
+
+  void TearDown() override {
+#if DCHECK_IS_ON()
+    SetIsBeforeThreadCreatedForTest();
+#endif
+    SchemeRegistry::RemoveURLSchemeAsWebUIBundledBytecodeForTest("chrome");
+    V8ScriptRunnerTest::TearDown();
+  }
+
+  // Produces CachedMetadata for the `classic_script`.
+  scoped_refptr<blink::CachedMetadata> ProduceCachedMetadata(
+      v8::Isolate* isolate,
+      ScriptState* script_state,
+      const ClassicScript& classic_script) {
+    v8::ScriptCompiler::CompileOptions compile_options;
+    V8CodeCache::ProduceCacheOptions produce_cache_options;
+    v8::ScriptCompiler::NoCacheReason no_cache_reason;
+    std::tie(compile_options, produce_cache_options, no_cache_reason) =
+        V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
+                                       classic_script);
+    v8::MaybeLocal<v8::Script> compiled_script = V8ScriptRunner::CompileScript(
+        script_state, classic_script,
+        classic_script.CreateScriptOrigin(isolate), compile_options,
+        no_cache_reason);
+
+    EXPECT_FALSE(compiled_script.IsEmpty());
+
+    std::unique_ptr<v8::ScriptCompiler::CachedData> cache_data(
+        v8::ScriptCompiler::CreateCodeCache(
+            compiled_script.ToLocalChecked()->GetUnboundScript()));
+    return blink::CachedMetadata::Create(
+        blink::V8CodeCache::TagForCodeCache(classic_script.CacheHandler()),
+        ToSpan(*cache_data));
+  }
+
+ private:
+  ScopedTestingPlatformSupport<TestingPlatformForWebUIBundledCodeCache>
+      platform_;
+};
+
+// Asserts that resources leveraging the webui bundled code cache do not attempt
+// to produce code cache when compiled with an empty handler.
+TEST_F(WebUIBundledCodeCacheV8ScriptRunnerTest, DoesNotProduceCache) {
+  V8TestingScope scope;
+  ClassicScript* classic_script =
+      CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
+  CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
+  EXPECT_EQ(CachedMetadataHandler::ServingSource::kWebUIBundledCache,
+            cache_handler->GetServingSource());
+
+  // Compile the script, no code cache should be set on the handler.
+  EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
+                            *classic_script,
+                            mojom::blink::V8CacheOptions::kCode));
+  EXPECT_FALSE(
+      cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
+  EXPECT_FALSE(static_cast<WebUIBundledCachedMetadataHandler*>(cache_handler)
+                   ->did_use_code_cache_for_testing());
+}
+
+// Asserts that resources leveraging the webui bundled code cache will consume
+// the code cache when available.
+TEST_F(WebUIBundledCodeCacheV8ScriptRunnerTest, ConsumesAvailableCodeCache) {
+  base::HistogramTester histogram_tester;
+  V8TestingScope scope;
+  ClassicScript* classic_script =
+      CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
+  CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
+  EXPECT_EQ(CachedMetadataHandler::ServingSource::kWebUIBundledCache,
+            cache_handler->GetServingSource());
+
+  // Compile the script and explicitly extract the cached metadata, no code
+  // cache should be set on the handler.
+  scoped_refptr<blink::CachedMetadata> cached_metadata = ProduceCachedMetadata(
+      scope.GetIsolate(), scope.GetScriptState(), *classic_script);
+
+  // Set the cached metadata on the handler.
+  cache_handler->SetSerializedCachedMetadata(
+      mojo_base::BigBuffer(cached_metadata->SerializedData()));
+  EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
+  EXPECT_FALSE(static_cast<WebUIBundledCachedMetadataHandler*>(cache_handler)
+                   ->did_use_code_cache_for_testing());
+
+  // Assert that the code cache was used and accepted when the script was
+  // compiled.
+  EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
+                            *classic_script,
+                            mojom::blink::V8CacheOptions::kCode));
+  EXPECT_TRUE(static_cast<WebUIBundledCachedMetadataHandler*>(cache_handler)
+                  ->did_use_code_cache_for_testing());
+  histogram_tester.ExpectUniqueSample(
+      "Blink.ResourceRequest.WebUIBundledCachedMetadataHandler.ConsumeCache",
+      true, 1);
+}
+
+// Asserts that webui code cache deemed invalid by V8 is appropriately rejected.
+TEST_F(WebUIBundledCodeCacheV8ScriptRunnerTest, RejectsInvalidCodeCache) {
+  base::HistogramTester histogram_tester;
+  V8TestingScope scope;
+  ClassicScript* classic_script =
+      CreateScript(CreateResource(scope.GetIsolate(), Utf8Encoding()));
+  CachedMetadataHandler* cache_handler = classic_script->CacheHandler();
+  EXPECT_EQ(CachedMetadataHandler::ServingSource::kWebUIBundledCache,
+            cache_handler->GetServingSource());
+
+  // Create and compile a different script to generate cached metadata
+  // invalid for use with with `classic_script`.
+  ClassicScript* different_classic_script = CreateScript(CreateResource(
+      scope.GetIsolate(), Utf8Encoding(), Vector<uint8_t>(), DifferentCode()));
+  scoped_refptr<blink::CachedMetadata> different_cached_metadata =
+      ProduceCachedMetadata(scope.GetIsolate(), scope.GetScriptState(),
+                            *different_classic_script);
+
+  // Set the invalid cached metadata on `classic_script`'s handler.
+  cache_handler->SetSerializedCachedMetadata(
+      mojo_base::BigBuffer(different_cached_metadata->SerializedData()));
+  EXPECT_TRUE(cache_handler->GetCachedMetadata(TagForCodeCache(cache_handler)));
+  EXPECT_FALSE(static_cast<WebUIBundledCachedMetadataHandler*>(cache_handler)
+                   ->did_use_code_cache_for_testing());
+
+  // Assert that the code cache was used but rejected when the script was
+  // compiled.
+  EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
+                            *classic_script,
+                            mojom::blink::V8CacheOptions::kCode));
+  EXPECT_TRUE(static_cast<WebUIBundledCachedMetadataHandler*>(cache_handler)
+                  ->did_use_code_cache_for_testing());
+  histogram_tester.ExpectUniqueSample(
+      "Blink.ResourceRequest.WebUIBundledCachedMetadataHandler.ConsumeCache",
+      false, 1);
 }
 
 TEST_F(V8ScriptRunnerTest, discardOffThreadCodeCacheWithDifferentSource) {
@@ -600,8 +711,8 @@ TEST_F(V8ScriptRunnerTest, discardOffThreadCodeCacheWithDifferentSource) {
   V8TestingScope scope;
 
   // Hot run - should start an off-thread code cache consumption.
-  ScriptResource* resource =
-      CreateResource(UTF8Encoding(), cached_data, DifferentCode());
+  ScriptResource* resource = CreateResource(scope.GetIsolate(), Utf8Encoding(),
+                                            cached_data, DifferentCode());
   ClassicScript* classic_script = CreateScript(resource);
   EXPECT_NE(classic_script->CacheConsumer(), nullptr);
   auto* consumer_client = MakeGarbageCollected<StubScriptCacheConsumerClient>(
@@ -615,16 +726,12 @@ TEST_F(V8ScriptRunnerTest, discardOffThreadCodeCacheWithDifferentSource) {
   // post a QuitClosure to this RunLoop.
   RunLoopUntilQuit();
 
-  base::HistogramTester tester;
-  HistogramCounter counter(tester);
   v8::ScriptCompiler::CompileOptions compile_options;
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
-  EXPECT_EQ(1, counter.GetTotal());
-  EXPECT_EQ(1, counter.GetPresent());
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);
   EXPECT_EQ(compile_options,
@@ -632,8 +739,6 @@ TEST_F(V8ScriptRunnerTest, discardOffThreadCodeCacheWithDifferentSource) {
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script, compile_options, no_cache_reason,
                             produce_cache_options));
-  EXPECT_EQ(2, counter.GetTotal());
-  EXPECT_EQ(2, counter.GetPresent());
   // Code cache should have been cleared after being rejected.
   EXPECT_FALSE(V8CodeCache::HasCodeCache(resource->CacheHandler()));
 }
@@ -649,10 +754,11 @@ TEST_F(V8ScriptRunnerTest, discardOffThreadCodeCacheWithBitCorruption) {
 
   // Corrupt the cached data.
   Vector<uint8_t> corrupted_data = cached_data;
-  corrupted_data[10] ^= 0x1;
+  corrupted_data[sizeof(CachedMetadataHeader) + 2] ^= 0x1;
 
   // Hot run - should start an off-thread code cache consumption.
-  ScriptResource* resource = CreateResource(UTF8Encoding(), corrupted_data);
+  ScriptResource* resource =
+      CreateResource(scope.GetIsolate(), Utf8Encoding(), corrupted_data);
   ClassicScript* classic_script = CreateScript(resource);
   EXPECT_NE(classic_script->CacheConsumer(), nullptr);
   auto* consumer_client = MakeGarbageCollected<StubScriptCacheConsumerClient>(
@@ -666,16 +772,12 @@ TEST_F(V8ScriptRunnerTest, discardOffThreadCodeCacheWithBitCorruption) {
   // post a QuitClosure to this RunLoop.
   RunLoopUntilQuit();
 
-  base::HistogramTester tester;
-  HistogramCounter counter(tester);
   v8::ScriptCompiler::CompileOptions compile_options;
   V8CodeCache::ProduceCacheOptions produce_cache_options;
   v8::ScriptCompiler::NoCacheReason no_cache_reason;
   std::tie(compile_options, produce_cache_options, no_cache_reason) =
-      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kDefault,
+      V8CodeCache::GetCompileOptions(mojom::blink::V8CacheOptions::kCode,
                                      *classic_script);
-  EXPECT_EQ(1, counter.GetTotal());
-  EXPECT_EQ(1, counter.GetPresent());
   EXPECT_EQ(produce_cache_options,
             V8CodeCache::ProduceCacheOptions::kNoProduceCache);
   EXPECT_EQ(compile_options,
@@ -683,8 +785,6 @@ TEST_F(V8ScriptRunnerTest, discardOffThreadCodeCacheWithBitCorruption) {
   EXPECT_TRUE(CompileScript(scope.GetIsolate(), scope.GetScriptState(),
                             *classic_script, compile_options, no_cache_reason,
                             produce_cache_options));
-  EXPECT_EQ(2, counter.GetTotal());
-  EXPECT_EQ(2, counter.GetPresent());
   // Code cache should have been cleared after being rejected.
   EXPECT_FALSE(V8CodeCache::HasCodeCache(resource->CacheHandler()));
 }

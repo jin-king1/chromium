@@ -9,12 +9,13 @@
 #include <string>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/process/process_handle.h"
-#include "base/ranges/algorithm.h"
 #include "build/build_config.h"
 #include "mojo/core/test/mojo_test_base.h"
 #include "mojo/public/c/system/platform_handle.h"
@@ -23,9 +24,10 @@
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
+
 #include "base/win/scoped_handle.h"
 #elif BUILDFLAG(IS_APPLE)
-#include "base/mac/scoped_mach_port.h"
+#include "base/apple/scoped_mach_port.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -66,7 +68,7 @@ namespace {
 using PlatformWrapperTest = test::MojoTestBase;
 
 #if BUILDFLAG(IS_IOS)
-// TODO(crbug.com/1418597): Test currently fails on iOS.
+// TODO(crbug.com/40257752): Test currently fails on iOS.
 #define MAYBE_WrapPlatformHandle DISABLED_WrapPlatformHandle
 #else
 #define MAYBE_WrapPlatformHandle WrapPlatformHandle
@@ -114,14 +116,13 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadPlatformFile, PlatformWrapperTest, h) {
 
   // Expect to read the same message from the file.
   std::vector<char> data(message.size());
-  EXPECT_EQ(file.ReadAtCurrentPos(data.data(), static_cast<int>(data.size())),
-            static_cast<int>(data.size()));
-  EXPECT_TRUE(base::ranges::equal(message, data));
+  EXPECT_TRUE(file.ReadAtCurrentPosAndCheck(base::as_writable_byte_span(data)));
+  EXPECT_TRUE(std::ranges::equal(message, data));
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(h));
 }
 
 #if BUILDFLAG(IS_IOS)
-// TODO(crbug.com/1418597): Test currently fails on iOS.
+// TODO(crbug.com/40257752): Test currently fails on iOS.
 #define MAYBE_WrapPlatformSharedMemoryRegion \
   DISABLED_WrapPlatformSharedMemoryRegion
 #else
@@ -133,7 +134,7 @@ TEST_F(PlatformWrapperTest, MAYBE_WrapPlatformSharedMemoryRegion) {
   auto region = base::UnsafeSharedMemoryRegion::Create(kMessage.size());
   base::WritableSharedMemoryMapping buffer = region.Map();
   CHECK(buffer.IsValid());
-  memcpy(buffer.memory(), kMessage.data(), kMessage.size());
+  base::as_writable_chars(base::span(buffer)).copy_from(kMessage);
 
   RunTestClient("ReadPlatformSharedBuffer", [&](MojoHandle h) {
     // Wrap the shared memory handle and send it to the child along with the
@@ -145,8 +146,8 @@ TEST_F(PlatformWrapperTest, MAYBE_WrapPlatformSharedMemoryRegion) {
     os_buffer.struct_size = sizeof(MojoPlatformHandle);
     os_buffer.type = SHARED_BUFFER_PLATFORM_HANDLE_TYPE;
 #if BUILDFLAG(IS_WIN)
-    os_buffer.value =
-        reinterpret_cast<uint64_t>(platform_region.PassPlatformHandle().Take());
+    os_buffer.value = reinterpret_cast<uint64_t>(
+        platform_region.PassPlatformHandle().release());
 #elif BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_ANDROID)
     os_buffer.value =
         static_cast<uint64_t>(platform_region.PassPlatformHandle().release());
@@ -202,7 +203,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadPlatformSharedBuffer,
   EXPECT_EQ(MOJO_PLATFORM_SHARED_MEMORY_REGION_ACCESS_MODE_UNSAFE, access_mode);
 
   auto mode = base::subtle::PlatformSharedMemoryRegion::Mode::kUnsafe;
-  absl::optional<base::UnguessableToken> guid =
+  std::optional<base::UnguessableToken> guid =
       base::UnguessableToken::Deserialize(mojo_guid.high, mojo_guid.low);
   ASSERT_TRUE(guid.has_value());
 #if BUILDFLAG(IS_WIN)
@@ -214,8 +215,8 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadPlatformSharedBuffer,
   auto platform_handle = zx::vmo(static_cast<zx_handle_t>(os_buffer.value));
 #elif BUILDFLAG(IS_APPLE)
   ASSERT_EQ(MOJO_PLATFORM_HANDLE_TYPE_MACH_PORT, os_buffer.type);
-  auto platform_handle =
-      base::mac::ScopedMachSendRight(static_cast<mach_port_t>(os_buffer.value));
+  auto platform_handle = base::apple::ScopedMachSendRight(
+      static_cast<mach_port_t>(os_buffer.value));
 #elif BUILDFLAG(IS_POSIX)
   ASSERT_EQ(MOJO_PLATFORM_HANDLE_TYPE_FILE_DESCRIPTOR, os_buffer.type);
   auto platform_handle = base::ScopedFD(static_cast<int>(os_buffer.value));
@@ -228,9 +229,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadPlatformSharedBuffer,
   ASSERT_TRUE(region.IsValid());
 
   base::WritableSharedMemoryMapping mapping = region.Map();
-  ASSERT_TRUE(mapping.memory());
-  EXPECT_TRUE(std::equal(message.begin(), message.end(),
-                         static_cast<const char*>(mapping.memory())));
+  EXPECT_EQ(base::as_byte_span(message), base::span(mapping));
 
   // Verify that the received buffer's internal GUID was preserved in transit.
   EXPECT_EQ(MOJO_RESULT_OK, WaitForSignals(h, MOJO_HANDLE_SIGNAL_READABLE));
@@ -240,7 +239,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(ReadPlatformSharedBuffer,
                            MOJO_READ_MESSAGE_FLAG_NONE));
   EXPECT_EQ(sizeof(MojoSharedBufferGuid), guid_bytes.size());
   auto* expected_guid =
-      reinterpret_cast<MojoSharedBufferGuid*>(guid_bytes.data());
+      UNSAFE_TODO(reinterpret_cast<MojoSharedBufferGuid*>(guid_bytes.data()));
   EXPECT_EQ(expected_guid->high, mojo_guid.high);
   EXPECT_EQ(expected_guid->low, mojo_guid.low);
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(h));

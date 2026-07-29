@@ -2,9 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// XXX
-#include <stdio.h>
-
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -25,51 +22,48 @@ bool equals(T lhs, T rhs) {
 }
 }  // namespace
 
-SBOX_TESTS_COMMAND int Process_CheckData(int argc, wchar_t** argv) {
+SBOX_TEST_COMMAND(Process_CheckData) {
   auto* target_services = SandboxFactory::GetTargetServices();
   if (SBOX_ALL_OK != target_services->Init()) {
     return SBOX_TEST_FAILED_SETUP;
   }
-  if (argc != 1) {
+  if (args.size() != 1) {
     return SBOX_TEST_INVALID_PARAMETER;
   }
-  std::wstring param(argv[0]);
+  std::wstring_view param = args[0];
   auto delegate_data = target_services->GetDelegateData();
   if (!delegate_data.has_value()) {
     return SBOX_TEST_FIRST_ERROR;
   }
-  if (!equals(delegate_data.value(), base::as_bytes(base::make_span(param)))) {
+  if (!equals(delegate_data.value(), base::as_byte_span(param))) {
     return SBOX_TEST_SECOND_ERROR;
   }
   return SBOX_TEST_SUCCEEDED;
 }
 
 TEST(ProcessDelegateData, AddDelegateData) {
-  TestRunner runner(JobLevel::kLockdown, USER_UNPROTECTED, USER_UNPROTECTED);
+  Process_CheckDataTestRunner runner(JobLevel::kLockdown, USER_UNPROTECTED,
+                                     USER_UNPROTECTED);
   std::wstring message(L"Delegate-Data-For-The-Target");
-  runner.GetPolicy()->AddDelegateData(base::as_bytes(base::make_span(message)));
-  std::wstring command = L"Process_CheckData ";
-  command.append(message);
-  EXPECT_EQ(SBOX_TEST_SUCCEEDED, runner.RunTest(command.c_str()));
+  runner.GetPolicy()->AddDelegateData(base::as_byte_span(message));
+  EXPECT_EQ(SBOX_TEST_SUCCEEDED, runner.RunTest(message));
 }
 
 TEST(ProcessDelegateData, AddDelegateDataAndRule) {
-  TestRunner runner(JobLevel::kLockdown, USER_LIMITED, USER_LOCKDOWN);
+  Process_CheckDataTestRunner runner(JobLevel::kLockdown, USER_LIMITED,
+                                     USER_LOCKDOWN);
   std::wstring message(L"Delegate-Data-For-The-Target");
-  runner.GetPolicy()->AddDelegateData(base::as_bytes(base::make_span(message)));
+  runner.GetPolicy()->AddDelegateData(base::as_byte_span(message));
   // Rule doesn't matter - but exercises having all three target regions.
-  runner.AddFsRule(Semantics::kFilesAllowAny, L"c:\\windows\\*");
-  std::wstring command = L"Process_CheckData ";
-  command.append(message);
-  EXPECT_EQ(SBOX_TEST_SUCCEEDED, runner.RunTest(command.c_str()));
+  runner.AllowFileAccess(FileSemantics::kAllowAny, L"c:\\windows\\*");
+  EXPECT_EQ(SBOX_TEST_SUCCEEDED, runner.RunTest(message));
 }
 
 TEST(ProcessDelegateData, NoDelegateData) {
-  TestRunner runner(JobLevel::kLockdown, USER_LIMITED, USER_LOCKDOWN);
+  Process_CheckDataTestRunner runner(JobLevel::kLockdown, USER_LIMITED,
+                                     USER_LOCKDOWN);
   std::wstring message(L"Expect-First-Error");
-  std::wstring command = L"Process_CheckData ";
-  command.append(message);
-  EXPECT_EQ(SBOX_TEST_FIRST_ERROR, runner.RunTest(command.c_str()));
+  EXPECT_EQ(SBOX_TEST_FIRST_ERROR, runner.RunTest(message));
 }
 
 }  // namespace sandbox

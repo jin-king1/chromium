@@ -7,9 +7,10 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
-#include "base/test/scoped_feature_list.h"
+#include "base/run_loop.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/test/run_until.h"
 #include "base/unguessable_token.h"
-#include "cc/slim/features.h"
 #include "cc/slim/layer.h"
 #include "cc/slim/solid_color_layer.h"
 #include "cc/slim/surface_layer.h"
@@ -19,6 +20,7 @@
 #include "components/viz/common/surfaces/local_surface_id.h"
 #include "components/viz/common/surfaces/surface_id.h"
 #include "components/viz/common/surfaces/surface_range.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/overlay_transform.h"
@@ -30,7 +32,6 @@ namespace {
 class SlimLayerTreeTest : public testing::Test {
  public:
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(features::kSlimCompositor);
     layer_tree_ = std::make_unique<TestLayerTreeImpl>(&client_);
   }
 
@@ -50,8 +51,7 @@ class SlimLayerTreeTest : public testing::Test {
         BEGINFRAME_FROM_HERE,
         /*source_id=*/1, ++sequence_id_, frame_time, frame_time + interval,
         interval, viz::BeginFrameArgs::NORMAL);
-    sink->OnBeginFrame(begin_frame_args, /*timing_details=*/{},
-                       /*frame_ack=*/false, {});
+    sink->OnBeginFrame(begin_frame_args, /*timing_details=*/{}, {});
   }
 
   base::WeakPtr<TestFrameSinkImpl> SetupLayerTreeForDraw() {
@@ -79,7 +79,6 @@ class SlimLayerTreeTest : public testing::Test {
   }
 
  protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
   TestLayerTreeClient client_;
   std::unique_ptr<TestLayerTreeImpl> layer_tree_;
   uint64_t sequence_id_ = 0;
@@ -101,8 +100,6 @@ TEST_F(SlimLayerTreeTest, SmokeTest) {
 
   layer_tree_->set_display_transform_hint(
       gfx::OVERLAY_TRANSFORM_FLIP_HORIZONTAL);
-
-  layer_tree_->UpdateTopControlsVisibleHeight(20.0f);
 }
 
 TEST_F(SlimLayerTreeTest, InitAndReleaseFrameSink) {
@@ -174,14 +171,15 @@ TEST_F(SlimLayerTreeTest, LoseFrameSink) {
   EXPECT_TRUE(weak_frame_sink->bind_to_client_called());
 
   weak_frame_sink->OnContextLost();
-  ASSERT_FALSE(weak_frame_sink);
-  EXPECT_EQ(client_.request_new_frame_sink_count(), 2u);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(weak_frame_sink);
 
   frame_sink = TestFrameSinkImpl::Create();
-  weak_frame_sink = frame_sink->GetWeakPtr();
+  auto weak_frame_sink2 = frame_sink->GetWeakPtr();
   layer_tree_->SetFrameSink(std::move(frame_sink));
-  ASSERT_TRUE(weak_frame_sink);
-  EXPECT_TRUE(weak_frame_sink->bind_to_client_called());
+  ASSERT_TRUE(weak_frame_sink2);
+  ASSERT_FALSE(weak_frame_sink);
+  EXPECT_TRUE(weak_frame_sink2->bind_to_client_called());
 }
 
 TEST_F(SlimLayerTreeTest, NeedsBeginFrame) {
@@ -205,7 +203,7 @@ TEST_F(SlimLayerTreeTest, NeedsBeginFrame) {
   layer_tree_->SetNeedsAnimate();
   ExpectNeedsBeginFrameThenReset(weak_frame_sink);
 
-  layer_tree_->SetNeedsRedraw();
+  layer_tree_->SetNeedsAnimate();
   ExpectNeedsBeginFrameThenReset(weak_frame_sink);
 
   layer_tree_->set_background_color(SkColors::kGreen);
@@ -284,7 +282,7 @@ TEST_F(SlimLayerTreeTest, MaxPendingFrame) {
   EXPECT_TRUE(weak_frame_sink->GetDidSubmitAndReset());
   EXPECT_FALSE(weak_frame_sink->GetDidNotProduceFrameAndReset());
 
-  layer_tree_->SetNeedsRedraw();
+  layer_tree_->SetNeedsAnimate();
   BeginFrame(weak_frame_sink);
   EXPECT_FALSE(weak_frame_sink->GetDidSubmitAndReset());
   EXPECT_TRUE(weak_frame_sink->GetDidNotProduceFrameAndReset());
@@ -303,7 +301,7 @@ TEST_F(SlimLayerTreeTest, MaxPendingResetWithFrameSink) {
   EXPECT_TRUE(weak_frame_sink->GetDidSubmitAndReset());
   EXPECT_FALSE(weak_frame_sink->GetDidNotProduceFrameAndReset());
 
-  layer_tree_->SetNeedsRedraw();
+  layer_tree_->SetNeedsAnimate();
   BeginFrame(weak_frame_sink);
   EXPECT_FALSE(weak_frame_sink->GetDidSubmitAndReset());
   EXPECT_TRUE(weak_frame_sink->GetDidNotProduceFrameAndReset());
@@ -335,18 +333,19 @@ TEST_F(SlimLayerTreeTest, ReferencedSurfaceRange) {
   layer->SetSurfaceId(end, cc::DeadlinePolicy::UseDefaultDeadline());
 
   layer_tree_->SetRoot(layer);
-  EXPECT_EQ(layer_tree_->referenced_surfaces(),
-            base::flat_set<viz::SurfaceRange>{viz::SurfaceRange(start, end)});
+  EXPECT_THAT(layer_tree_->referenced_surfaces(),
+              testing::UnorderedElementsAre(
+                  std::make_pair(viz::SurfaceRange(start, end), 1)));
 
   viz::SurfaceId new_end(viz::FrameSinkId(1u, 2u),
                          viz::LocalSurfaceId(7u, 8u, token));
   layer->SetSurfaceId(new_end, cc::DeadlinePolicy::UseDefaultDeadline());
-  EXPECT_EQ(layer_tree_->referenced_surfaces(),
-            std::vector<viz::SurfaceRange>{viz::SurfaceRange(start, new_end)});
+  EXPECT_THAT(layer_tree_->referenced_surfaces(),
+              testing::UnorderedElementsAre(
+                  std::make_pair(viz::SurfaceRange(start, new_end), 1)));
 
   layer_tree_->SetRoot(nullptr);
-  EXPECT_EQ(layer_tree_->referenced_surfaces(),
-            std::vector<viz::SurfaceRange>());
+  EXPECT_TRUE(layer_tree_->referenced_surfaces().empty());
 }
 
 TEST_F(SlimLayerTreeTest, DestroyTreeBeforeLayer) {
@@ -368,6 +367,78 @@ TEST_F(SlimLayerTreeTest, DestroyTreeBeforeLayer) {
 
   EXPECT_EQ(root_layer->layer_tree(), nullptr);
   EXPECT_EQ(surface_layer->layer_tree(), nullptr);
+}
+
+TEST_F(SlimLayerTreeTest, NewLocalSurfaceIdForNewSink) {
+  auto weak_frame_sink = SetupLayerTreeForDraw();
+  viz::LocalSurfaceId old_id = weak_frame_sink->GetCurrentLocalSurfaceId();
+
+  auto frame_sink = TestFrameSinkImpl::Create();
+  weak_frame_sink = frame_sink->GetWeakPtr();
+  layer_tree_->SetFrameSink(std::move(frame_sink));
+  EXPECT_TRUE(weak_frame_sink);
+
+  viz::LocalSurfaceId new_id = weak_frame_sink->GetCurrentLocalSurfaceId();
+  EXPECT_NE(old_id, new_id);
+  EXPECT_TRUE(new_id.IsNewerThan(old_id));
+}
+
+TEST_F(SlimLayerTreeTest, LoseFrameSinkDuringBeginFrame) {
+  // Note, this test exercises a sequence that can happen when the GPU process
+  // crashes.
+  class FrameSinkDestroyingClient : public TestLayerTreeClient {
+   public:
+    FrameSinkDestroyingClient() = default;
+    void SetLayerTree(LayerTreeImpl* layer_tree) { layer_tree_ = layer_tree; }
+    void SetFrameSink(TestFrameSinkImpl* sink) { sink_ = sink; }
+    void BeginFrame(const viz::BeginFrameArgs& args) override {
+      layer_tree_->SetVisible(false);
+      if (sink_) {
+        sink_->OnContextLost();
+      }
+    }
+
+   private:
+    raw_ptr<LayerTreeImpl> layer_tree_;
+    raw_ptr<TestFrameSinkImpl> sink_;
+  };
+
+  FrameSinkDestroyingClient custom_client;
+  auto custom_layer_tree = std::make_unique<TestLayerTreeImpl>(&custom_client);
+  custom_client.SetLayerTree(custom_layer_tree.get());
+
+  custom_layer_tree->SetVisible(true);
+  auto frame_sink = TestFrameSinkImpl::Create();
+  TestFrameSinkImpl* frame_sink_ptr = frame_sink.get();
+  custom_client.SetFrameSink(frame_sink_ptr);
+  custom_layer_tree->SetFrameSink(std::move(frame_sink));
+
+  gfx::Rect viewport(0, 0, 100, 100);
+  float scale_factor = 2.0f;
+  base::UnguessableToken token = base::UnguessableToken::Create();
+  viz::LocalSurfaceId local_surface_id(1u, 2u, token);
+  custom_layer_tree->SetViewportRectAndScale(viewport, scale_factor,
+                                             local_surface_id);
+
+  auto root_layer = Layer::Create();
+  root_layer->SetBounds(viewport.size());
+  root_layer->SetIsDrawable(true);
+  custom_layer_tree->SetRoot(root_layer);
+
+  custom_layer_tree->SetNeedsAnimate();
+
+  base::TimeTicks frame_time = base::TimeTicks::Now();
+  base::TimeDelta interval = viz::BeginFrameArgs::DefaultInterval();
+  viz::BeginFrameArgs begin_frame_args = viz::BeginFrameArgs::Create(
+      BEGINFRAME_FROM_HERE,
+      /*source_id=*/1, 1, frame_time, frame_time + interval, interval,
+      viz::BeginFrameArgs::NORMAL);
+
+  frame_sink_ptr->OnBeginFrame(begin_frame_args, /*timing_details=*/{}, {});
+
+  base::RunLoop().RunUntilIdle();
+  custom_client.SetLayerTree(nullptr);
+  custom_client.SetFrameSink(nullptr);
 }
 
 }  // namespace

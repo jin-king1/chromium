@@ -12,12 +12,6 @@
 
 namespace content_settings {
 
-#if BUILDFLAG(IS_IOS)
-// Feature to enable a better cookie controls ui.
-COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-BASE_DECLARE_FEATURE(kImprovedCookieControls);
-#endif
-
 #if BUILDFLAG(IS_ANDROID)
 // Enables auto dark feature in theme settings.
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
@@ -32,11 +26,16 @@ namespace features {
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
 BASE_DECLARE_FEATURE(kSafetyCheckUnusedSitePermissions);
 
-// Determines the frequency at which permissions of sites are checked whether
-// they are unused.
+// Lets the HostContentSettingsMap actively monitor when content settings expire
+// and delete them instantly. This also notifies observers that will, in turn,
+// terminate access to capabilities gated on those settings right away.
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kSafetyCheckUnusedSitePermissionsRepeatedUpdateInterval;
+BASE_DECLARE_FEATURE(kActiveContentSettingExpiry);
+
+// Enables early querying of storage access permissions to populate the renderer
+// cache and eliminate synchronous IPCs during initial page load.
+COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
+BASE_DECLARE_FEATURE(kEagerStorageAccessPermissionCheck);
 
 // When enabled, site permissions will be considered as unused immediately in
 // order to facilitate testing.
@@ -49,18 +48,26 @@ COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
 extern const base::FeatureParam<bool>
     kSafetyCheckUnusedSitePermissionsWithDelay;
 
-// Determines the time interval after which sites are considered to be unused
-// and its permissions will be revoked.
+// When enabled, allows users to choose between approximate and precise location
+// in geolocation permission prompts.
+//
+// Enabling this feature will migrate geolocation permissions from
+// ContentSettingsType::GEOLOCATION to
+// ContentSettingsType::GEOLOCATION_WITH_OPTIONS. When the feature is enabled,
+// ContentSettingType::GEOLOCATION_WITH_OPTIONS should be used in place of
+// ContentSettingsType::GEOLOCATION. The correct ContentSettingsType for
+// geolocation can always be retrieved using
+// content_settings::GeolocationContentSettingsType().
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kSafetyCheckUnusedSitePermissionsRevocationThreshold;
+BASE_DECLARE_FEATURE(kApproximateGeolocationPermission);
 
-// Determines the time interval after which the revoked permissions of unused
-// sites are cleaned up and no longer shown to users, starting from the point
-// in time that permissions for a site were revoked.
+// Move activity indicators to the left-hand side of Omnibox.
 COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
-extern const base::FeatureParam<base::TimeDelta>
-    kSafetyCheckUnusedSitePermissionsRevocationCleanUpThreshold;
+BASE_DECLARE_FEATURE(kLeftHandSideActivityIndicators);
+
+// Move sensor activity indicators to the left-hand side of Omnibox.
+COMPONENT_EXPORT(CONTENT_SETTINGS_FEATURES)
+BASE_DECLARE_FEATURE(kLeftHandSideSensorActivityIndicators);
 
 }  // namespace features
 }  // namespace content_settings

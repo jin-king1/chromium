@@ -10,16 +10,19 @@
 
 #include "ash/ash_export.h"
 #include "ash/public/cpp/session/session_observer.h"
+#include "ash/system/time/astronomer_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chromeos/ash/components/geolocation/simple_geolocation_provider.h"
+#include "base/types/expected.h"
+#include "chromeos/ash/components/geolocation/system_location_provider.h"
 #include "chromeos/ash/components/settings/timezone_settings.h"
 #include "chromeos/dbus/power/power_manager_client.h"
-#include "services/network/public/cpp/shared_url_loader_factory.h"
 
+class PrefChangeRegistrar;
 class PrefRegistrySimple;
 class PrefService;
 
@@ -28,6 +31,8 @@ class Clock;
 }  // namespace base
 
 namespace ash {
+
+class LocalTimeConverter;
 
 // Represents a geolocation position fix. It's "simple" because it doesn't
 // expose all the parameters of the position interface as defined by the
@@ -51,10 +56,10 @@ struct SimpleGeoposition {
 // TODO(crbug.com/1272178): `GeolocationController` should observe the sleep
 // and update next request time.
 class ASH_EXPORT GeolocationController
-    : public system::TimezoneSettings::Observer,
+    : public SystemLocationProvider::Observer,
+      public system::TimezoneSettings::Observer,
       public chromeos::PowerManagerClient::Observer,
-      public SessionObserver,
-      public SimpleGeolocationProvider::Delegate {
+      public SessionObserver {
  public:
   class Observer : public base::CheckedObserver {
    public:
@@ -67,8 +72,7 @@ class ASH_EXPORT GeolocationController
     ~Observer() override = default;
   };
 
-  explicit GeolocationController(
-      scoped_refptr<network::SharedURLLoaderFactory> factory);
+  explicit GeolocationController(SystemLocationProvider* const provider);
   GeolocationController(const GeolocationController&) = delete;
   GeolocationController& operator=(const GeolocationController&) = delete;
   ~GeolocationController() override;
@@ -85,14 +89,14 @@ class ASH_EXPORT GeolocationController
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
 
+  // SystemLocationProvider::Observer:
+  void OnGeolocationPermissionChanged(bool enabled) override;
+
   // system::TimezoneSettings::Observer:
   void TimezoneChanged(const icu::TimeZone& timezone) override;
 
   // chromeos::PowerManagerClient::Observer:
   void SuspendDone(base::TimeDelta sleep_duration) override;
-
-  // SimpleGeolocationProvider::Delegate:
-  bool IsPreciseGeolocationAllowed() const override;
 
   // SessionObserver:
   void OnActiveUserPrefServiceChanged(PrefService* pref_service) override;
@@ -100,24 +104,26 @@ class ASH_EXPORT GeolocationController
   // Returns sunset and sunrise time calculated from the most recently observed
   // geoposition. If a geoposition has not been observed, defaults to sunset
   // 6 PM and sunrise 6 AM.
-  base::Time GetSunsetTime() const { return GetSunRiseSet(/*sunrise=*/false); }
-  base::Time GetSunriseTime() const { return GetSunRiseSet(/*sunrise=*/true); }
+  base::expected<SunRiseSetTime, SunRiseSetError> GetSunRiseSetTime() const;
 
   static base::TimeDelta GetNextRequestDelayAfterSuccessForTesting();
 
-  network::SharedURLLoaderFactory* GetFactoryForTesting() { return factory_; }
-
   base::OneShotTimer* GetTimerForTesting() { return timer_.get(); }
 
-  bool HasObserverForTesting(const Observer* obs) const {
+  bool HasObserver(const Observer* obs) const {
     return observers_.HasObserver(obs);
   }
 
   void SetTimerForTesting(std::unique_ptr<base::OneShotTimer> timer);
 
   void SetClockForTesting(base::Clock* clock);
-
+  void SetLocalTimeConverterForTesting(
+      const LocalTimeConverter* local_time_converter);
   void SetCurrentTimezoneIdForTesting(const std::u16string& timezone_id);
+  // Resets the running `timer_` and issues an immediate geoposition request.
+  // Any responses on the fly will be processed first, but will be overridden
+  // once the response of this request arrives.
+  void RequestImmediateGeopositionForTesting();
 
  protected:
   // The callback of geolocation request via `provider_`. Once receiving a
@@ -134,10 +140,6 @@ class ASH_EXPORT GeolocationController
   virtual void RequestGeoposition();
 
  private:
-  // Gets now time from the `clock_` or `base::Time::Now()` if `clock_` does
-  // not exist.
-  base::Time GetNow() const;
-
   // Calls `RequestGeoposition()` after `delay`.
   void ScheduleNextRequest(base::TimeDelta delay);
 
@@ -150,7 +152,7 @@ class ASH_EXPORT GeolocationController
   // GetSunsetTime() or GetSunriseTime() is called rather than once whenever we
   // receive a geoposition (which happens at least once a day). This reduces
   // the chances of getting inaccurate values, especially around DST changes.
-  base::Time GetSunRiseSet(bool sunrise) const;
+  base::expected<base::Time, SunRiseSetError> GetSunRiseSet(bool sunrise) const;
 
   // Called only when the active user changes in order to see if we need to use
   // a previously cached geoposition value from the active user's prefs.
@@ -161,13 +163,13 @@ class ASH_EXPORT GeolocationController
   // being able to retrieve a valid geoposition.
   void StoreCachedGeoposition() const;
 
-  const raw_ptr<network::SharedURLLoaderFactory, ExperimentalAsh> factory_;
+  // Points to the `SystemLocationProvider::GetInstance()` throughout the
+  // object lifecycle. Overridden in unit tests.
+  raw_ptr<SystemLocationProvider> geolocation_provider_ = nullptr;
 
   // May be null if a user has not logged in yet.
   raw_ptr<PrefService> active_user_pref_service_ = nullptr;
-
-  // The IP-based geolocation provider.
-  SimpleGeolocationProvider provider_;
+  std::unique_ptr<PrefChangeRegistrar> registrar_;
 
   // Delay after which a new request is retried after a failed one.
   base::TimeDelta backoff_delay_;
@@ -175,7 +177,11 @@ class ASH_EXPORT GeolocationController
   std::unique_ptr<base::OneShotTimer> timer_;
 
   // Optional Used in tests to override the time of "Now".
-  raw_ptr<base::Clock, ExperimentalAsh> clock_ = nullptr;  // Not owned.
+  raw_ptr<base::Clock> clock_ = nullptr;  // Not owned.
+
+  // Optional Used in tests to override all local time operations.
+  raw_ptr<const LocalTimeConverter> local_time_converter_ =
+      nullptr;  // Not owned.
 
   // The ID of the current timezone in the format similar to "America/Chicago".
   std::u16string current_timezone_id_;
@@ -193,6 +199,8 @@ class ASH_EXPORT GeolocationController
   std::unique_ptr<SimpleGeoposition> geoposition_;
 
   ScopedSessionObserver scoped_session_observer_;
+
+  base::WeakPtrFactory<GeolocationController> weak_ptr_factory_{this};
 };
 
 }  // namespace ash

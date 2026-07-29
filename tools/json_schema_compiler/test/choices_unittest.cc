@@ -8,10 +8,12 @@
 
 #include <utility>
 
-#include "base/strings/string_piece.h"
 #include "base/values.h"
+#include "extensions/buildflags/buildflags.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "tools/json_schema_compiler/test/test_util.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace {
 
@@ -25,7 +27,7 @@ using json_schema_compiler::test_util::Vector;
 
 TEST(JsonSchemaCompilerChoicesTest, TakesIntegersParamsCreate) {
   {
-    absl::optional<TakesIntegers::Params> params(
+    std::optional<TakesIntegers::Params> params(
         TakesIntegers::Params::Create(List(base::Value(true)).GetList()));
 
     static_assert(!std::is_copy_constructible_v<TakesIntegers::Params>);
@@ -36,7 +38,7 @@ TEST(JsonSchemaCompilerChoicesTest, TakesIntegersParamsCreate) {
     EXPECT_FALSE(params);
   }
   {
-    absl::optional<TakesIntegers::Params> params(
+    std::optional<TakesIntegers::Params> params(
         TakesIntegers::Params::Create(List(base::Value(6)).GetList()));
     ASSERT_TRUE(params);
     EXPECT_FALSE(params->nums.as_integers);
@@ -44,7 +46,7 @@ TEST(JsonSchemaCompilerChoicesTest, TakesIntegersParamsCreate) {
     EXPECT_EQ(6, *params->nums.Clone().as_integer);
   }
   {
-    absl::optional<TakesIntegers::Params> params(TakesIntegers::Params::Create(
+    std::optional<TakesIntegers::Params> params(TakesIntegers::Params::Create(
         List(List(base::Value(2), base::Value(6), base::Value(8))).GetList()));
     ASSERT_TRUE(params);
     ASSERT_TRUE(params->nums.as_integers);
@@ -55,7 +57,7 @@ TEST(JsonSchemaCompilerChoicesTest, TakesIntegersParamsCreate) {
 
 TEST(JsonSchemaCompilerChoicesTest, ObjectWithChoicesParamsCreate) {
   {
-    absl::optional<choices::ObjectWithChoices::Params> params(
+    std::optional<choices::ObjectWithChoices::Params> params(
         choices::ObjectWithChoices::Params::Create(
             List(Dictionary("strings", base::Value("asdf"))).GetList()));
     ASSERT_TRUE(params);
@@ -65,7 +67,7 @@ TEST(JsonSchemaCompilerChoicesTest, ObjectWithChoicesParamsCreate) {
     EXPECT_FALSE(params->string_info.integers);
   }
   {
-    absl::optional<choices::ObjectWithChoices::Params> params(
+    std::optional<choices::ObjectWithChoices::Params> params(
         choices::ObjectWithChoices::Params::Create(
             List(Dictionary("strings", base::Value("asdf"), "integers",
                             base::Value(6)))
@@ -86,32 +88,32 @@ TEST(JsonSchemaCompilerChoicesTest, ObjectWithChoicesParamsCreate) {
 
 TEST(JsonSchemaCompilerChoicesTest, ObjectWithChoicesParamsCreateFail) {
   {
-    base::Value::Dict object_param;
+    base::DictValue object_param;
     object_param.Set("strings", 5);
-    base::Value::List params_value;
+    base::ListValue params_value;
     params_value.Append(std::move(object_param));
-    absl::optional<choices::ObjectWithChoices::Params> params(
+    std::optional<choices::ObjectWithChoices::Params> params(
         choices::ObjectWithChoices::Params::Create(
             base::Value(std::move(params_value)).GetList()));
     EXPECT_FALSE(params.has_value());
   }
   {
-    base::Value::Dict object_param;
+    base::DictValue object_param;
     object_param.Set("strings", "asdf");
     object_param.Set("integers", "asdf");
-    base::Value::List params_value;
+    base::ListValue params_value;
     params_value.Append(std::move(object_param));
-    absl::optional<choices::ObjectWithChoices::Params> params(
+    std::optional<choices::ObjectWithChoices::Params> params(
         choices::ObjectWithChoices::Params::Create(
             base::Value(std::move(params_value)).GetList()));
     EXPECT_FALSE(params.has_value());
   }
   {
-    base::Value::Dict object_param;
+    base::DictValue object_param;
     object_param.Set("integers", 6);
-    base::Value::List params_value;
+    base::ListValue params_value;
     params_value.Append(std::move(object_param));
-    absl::optional<choices::ObjectWithChoices::Params> params(
+    std::optional<choices::ObjectWithChoices::Params> params(
         choices::ObjectWithChoices::Params::Create(
             base::Value(std::move(params_value)).GetList()));
     EXPECT_FALSE(params.has_value());
@@ -123,45 +125,45 @@ TEST(JsonSchemaCompilerChoicesTest, PopulateChoiceType) {
                                             std::string("of"),
                                             std::string("strings"));
 
-  base::Value::List strings_value;
+  base::ListValue strings_value;
   for (const auto& string : strings)
     strings_value.Append(string);
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("integers", 4);
   dict.Set("strings", std::move(strings_value));
 
-  choices::ChoiceType out;
+  auto out = choices::ChoiceType::FromValue(dict);
+  ASSERT_TRUE(out);
 
   static_assert(!std::is_copy_constructible_v<choices::ChoiceType>);
   static_assert(!std::is_copy_assignable_v<choices::ChoiceType>);
   static_assert(std::is_move_constructible_v<choices::ChoiceType>);
   static_assert(std::is_move_assignable_v<choices::ChoiceType>);
 
-  ASSERT_TRUE(choices::ChoiceType::Populate(dict, out));
-  ASSERT_TRUE(out.integers.as_integer);
-  EXPECT_FALSE(out.integers.as_integers);
-  EXPECT_EQ(4, *out.integers.as_integer);
+  ASSERT_TRUE(out->integers.as_integer);
+  EXPECT_FALSE(out->integers.as_integers);
+  EXPECT_EQ(4, *out->integers.as_integer);
 
-  EXPECT_FALSE(out.strings->as_string);
-  ASSERT_TRUE(out.strings->as_strings);
-  EXPECT_EQ(strings, *out.strings->as_strings);
+  EXPECT_FALSE(out->strings->as_string);
+  ASSERT_TRUE(out->strings->as_strings);
+  EXPECT_EQ(strings, *out->strings->as_strings);
 }
 
 TEST(JsonSchemaCompilerChoicesTest, ChoiceTypeToValue) {
-  base::Value::List strings_value;
+  base::ListValue strings_value;
   strings_value.Append("list");
   strings_value.Append("of");
   strings_value.Append("strings");
 
-  base::Value::Dict dict;
+  base::DictValue dict;
   dict.Set("integers", 5);
   dict.Set("strings", std::move(strings_value));
 
-  choices::ChoiceType out;
-  ASSERT_TRUE(choices::ChoiceType::Populate(dict, out));
+  auto out = choices::ChoiceType::FromValue(dict);
+  ASSERT_TRUE(out);
 
-  EXPECT_EQ(dict, out.ToValue());
+  EXPECT_EQ(dict, out->ToValue());
 }
 
 TEST(JsonSchemaCompilerChoicesTest, ReturnChoices) {
@@ -171,7 +173,7 @@ TEST(JsonSchemaCompilerChoicesTest, ReturnChoices) {
 
     base::Value results_value(results.ToValue());
 
-    base::Value::List expected;
+    base::ListValue expected;
     expected.Append(1);
     expected.Append(2);
 
@@ -195,7 +197,7 @@ TEST(JsonSchemaCompilerChoicesTest, NestedChoices) {
   {
     // The plain integer choice.
     base::Value value = ReadJson("42");
-    absl::optional<NestedChoice> obj = NestedChoice::FromValue(value);
+    std::optional<NestedChoice> obj = NestedChoice::FromValue(value);
 
     ASSERT_TRUE(obj);
     ASSERT_TRUE(obj->as_integer);
@@ -209,7 +211,7 @@ TEST(JsonSchemaCompilerChoicesTest, NestedChoices) {
   {
     // The string choice within the first choice.
     base::Value value = ReadJson("\"foo\"");
-    absl::optional<NestedChoice> obj = NestedChoice::FromValue(value);
+    std::optional<NestedChoice> obj = NestedChoice::FromValue(value);
 
     ASSERT_TRUE(obj);
     EXPECT_FALSE(obj->as_integer);
@@ -225,7 +227,7 @@ TEST(JsonSchemaCompilerChoicesTest, NestedChoices) {
   {
     // The boolean choice within the first choice.
     base::Value value = ReadJson("true");
-    absl::optional<NestedChoice> obj = NestedChoice::FromValue(value);
+    std::optional<NestedChoice> obj = NestedChoice::FromValue(value);
 
     ASSERT_TRUE(obj);
     EXPECT_FALSE(obj->as_integer);
@@ -241,7 +243,7 @@ TEST(JsonSchemaCompilerChoicesTest, NestedChoices) {
   {
     // The double choice within the second choice.
     base::Value value = ReadJson("42.0");
-    absl::optional<NestedChoice> obj = NestedChoice::FromValue(value);
+    std::optional<NestedChoice> obj = NestedChoice::FromValue(value);
 
     ASSERT_TRUE(obj);
     EXPECT_FALSE(obj->as_integer);
@@ -259,7 +261,7 @@ TEST(JsonSchemaCompilerChoicesTest, NestedChoices) {
     // The ChoiceType choice within the second choice.
     base::Value value =
         ReadJson("{\"integers\": [1, 2], \"strings\": \"foo\"}");
-    absl::optional<NestedChoice> obj = NestedChoice::FromValue(value);
+    std::optional<NestedChoice> obj = NestedChoice::FromValue(value);
 
     ASSERT_TRUE(obj);
     EXPECT_FALSE(obj->as_integer);
@@ -289,7 +291,7 @@ TEST(JsonSchemaCompilerChoicesTest, NestedChoices) {
         "  {\"integers\": [1, 2], \"strings\": \"foo\"},"
         "  {\"integers\": 3, \"strings\": [\"bar\", \"baz\"]}"
         "]");
-    absl::optional<NestedChoice> obj = NestedChoice::FromValue(value);
+    std::optional<NestedChoice> obj = NestedChoice::FromValue(value);
 
     ASSERT_TRUE(obj);
     EXPECT_FALSE(obj->as_integer);

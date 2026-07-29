@@ -6,7 +6,6 @@
 
 #include <utility>
 
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_string_value_serializer.h"
 #include "base/memory/ref_counted_memory.h"
@@ -41,7 +40,7 @@ FeedbackData::FeedbackData(base::WeakPtr<feedback::FeedbackUploader> uploader,
   // sending the report. If it is created after this point, then the tracing is
   // not relevant to this report.
   if (tracing_manager) {
-    tracing_manager_ = base::AsWeakPtr(tracing_manager);
+    tracing_manager_ = tracing_manager->AsWeakPtr();
   }
 }
 
@@ -131,7 +130,9 @@ void FeedbackData::OnGetTraceData(
   if (tracing_manager_)
     tracing_manager_->DiscardTraceData(trace_id);
 
-  AddFile(kTraceFilename, std::move(trace_data->data()));
+  std::string s;
+  std::swap(s, trace_data->as_string());
+  AddFile(kTraceFilename, std::move(s));
 
   set_category_tag(kPerformanceCategoryTag);
   --pending_op_count_;
@@ -159,7 +160,8 @@ void FeedbackData::SendReport() {
     auto post_body = std::make_unique<std::string>();
     feedback_data.SerializeToString(post_body.get());
     uploader_->QueueReport(std::move(post_body),
-                           /*has_email=*/!user_email().empty());
+                           /*has_email=*/!user_email().empty(),
+                           /*product_id=*/feedback_data.product_id());
   }
 }
 

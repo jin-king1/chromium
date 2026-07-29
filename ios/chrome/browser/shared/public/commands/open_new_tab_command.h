@@ -7,10 +7,13 @@
 
 #import <UIKit/UIKit.h>
 
+#import "base/memory/weak_ptr.h"
+
 class GURL;
 
 namespace web {
 struct Referrer;
+class WebState;
 }
 
 // Describes the intended position for a new tab.
@@ -85,6 +88,9 @@ enum class OpenPosition {
 // Origin point of the action triggering this command.
 @property(nonatomic, assign) CGPoint originPoint;
 
+// Extra headers.
+@property(nonatomic, copy) NSDictionary<NSString*, NSString*>* extraHeaders;
+
 #pragma mark - ReadOnly properties
 
 // Whether this URL command requests opening in incognito or not.
@@ -104,12 +110,27 @@ enum class OpenPosition {
 // Referrer for the URL.
 @property(nonatomic, readonly, assign) const web::Referrer& referrer;
 
+// A text fragment to be attached to the NavigationItem's internal state so
+// that the page scrolls to the matched text upon loading. The string should
+// contain only the selector value (the part after "text=" in a URL directive).
+// See https://wicg.github.io/scroll-to-text-fragment/ for details.
+@property(nonatomic, copy) NSString* textFragment;
+
 // Whether or not this URL command comes from a chrome context (e.g., settings),
 // as opposed to a web page context.
 @property(nonatomic, readonly, assign) BOOL fromChrome;
 
+// Whether or not this URL command comes from Send Tab to Self.
+@property(nonatomic, readonly, assign) BOOL fromSendTabToSelf;
+
+// The GUID of the Send Tab to Self entry that triggered this command.
+@property(nonatomic, copy) NSString* sendTabToSelfEntryGUID;
+
 // Location where the new tab should be opened.
 @property(nonatomic, assign) OpenPosition appendTo;
+
+// Opener WebState for the new tab.
+@property(nonatomic, assign) base::WeakPtr<web::WebState> openerWebState;
 
 @end
 

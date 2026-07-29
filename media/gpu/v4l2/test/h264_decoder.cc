@@ -2,17 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+
 #include "media/gpu/v4l2/test/h264_decoder.h"
 
-#if BUILDFLAG(IS_CHROMEOS)
-#include <linux/media/h264-ctrls-upstream.h>
-#endif
+#include <linux/v4l2-controls.h>
+#include <linux/videodev2.h>
 
+#include <tuple>
+
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/notreached.h"
 #include "media/gpu/macros.h"
-#include "media/gpu/v4l2/test/upstream_pix_fmt.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace media {
 
@@ -105,10 +108,10 @@ v4l2_ctrl_h264_sps SetupSPSCtrl(const H264SPS* sps) {
 
   // Check that SPS offsets for ref frames size matches v4l2 sps.
   static_assert(std::extent<decltype(v4l2_sps.offset_for_ref_frame)>() ==
-                    std::extent<decltype(sps->offset_for_ref_frame)>(),
-                "SPS Offsets for ref frames size must match");
+                std::tuple_size<decltype(sps->offset_for_ref_frame)>::value);
   for (size_t i = 0; i < std::size(v4l2_sps.offset_for_ref_frame); i++)
-    v4l2_sps.offset_for_ref_frame[i] = sps->offset_for_ref_frame[i];
+    UNSAFE_TODO(v4l2_sps.offset_for_ref_frame[i]) =
+        UNSAFE_TODO(sps->offset_for_ref_frame[i]);
 
   v4l2_sps.offset_for_non_ref_pic = sps->offset_for_non_ref_pic;
   v4l2_sps.offset_for_top_to_bottom_field = sps->offset_for_top_to_bottom_field;
@@ -181,25 +184,33 @@ v4l2_ctrl_h264_scaling_matrix SetupScalingMatrix(const H264SPS* sps,
   // Makes sure that the size of the matrix scaling lists correspond
   // to the PPS scaling matrix sizes.
   static_assert(std::extent<decltype(matrix.scaling_list_4x4)>() <=
-                        std::extent<decltype(pps->scaling_list4x4)>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(pps->scaling_list4x4)>>::value &&
                     std::extent<decltype(matrix.scaling_list_4x4[0])>() <=
-                        std::extent<decltype(pps->scaling_list4x4[0])>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(pps->scaling_list4x4[0])>>::value &&
                     std::extent<decltype(matrix.scaling_list_8x8)>() <=
-                        std::extent<decltype(pps->scaling_list8x8)>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(pps->scaling_list8x8)>>::value &&
                     std::extent<decltype(matrix.scaling_list_8x8[0])>() <=
-                        std::extent<decltype(pps->scaling_list8x8[0])>(),
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(pps->scaling_list8x8[0])>>::value,
                 "PPS scaling_lists must be of correct size");
 
   // Makes sure that the size of the matrix scaling lists correspond
   // to the SPS scaling matrix sizes.
   static_assert(std::extent<decltype(matrix.scaling_list_4x4)>() <=
-                        std::extent<decltype(sps->scaling_list4x4)>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(sps->scaling_list4x4)>>::value &&
                     std::extent<decltype(matrix.scaling_list_4x4[0])>() <=
-                        std::extent<decltype(sps->scaling_list4x4[0])>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(sps->scaling_list4x4[0])>>::value &&
                     std::extent<decltype(matrix.scaling_list_8x8)>() <=
-                        std::extent<decltype(sps->scaling_list8x8)>() &&
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(sps->scaling_list8x8)>>::value &&
                     std::extent<decltype(matrix.scaling_list_8x8[0])>() <=
-                        std::extent<decltype(sps->scaling_list8x8[0])>(),
+                        std::tuple_size<std::remove_reference_t<
+                            decltype(sps->scaling_list8x8[0])>>::value,
                 "SPS scaling_lists must be of correct size");
 
   const auto* scaling_list4x4 = &sps->scaling_list4x4[0];
@@ -212,16 +223,20 @@ v4l2_ctrl_h264_scaling_matrix SetupScalingMatrix(const H264SPS* sps,
   static_assert(std::extent<decltype(matrix.scaling_list_4x4), 1>() ==
                 std::extent<decltype(zigzag_4x4)>());
   for (size_t i = 0; i < std::size(matrix.scaling_list_4x4); ++i) {
-    for (size_t j = 0; j < std::size(matrix.scaling_list_4x4[i]); ++j) {
-      matrix.scaling_list_4x4[i][zigzag_4x4[j]] = scaling_list4x4[i][j];
+    for (size_t j = 0; j < std::size(UNSAFE_TODO(matrix.scaling_list_4x4[i]));
+         ++j) {
+      UNSAFE_TODO(matrix.scaling_list_4x4[i][zigzag_4x4[j]]) =
+          UNSAFE_TODO(scaling_list4x4[i][j]);
     }
   }
 
   static_assert(std::extent<decltype(matrix.scaling_list_8x8), 1>() ==
                 std::extent<decltype(zigzag_8x8)>());
   for (size_t i = 0; i < std::size(matrix.scaling_list_8x8); ++i) {
-    for (size_t j = 0; j < std::size(matrix.scaling_list_8x8[i]); ++j) {
-      matrix.scaling_list_8x8[i][zigzag_8x8[j]] = scaling_list8x8[i][j];
+    for (size_t j = 0; j < std::size(UNSAFE_TODO(matrix.scaling_list_8x8[i]));
+         ++j) {
+      UNSAFE_TODO(matrix.scaling_list_8x8[i][zigzag_8x8[j]]) =
+          UNSAFE_TODO(scaling_list8x8[i][j]);
     }
   }
 
@@ -230,28 +245,52 @@ v4l2_ctrl_h264_scaling_matrix SetupScalingMatrix(const H264SPS* sps,
 
 // Sets up v4l2_ctrl_h264_decode_params from data in the H264SliceHeader and
 // the current H264SliceMetadata.
-void SetupDecodeParams(const H264SliceHeader& slice,
-                       const H264SliceMetadata& slice_metadata,
-                       v4l2_ctrl_h264_decode_params* v4l2_decode_param) {
-  v4l2_decode_param->nal_ref_idc = slice.nal_ref_idc;
-  v4l2_decode_param->frame_num = slice.frame_num;
-  v4l2_decode_param->idr_pic_id = slice.idr_pic_id;
-  v4l2_decode_param->pic_order_cnt_lsb = slice.pic_order_cnt_lsb;
-  v4l2_decode_param->delta_pic_order_cnt_bottom =
+v4l2_ctrl_h264_decode_params SetupDecodeParams(
+    const H264SliceHeader& slice,
+    const H264SliceMetadata& slice_metadata,
+    const H264DPB& dpb) {
+  v4l2_ctrl_h264_decode_params v4l2_decode_params = {};
+
+  v4l2_decode_params.nal_ref_idc = slice.nal_ref_idc;
+  v4l2_decode_params.frame_num = slice.frame_num;
+  v4l2_decode_params.idr_pic_id = slice.idr_pic_id;
+  v4l2_decode_params.pic_order_cnt_lsb = slice.pic_order_cnt_lsb;
+  v4l2_decode_params.delta_pic_order_cnt_bottom =
       slice.delta_pic_order_cnt_bottom;
-  v4l2_decode_param->delta_pic_order_cnt0 = slice.delta_pic_order_cnt0;
-  v4l2_decode_param->delta_pic_order_cnt1 = slice.delta_pic_order_cnt1;
-  v4l2_decode_param->dec_ref_pic_marking_bit_size =
+  v4l2_decode_params.delta_pic_order_cnt0 = slice.delta_pic_order_cnt0;
+  v4l2_decode_params.delta_pic_order_cnt1 = slice.delta_pic_order_cnt1;
+  v4l2_decode_params.dec_ref_pic_marking_bit_size =
       slice.dec_ref_pic_marking_bit_size;
-  v4l2_decode_param->pic_order_cnt_bit_size = slice.pic_order_cnt_bit_size;
+  v4l2_decode_params.pic_order_cnt_bit_size = slice.pic_order_cnt_bit_size;
 
-  v4l2_decode_param->flags = 0;
+  v4l2_decode_params.flags = 0;
   if (slice.idr_pic_flag)
-    v4l2_decode_param->flags |= V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC;
+    v4l2_decode_params.flags |= V4L2_H264_DECODE_PARAM_FLAG_IDR_PIC;
 
-  v4l2_decode_param->top_field_order_cnt = slice_metadata.top_field_order_cnt;
-  v4l2_decode_param->bottom_field_order_cnt =
+  v4l2_decode_params.top_field_order_cnt = slice_metadata.top_field_order_cnt;
+  v4l2_decode_params.bottom_field_order_cnt =
       slice_metadata.bottom_field_order_cnt;
+
+  size_t i = 0;
+  constexpr size_t kTimestampToNanoSecs = 1000;
+  for (const auto& element : dpb) {
+    struct v4l2_h264_dpb_entry& entry =
+        UNSAFE_TODO(v4l2_decode_params.dpb[i++]);
+    entry = {.reference_ts = element.second.ref_ts_nsec * kTimestampToNanoSecs,
+             .pic_num = static_cast<unsigned short>(element.second.pic_num),
+             .frame_num = static_cast<unsigned short>(element.second.frame_num),
+             .fields = V4L2_H264_FRAME_REF,
+             .top_field_order_cnt = element.second.top_field_order_cnt,
+             .bottom_field_order_cnt = element.second.bottom_field_order_cnt,
+             .flags = static_cast<uint32_t>(
+                 V4L2_H264_DPB_ENTRY_FLAG_VALID |
+                 (element.second.ref ? V4L2_H264_DPB_ENTRY_FLAG_ACTIVE : 0) |
+                 (element.second.long_term_reference_flag
+                      ? V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM
+                      : 0))};
+  }
+
+  return v4l2_decode_params;
 }
 
 // Determines whether the current slice is part of the same
@@ -414,7 +453,7 @@ void H264Decoder::FlushDPB() {
 
 void H264Decoder::InitializeDecoderLogic() {
   parser_ = std::make_unique<H264Parser>();
-  parser_->SetStream(data_stream_.data(), data_stream_.length());
+  parser_->SetStream(data_stream_->bytes());
 
   // Advance through NALUs until the first SPS.  The start of the decodable
   // data in an h.264 bistreams starts with an SPS.
@@ -460,11 +499,14 @@ VideoDecoder::Result H264Decoder::SubmitSlice() {
   std::vector<uint8_t> slice_data(
       sizeof(V4L2_STATELESS_H264_START_CODE_ANNEX_B) - 1);
   slice_data[2] = V4L2_STATELESS_H264_START_CODE_ANNEX_B;
-  slice_data.insert(slice_data.end(), curr_slice_hdr_->nalu_data,
-                    curr_slice_hdr_->nalu_data + curr_slice_hdr_->nalu_size);
+  slice_data.insert(
+      slice_data.end(), (curr_slice_hdr_->nalu_data).get(),
+      UNSAFE_TODO((curr_slice_hdr_->nalu_data +
+                   base::checked_cast<size_t>(curr_slice_hdr_->nalu_size))
+                      .get()));
 
   scoped_refptr<MmappedBuffer> OUTPUT_buffer = OUTPUT_queue_->GetBuffer(0);
-  OUTPUT_buffer->mmapped_planes()[0].CopyIn(&slice_data[0], slice_data.size());
+  OUTPUT_buffer->mmapped_planes()[0].CopyIn(slice_data);
   OUTPUT_buffer->set_frame_number(global_pic_count_);
 
   if (!v4l2_ioctl_->QBuf(OUTPUT_queue_, 0)) {
@@ -491,14 +533,15 @@ VideoDecoder::Result H264Decoder::InitializeSliceMetadata(
   slice_metadata->pic_num = slice_hdr.frame_num;
   slice_metadata->pic_order_cnt_lsb = slice_hdr.pic_order_cnt_lsb;
 
+  const auto visible_rect = sps->GetVisibleRect();
+  // If there is no value, then the bitstream is invalid
+  CHECK(visible_rect.has_value());
+  slice_metadata->visible_rect_ = *visible_rect;
+
   slice_metadata->long_term_reference_flag = slice_hdr.long_term_reference_flag;
 
   if (slice_hdr.adaptive_ref_pic_marking_mode_flag) {
-    static_assert(sizeof(slice_metadata->ref_pic_marking) ==
-                      sizeof(slice_hdr.ref_pic_marking),
-                  "Array sizes of ref pic marking do not match.");
-    memcpy(slice_metadata->ref_pic_marking, slice_hdr.ref_pic_marking,
-           sizeof(slice_metadata->ref_pic_marking));
+    slice_metadata->ref_pic_marking = slice_hdr.ref_pic_marking;
   }
 
   // Calculate H264 slice order counts.
@@ -584,9 +627,8 @@ VideoDecoder::Result H264Decoder::InitializeSliceMetadata(
 }
 
 VideoDecoder::Result H264Decoder::StartNewFrame(
-    H264SliceMetadata* slice_metadata,
-    v4l2_ctrl_h264_decode_params* v4l2_decode_param,
-    bool is_OUTPUT_queue_new) {
+    bool is_OUTPUT_queue_new,
+    H264SliceMetadata* slice_metadata) {
   const H264PPS* pps = parser_->GetPPS(curr_slice_hdr_->pic_parameter_set_id);
   const H264SPS* sps = parser_->GetSPS(pps->seq_parameter_set_id);
 
@@ -623,50 +665,30 @@ VideoDecoder::Result H264Decoder::StartNewFrame(
   struct v4l2_ext_controls ext_ctrls = {
       .count = (sizeof(ctrls) / sizeof(ctrls[0])), .controls = ctrls};
 
-  v4l2_ioctl_->SetExtCtrls(OUTPUT_queue_, &ext_ctrls,
-                           is_OUTPUT_queue_new && cur_val_is_supported_);
-
-  memset(v4l2_decode_param->dpb, 0, sizeof(v4l2_decode_param->dpb));
-  size_t i = 0;
-  constexpr size_t kTimestampToNanoSecs = 1000;
-  for (const auto& element : dpb_) {
-    struct v4l2_h264_dpb_entry& entry = v4l2_decode_param->dpb[i++];
-    entry = {.reference_ts = element.second.ref_ts_nsec * kTimestampToNanoSecs,
-             .pic_num = static_cast<unsigned short>(element.second.pic_num),
-             .frame_num = static_cast<unsigned short>(element.second.frame_num),
-             .fields = V4L2_H264_FRAME_REF,
-             .top_field_order_cnt = element.second.top_field_order_cnt,
-             .bottom_field_order_cnt = element.second.bottom_field_order_cnt,
-             .flags = static_cast<uint32_t>(
-                 V4L2_H264_DPB_ENTRY_FLAG_VALID |
-                 (element.second.ref ? V4L2_H264_DPB_ENTRY_FLAG_ACTIVE : 0) |
-                 (element.second.long_term_reference_flag
-                      ? V4L2_H264_DPB_ENTRY_FLAG_LONG_TERM
-                      : 0))};
-  }
+  v4l2_ioctl_->SetExtCtrls(OUTPUT_queue_, &ext_ctrls, is_OUTPUT_queue_new);
 
   return VideoDecoder::kOk;
 }
 
 void H264Decoder::ProcessNextFrame() {
   H264SliceMetadata slice_metadata = {};
-  v4l2_ctrl_h264_decode_params v4l2_decode_param = {};
 
   const bool is_OUTPUT_queue_new = !OUTPUT_queue_;
   if (!OUTPUT_queue_) {
     CreateOUTPUTQueue(kDriverCodecFourcc);
   }
 
-  StartNewFrame(&slice_metadata, &v4l2_decode_param, is_OUTPUT_queue_new);
-  SetupDecodeParams(*curr_slice_hdr_, slice_metadata, &v4l2_decode_param);
+  StartNewFrame(is_OUTPUT_queue_new, &slice_metadata);
+  v4l2_ctrl_h264_decode_params v4l2_decode_params =
+      SetupDecodeParams(*curr_slice_hdr_, slice_metadata, dpb_);
 
   const int pps_id = curr_slice_hdr_->pic_parameter_set_id;
   const int sps_id = parser_->GetPPS(pps_id)->seq_parameter_set_id;
 
   struct v4l2_ext_control ctrls[] = {
       {.id = V4L2_CID_STATELESS_H264_DECODE_PARAMS,
-       .size = sizeof(v4l2_decode_param),
-       .ptr = &v4l2_decode_param},
+       .size = sizeof(v4l2_decode_params),
+       .ptr = &v4l2_decode_params},
       {.id = V4L2_CID_STATELESS_H264_DECODE_MODE,
        .value = V4L2_STATELESS_H264_DECODE_MODE_FRAME_BASED}};
   struct v4l2_ext_controls ext_ctrls = {
@@ -721,6 +743,8 @@ void H264Decoder::FinishPicture(H264SliceMetadata picture, const int sps_id) {
   if (!CAPTURE_queue_) {
     CreateCAPTUREQueue(kNumberOfBuffersInCaptureQueue);
   }
+
+  v4l2_ioctl_->WaitForRequestCompletion(OUTPUT_queue_);
 
   uint32_t CAPTURE_id;
   v4l2_ioctl_->DQBuf(CAPTURE_queue_, &CAPTURE_id);
@@ -880,7 +904,7 @@ void H264Decoder::FinishPicture(H264SliceMetadata picture, const int sps_id) {
 std::unique_ptr<H264Decoder> H264Decoder::Create(
     const base::MemoryMappedFile& stream) {
   auto parser = std::make_unique<H264Parser>();
-  parser->SetStream(stream.data(), stream.length());
+  parser->SetStream(stream.bytes());
 
   // Advance through NALUs until the first SPS.  The start of the decodable
   // data in an h.264 bistreams starts with an SPS.
@@ -903,17 +927,10 @@ std::unique_ptr<H264Decoder> H264Decoder::Create(
   const H264SPS* sps = parser->GetSPS(sps_id);
   CHECK(sps);
 
-  absl::optional<gfx::Size> coded_size = sps->GetCodedSize();
+  std::optional<gfx::Size> coded_size = sps->GetCodedSize();
   CHECK(coded_size);
-  LOG(INFO) << "h.264 coded size : " << coded_size->ToString();
 
   auto v4l2_ioctl = std::make_unique<V4L2IoctlShim>(kDriverCodecFourcc);
-
-  if (!v4l2_ioctl->VerifyCapabilities(kDriverCodecFourcc)) {
-    LOG(ERROR) << "Device doesn't support "
-               << media::FourccToString(kDriverCodecFourcc) << ".";
-    return nullptr;
-  }
 
   return base::WrapUnique(
       new H264Decoder(std::move(v4l2_ioctl), coded_size.value(), stream));
@@ -946,11 +963,12 @@ std::set<uint32_t> H264Decoder::GetReusableReferenceSlots(
   return reusable_buffer_slots;
 }
 
-VideoDecoder::Result H264Decoder::DecodeNextFrame(std::vector<uint8_t>& y_plane,
+VideoDecoder::Result H264Decoder::DecodeNextFrame(const int frame_number,
+                                                  std::vector<uint8_t>& y_plane,
                                                   std::vector<uint8_t>& u_plane,
                                                   std::vector<uint8_t>& v_plane,
                                                   gfx::Size& size,
-                                                  const int frame_number) {
+                                                  BitDepth& bit_depth) {
   // If this is the start of the Decoder, initialize Decoder state.
   if (!parser_) {
     InitializeDecoderLogic();
@@ -974,10 +992,16 @@ VideoDecoder::Result H264Decoder::DecodeNextFrame(std::vector<uint8_t>& y_plane,
   last_decoded_frame_visible_ = picture.outputted;
   scoped_refptr<MmappedBuffer> buffer =
       CAPTURE_queue_->GetBuffer(picture.capture_queue_buffer_id);
+  size = picture.visible_rect_.size();
 
-  ConvertToYUV(y_plane, u_plane, v_plane, OUTPUT_queue_->resolution(),
-               buffer->mmapped_planes(), CAPTURE_queue_->resolution(),
-               CAPTURE_queue_->fourcc());
+  if (!picture.visible_rect_.origin().IsOrigin()) {
+    // TODO(b/315491484): Handle cropping with non-zero origin
+    LOG(INFO) << "Non-zero visible rect origin.";
+  }
+
+  bit_depth =
+      ConvertToYUV(y_plane, u_plane, v_plane, size, buffer->mmapped_planes(),
+                   CAPTURE_queue_->resolution(), CAPTURE_queue_->fourcc());
 
   slice_ready_queue_.pop();
   return VideoDecoder::kOk;

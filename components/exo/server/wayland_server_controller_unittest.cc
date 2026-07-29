@@ -8,7 +8,6 @@
 
 #include "ash/test/ash_test_base.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/test/bind.h"
@@ -46,7 +45,7 @@ class WaylandServerControllerTest : public ash::AshTestBase {
 }  // namespace
 
 TEST_F(WaylandServerControllerTest, RequestServerByFd) {
-  WaylandServerController wsc(nullptr, nullptr, nullptr, nullptr);
+  WaylandServerController wsc(nullptr, nullptr, nullptr, nullptr, nullptr);
   ASSERT_EQ(WaylandServerController::Get(), &wsc);
 
   wayland::test::WaylandServerTestBase::ScopedTempSocket sock;
@@ -76,7 +75,7 @@ TEST_F(WaylandServerControllerTest, RequestServerByFd) {
 }
 
 TEST_F(WaylandServerControllerTest, RequestServerBadSocket) {
-  WaylandServerController wsc(nullptr, nullptr, nullptr, nullptr);
+  WaylandServerController wsc(nullptr, nullptr, nullptr, nullptr, nullptr);
   ASSERT_EQ(WaylandServerController::Get(), &wsc);
 
   base::RunLoop loop;

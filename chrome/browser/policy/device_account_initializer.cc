@@ -27,9 +27,16 @@ namespace em = enterprise_management;
 
 namespace policy {
 
-DeviceAccountInitializer::DeviceAccountInitializer(CloudPolicyClient* client,
-                                                   Delegate* delegate)
-    : client_(client), delegate_(delegate), handling_request_(false) {
+DeviceAccountInitializer::DeviceAccountInitializer(
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    CloudPolicyClient* client,
+    Delegate* delegate)
+    : shared_url_loader_factory_(std::move(shared_url_loader_factory)),
+      client_(client),
+      delegate_(delegate),
+      handling_request_(false) {
+  CHECK(shared_url_loader_factory_);
+
   client_->AddObserver(this);
 }
 
@@ -71,11 +78,9 @@ void DeviceAccountInitializer::OnRobotAuthCodesFetched(
       GaiaUrls::GetInstance()->oauth2_chrome_client_secret();
   client_info.redirect_uri = "oob";
 
-  DCHECK(delegate_->GetURLLoaderFactory());
-
   // Use the system request context to avoid sending user cookies.
   gaia_oauth_client_ =
-      std::make_unique<gaia::GaiaOAuthClient>(delegate_->GetURLLoaderFactory());
+      std::make_unique<gaia::GaiaOAuthClient>(shared_url_loader_factory_);
   gaia_oauth_client_->GetTokensFromAuthCode(client_info, auth_code,
                                             0 /* max_retries */, this);
 }
@@ -105,7 +110,7 @@ void DeviceAccountInitializer::OnOAuthError() {
   // response is bad (empty access token returned).
   LOG(ERROR) << "OAuth protocol error while fetching API refresh token.";
   handling_request_ = false;
-  delegate_->OnDeviceAccountTokenFetchError(/*dm_status=*/absl::nullopt);
+  delegate_->OnDeviceAccountTokenFetchError(/*dm_status=*/std::nullopt);
 }
 
 // GaiaOAuthClient::Delegate network error when fetching refresh token.
@@ -113,7 +118,7 @@ void DeviceAccountInitializer::OnNetworkError(int response_code) {
   LOG(ERROR) << "Network error while fetching API refresh token: "
              << response_code;
   handling_request_ = false;
-  delegate_->OnDeviceAccountTokenFetchError(/*dm_status=*/absl::nullopt);
+  delegate_->OnDeviceAccountTokenFetchError(/*dm_status=*/std::nullopt);
 }
 
 void DeviceAccountInitializer::StoreToken() {
@@ -138,11 +143,6 @@ void DeviceAccountInitializer::Stop() {
   handling_request_ = false;
   weak_ptr_factory_.InvalidateWeakPtrs();
 }
-
-void DeviceAccountInitializer::OnPolicyFetched(CloudPolicyClient* client) {}
-
-void DeviceAccountInitializer::OnRegistrationStateChanged(
-    CloudPolicyClient* client) {}
 
 void DeviceAccountInitializer::OnClientError(CloudPolicyClient* client) {
   if (!handling_request_)

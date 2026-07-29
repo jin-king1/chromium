@@ -9,8 +9,6 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/threading/thread_checker.h"
-#include "mojo/public/cpp/bindings/pending_receiver.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/shared_remote.h"
@@ -25,7 +23,7 @@ class P2PSocketClientDelegate;
 
 // P2P socket that routes all calls over Mojo.
 // The object runs on the WebRTC worker thread.
-// TODO(crbug.com/1044522): reuse code from blink instead.
+// TODO(crbug.com/40115622): reuse code from blink instead.
 class P2PSocketClient : public network::mojom::P2PSocketClient {
  public:
   P2PSocketClient(const mojo::SharedRemote<network::mojom::P2PSocketManager>&
@@ -49,7 +47,7 @@ class P2PSocketClient : public network::mojom::P2PSocketClient {
   // |dscp|. Return value is the unique packet_id for this packet.
   uint64_t Send(const net::IPEndPoint& address,
                 base::span<const uint8_t> data,
-                const rtc::PacketOptions& options);
+                const webrtc::AsyncSocketPacketOptions& options);
 
   // Setting socket options.
   void SetOption(network::P2PSocketOption option, int value);
@@ -75,13 +73,15 @@ class P2PSocketClient : public network::mojom::P2PSocketClient {
   // condition.
   void SendWithPacketId(const net::IPEndPoint& address,
                         base::span<const uint8_t> data,
-                        const rtc::PacketOptions& options,
+                        const webrtc::AsyncSocketPacketOptions& options,
                         uint64_t packet_id);
 
   // network::mojom::P2PSocketClient interface.
   void SocketCreated(const net::IPEndPoint& local_address,
                      const net::IPEndPoint& remote_address) override;
   void SendComplete(const network::P2PSendPacketMetrics& send_metrics) override;
+  void SendBatchComplete(const std::vector<::network::P2PSendPacketMetrics>&
+                             send_metrics_batch) override;
   void DataReceived(
       std::vector<network::mojom::P2PReceivedPacketPtr> packets) override;
 
@@ -90,7 +90,7 @@ class P2PSocketClient : public network::mojom::P2PSocketClient {
   mojo::SharedRemote<network::mojom::P2PSocketManager> socket_manager_;
   THREAD_CHECKER(thread_checker_);
   int socket_id_;
-  raw_ptr<P2PSocketClientDelegate, ExperimentalAsh> delegate_;
+  raw_ptr<P2PSocketClientDelegate> delegate_;
   State state_;
   const net::NetworkTrafficAnnotationTag traffic_annotation_;
 

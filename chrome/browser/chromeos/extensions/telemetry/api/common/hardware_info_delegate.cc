@@ -8,49 +8,20 @@
 #include <string>
 #include <utility>
 
-#include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/ptr_util.h"
-#include "base/strings/string_util.h"
-#include "base/system/sys_info.h"
-#include "base/task/task_traits.h"
-#include "base/task/thread_pool.h"
-#include "chrome/browser/chromeos/extensions/telemetry/api/common/remote_probe_service_strategy.h"
-#include "chromeos/crosapi/mojom/probe_service.mojom.h"
+#include "chromeos/ash/services/cros_healthd/public/cpp/service_connection.h"
+#include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_probe.mojom.h"
 
 namespace chromeos {
 
 namespace {
 
-// Returns manufacturer read from sys_vendor file. Runs in the separate thread
-// pool which supports blocking sys calls.
-// Returns an empty string on error.
-//
-// We use this function instead of base::SysInfo::GetHardwareInfo() since the
-// latter always returns "Google" as a manufacturer on ChromeOS.
-std::string GetManufacturerFromSysfsSync() {
-  static const size_t kMaxStringSize = 100u;
-  std::string manufacturer;
-  if (base::ReadFileToStringWithMaxSize(
-          base::FilePath("/sys/devices/virtual/dmi/id/sys_vendor"),
-          &manufacturer, kMaxStringSize)) {
-    DCHECK(base::IsStringUTF8(manufacturer));
-    base::TrimWhitespaceASCII(manufacturer, base::TrimPositions::TRIM_ALL,
-                              &manufacturer);
-  }
-  return manufacturer;
-}
+HardwareInfoDelegate* g_instance = nullptr;
 
-void GetManufacturerFromSysfs(base::OnceCallback<void(std::string)> callback) {
-  base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock()},
-      base::BindOnce(&GetManufacturerFromSysfsSync), std::move(callback));
-}
-
-// Callback from ProbeServiceAsh::ProbeTelemetryInfo().
-std::string OnGetSystemInfo(crosapi::mojom::ProbeTelemetryInfoPtr ptr) {
+// Callback from ProbeTelemetryInfo().
+std::string OnGetSystemInfo(ash::cros_healthd::mojom::TelemetryInfoPtr ptr) {
   if (!ptr || !ptr->system_result || !ptr->system_result->is_system_info()) {
     return "";
   }
@@ -66,55 +37,47 @@ std::string OnGetSystemInfo(crosapi::mojom::ProbeTelemetryInfoPtr ptr) {
 }  // namespace
 
 // static
-HardwareInfoDelegate::Factory* HardwareInfoDelegate::Factory::test_factory_ =
-    nullptr;
-
-// static
-std::unique_ptr<HardwareInfoDelegate> HardwareInfoDelegate::Factory::Create() {
-  if (test_factory_) {
-    return test_factory_->CreateInstance();
+HardwareInfoDelegate& HardwareInfoDelegate::Get() {
+  if (!g_instance) {
+    g_instance = new HardwareInfoDelegate();
   }
-  return base::WrapUnique<HardwareInfoDelegate>(new HardwareInfoDelegate());
+  return *g_instance;
 }
 
-// static
-void HardwareInfoDelegate::Factory::SetForTesting(Factory* test_factory) {
-  test_factory_ = test_factory;
-}
-
-HardwareInfoDelegate::Factory::~Factory() = default;
-
-HardwareInfoDelegate::HardwareInfoDelegate()
-    : remote_probe_service_strategy_(RemoteProbeServiceStrategy::Create()) {}
+HardwareInfoDelegate::HardwareInfoDelegate() = default;
 HardwareInfoDelegate::~HardwareInfoDelegate() = default;
 
 // GetManufacturer tries to get the manufacturer (or OEM name) from
-// ProbeServiceAsh[1] first. If no (or empty) information is returned,
-// GetManufacturer falls back to SysInfo[2].
-// [1] ProbeServiceAsh fetches the OEM name from cros_config.
-// [2] SysInfo fetches the manufacturer information from the
-// "/sys/devices/virtual/dmi/id/sys_vendor" system file.
+// ProbeServiceAsh, which fetches the OEM name from cros_config.
 void HardwareInfoDelegate::GetManufacturer(ManufacturerCallback done_cb) {
-  auto fallback = base::BindOnce(&HardwareInfoDelegate::FallbackHandler,
-                                 base::Unretained(this), std::move(done_cb));
-
-  if (remote_probe_service_strategy_) {
-    auto cb = base::BindOnce(&OnGetSystemInfo).Then(std::move(fallback));
-    remote_probe_service_strategy_->GetRemoteService()->ProbeTelemetryInfo(
-        {crosapi::mojom::ProbeCategoryEnum::kSystem}, std::move(cb));
-  } else {
-    std::move(fallback).Run("");
-  }
-}
-
-void HardwareInfoDelegate::FallbackHandler(ManufacturerCallback done_cb,
-                                           std::string probe_service_result) {
-  if (!probe_service_result.empty()) {
-    std::move(done_cb).Run(probe_service_result);
+  if (manufacturer_cache_.has_value()) {
+    std::move(done_cb).Run(manufacturer_cache_.value());
     return;
   }
 
-  GetManufacturerFromSysfs(std::move(done_cb));
+  auto* probe_service =
+      ash::cros_healthd::ServiceConnection::GetInstance()->GetProbeService();
+  if (!probe_service) {
+    std::move(done_cb).Run(std::string());
+    return;
+  }
+
+  probe_service->ProbeTelemetryInfo(
+      {ash::cros_healthd::mojom::ProbeCategoryEnum::kSystem},
+      base::BindOnce(&OnGetSystemInfo)
+          .Then(base::BindOnce(&HardwareInfoDelegate::SetCacheAndReturnResult,
+                               base::Unretained(this), std::move(done_cb))));
+}
+
+void HardwareInfoDelegate::ClearCacheForTesting() {
+  manufacturer_cache_ = std::nullopt;
+}
+
+void HardwareInfoDelegate::SetCacheAndReturnResult(
+    ManufacturerCallback done_cb,
+    const std::string& manufacturer) {
+  manufacturer_cache_ = manufacturer;
+  std::move(done_cb).Run(manufacturer);
 }
 
 }  // namespace chromeos

@@ -4,7 +4,6 @@
 
 #include "ash/webui/eche_app_ui/eche_stream_status_change_handler.h"
 
-#include "ash/constants/ash_features.h"
 #include "ash/webui/eche_app_ui/apps_launch_info_provider.h"
 #include "ash/webui/eche_app_ui/launch_app_helper.h"
 #include "ash/webui/eche_app_ui/mojom/eche_app.mojom-shared.h"
@@ -37,10 +36,17 @@ void EcheStreamStatusChangeHandler::OnStreamStatusChanged(
                << status;
   NotifyStreamStatusChanged(status);
 
+  // Note that the stream status and connection status from
+  // |apps_launch_info_provider_| can be out of sync. This is because the
+  // pre-warm connection may not havbe been established (e.g. launched from a
+  // notification when Phone Hub just get connected) and the value is stored in
+  // |apps_launch_info_provider_| when app streaming gets initialized. This is
+  // very likely to fail to start actual streaming and we are recording these
+  // events to separate bucket to prevent it from polluting our real success
+  // metrics.
   if (status == mojom::StreamStatus::kStreamStatusStarted) {
-    if (features::IsEcheNetworkConnectionStateEnabled() &&
-        apps_launch_info_provider_->GetConnectionStatusForUi() ==
-            mojom::ConnectionStatus::kConnectionStatusFailed &&
+    if (apps_launch_info_provider_->GetConnectionStatusFromLastAttempt() !=
+            mojom::ConnectionStatus::kConnectionStatusConnected &&
         apps_launch_info_provider_->entry_point() ==
             mojom::AppStreamLaunchEntryPoint::NOTIFICATION) {
       base::UmaHistogramEnumeration(
@@ -49,6 +55,25 @@ void EcheStreamStatusChangeHandler::OnStreamStatusChanged(
     } else {
       base::UmaHistogramEnumeration("Eche.StreamEvent",
                                     mojom::StreamStatus::kStreamStatusStarted);
+      switch (apps_launch_info_provider_->entry_point()) {
+        case eche_app::mojom::AppStreamLaunchEntryPoint::APPS_LIST:
+          base::UmaHistogramEnumeration(
+              "Eche.StreamEvent.FromLauncher",
+              eche_app::mojom::StreamStatus::kStreamStatusStarted);
+          break;
+        case eche_app::mojom::AppStreamLaunchEntryPoint::NOTIFICATION:
+          base::UmaHistogramEnumeration(
+              "Eche.StreamEvent.FromNotification",
+              eche_app::mojom::StreamStatus::kStreamStatusStarted);
+          break;
+        case eche_app::mojom::AppStreamLaunchEntryPoint::RECENT_APPS:
+          base::UmaHistogramEnumeration(
+              "Eche.StreamEvent.FromRecentApps",
+              eche_app::mojom::StreamStatus::kStreamStatusStarted);
+          break;
+        case eche_app::mojom::AppStreamLaunchEntryPoint::UNKNOWN:
+          NOTREACHED();
+      }
     }
   }
 }
@@ -60,7 +85,7 @@ void EcheStreamStatusChangeHandler::SetStreamActionObserver(
   observer_remote_.Bind(std::move(observer));
 }
 
-void EcheStreamStatusChangeHandler::OnRequestCloseConnnection() {
+void EcheStreamStatusChangeHandler::OnRequestCloseConnection() {
   CloseStream();
 }
 

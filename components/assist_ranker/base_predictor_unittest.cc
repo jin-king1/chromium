@@ -38,7 +38,6 @@ const char kTestNavigationUrl[] = "https://foo.com";
 const base::flat_set<std::string> kFeatureAllowlist;
 
 BASE_FEATURE(kTestRankerQuery,
-             "TestRankerQuery",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 const base::FeatureParam<std::string> kTestRankerUrl{
@@ -68,7 +67,7 @@ class FakePredictor : public BasePredictor {
   ~FakePredictor() override {}
   // Validation will always succeed.
   static RankerModelStatus ValidateModel(const RankerModel& model) {
-    return RankerModelStatus::OK;
+    return RankerModelStatus::kOk;
   }
 
  protected:

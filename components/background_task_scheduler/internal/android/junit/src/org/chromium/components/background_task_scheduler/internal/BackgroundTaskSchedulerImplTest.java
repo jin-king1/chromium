@@ -11,10 +11,12 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 
@@ -30,17 +32,15 @@ import java.util.concurrent.TimeUnit;
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class BackgroundTaskSchedulerImplTest {
-    @Mock
-    private BackgroundTaskSchedulerDelegate mDelegate;
-    @Mock
-    private BackgroundTaskSchedulerUma mBackgroundTaskSchedulerUma;
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Mock private BackgroundTaskSchedulerDelegate mDelegate;
+    @Mock private BackgroundTaskSchedulerUma mBackgroundTaskSchedulerUma;
 
     private TaskInfo mTask;
     private TaskInfo mExpirationTask;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         BackgroundTaskSchedulerFactoryInternal.setSchedulerForTesting(
                 new BackgroundTaskSchedulerImpl(mDelegate));
         BackgroundTaskSchedulerUma.setInstanceForTesting(mBackgroundTaskSchedulerUma);
@@ -63,8 +63,8 @@ public class BackgroundTaskSchedulerImplTest {
     @Feature({"BackgroundTaskScheduler"})
     public void testScheduleTaskSuccessful() {
         doReturn(true).when(mDelegate).schedule(eq(RuntimeEnvironment.application), eq(mTask));
-        BackgroundTaskSchedulerFactoryInternal.getScheduler().schedule(
-                RuntimeEnvironment.application, mTask);
+        BackgroundTaskSchedulerFactoryInternal.getScheduler()
+                .schedule(RuntimeEnvironment.application, mTask);
         verify(mDelegate, times(1)).schedule(eq(RuntimeEnvironment.application), eq(mTask));
         verify(mBackgroundTaskSchedulerUma, times(1))
                 .reportTaskScheduled(eq(TaskIds.TEST), eq(true));
@@ -75,10 +75,11 @@ public class BackgroundTaskSchedulerImplTest {
     @Test
     @Feature({"BackgroundTaskScheduler"})
     public void testScheduleTaskWithExpirationSuccessful() {
-        doReturn(true).when(mDelegate).schedule(
-                eq(RuntimeEnvironment.application), eq(mExpirationTask));
-        BackgroundTaskSchedulerFactoryInternal.getScheduler().schedule(
-                RuntimeEnvironment.application, mExpirationTask);
+        doReturn(true)
+                .when(mDelegate)
+                .schedule(eq(RuntimeEnvironment.application), eq(mExpirationTask));
+        BackgroundTaskSchedulerFactoryInternal.getScheduler()
+                .schedule(RuntimeEnvironment.application, mExpirationTask);
         verify(mBackgroundTaskSchedulerUma, times(1))
                 .reportTaskCreatedAndExpirationState(eq(TaskIds.TEST), eq(true));
     }
@@ -87,8 +88,8 @@ public class BackgroundTaskSchedulerImplTest {
     @Feature({"BackgroundTaskScheduler"})
     public void testScheduleTaskFailed() {
         doReturn(false).when(mDelegate).schedule(eq(RuntimeEnvironment.application), eq(mTask));
-        BackgroundTaskSchedulerFactoryInternal.getScheduler().schedule(
-                RuntimeEnvironment.application, mTask);
+        BackgroundTaskSchedulerFactoryInternal.getScheduler()
+                .schedule(RuntimeEnvironment.application, mTask);
         verify(mDelegate, times(1)).schedule(eq(RuntimeEnvironment.application), eq(mTask));
     }
 
@@ -96,8 +97,8 @@ public class BackgroundTaskSchedulerImplTest {
     @Feature({"BackgroundTaskScheduler"})
     public void testCancel() {
         doNothing().when(mDelegate).cancel(eq(RuntimeEnvironment.application), eq(TaskIds.TEST));
-        BackgroundTaskSchedulerFactoryInternal.getScheduler().cancel(
-                RuntimeEnvironment.application, TaskIds.TEST);
+        BackgroundTaskSchedulerFactoryInternal.getScheduler()
+                .cancel(RuntimeEnvironment.application, TaskIds.TEST);
         verify(mDelegate, times(1)).cancel(eq(RuntimeEnvironment.application), eq(TaskIds.TEST));
     }
 }

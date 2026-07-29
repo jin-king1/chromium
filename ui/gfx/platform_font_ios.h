@@ -22,7 +22,7 @@ class PlatformFontIOS : public PlatformFont {
   // font; use the |SystemFontType| constructor for that.
   PlatformFontIOS(sk_sp<SkTypeface> typeface,
                   int font_size_pixels,
-                  const absl::optional<FontRenderParams>& params);
+                  const std::optional<FontRenderParams>& params);
 #endif
   PlatformFontIOS(const PlatformFontIOS&) = delete;
   PlatformFontIOS& operator=(const PlatformFontIOS&) = delete;
@@ -39,6 +39,7 @@ class PlatformFontIOS : public PlatformFont {
   int GetStyle() const override;
   const std::string& GetFontName() const override;
   std::string GetActualFontName() const override;
+  std::vector<std::string> GetActualFontNames() const override;
   int GetFontSize() const override;
   const FontRenderParams& GetFontRenderParams() override;
   CTFontRef GetCTFont() const override;
@@ -49,7 +50,7 @@ class PlatformFontIOS : public PlatformFont {
                   int font_size,
                   int style,
                   Font::Weight weight);
-  ~PlatformFontIOS() override {}
+  ~PlatformFontIOS() override = default;
 
   // Initialize the object with the specified parameters.
   void InitWithNameSizeAndStyle(const std::string& font_name,
@@ -70,6 +71,9 @@ class PlatformFontIOS : public PlatformFont {
   int ascent_;
   int cap_height_;
   int average_width_;
+
+  // Details about how the font should be rendered.
+  FontRenderParams render_params_;
 };
 
 }  // namespace gfx

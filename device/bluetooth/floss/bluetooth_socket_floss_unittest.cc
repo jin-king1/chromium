@@ -56,8 +56,7 @@ class BluetoothSocketFlossTest : public testing::Test {
   void InitializeAndEnableAdapter() {
     adapter_ = BluetoothAdapterFloss::CreateAdapter();
 
-    fake_floss_manager_client_->SetAdapterPowered(/*adapter*/ 0,
-                                                  /*powered*/ true);
+    fake_floss_manager_client_->SetDefaultEnabled(true);
 
     base::RunLoop run_loop;
     adapter_->Initialize(run_loop.QuitClosure());
@@ -139,7 +138,7 @@ class BluetoothSocketFlossTest : public testing::Test {
     run_loop.Run();
   }
 
-  raw_ptr<FakeFlossSocketManager> GetFakeFlossSocketManager() {
+  FakeFlossSocketManager* GetFakeFlossSocketManager() {
     return static_cast<FakeFlossSocketManager*>(
         FlossDBusManager::Get()->GetSocketManager());
   }
@@ -211,7 +210,6 @@ TEST_F(BluetoothSocketFlossTest, Connect) {
   socket = nullptr;
 }
 
-// TODO (crbug.com/1412530) Test is failing on ASan bots
 TEST_F(BluetoothSocketFlossTest, Listen) {
   // Get socket id for next returned socket.
   FlossSocketManager::SocketId id = GetFakeFlossSocketManager()->GetNextId();
@@ -228,6 +226,11 @@ TEST_F(BluetoothSocketFlossTest, Listen) {
         base::BindOnce(&BluetoothSocketFlossTest::ErrorCallback,
                        weak_ptr_factory_.GetWeakPtr(),
                        run_loop.QuitWhenIdleClosure()));
+    // Mark the socket as ready. This should trigger the success callback and an
+    // accept.
+    GetFakeFlossSocketManager()->SendSocketReady(
+        id, device::BluetoothUUID(FakeFlossSocketManager::kRfcommUuid),
+        FlossDBusClient::BtifStatus::kSuccess);
     run_loop.Run();
   }
 
@@ -239,11 +242,6 @@ TEST_F(BluetoothSocketFlossTest, Listen) {
   scoped_refptr<device::BluetoothSocket> server_socket =
       std::move(last_socket_);
   ClearCounters();
-
-  // Mark the socket as ready. This should trigger an accept.
-  GetFakeFlossSocketManager()->SendSocketReady(
-      id, device::BluetoothUUID(FakeFlossSocketManager::kRfcommUuid),
-      FlossDBusClient::BtifStatus::kSuccess);
 
   // Simulate incoming connection. This queues one up to be accepted later.
   FlossDeviceId device = {.address = FakeFlossAdapterClient::kBondedAddress1,
@@ -275,6 +273,33 @@ TEST_F(BluetoothSocketFlossTest, Listen) {
   DisconnectSocket(client_socket.get());
   client_socket = nullptr;
   ClearCounters();
+
+  // Accept a connection when there's nothing there and then receives connection
+  // failed.
+  {
+    base::RunLoop run_loop;
+    server_socket->Accept(
+        base::BindOnce(&BluetoothSocketFlossTest::AcceptSuccessCallback,
+                       weak_ptr_factory_.GetWeakPtr(),
+                       run_loop.QuitWhenIdleClosure()),
+        base::BindOnce(&BluetoothSocketFlossTest::ErrorCallback,
+                       weak_ptr_factory_.GetWeakPtr(),
+                       run_loop.QuitWhenIdleClosure()));
+    run_loop.RunUntilIdle();
+
+    // No sockets found to accept.
+    EXPECT_EQ(0, success_callback_count_);
+    EXPECT_EQ(0, error_callback_count_);
+
+    GetFakeFlossSocketManager()->SendSocketReady(
+        id, device::BluetoothUUID(FakeFlossSocketManager::kRfcommUuid),
+        FlossDBusClient::BtifStatus::kFail);
+
+    EXPECT_EQ(1, error_callback_count_);
+    EXPECT_EQ(0, success_callback_count_);
+    EXPECT_TRUE(last_socket_.get() == nullptr);
+    ClearCounters();
+  }
 
   // Accept a connection when there's nothing there and then send connection.
   {
@@ -344,6 +369,50 @@ TEST_F(BluetoothSocketFlossTest, Listen) {
 
   // Clean up server socket at end.
   DisconnectSocket(server_socket.get());
+}
+
+// Regression test for a use-after-free in DoConnectionStateChanged.
+//
+// After CompleteListen(), the sole strong reference to the BluetoothSocketFloss
+// is held by its own |pending_listen_ready_callback_| member.
+// DoConnectionStateChanged is dispatched via a WeakPtr-bound RepeatingCallback
+// (no strong ref on the stack) and synchronously runs that callback. If the
+// callee drops the scoped_refptr without retaining it (which happens in
+// production when chrome.bluetoothSocket.close() removed the BluetoothApiSocket
+// before listen completed), |this| is freed mid-method and the subsequent
+// member writes/reads are use-after-free.
+TEST_F(BluetoothSocketFlossTest, ListenReadyCallbackDropsLastRef) {
+  FlossSocketManager::SocketId id = GetFakeFlossSocketManager()->GetNextId();
+
+  // Simulates BluetoothSocketListenFunction::OnCreateService when
+  // GetSocket(socket_id()) returns nullptr: the scoped_refptr parameter is
+  // destroyed without being retained anywhere.
+  auto drop_last_ref = [](scoped_refptr<device::BluetoothSocket> socket) {
+    // |socket| destructs here. Without a self-ref in DoConnectionStateChanged
+    // this is the last reference -> refcount hits 0 -> ~BluetoothSocketFloss().
+  };
+
+  adapter_->CreateRfcommService(
+      device::BluetoothUUID(FakeFlossSocketManager::kRfcommUuid),
+      BluetoothAdapter::ServiceOptions(),
+      base::BindLambdaForTesting(drop_last_ref),
+      base::BindLambdaForTesting(
+          [](const std::string& msg) { FAIL() << msg; }));
+
+  // At this point CompleteListen has run synchronously (FakeFlossSocketManager
+  // invokes the response callback inline), so the only owner of the
+  // BluetoothSocketFloss is its own pending_listen_ready_callback_ member.
+  //
+  // SendSocketReady dispatches DoConnectionStateChanged via the WeakPtr-bound
+  // ConnectionStateChanged callback. Inside, pending_listen_ready_callback_ is
+  // run, |drop_last_ref| destroys the last scoped_refptr, the object is freed,
+  // and DoConnectionStateChanged then writes is_accepting_ and dereferences
+  // weak_ptr_factory_ on freed heap. ASan reports heap-use-after-free here.
+  GetFakeFlossSocketManager()->SendSocketReady(
+      id, device::BluetoothUUID(FakeFlossSocketManager::kRfcommUuid),
+      FlossDBusClient::BtifStatus::kSuccess);
+
+  base::RunLoop().RunUntilIdle();
 }
 
 }  // namespace floss

@@ -7,8 +7,8 @@
  */
 
 import {getSurroundingText} from '//ios/web/js_features/context_menu/resources/surrounding_text.js';
-import {gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
-import {sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.js'
+import {CrWebApi, gCrWeb} from '//ios/web/public/js_messaging/resources/gcrweb.js';
+import {sendWebKitMessage} from '//ios/web/public/js_messaging/resources/utils.js';
 
 // The minimum opacity for an element to be considered as opaque. Elements
 // with a higher opacity will prevent selection of images underneath.
@@ -19,7 +19,7 @@ const OPACITY_THRESHOLD = 0.9;
 const TRANSPARENCY_THRESHOLD = 0.1;
 
 // The maximum depth to search for elements at any point.
-const MAX_SEARCH_DEPTH = 8;
+const MAX_SEARCH_DEPTH = 20;
 
 /**
  * Response from `findElementAtPoint` describing an image element.
@@ -41,6 +41,8 @@ interface FindElementImgResult {
   title?: string;
   // The alternative text given with the image.
   alt?: string;
+  // The frame ID of the frame where the context menu was triggered.
+  frameId?: string;
 }
 
 /**
@@ -59,6 +61,8 @@ interface FindElementLinkResult {
   href: string;
   // The inner text of the link.
   innerText?: string;
+  // The frame ID of the frame where the context menu was triggered.
+  frameId?: string;
 }
 
 /**
@@ -80,6 +84,8 @@ interface FindElementTextResult {
   // Note that `innerText` is contained in `surroundingText`.
   surroundingText?: string;
   surroundingTextOffset?: number;
+  // The frame ID of the frame where the context menu was triggered.
+  frameId?: string;
 }
 
 /**
@@ -87,6 +93,8 @@ interface FindElementTextResult {
  */
 interface FindElementFailResult {
   requestId?: string;
+  // The frame ID of the frame where the context menu was triggered.
+  frameId?: string;
 }
 
 type FindElementResult = FindElementImgResult|FindElementLinkResult|
@@ -96,8 +104,8 @@ type FindElementResult = FindElementImgResult|FindElementLinkResult|
  * Represents local `x` and `y` coordinates in `window` space.
  */
 class WindowCoordinates {
-  public readonly viewPortX: number;
-  public readonly viewPortY: number;
+  readonly viewPortX: number;
+  readonly viewPortY: number;
 
   constructor(public readonly x: number, public readonly y: number) {
     this.viewPortX = x - window.pageXOffset;
@@ -213,8 +221,7 @@ function findElementAtPointInPageCoordinates(
     requestId: string, x: number, y: number) {
   const hitCoordinates = spiralCoordinates(x, y);
   const processedElements = new Set<Element>();
-  const firstDefaultElement: Element[] = [];
-  for (let coordinates of hitCoordinates) {
+  for (const coordinates of hitCoordinates) {
     const coordinateDetails =
         new WindowCoordinates(coordinates.x, coordinates.y);
     const useViewPortCoordinates = elementFromPointIsUsingViewPortCoordinates();
@@ -224,22 +231,12 @@ function findElementAtPointInPageCoordinates(
                                                  coordinateDetails.y;
     const elementWasFound = findElementAtPoint(
         requestId, window.document, processedElements, coordinateX, coordinateY,
-        x, y, firstDefaultElement);
+        x, y);
 
     // Exit early if an element was found.
     if (elementWasFound) {
       return;
     }
-  }
-
-  if (firstDefaultElement.length > 0 &&
-      firstDefaultElement[0] instanceof Element) {
-    sendFindElementAtPointResponse(
-        requestId,
-        getResponseForTextElement(
-            firstDefaultElement[0], x - window.pageXOffset,
-            y - window.pageYOffset));
-    return;
   }
 
   // If no element was found, send an empty response.
@@ -257,14 +254,27 @@ function findElementAtPointInPageCoordinates(
  * @param pointY - the Y coordinate of the target location.
  * @param centerX - the X coordinate of the center of the target.
  * @param centerY - the Y coordinate of the center of the target.
- * @param firstDefaultElement - contains the first default element found if any.
  */
 function findElementAtPoint(
     requestId: string, root: Document|ShadowRoot,
     processedElements: Set<Element>, pointX: number, pointY: number,
-    centerX: number, centerY: number, firstDefaultElement: Element[]): boolean {
+    centerX: number, centerY: number): boolean {
+  // Make chrome_annotation temporary available for `elementsFromPoint`.
+  const annotations = document.querySelectorAll('chrome_annotation');
+  for (const annotation of annotations) {
+    if (annotation instanceof HTMLElement) {
+      annotation.style.pointerEvents = 'all';
+    }
+  }
   const elements = root.elementsFromPoint(pointX, pointY);
+  for (const annotation of annotations) {
+    if (annotation instanceof HTMLElement) {
+      annotation.style.pointerEvents = 'none';
+    }
+  }
   let foundLinkElement: HTMLAnchorElement|SVGAElement|null = null;
+  let foundTextElement: Element|null = null;
+  let foundImageElement: HTMLElement|null = null;
   for (let elementIndex = 0;
        elementIndex < elements.length && elementIndex < MAX_SEARCH_DEPTH;
        elementIndex++) {
@@ -297,7 +307,7 @@ function findElementAtPoint(
         // keep iterating.
         if (findElementAtPoint(
                 requestId, element.shadowRoot, processedElements, pointX,
-                pointY, centerX, centerY, firstDefaultElement)) {
+                pointY, centerX, centerY)) {
           return true;
         }
       }
@@ -306,10 +316,23 @@ function findElementAtPoint(
               requestId, centerX, centerY, element as HTMLElement)) {
         return true;
       }
+    }
 
-      if (element.tagName !== 'HTML' && element.tagName !== 'IMG' &&
-          element.tagName !== 'svg' && firstDefaultElement.length === 0) {
-        firstDefaultElement.push(element);
+    if (getComputedWebkitTouchCallout(element) !== 'none') {
+      // Remember topmost text element, while going up the tree looking for
+      // links.
+      if (foundTextElement === null && element.tagName !== 'HTML' &&
+          element.tagName !== 'IMG' && element.tagName !== 'svg' &&
+          isTextElement(element)) {
+        foundTextElement = element;
+      }
+
+      // Remember topmost opaque image, while going up the tree looking for
+      // links. If there's already a topmost text, no need to remember this
+      // image.
+      if (foundImageElement === null && foundTextElement === null &&
+          getImageSource(element) && !isTransparentElement(element)) {
+        foundImageElement = element as HTMLElement;
       }
     }
 
@@ -319,13 +342,31 @@ function findElementAtPoint(
     }
   }
 
-  // If no link was processed in the prior loop, but a link was found
-  // using element.closest, then return that link. This can occur if the
-  // link was a child of an <svg> element. This can also occur if the link
-  // element is too deep in the ancestor tree.
+  if (foundImageElement) {
+    // imageSrc cannot be null, as it would've stopped `foundImageElement` from
+    // being set.
+    const imageSrc = getImageSource(foundImageElement);
+    sendFindElementAtPointResponse(
+        requestId, getResponseForImageElement(foundImageElement, imageSrc!));
+    return true;
+  }
+
   if (foundLinkElement) {
+    // If no link was processed in the prior loop, but a link was found
+    // using element.closest, then return that link. This can occur if the
+    // link was a child of an <svg> element. This can also occur if the link
+    // element is too deep in the ancestor tree.
     sendFindElementAtPointResponse(
         requestId, getResponseForLinkElement(foundLinkElement));
+    return true;
+  }
+
+  if (foundTextElement) {
+    sendFindElementAtPointResponse(
+        requestId,
+        getResponseForTextElement(
+            foundTextElement, centerX - window.pageXOffset,
+            centerY - window.pageYOffset));
     return true;
   }
 
@@ -334,7 +375,9 @@ function findElementAtPoint(
 
 /**
  * Processes the element for a find element at point response and return true
- * if `element` was matched as the target of the touch
+ * if `element` was matched as the target of the touch. Only links and input
+ * elements will stop the process right away. Frames will make it continue
+ * inside the frame.
  * @param requestId - an identifier which will be returned in the result
  *                 dictionary of this request.
  * @param centerX - the X coordinate of the center of the target.
@@ -352,17 +395,24 @@ function processElementForFindElementAtPoint(
 
   // if element is a frame, tell it to respond to this element request
   if (tagName === 'iframe' || tagName === 'frame') {
+    const rect = element.getBoundingClientRect();
+    const absoluteLeft = rect.left + window.pageXOffset;
+    const absoluteTop = rect.top + window.pageYOffset;
     const payload = {
       type: 'org.chromium.contextMenuMessage',
       requestId: requestId,
-      x: centerX - element.offsetLeft,
-      y: centerY - element.offsetTop,
+      x: centerX - absoluteLeft,
+      y: centerY - absoluteTop,
     };
-    // The message will not be sent if `targetOrigin` is null, so use * which
-    // allows the message to be delievered to the contentWindow regardless of
-    // the origin.
+    // The message will not be sent if `targetOrigin` is null or "about:blank",
+    // so use * which allows the message to be delievered to the contentWindow
+    // regardless of the origin.
     if (element instanceof HTMLIFrameElement) {
-      const targetOrigin = element.src || '*';
+      let targetOrigin = '*';
+      const iframeSrc = element.src;
+      if (iframeSrc && !iframeSrc.startsWith('about:')) {
+        targetOrigin = iframeSrc;
+      }
       if (element.contentWindow) {
         element.contentWindow.postMessage(payload, targetOrigin);
       }
@@ -387,15 +437,23 @@ function processElementForFindElementAtPoint(
           requestId, getResponseForLinkElement(element));
       return true;
     }
+  }
 
-    const imageSrc = getImageSource(element);
-    if (imageSrc && !isTransparentElement(element)) {
-      sendFindElementAtPointResponse(
-          requestId, getResponseForImageElement(element, imageSrc));
+  return false;
+}
+
+/**
+ * Returns true if given node has at least one non empty child text node.
+ */
+function isTextElement(node: Node) {
+  if (!node.hasChildNodes()) {
+    return false;
+  }
+  for (const subnode of node.childNodes) {
+    if (subnode.nodeType === Node.TEXT_NODE && subnode.textContent !== '') {
       return true;
     }
   }
-
   return false;
 }
 
@@ -409,6 +467,7 @@ function processElementForFindElementAtPoint(
 function sendFindElementAtPointResponse(
     requestId: string, response: FindElementResult): void {
   response.requestId = requestId;
+  response.frameId = gCrWeb.getFrameId();
   sendWebKitMessage('FindElementResultHandler', response);
 }
 
@@ -586,6 +645,9 @@ function extractUrlFromBackgroundImageString(backgroundImageString: string):
  */
 window.addEventListener('message', function(message) {
   const payload = message.data;
+  if (!payload || typeof payload !== 'object') {
+    return;
+  }
   if (payload.hasOwnProperty('type') &&
       payload.type === 'org.chromium.contextMenuMessage') {
     findElementAtPointInPageCoordinates(
@@ -594,10 +656,11 @@ window.addEventListener('message', function(message) {
   }
 });
 
-// Call contextMenuAllFrames on gCrWeb directly to prevent code duplication
-// that using export/import would create.
-gCrWeb.contextMenuAllFrames = {
-  findElementAtPointInPageCoordinates,
-  // For testing only:
-  getSurroundingText,
-};
+const contextMenuAllFrames = new CrWebApi('contextMenuAllFrames');
+
+contextMenuAllFrames.addFunction(
+    'findElementAtPointInPageCoordinates', findElementAtPointInPageCoordinates);
+// For testing only
+contextMenuAllFrames.addFunction('getSurroundingText', getSurroundingText);
+
+gCrWeb.registerApi(contextMenuAllFrames);

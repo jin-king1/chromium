@@ -6,31 +6,32 @@ package org.chromium.chrome.browser.recent_tabs;
 
 import android.content.Context;
 
+import org.chromium.base.DeviceInfo;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tabmodel.TabCreatorManager;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.ui.modaldialog.ModalDialogManager;
 
-/**
- * A factory interface for building a RestoreTabsController instance.
- */
+/** A factory interface for building a RestoreTabsController instance. */
+@NullMarked
 public class RestoreTabsControllerFactory {
     /**
-     * A listener to indicate the lifecycle status of the RestoreTabs feature.
+     * @return An instance of RestoreTabsController.
      */
-    public interface ControllerListener {
-        /**
-         * Action to perform when the restore tabs promo is done showing.
-         */
-        public void onDismissed();
-    }
+    public static RestoreTabsController createInstance(
+            Context context,
+            Profile profile,
+            TabCreatorManager tabCreatorManager,
+            BottomSheetController bottomSheetController,
+            ModalDialogManager modalDialogManager) {
 
-    /**
-     * @return An instance of RestoreTabsControllerImpl.
-     */
-    public static RestoreTabsControllerImpl createInstance(Context context, Profile profile,
-            RestoreTabsControllerFactory.ControllerListener listener,
-            TabCreatorManager tabCreatorManager, BottomSheetController bottomSheetController) {
+        if (DeviceInfo.isXr()) {
+            return new RestoreTabsDialogControllerImpl(
+                    context, profile, tabCreatorManager, modalDialogManager);
+        }
+
         return new RestoreTabsControllerImpl(
-                context, profile, listener, tabCreatorManager, bottomSheetController);
+                context, profile, tabCreatorManager, bottomSheetController);
     }
 }

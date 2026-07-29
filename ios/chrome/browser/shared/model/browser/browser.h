@@ -5,39 +5,65 @@
 #ifndef IOS_CHROME_BROWSER_SHARED_MODEL_BROWSER_BROWSER_H_
 #define IOS_CHROME_BROWSER_SHARED_MODEL_BROWSER_BROWSER_H_
 
-#include <memory>
+#import <memory>
 
-#include "base/memory/weak_ptr.h"
-#include "base/supports_user_data.h"
+#import "base/memory/weak_ptr.h"
+#import "base/supports_user_data.h"
 
 class BrowserObserver;
-class ChromeBrowserState;
 @class CommandDispatcher;
+class ProfileIOS;
+@class SceneState;
 class WebStateList;
 
 // Browser is the model for a window containing multiple tabs. Instances
-// are owned by a BrowserList to allow multiple windows for a single user
+// are owned by a Coordinator to allow multiple windows for a single user
 // session.
 //
 // See src/docs/ios/objects.md for more information.
 class Browser : public base::SupportsUserData {
  public:
-  // Creates a new Browser attached to `browser_state`.
-  static std::unique_ptr<Browser> Create(ChromeBrowserState* browser_state);
+  // Different type of browsers.
+  // LINT.IfChange(ChromeBrowserType)
+  enum class Type {
+    kRegular = 0,
+    kIncognito = 1,
+    kInactive = 2,
+    kTemporary = 3,
+    kMaxValue = kTemporary,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:ChromeBrowserType)
+
+  // Creates a new Browser attached to `profile` and to `scene_state`.
+  static std::unique_ptr<Browser> Create(ProfileIOS* profile,
+                                         SceneState* scene_state);
+
+  // Creates a new temporary Browser attached to `profile`. It should
+  // not be presented to the user but can be used when there is a need to
+  // store WebStates while supporting BrowserAgent (i.e. recording metrics,
+  // reporting recently closed tabs, ...).
+  static std::unique_ptr<Browser> CreateTemporary(ProfileIOS* profile);
 
   Browser(const Browser&) = delete;
   Browser& operator=(const Browser&) = delete;
 
   ~Browser() override {}
 
-  // Accessor for the owning ChromeBrowserState.
-  virtual ChromeBrowserState* GetBrowserState() = 0;
+  // Returns the type of this browser.
+  virtual Type type() const = 0;
+
+  // Accessor for the owning Profile.
+  // The returned pointer is not nullptr.
+  virtual ProfileIOS* GetProfile() = 0;
 
   // Accessor for the WebStateList.
   virtual WebStateList* GetWebStateList() = 0;
 
   // Accessor for the CommandDispatcher.
   virtual CommandDispatcher* GetCommandDispatcher() = 0;
+
+  // Accessor for the SceneState.
+  virtual SceneState* GetSceneState() = 0;
 
   // Adds and removes observers.
   virtual void AddObserver(BrowserObserver* observer) = 0;
@@ -56,7 +82,8 @@ class Browser : public base::SupportsUserData {
   virtual Browser* GetInactiveBrowser() = 0;
 
   // Creates the associated inactive browser. `IsInactive` must be false, and
-  // this function must be called at most once.
+  // this function must be called at most once. This can only be called on a
+  // regular browser.
   virtual Browser* CreateInactiveBrowser() = 0;
 
   // Destroys the associated inactive browser. `IsInactive` must be false.

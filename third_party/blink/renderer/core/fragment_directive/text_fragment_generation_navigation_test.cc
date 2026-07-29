@@ -46,10 +46,10 @@ class TextFragmentGenerationNavigationTest
   GenerateAndNavigate(std::string html_content,
                       std::string* start_parent_id,
                       int start_offset_in_parent,
-                      absl::optional<int> start_text_offset,
+                      std::optional<int> start_text_offset,
                       std::string* end_parent_id,
                       int end_offset_in_parent,
-                      absl::optional<int> end_text_offset,
+                      std::optional<int> end_text_offset,
                       std::string selected_text,
                       std::string* highlight_text) override;
 
@@ -57,10 +57,10 @@ class TextFragmentGenerationNavigationTest
 
   RangeInFlatTree* GetSelectionRange(std::string* start_parent_id,
                                      int start_offset_in_parent,
-                                     absl::optional<int> start_text_offset,
+                                     std::optional<int> start_text_offset,
                                      std::string* end_parent_id,
                                      int end_offset_in_parent,
-                                     absl::optional<int> end_text_offset);
+                                     std::optional<int> end_text_offset);
 
   String GenerateSelector(const RangeInFlatTree& selection_range);
 
@@ -72,6 +72,10 @@ class TextFragmentGenerationNavigationTest
 void TextFragmentGenerationNavigationTest::SetUp() {
   SimTest::SetUp();
   WebView().MainFrameViewWidget()->Resize(gfx::Size(800, 600));
+  if (WebView().GetPage()) {
+    WebView().GetPage()->related_pages_mutation_from_previous_page_finalized_ =
+        true;
+  }
 }
 
 void TextFragmentGenerationNavigationTest::RunAsyncMatchingTasks() {
@@ -101,23 +105,23 @@ void TextFragmentGenerationNavigationTest::LoadHTML(String url,
 RangeInFlatTree* TextFragmentGenerationNavigationTest::GetSelectionRange(
     std::string* start_parent_id,
     int start_offset_in_parent,
-    absl::optional<int> start_text_offset,
+    std::optional<int> start_text_offset,
     std::string* end_parent_id,
     int end_offset_in_parent,
-    absl::optional<int> end_text_offset) {
+    std::optional<int> end_text_offset) {
   // Parent of start node will be the node with `start_parent_id` id
   // or the DOM body if no `start_parent_id`.
-  Node* start_parent_node =
-      start_parent_id == nullptr
-          ? GetDocument().body()
-          : GetDocument().getElementById(start_parent_id->c_str());
+  Node* start_parent_node = start_parent_id == nullptr
+                                ? GetDocument().body()
+                                : GetDocument().getElementById(
+                                      AtomicString(start_parent_id->c_str()));
 
   // Parent of end node will be the node with `end_parent_id` id
   // or the DOM body if no `end_parent_id`.
   Node* end_parent_node =
       end_parent_id == nullptr
           ? GetDocument().body()
-          : GetDocument().getElementById(end_parent_id->c_str());
+          : GetDocument().getElementById(AtomicString(end_parent_id->c_str()));
 
   const Node* start_node =
       start_parent_node->childNodes()->item(start_offset_in_parent);
@@ -142,7 +146,7 @@ String TextFragmentGenerationNavigationTest::GenerateSelector(
                    shared_highlighting::LinkGenerationError error) {
     selector = generated_selector.ToString();
   };
-  auto callback = WTF::BindOnce(lambda, std::ref(selector));
+  auto callback = BindOnce(lambda, std::ref(selector));
 
   MakeGarbageCollected<TextFragmentSelectorGenerator>(GetDocument().GetFrame())
       ->Generate(selection_range, std::move(callback));
@@ -151,7 +155,7 @@ String TextFragmentGenerationNavigationTest::GenerateSelector(
 }
 
 String TextFragmentGenerationNavigationTest::GetHighlightedText() {
-  auto* container = AnnotationAgentContainerImpl::From(GetDocument());
+  auto* container = AnnotationAgentContainerImpl::CreateIfNeeded(GetDocument());
   // Returns a null string, distinguishable from an empty string.
   if (!container)
     return String();
@@ -171,14 +175,14 @@ TextFragmentGenerationNavigationTest::GenerateAndNavigate(
     std::string html_content,
     std::string* start_parent_id,
     int start_offset_in_parent,
-    absl::optional<int> start_text_offset,
+    std::optional<int> start_text_offset,
     std::string* end_parent_id,
     int end_offset_in_parent,
-    absl::optional<int> end_text_offset,
+    std::optional<int> end_text_offset,
     std::string selected_text,
     std::string* highlight_text) {
   String base_url = "https://example.com/test.html";
-  String html_content_wtf = String::FromUTF8(html_content.c_str());
+  String html_content_wtf = String::FromUtf8(html_content);
   LoadHTML(base_url, html_content_wtf);
 
   RangeInFlatTree* selection_range = GetSelectionRange(
@@ -204,8 +208,7 @@ TextFragmentGenerationNavigationTest::GenerateAndNavigate(
                                        : String();
 
   String expected_highlighted_text =
-      highlight_text != nullptr ? String::FromUTF8(highlight_text->c_str())
-                                : String();
+      highlight_text != nullptr ? String::FromUtf8(*highlight_text) : String();
 
   return shared_highlighting::SharedHighlightingDataDrivenTestResults{
       .generation_success = true,

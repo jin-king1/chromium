@@ -5,23 +5,30 @@
 #include "third_party/blink/renderer/core/navigation_api/navigation_api.h"
 
 #include <memory>
+#include <optional>
 
 #include "base/check_op.h"
+#include "base/feature_list.h"
+#include "base/time/time.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom-blink.h"
 #include "third_party/blink/public/web/web_frame_load_type.h"
+#include "third_party/blink/renderer/bindings/core/v8/binding_security.h"
 #include "third_party/blink/renderer/bindings/core/v8/capture_source_location.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_value.h"
+#include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_microtasks_scope.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigate_event_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_current_entry_change_event_init.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_navigation_defer_page_swap_restore_callback.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_history_behavior.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_navigate_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_reload_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_result.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_transition.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_navigation_update_current_entry_options.h"
-#include "third_party/blink/renderer/core/dom/abort_signal.h"
+#include "third_party/blink/renderer/core/dom/abort_controller.h"
 #include "third_party/blink/renderer/core/dom/dom_exception.h"
 #include "third_party/blink/renderer/core/event_target_names.h"
 #include "third_party/blink/renderer/core/events/error_event.h"
@@ -32,17 +39,27 @@
 #include "third_party/blink/renderer/core/loader/document_loader.h"
 #include "third_party/blink/renderer/core/loader/frame_load_request.h"
 #include "third_party/blink/renderer/core/navigation_api/navigate_event.h"
-#include "third_party/blink/renderer/core/navigation_api/navigation_api_navigation.h"
+#include "third_party/blink/renderer/core/navigation_api/navigation_activation.h"
+#include "third_party/blink/renderer/core/navigation_api/navigation_api_method_tracker.h"
 #include "third_party/blink/renderer/core/navigation_api/navigation_current_entry_change_event.h"
 #include "third_party/blink/renderer/core/navigation_api/navigation_destination.h"
 #include "third_party/blink/renderer/core/navigation_api/navigation_history_entry.h"
 #include "third_party/blink/renderer/core/navigation_api/navigation_transition.h"
-#include "third_party/blink/renderer/core/timing/soft_navigation_heuristics.h"
+#include "third_party/blink/renderer/core/navigation_api/navigation_type_util.h"
+#include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/core/route_matching/navigation_state.h"
+#include "third_party/blink/renderer/core/route_matching/route_map.h"
+#include "third_party/blink/renderer/core/skeleton/skeleton_loader.h"
+#include "third_party/blink/renderer/core/timing/dom_window_performance.h"
+#include "third_party/blink/renderer/core/timing/event_timing.h"
+#include "third_party/blink/renderer/core/timing/responsiveness_metrics.h"
+#include "third_party/blink/renderer/core/view_transition/view_transition_supplement.h"
 #include "third_party/blink/renderer/platform/bindings/exception_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
-#include "third_party/blink/renderer/platform/bindings/to_v8.h"
-#include "third_party/blink/renderer/platform/scheduler/public/thread_scheduler.h"
-#include "third_party/blink/renderer/platform/wtf/uuid.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/scheduler/public/task_attribution_info.h"
+#include "third_party/blink/renderer/platform/scheduler/public/task_attribution_tracker.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 
 namespace blink {
 
@@ -57,16 +74,22 @@ NavigationResult* EarlyErrorResult(ScriptState* script_state,
 NavigationResult* EarlyErrorResult(ScriptState* script_state,
                                    DOMException* ex) {
   auto* result = NavigationResult::Create();
-  result->setCommitted(ScriptPromise::RejectWithDOMException(script_state, ex));
-  result->setFinished(ScriptPromise::RejectWithDOMException(script_state, ex));
+  result->setCommitted(
+      ScriptPromise<NavigationHistoryEntry>::RejectWithDOMException(
+          script_state, ex));
+  result->setFinished(
+      ScriptPromise<NavigationHistoryEntry>::RejectWithDOMException(
+          script_state, ex));
   return result;
 }
 
 NavigationResult* EarlyErrorResult(ScriptState* script_state,
                                    v8::Local<v8::Value> ex) {
   auto* result = NavigationResult::Create();
-  result->setCommitted(ScriptPromise::Reject(script_state, ex));
-  result->setFinished(ScriptPromise::Reject(script_state, ex));
+  result->setCommitted(
+      ScriptPromise<NavigationHistoryEntry>::Reject(script_state, ex));
+  result->setFinished(
+      ScriptPromise<NavigationHistoryEntry>::Reject(script_state, ex));
   return result;
 }
 
@@ -74,31 +97,22 @@ NavigationResult* EarlySuccessResult(ScriptState* script_state,
                                      NavigationHistoryEntry* entry) {
   auto* result = NavigationResult::Create();
   result->setCommitted(
-      ScriptPromise::Cast(script_state, ToV8(entry, script_state)));
+      ToResolvedPromise<NavigationHistoryEntry>(script_state, entry));
   result->setFinished(
-      ScriptPromise::Cast(script_state, ToV8(entry, script_state)));
+      ToResolvedPromise<NavigationHistoryEntry>(script_state, entry));
   return result;
 }
 
-String DetermineNavigationType(WebFrameLoadType type) {
-  switch (type) {
-    case WebFrameLoadType::kStandard:
-      return "push";
-    case WebFrameLoadType::kBackForward:
-      return "traverse";
-    case WebFrameLoadType::kReload:
-    case WebFrameLoadType::kReloadBypassingCache:
-      return "reload";
-    case WebFrameLoadType::kReplaceCurrentItem:
-      return "replace";
-  }
-  NOTREACHED_NORETURN();
+NavigationApi::NavigationApi(LocalDOMWindow* window)
+    : window_(window),
+      activation_(MakeGarbageCollected<NavigationActivation>()) {}
+
+NavigationActivation* NavigationApi::activation() const {
+  return HasEntriesAndEventsDisabled() ? nullptr : activation_;
 }
 
-NavigationApi::NavigationApi(LocalDOMWindow* window) : window_(window) {}
-
 void NavigationApi::setOnnavigate(EventListener* listener) {
-  UseCounter::Count(window_, WebFeature::kAppHistory);
+  UseCounter::Count(window_, WebFeature::kNavigationAPI);
   SetAttributeEventListener(event_type_names::kNavigate, listener);
 }
 
@@ -108,13 +122,43 @@ void NavigationApi::PopulateKeySet() {
     keys_to_indices_.insert(entries_[i]->key(), i);
 }
 
+void NavigationApi::UpdateActivation(HistoryItem* previous_item,
+                                     WebFrameLoadType load_type) {
+  NavigationHistoryEntry* previous_history_entry = nullptr;
+  if (previous_item) {
+    if (auto* entry =
+            GetExistingEntryFor(previous_item->GetNavigationApiKey(),
+                                previous_item->GetNavigationApiId())) {
+      previous_history_entry = entry;
+    } else {
+      previous_history_entry = MakeEntryFromItem(*previous_item);
+    }
+  }
+  V8NavigationType::Enum navigation_type =
+      window_->GetFrame()->GetPage()->IsPrerendering()
+          ? V8NavigationType::Enum::kPush
+          : ToV8NavigationType(load_type);
+  activation_->Update(currentEntry(), previous_history_entry, navigation_type);
+}
+
+NavigationHistoryEntry* NavigationApi::GetExistingEntryFor(const String& key,
+                                                           const String& id) {
+  const auto& it = keys_to_indices_.find(key);
+  if (it == keys_to_indices_.end()) {
+    return nullptr;
+  }
+  NavigationHistoryEntry* existing_entry = entries_[it->value];
+  return existing_entry->id() == id ? existing_entry : nullptr;
+}
+
 void NavigationApi::InitializeForNewWindow(
     HistoryItem& current,
     WebFrameLoadType load_type,
     CommitReason commit_reason,
     NavigationApi* previous,
-    const WebVector<WebHistoryItem>& back_entries,
-    const WebVector<WebHistoryItem>& forward_entries) {
+    const std::vector<WebHistoryItem>& back_entries,
+    const std::vector<WebHistoryItem>& forward_entries,
+    HistoryItem* previous_entry) {
   CHECK(entries_.empty());
 
   // This can happen even when commit_reason is not kInitialization, e.g. when
@@ -131,8 +175,8 @@ void NavigationApi::InitializeForNewWindow(
   // previous window and use the same update algorithm as same-document
   // navigations.
   if (commit_reason != CommitReason::kRegular ||
-      (current.Url() == BlankURL() && !IsBackForwardLoadType(load_type)) ||
-      (current.Url().IsAboutSrcdocURL() && !IsBackForwardLoadType(load_type))) {
+      (current.Url() == BlankUrl() && !IsBackForwardLoadType(load_type)) ||
+      (current.Url().IsAboutSrcdocUrl() && !IsBackForwardLoadType(load_type))) {
     if (previous && !previous->entries_.empty() &&
         window_->GetSecurityOrigin()->IsSameOriginWith(
             previous->window_->GetSecurityOrigin())) {
@@ -160,6 +204,15 @@ void NavigationApi::InitializeForNewWindow(
   for (const auto& entry : forward_entries)
     entries_.emplace_back(MakeEntryFromItem(*entry));
   PopulateKeySet();
+  UpdateActivation(previous_entry, load_type);
+}
+
+void NavigationApi::UpdateCurrentEntryForTesting(HistoryItem& item) {
+  current_entry_index_++;
+  entries_.resize(current_entry_index_ + 1);
+  entries_[current_entry_index_] = MakeEntryFromItem(item);
+  keys_to_indices_.insert(entries_[current_entry_index_]->key(),
+                          current_entry_index_);
 }
 
 void NavigationApi::UpdateForNavigation(HistoryItem& item,
@@ -173,9 +226,9 @@ void NavigationApi::UpdateForNavigation(HistoryItem& item,
   NavigationHistoryEntry* old_current = currentEntry();
 
   HeapVector<Member<NavigationHistoryEntry>> disposed_entries;
-  if (type == WebFrameLoadType::kBackForward) {
-    // If this is a same-document back/forward navigation, the new current
-    // entry should already be present in entries_ and its key in
+  if (IsBackForwardOrRestore(type)) {
+    // If this is a same-document back/forward navigation or restore, the new
+    // current entry should already be present in entries_ and its key in
     // keys_to_indices_.
     CHECK(keys_to_indices_.Contains(item.GetNavigationApiKey()));
     current_entry_index_ = keys_to_indices_.at(item.GetNavigationApiKey());
@@ -212,9 +265,12 @@ void NavigationApi::UpdateForNavigation(HistoryItem& item,
   // NotifyAboutTheCommittedToEntry() leads to the committed promise rejecting,
   // even though we have already committed and the promise should definitely
   // fulfill.
-  if (ongoing_navigation_) {
-    ongoing_navigation_->NotifyAboutTheCommittedToEntry(
+  if (ongoing_api_method_tracker_) {
+    ongoing_api_method_tracker_->NotifyAboutTheCommittedToEntry(
         entries_[current_entry_index_], type);
+  }
+  if (transition_) {
+    transition_->ResolveCommittedPromise();
   }
 
   NavigateEvent* ongoing_navigate_event = ongoing_navigate_event_;
@@ -229,11 +285,10 @@ void NavigationApi::UpdateForNavigation(HistoryItem& item,
   // Without the microtasks scope deferring promise continuations, the order
   // inverts when committing a browser-initiated same-document navigation and
   // an event listener is present for either currententrychange or dispose.
-  v8::MicrotasksScope scope(window_->GetIsolate(), ToMicrotaskQueue(window_),
-                            v8::MicrotasksScope::kRunMicrotasks);
+  V8RunMicrotasksScope run_microtasks_scope(window_.Get());
 
   auto* init = NavigationCurrentEntryChangeEventInit::Create();
-  init->setNavigationType(DetermineNavigationType(type));
+  init->setNavigationType(ToV8NavigationType(type));
   init->setFrom(old_current);
   DispatchEvent(*NavigationCurrentEntryChangeEvent::Create(
       event_type_names::kCurrententrychange, init));
@@ -244,15 +299,27 @@ void NavigationApi::UpdateForNavigation(HistoryItem& item,
   for (const auto& disposed_entry : disposed_entries) {
     disposed_entry->DispatchEvent(*Event::Create(event_type_names::kDispose));
   }
+
+  if (auto* routemap = RouteMap::Get(window_->document())) {
+    if (transition_) {
+      routemap->SetCommitted();
+    }
+  }
+
+  if (ongoing_navigate_event && window_->GetFrame()) {
+    auto* script_state = ToScriptStateForMainWorld(window_->GetFrame());
+    ScriptState::Scope scope(script_state);
+    ongoing_navigate_event->React(script_state);
+  }
 }
 
 NavigationHistoryEntry* NavigationApi::GetEntryForRestore(
     const mojom::blink::NavigationApiHistoryEntryPtr& entry) {
-  const auto& it = keys_to_indices_.find(entry->key);
-  if (it != keys_to_indices_.end()) {
-    NavigationHistoryEntry* existing_entry = entries_[it->value];
-    if (existing_entry->id() == entry->id)
-      return existing_entry;
+  if (!entry) {
+    return nullptr;
+  }
+  if (auto* existing_entry = GetExistingEntryFor(entry->key, entry->id)) {
+    return existing_entry;
   }
   return MakeGarbageCollected<NavigationHistoryEntry>(
       window_, entry->key, entry->id, KURL(entry->url),
@@ -262,18 +329,25 @@ NavigationHistoryEntry* NavigationApi::GetEntryForRestore(
 
 // static
 void FireDisposeEventsAsync(
-    HeapVector<Member<NavigationHistoryEntry>>* disposed_entries) {
+    GCedHeapVector<Member<NavigationHistoryEntry>>* disposed_entries) {
   for (const auto& entry : *disposed_entries) {
     entry->DispatchEvent(*Event::Create(event_type_names::kDispose));
   }
 }
 
 void NavigationApi::SetEntriesForRestore(
-    const mojom::blink::NavigationApiHistoryEntryArraysPtr& entry_arrays) {
+    const mojom::blink::NavigationApiHistoryEntryArraysPtr& entry_arrays,
+    mojom::blink::NavigationApiEntryRestoreReason restore_reason) {
   // If this window HasEntriesAndEventsDisabled(), we shouldn't attempt to
   // restore anything.
   if (HasEntriesAndEventsDisabled())
     return;
+
+  // Avoid a dangling navigate event when restoring.
+  // This prevents the successful cross-document navigation that exited this
+  // page from remaining as an ongoing event that would be "aborted".
+  ongoing_navigate_event_ = nullptr;
+  ongoing_api_method_tracker_ = nullptr;
 
   HeapVector<Member<NavigationHistoryEntry>> new_entries;
   new_entries.reserve(
@@ -291,18 +365,39 @@ void NavigationApi::SetEntriesForRestore(
   keys_to_indices_.clear();
   PopulateKeySet();
 
+  V8NavigationType::Enum navigation_type;
+  switch (restore_reason) {
+    case mojom::blink::NavigationApiEntryRestoreReason::kBFCache:
+      navigation_type = V8NavigationType::Enum::kTraverse;
+      break;
+    case mojom::blink::NavigationApiEntryRestoreReason::
+        kPrerenderActivationPush:
+      navigation_type = V8NavigationType::Enum::kPush;
+      break;
+    case mojom::blink::NavigationApiEntryRestoreReason::
+        kPrerenderActivationReplace:
+      navigation_type = V8NavigationType::Enum::kReplace;
+      break;
+    default:
+      NOTREACHED();
+  }
+  activation_->Update(currentEntry(),
+                      GetEntryForRestore(entry_arrays->previous_entry),
+                      navigation_type);
+
   // |new_entries| now contains the previous entries_. Find the ones that are no
   // longer in entries_ so they can be disposed.
-  HeapVector<Member<NavigationHistoryEntry>>* disposed_entries =
-      MakeGarbageCollected<HeapVector<Member<NavigationHistoryEntry>>>();
+  GCedHeapVector<Member<NavigationHistoryEntry>>* disposed_entries =
+      MakeGarbageCollected<GCedHeapVector<Member<NavigationHistoryEntry>>>();
   for (const auto& entry : new_entries) {
     const auto& it = keys_to_indices_.find(entry->key());
     if (it == keys_to_indices_.end() || entries_[it->value] != entry)
       disposed_entries->push_back(entry);
   }
+
   window_->GetTaskRunner(TaskType::kInternalDefault)
-      ->PostTask(FROM_HERE, WTF::BindOnce(&FireDisposeEventsAsync,
-                                          WrapPersistent(disposed_entries)));
+      ->PostTask(FROM_HERE, BindOnce(&FireDisposeEventsAsync,
+                                     WrapPersistent(disposed_entries)));
 }
 
 void NavigationApi::DisposeEntriesForSessionHistoryRemoval(
@@ -383,31 +478,33 @@ void NavigationApi::updateCurrentEntry(
 NavigationResult* NavigationApi::navigate(ScriptState* script_state,
                                           const String& url,
                                           NavigationNavigateOptions* options) {
-  KURL completed_url = window_->CompleteURL(url);
+  KURL completed_url = KURL(window_->BaseURL(), url);
   if (!completed_url.IsValid()) {
-    return EarlyErrorResult(script_state, DOMExceptionCode::kSyntaxError,
-                            "Invalid URL '" + completed_url.GetString() + "'.");
+    return EarlyErrorResult(
+        script_state, DOMExceptionCode::kSyntaxError,
+        StrCat({"Invalid URL '", completed_url.GetString(), "'."}));
+  }
+
+  if (completed_url.ProtocolIsJavaScript()) {
+    UseCounter::Count(window_, WebFeature::kNavigationNavigateJavaScriptURL);
+    return EarlyErrorResult(script_state, DOMExceptionCode::kNotSupportedError,
+                            "The javascript: protocol is not supported");
   }
 
   scoped_refptr<SerializedScriptValue> serialized_state = nullptr;
   {
     if (options->hasState()) {
-      ExceptionState exception_state(
-          script_state->GetIsolate(),
-          ExceptionContext::Context::kOperationInvoke, "Navigation",
-          "navigate");
-      serialized_state = SerializeState(options->state(), exception_state);
-      if (exception_state.HadException()) {
-        NavigationResult* result =
-            EarlyErrorResult(script_state, exception_state.GetException());
-        exception_state.ClearException();
-        return result;
+      v8::TryCatch try_catch(script_state->GetIsolate());
+      serialized_state = SerializeState(
+          options->state(), PassThroughException(script_state->GetIsolate()));
+      if (try_catch.HasCaught()) {
+        return EarlyErrorResult(script_state, try_catch.Exception());
       }
     }
   }
 
   FrameLoadRequest request(window_, ResourceRequest(completed_url));
-  request.SetClientRedirectReason(ClientNavigationReason::kFrameNavigation);
+  request.SetClientNavigationReason(ClientNavigationReason::kFrameNavigation);
 
   if (options->history() == V8NavigationHistoryBehavior::Enum::kPush) {
     LocalFrame* frame = window_->GetFrame();
@@ -457,15 +554,11 @@ NavigationResult* NavigationApi::reload(ScriptState* script_state,
   scoped_refptr<SerializedScriptValue> serialized_state = nullptr;
   {
     if (options->hasState()) {
-      ExceptionState exception_state(
-          script_state->GetIsolate(),
-          ExceptionContext::Context::kOperationInvoke, "Navigation", "reload");
-      serialized_state = SerializeState(options->state(), exception_state);
-      if (exception_state.HadException()) {
-        NavigationResult* result =
-            EarlyErrorResult(script_state, exception_state.GetException());
-        exception_state.ClearException();
-        return result;
+      v8::TryCatch try_catch(script_state->GetIsolate());
+      serialized_state = SerializeState(
+          options->state(), PassThroughException(script_state->GetIsolate()));
+      if (try_catch.HasCaught()) {
+        return EarlyErrorResult(script_state, try_catch.Exception());
       }
     } else if (NavigationHistoryEntry* current_entry = currentEntry()) {
       serialized_state = current_entry->GetSerializedState();
@@ -473,7 +566,7 @@ NavigationResult* NavigationApi::reload(ScriptState* script_state,
   }
 
   FrameLoadRequest request(window_, ResourceRequest(window_->Url()));
-  request.SetClientRedirectReason(ClientNavigationReason::kFrameNavigation);
+  request.SetClientNavigationReason(ClientNavigationReason::kFrameNavigation);
 
   return PerformNonTraverseNavigation(script_state, request,
                                       std::move(serialized_state), options,
@@ -496,35 +589,36 @@ NavigationResult* NavigationApi::PerformNonTraverseNavigation(
           PerformSharedNavigationChecks(method_name_for_error_message))
     return EarlyErrorResult(script_state, maybe_ex);
 
-  NavigationApiNavigation* navigation =
-      MakeGarbageCollected<NavigationApiNavigation>(
+  NavigationApiMethodTracker* api_method_tracker =
+      MakeGarbageCollected<NavigationApiMethodTracker>(
           script_state, options, String(), std::move(serialized_state));
   if (HasEntriesAndEventsDisabled()) {
     // If `HasEntriesAndEventsDisabled()` is true, we still allow the
     // navigation, but the navigate event won't fire and we won't do anything
     // with the promises, so we need to detach the promise resolvers.
-    navigation->CleanupForWillNeverSettle();
+    api_method_tracker->CleanupForWillNeverSettle();
   } else {
-    upcoming_non_traversal_navigation_ = navigation;
+    upcoming_non_traverse_api_method_tracker_ = api_method_tracker;
   }
 
-  window_->GetFrame()->MaybeLogAdClickNavigation();
   window_->GetFrame()->Navigate(request, frame_load_type);
 
-  // DispatchNavigateEvent() will clear upcoming_non_traversal_navigation_ if we
-  // get that far. If the navigation is blocked before DispatchNavigateEvent()
-  // is called, reject the promise and cleanup here.
-  if (upcoming_non_traversal_navigation_ == navigation) {
-    upcoming_non_traversal_navigation_ = nullptr;
+  // DispatchNavigateEvent() will clear
+  // upcoming_non_traverse_api_method_tracker_ if we get that far. If the
+  // navigation is blocked before DispatchNavigateEvent() is called, reject the
+  // promise and cleanup here.
+  if (upcoming_non_traverse_api_method_tracker_ == api_method_tracker) {
+    upcoming_non_traverse_api_method_tracker_ = nullptr;
     return EarlyErrorResult(script_state, DOMExceptionCode::kAbortError,
                             "Navigation was aborted");
   }
-  return navigation->GetNavigationResult();
+  return api_method_tracker->GetNavigationResult();
 }
 
 NavigationResult* NavigationApi::traverseTo(ScriptState* script_state,
                                             const String& key,
                                             NavigationOptions* options) {
+  base::TimeTicks actual_navigation_start = base::TimeTicks::Now();
   if (DOMException* maybe_ex =
           PerformSharedNavigationChecks("traverseTo()/back()/forward()")) {
     return EarlyErrorResult(script_state, maybe_ex);
@@ -538,27 +632,29 @@ NavigationResult* NavigationApi::traverseTo(ScriptState* script_state,
     return EarlySuccessResult(script_state, currentEntry());
   }
 
-  auto previous_navigation = upcoming_traversals_.find(key);
-  if (previous_navigation != upcoming_traversals_.end())
-    return previous_navigation->value->GetNavigationResult();
+  auto previous_api_method_tracker =
+      upcoming_traverse_api_method_trackers_.find(key);
+  if (previous_api_method_tracker !=
+      upcoming_traverse_api_method_trackers_.end()) {
+    return previous_api_method_tracker->value->GetNavigationResult();
+  }
 
-  NavigationApiNavigation* ongoing_navigation =
-      MakeGarbageCollected<NavigationApiNavigation>(script_state, options, key);
-  upcoming_traversals_.insert(key, ongoing_navigation);
-  if (window_->GetFrame()->IsMainFrame()) {
-    SoftNavigationHeuristics* heuristics =
-        SoftNavigationHeuristics::From(*window_);
-    heuristics->SameDocumentNavigationStarted(script_state);
+  NavigationApiMethodTracker* api_method_tracker =
+      MakeGarbageCollected<NavigationApiMethodTracker>(script_state, options,
+                                                       key);
+  upcoming_traverse_api_method_trackers_.insert(key, api_method_tracker);
+  LocalFrame* frame = window_->GetFrame();
+  std::optional<scheduler::TaskAttributionId> task_state_id;
+  if (script_state->World().IsMainWorld() && frame->IsOutermostMainFrame()) {
+    if (auto* tracker = scheduler::TaskAttributionTracker::From(
+            script_state->GetIsolate())) {
+      task_state_id = tracker->AsyncSameDocumentNavigationStarted();
+    }
   }
-  auto* tracker = ThreadScheduler::Current()->GetTaskAttributionTracker();
-  absl::optional<scheduler::TaskAttributionId> task_id;
-  if (tracker && script_state->World().IsMainWorld()) {
-    task_id = tracker->RunningTaskAttributionId(script_state);
-  }
-  window_->GetFrame()->GetLocalFrameHostRemote().NavigateToNavigationApiKey(
-      key, LocalFrame::HasTransientUserActivation(window_->GetFrame()),
-      task_id);
-  return ongoing_navigation->GetNavigationResult();
+  frame->GetLocalFrameHostRemote().NavigateToNavigationApiKey(
+      key, LocalFrame::HasTransientUserActivation(frame),
+      actual_navigation_start, task_state_id);
+  return api_method_tracker->GetNavigationResult();
 }
 
 bool NavigationApi::canGoBack() const {
@@ -595,14 +691,14 @@ DOMException* NavigationApi::PerformSharedNavigationChecks(
   if (!window_->GetFrame()) {
     return MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError,
-        method_name_for_error_message +
-            " cannot be called when the Window is detached.");
+        StrCat({method_name_for_error_message,
+                " cannot be called when the Window is detached."}));
   }
   if (window_->document()->PageDismissalEventBeingDispatched()) {
     return MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError,
-        method_name_for_error_message +
-            " cannot be called during unload or beforeunload.");
+        StrCat({method_name_for_error_message,
+                " cannot be called during unload or beforeunload."}));
   }
   return nullptr;
 }
@@ -618,16 +714,17 @@ scoped_refptr<SerializedScriptValue> NavigationApi::SerializeState(
 }
 
 void NavigationApi::PromoteUpcomingNavigationToOngoing(const String& key) {
-  CHECK(!ongoing_navigation_);
+  CHECK(!ongoing_api_method_tracker_);
   if (!key.IsNull()) {
-    CHECK(!upcoming_non_traversal_navigation_);
-    auto iter = upcoming_traversals_.find(key);
-    if (iter != upcoming_traversals_.end()) {
-      ongoing_navigation_ = iter->value;
-      upcoming_traversals_.erase(iter);
+    CHECK(!upcoming_non_traverse_api_method_tracker_);
+    auto iter = upcoming_traverse_api_method_trackers_.find(key);
+    if (iter != upcoming_traverse_api_method_trackers_.end()) {
+      ongoing_api_method_tracker_ = iter->value;
+      upcoming_traverse_api_method_trackers_.erase(iter);
     }
   } else {
-    ongoing_navigation_ = upcoming_non_traversal_navigation_.Release();
+    ongoing_api_method_tracker_ =
+        upcoming_non_traverse_api_method_tracker_.Release();
   }
 }
 
@@ -648,12 +745,6 @@ NavigationHistoryEntry* NavigationApi::MakeEntryFromItem(HistoryItem& item) {
 
 NavigationApi::DispatchResult NavigationApi::DispatchNavigateEvent(
     NavigateEventDispatchParams* params) {
-  // TODO(japhet): The draft spec says to cancel any ongoing navigate event
-  // before invoking DispatchNavigateEvent(), because not all navigations will
-  // fire a navigate event, but all should abort an ongoing navigate event.
-  // The main case were that would be a problem (browser-initiated back/forward)
-  // is not implemented yet. Move this once it is implemented.
-  InformAboutCanceledNavigation();
   CHECK(window_);
 
   if (HasEntriesAndEventsDisabled()) {
@@ -661,20 +752,38 @@ NavigationApi::DispatchResult NavigationApi::DispatchNavigateEvent(
     // * back()/forward()/traverseTo() immediately fail when
     //   `HasEntriesAndEventsDisabled()` is false, because current_entry_index_
     //   will be permanently -1.
-    // * navigate()/reload() will not set `upcoming_non_traversal_navigation_`
-    //   when `HasEntriesAndEventsDisabled()` is false, so there's nothing to
-    //   promote to `ongoing_navigation_`.
+    // * navigate()/reload() will not set
+    //   `upcoming_non_traverse_api_method_tracker_` when
+    //   `HasEntriesAndEventsDisabled()` is false, so there's nothing to promote
+    //   to `ongoing_navigation_`.
     // * non-NavigationApi navigations never create an upcoming navigation.
-    CHECK(!ongoing_navigation_);
-    CHECK(!upcoming_non_traversal_navigation_);
-    CHECK(upcoming_traversals_.empty());
+    CHECK(!ongoing_api_method_tracker_);
+    CHECK(!upcoming_non_traverse_api_method_tracker_);
+    CHECK(upcoming_traverse_api_method_trackers_.empty());
     return DispatchResult::kContinue;
+  }
+
+  if (params->source_element && !BindingSecurity::ShouldAllowAccessTo(
+                                    window_, params->source_element.Get())) {
+    params->source_element = nullptr;
+  }
+
+  LocalFrame* frame = window_->GetFrame();
+  auto* script_state = ToScriptStateForMainWorld(frame);
+  ScriptState::Scope scope(script_state);
+
+  while (ongoing_navigate_event_) {
+    AbortOngoingNavigation(script_state);
+  }
+  CHECK(!ongoing_api_method_tracker_);
+  if (!window_) {
+    return DispatchResult::kAbort;
   }
 
   const String& key = params->destination_item
                           ? params->destination_item->GetNavigationApiKey()
                           : String();
-  if (params->frame_load_type == WebFrameLoadType::kBackForward &&
+  if (IsBackForwardOrRestore(params->frame_load_type) &&
       params->event_type == NavigateEventType::kFragment &&
       !keys_to_indices_.Contains(key)) {
     // This same document history traversal was preempted by another navigation
@@ -687,50 +796,42 @@ NavigationApi::DispatchResult NavigationApi::DispatchNavigateEvent(
 
   PromoteUpcomingNavigationToOngoing(key);
 
-  LocalFrame* frame = window_->GetFrame();
-  auto* script_state = ToScriptStateForMainWorld(frame);
-  ScriptState::Scope scope(script_state);
-
   auto* init = NavigateEventInit::Create();
-  const String& navigation_type =
-      DetermineNavigationType(params->frame_load_type);
+  V8NavigationType::Enum navigation_type =
+      ToV8NavigationType(params->frame_load_type);
   init->setNavigationType(navigation_type);
 
   SerializedScriptValue* destination_state = nullptr;
   if (params->destination_item) {
     destination_state = params->destination_item->GetNavigationApiState();
-  } else if (ongoing_navigation_) {
-    destination_state = ongoing_navigation_->GetSerializedState();
-  } else if (navigation_type == "reload") {
+  } else if (ongoing_api_method_tracker_) {
+    destination_state = ongoing_api_method_tracker_->GetSerializedState();
+  } else if (navigation_type == V8NavigationType::Enum::kReload) {
     HistoryItem* current_item = window_->document()->Loader()->GetHistoryItem();
     destination_state = current_item->GetNavigationApiState();
   }
-  NavigationDestination* destination =
-      MakeGarbageCollected<NavigationDestination>(
-          params->url, params->event_type != NavigateEventType::kCrossDocument,
-          destination_state);
-  if (params->frame_load_type == WebFrameLoadType::kBackForward) {
+  NavigationHistoryEntry* destination_entry = nullptr;
+  if (IsBackForwardOrRestore(params->frame_load_type)) {
     auto iter = keys_to_indices_.find(key);
     if (iter != keys_to_indices_.end()) {
-      destination->SetDestinationEntry(entries_[iter->value]);
+      destination_entry = entries_[iter->value];
     }
   }
-  init->setDestination(destination);
+  init->setDestination(MakeGarbageCollected<NavigationDestination>(
+      params, destination_state, destination_entry));
 
   bool should_allow_traversal_cancellation =
-      RuntimeEnabledFeatures::NavigateEventCancelableTraversalsEnabled() &&
-      params->frame_load_type == WebFrameLoadType::kBackForward &&
+      IsBackForwardOrRestore(params->frame_load_type) &&
       params->event_type != NavigateEventType::kCrossDocument &&
       frame->IsMainFrame() &&
       (!params->is_browser_initiated || frame->IsHistoryUserActivationActive());
-  init->setCancelable(params->frame_load_type !=
-                          WebFrameLoadType::kBackForward ||
+  init->setCancelable(!IsBackForwardOrRestore(params->frame_load_type) ||
                       should_allow_traversal_cancellation);
   init->setCanIntercept(
       CanChangeToUrlForHistoryApi(params->url, window_->GetSecurityOrigin(),
                                   window_->Url()) &&
       (params->event_type != NavigateEventType::kCrossDocument ||
-       params->frame_load_type != WebFrameLoadType::kBackForward));
+       !IsBackForwardOrRestore(params->frame_load_type)));
   init->setHashChange(
       params->event_type == NavigateEventType::kFragment &&
       params->url != window_->Url() &&
@@ -738,38 +839,78 @@ NavigationApi::DispatchResult NavigationApi::DispatchNavigateEvent(
 
   init->setUserInitiated(params->involvement !=
                          UserNavigationInvolvement::kNone);
-  if (params->form && params->form->Method() == FormSubmission::kPostMethod) {
-    init->setFormData(FormData::Create(params->form, ASSERT_NO_EXCEPTION));
+  if (params->source_element) {
+    auto* control =
+        DynamicTo<HTMLFormControlElement>(params->source_element.Get());
+    HTMLFormElement* form =
+        control ? control->formOwner()
+                : DynamicTo<HTMLFormElement>(params->source_element.Get());
+    if (form && form->Method() == FormSubmission::kPostMethod) {
+      init->setFormData(FormData::Create(form, control, ASSERT_NO_EXCEPTION));
+      if (ongoing_navigate_event_ || !window_ || !window_->GetFrame()) {
+        // `FormData::Create` can fire a synchronous `formdata` event that
+        // starts another navigation or detaches the frame.
+        return DispatchResult::kAbort;
+      }
+    }
   }
-  if (ongoing_navigation_)
-    init->setInfo(ongoing_navigation_->GetInfo());
-  init->setSignal(MakeGarbageCollected<AbortSignal>(window_));
+  if (ongoing_api_method_tracker_) {
+    init->setInfo(ongoing_api_method_tracker_->GetInfo());
+  }
+  auto* controller = AbortController::Create(script_state);
+  init->setSignal(controller->signal());
   init->setDownloadRequest(params->download_filename);
-  // This unique_ptr needs to be in the function's scope, to maintain the
-  // SoftNavigationEventScope until the event handler runs.
-  std::unique_ptr<SoftNavigationEventScope> soft_navigation_scope;
-  auto* soft_navigation_heuristics = SoftNavigationHeuristics::From(*window_);
-  if (soft_navigation_heuristics && init->userInitiated() &&
-      !init->downloadRequest() && init->canIntercept()) {
-    // If these conditions are met, create a SoftNavigationEventScope to
-    // consider this a "user initiated click", and the dispatched event handlers
-    // as potential soft navigation tasks.
-    soft_navigation_scope = std::make_unique<SoftNavigationEventScope>(
-        soft_navigation_heuristics, script_state);
-
-    soft_navigation_heuristics->SameDocumentNavigationStarted(script_state);
+  if (params->source_element) {
+    init->setSourceElement(params->source_element);
   }
-  auto* navigate_event =
-      NavigateEvent::Create(window_, event_type_names::kNavigate, init);
+  init->setHasUAVisualTransition(params->has_ua_visual_transition);
+
+  auto* navigate_event = NavigateEvent::Create(
+      window_, event_type_names::kNavigate, init, controller);
   navigate_event->SetDispatchParams(params);
 
   CHECK(!ongoing_navigate_event_);
   ongoing_navigate_event_ = navigate_event;
+
+  if (RuntimeEnabledFeatures::NavigationStateEnabled()) {
+    NavigationState::Create(*window_->document(), window_->Url(), params->url,
+                            params->source_element);
+  }
+
+  if (auto* routemap = RouteMap::Get(window_->document())) {
+    routemap->SetNavigationStarted();
+    if (params->frame_load_type == WebFrameLoadType::kBackForward &&
+        routemap->HasHistoryRules() && destination_entry) {
+      int previous_index = GetIndexFor(currentEntry());
+      int next_index = GetIndexFor(destination_entry);
+      NavigationState::HistoryTraverseType direction =
+          next_index < previous_index ? NavigationState::kBack
+                                      : NavigationState::kForward;
+      routemap->SetTraverseType(direction);
+    }
+  }
+
   has_dropped_navigation_ = false;
-  DispatchEvent(*navigate_event);
+  {
+    // TODO(crbug.com/418007230): This event timing only measures the initial
+    // event dispatch of the navigate event. However, the interesting work is
+    // in the intercept() handlers, which can be dispatched async.  Investigate
+    // ways to measure such multi-part + promise-awaiting events.
+    NavigationEventTiming event_timing_scope(window_->GetFrame(),
+                                             *navigate_event);
+    // Save interactionId for async `NavigateEvent::CommitNow()` use case.
+    // Note: we don't use this to measure the navigate event continuation
+    // (yet!), but to match `popstate` and `hashchange` events to this one.
+    if (std::optional<PerformanceTimelineEntryIdInfo> id =
+            event_timing_scope.GetInteractionIdInfo()) {
+      params->interaction_id = *id;
+    }
+
+    DispatchEvent(*navigate_event);
+  }
 
   if (navigate_event->defaultPrevented()) {
-    if (params->frame_load_type == WebFrameLoadType::kBackForward &&
+    if (IsBackForwardOrRestore(params->frame_load_type) &&
         window_->GetFrame()) {
       window_->GetFrame()->ConsumeHistoryUserActivation();
     }
@@ -779,15 +920,37 @@ NavigationApi::DispatchResult NavigationApi::DispatchNavigateEvent(
     return DispatchResult::kAbort;
   }
 
-  if (navigate_event->HasNavigationActions()) {
-    transition_ = MakeGarbageCollected<NavigationTransition>(
-        window_, navigation_type, currentEntry());
-    navigate_event->MaybeCommitImmediately(script_state);
+  // Stash the destination URL for
+  // performance.getSpeculations().navigationDestinationURL. We only do this
+  // once handlers have run without canceling and without calling intercept()
+  // (which would convert this into a same-document navigation). The explainer
+  // restricts exposure to non-same-document, same-origin navigations.
+  //
+  // The URL is stashed as "pending" here and only promoted to the public
+  // value once pagehide is about to be dispatched, so that a later
+  // cancellation (e.g. by beforeunload, by a network error before commit, or
+  // by another navigation preempting this one) does not leave a stale URL
+  // exposed.
+  if (params->event_type == NavigateEventType::kCrossDocument &&
+      !navigate_event->HasNavigationActions() &&
+      window_->GetSecurityOrigin()->IsSameOriginWith(
+          SecurityOrigin::Create(params->url).get())) {
+    DOMWindowPerformance::performance(*window_)
+        ->SetPendingNavigationDestinationURL(params->url);
   }
 
-  if (navigate_event->HasNavigationActions() ||
-      params->event_type != NavigateEventType::kCrossDocument) {
-    navigate_event->React(script_state);
+  if (navigate_event->HasNavigationActions()) {
+    transition_ = MakeGarbageCollected<NavigationTransition>(
+        window_, navigation_type, currentEntry(),
+        navigate_event->destination());
+    navigate_event->MaybeCommitImmediately(script_state);
+  } else if (params->event_type == NavigateEventType::kCrossDocument) {
+    if (SkeletonLoader* skeleton_loader =
+            SkeletonLoader::Get(*window_->document())) {
+      skeleton_loader->NavigateTo(params->url);
+    }
+    window_->document()->GetViewTransitions().StartNavigationPreviewIfNeeded();
+    navigate_event->MaybeDeferCrossDocumentCommit(script_state, params);
   }
 
   // Note: we cannot clean up ongoing_navigation_ for cross-document
@@ -800,6 +963,17 @@ NavigationApi::DispatchResult NavigationApi::DispatchNavigateEvent(
 
 void NavigationApi::InformAboutCanceledNavigation(
     CancelNavigationReason reason) {
+  if (auto* tracker =
+          scheduler::TaskAttributionTracker::From(window_->GetIsolate());
+      tracker && reason != CancelNavigationReason::kNavigateEvent) {
+    tracker->ResetSameDocumentNavigationTasks();
+  }
+
+  if (auto* skeleton_loader = SkeletonLoader::Get(*window_->document())) {
+    skeleton_loader->CancelNavigation();
+  }
+  window_->document()->GetViewTransitions().AbortNavigationPreview();
+
   if (reason == CancelNavigationReason::kDropped) {
     has_dropped_navigation_ = true;
     return;
@@ -814,26 +988,27 @@ void NavigationApi::InformAboutCanceledNavigation(
   }
 
   // If this function is being called as part of frame detach, also cleanup any
-  // upcoming_traversals_.
-  if (!upcoming_traversals_.empty() && window_->GetFrame() &&
+  // upcoming_traverse_api_method_trackers_.
+  if (!upcoming_traverse_api_method_trackers_.empty() && window_->GetFrame() &&
       !window_->GetFrame()->IsAttached()) {
-    HeapVector<Member<NavigationApiNavigation>> traversals;
-    CopyValuesToVector(upcoming_traversals_, traversals);
+    HeapVector<Member<NavigationApiMethodTracker>> traversals(
+        upcoming_traverse_api_method_trackers_.Values());
     for (auto& traversal : traversals) {
       TraverseCancelled(
           traversal->GetKey(),
           mojom::blink::TraverseCancelledReason::kAbortedBeforeCommit);
     }
-    CHECK(upcoming_traversals_.empty());
+    CHECK(upcoming_traverse_api_method_trackers_.empty());
   }
 }
 
 void NavigationApi::TraverseCancelled(
     const String& key,
     mojom::blink::TraverseCancelledReason reason) {
-  auto traversal = upcoming_traversals_.find(key);
-  if (traversal == upcoming_traversals_.end())
+  auto traversal = upcoming_traverse_api_method_trackers_.find(key);
+  if (traversal == upcoming_traverse_api_method_trackers_.end()) {
     return;
+  }
 
   auto* script_state = ToScriptStateForMainWorld(window_->GetFrame());
   ScriptState::Scope scope(script_state);
@@ -845,9 +1020,9 @@ void NavigationApi::TraverseCancelled(
              mojom::blink::TraverseCancelledReason::kSandboxViolation) {
     exception = MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kSecurityError,
-        "Navigating to key " + key +
-            " would require a navigation that "
-            "violates this frame's sandbox policy");
+        StrCat({"Navigating to key ", key,
+                " would require a navigation that violates this frame's "
+                "sandbox policy"}));
   } else if (reason ==
              mojom::blink::TraverseCancelledReason::kAbortedBeforeCommit) {
     exception = MakeGarbageCollected<DOMException>(
@@ -856,7 +1031,7 @@ void NavigationApi::TraverseCancelled(
   CHECK(exception);
   traversal->value->RejectFinishedPromise(
       ScriptValue::From(script_state, exception));
-  upcoming_traversals_.erase(traversal);
+  upcoming_traverse_api_method_trackers_.erase(traversal);
 }
 
 bool NavigationApi::HasNonDroppedOngoingNavigation() const {
@@ -865,22 +1040,28 @@ bool NavigationApi::HasNonDroppedOngoingNavigation() const {
   return has_ongoing_intercept && !has_dropped_navigation_;
 }
 
-void NavigationApi::DidFailOngoingNavigation(ScriptValue value) {
+void NavigationApi::DidAbort(ScriptValue value) {
+  if (ongoing_api_method_tracker_) {
+    ongoing_api_method_tracker_->RejectFinishedPromise(value);
+    ongoing_api_method_tracker_ = nullptr;
+  }
+
   auto* isolate = window_->GetIsolate();
   v8::Local<v8::Message> message =
       v8::Exception::CreateMessage(isolate, value.V8Value());
-  std::unique_ptr<SourceLocation> location =
+  SourceLocation* location =
       blink::CaptureSourceLocation(isolate, message, window_);
-  ErrorEvent* event = ErrorEvent::Create(
-      ToCoreStringWithNullCheck(message->Get()), std::move(location), value,
-      &DOMWrapperWorld::MainWorld());
+  ErrorEvent* event =
+      ErrorEvent::Create(ToCoreStringWithNullCheck(isolate, message->Get()),
+                         location, value, &DOMWrapperWorld::MainWorld(isolate));
   event->SetType(event_type_names::kNavigateerror);
+
+  if (RuntimeEnabledFeatures::NavigationStateEnabled()) {
+    NavigationState::AttemptFinishNavigationAndDestroy(window_->document());
+  }
   DispatchEvent(*event);
 
-  if (ongoing_navigation_) {
-    ongoing_navigation_->RejectFinishedPromise(value);
-    ongoing_navigation_ = nullptr;
-  }
+  FlushRestoreCallbacks();
 
   if (transition_) {
     transition_->RejectFinishedPromise(value);
@@ -888,13 +1069,28 @@ void NavigationApi::DidFailOngoingNavigation(ScriptValue value) {
   }
 }
 
-void NavigationApi::DidFinishOngoingNavigation() {
-  DispatchEvent(*Event::Create(event_type_names::kNavigatesuccess));
+void NavigationApi::FlushRestoreCallbacks() {
+  HeapVector<Member<V8NavigationDeferPageSwapRestoreCallback>>
+      restore_callback_list;
+  std::swap(restore_callback_list, restore_callback_list_);
+  CHECK(restore_callback_list.empty() ||
+        RuntimeEnabledFeatures::NavigateEventDeferCrossDocumentCommitEnabled());
 
-  if (ongoing_navigation_) {
-    ongoing_navigation_->ResolveFinishedPromise();
-    ongoing_navigation_ = nullptr;
+  for (auto& callback : restore_callback_list) {
+    (void)callback->Invoke(this);
   }
+}
+
+void NavigationApi::DidFinishOngoingNavigation() {
+  if (ongoing_api_method_tracker_) {
+    ongoing_api_method_tracker_->ResolveFinishedPromise();
+    ongoing_api_method_tracker_ = nullptr;
+  }
+
+  if (RuntimeEnabledFeatures::NavigationStateEnabled()) {
+    NavigationState::AttemptFinishNavigationAndDestroy(window_->document());
+  }
+  DispatchEvent(*Event::Create(event_type_names::kNavigatesuccess));
 
   if (transition_) {
     transition_->ResolveFinishedPromise();
@@ -909,8 +1105,6 @@ void NavigationApi::AbortOngoingNavigation(ScriptState* script_state) {
       MakeGarbageCollected<DOMException>(DOMExceptionCode::kAbortError,
                                          "Navigation was aborted"));
   ongoing_navigate_event_->Abort(script_state, error);
-  ongoing_navigate_event_ = nullptr;
-  DidFailOngoingNavigation(error);
 }
 
 int NavigationApi::GetIndexFor(NavigationHistoryEntry* entry) {
@@ -927,8 +1121,7 @@ const AtomicString& NavigationApi::InterfaceName() const {
 void NavigationApi::AddedEventListener(
     const AtomicString& event_type,
     RegisteredEventListener& registered_listener) {
-  EventTargetWithInlineData::AddedEventListener(event_type,
-                                                registered_listener);
+  EventTarget::AddedEventListener(event_type, registered_listener);
   LocalFrame* frame = window_->GetFrame();
   if (event_type != event_type_names::kNavigate || !frame) {
     return;
@@ -942,8 +1135,7 @@ void NavigationApi::AddedEventListener(
 void NavigationApi::RemovedEventListener(
     const AtomicString& event_type,
     const RegisteredEventListener& registered_listener) {
-  EventTargetWithInlineData::RemovedEventListener(event_type,
-                                                  registered_listener);
+  EventTarget::RemovedEventListener(event_type, registered_listener);
   LocalFrame* frame = window_->GetFrame();
   if (event_type != event_type_names::kNavigate || !frame) {
     return;
@@ -955,14 +1147,16 @@ void NavigationApi::RemovedEventListener(
 }
 
 void NavigationApi::Trace(Visitor* visitor) const {
-  EventTargetWithInlineData::Trace(visitor);
+  EventTarget::Trace(visitor);
   visitor->Trace(window_);
   visitor->Trace(entries_);
   visitor->Trace(transition_);
-  visitor->Trace(ongoing_navigation_);
-  visitor->Trace(upcoming_traversals_);
-  visitor->Trace(upcoming_non_traversal_navigation_);
+  visitor->Trace(activation_);
+  visitor->Trace(ongoing_api_method_tracker_);
+  visitor->Trace(upcoming_traverse_api_method_trackers_);
+  visitor->Trace(upcoming_non_traverse_api_method_tracker_);
   visitor->Trace(ongoing_navigate_event_);
+  visitor->Trace(restore_callback_list_);
 }
 
 }  // namespace blink

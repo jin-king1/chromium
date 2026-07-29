@@ -64,7 +64,7 @@ import os
 import re
 import xml.sax.saxutils
 
-from grit import lazy_re
+from grit import constants
 from grit.node import message
 
 
@@ -76,7 +76,7 @@ _TAGGED_ONLY_DEFAULT = False
 # In tagged-only mode, only messages with this tag will be ouputted.
 _EMIT_TAG = 'android_java'
 
-_NAME_PATTERN = lazy_re.compile(r'IDS_(?P<name>[A-Z0-9_]+)\Z')
+_NAME_PATTERN = re.compile(r'IDS_(?P<name>[A-Z0-9_]+)\Z')
 
 # Most strings are output as a <string> element. Note the double quotes
 # around the value to preserve whitespace.
@@ -89,13 +89,13 @@ _PLURALS_ITEM_TEMPLATE = '  <item quantity="%s">%s</item>\n'
 # Matches e.g. "{HELLO, plural, HOW ARE YOU DOING}", while capturing
 # "HOW ARE YOU DOING" in <items>. The en-XA pseudolocale adds a set of words
 # beginning with " - one" after the plural block which is also captured.
-_PLURALS_PATTERN = lazy_re.compile(
+_PLURALS_PATTERN = re.compile(
     r'\{[A-Z_]+,\s*plural,(?P<items>.*)\}(?P<pseudolong> - one.*)?$', flags=re.S)
 
 # Repeatedly matched against the <items> capture in _PLURALS_PATTERN,
 # to match "<quantity>{<value>}".
-_PLURALS_ITEM_PATTERN = lazy_re.compile(r'(?P<quantity>\S+?)\s*'
-                                        r'\{(?P<value>.*?)\}')
+_PLURALS_ITEM_PATTERN = re.compile(r'(?P<quantity>[=\w]+?)\s*'
+                                   r'\{(?P<value>.*?)\}')
 _PLURALS_QUANTITY_MAP = {
   '=0': 'zero',
   'zero': 'zero',
@@ -109,7 +109,9 @@ _PLURALS_QUANTITY_MAP = {
 }
 
 
-def Format(root, lang='en', output_dir='.'):
+def Format(root, lang='en', gender=constants.DEFAULT_GENDER, output_dir='.'):
+  assert gender is not None
+
   yield ('<?xml version="1.0" encoding="utf-8"?>\n'
           '<resources '
           'xmlns:android="http://schemas.android.com/apk/res/android">\n')
@@ -127,10 +129,54 @@ def Format(root, lang='en', output_dir='.'):
 
   for item in root.ActiveDescendants():
     with item:
-      if ShouldOutputNode(item, tagged_only):
-        yield _FormatMessage(item, lang)
+      if not ShouldOutputNode(item, tagged_only):
+        continue
+
+      value = _GetGenderDedupedValue(item, lang, gender)
+      if gender == constants.DEFAULT_GENDER:
+        # Only try to dedupe by language if we're looking at the default gender.
+        # Other genders should only be deduped against the default gender.
+        value = _GetLangDedupedValue(item, lang, value)
+      if value is not None:
+        yield value
 
   yield '</resources>\n'
+
+
+# Many strings don't get separate translations per gender. We don't want to
+# store 4 copies of every string if we don't need to. This function checks if a
+# string in a gender translation already exists in the default translation for
+# the given language, and if so, removes it. Chrome will attempt to find a
+# translation in the appropriate gender first, and if not found, it will fall
+# back to the default gender.
+def _GetGenderDedupedValue(item, lang, gender):
+  value = _FormatMessage(item, lang, gender)
+  assert value is not None
+  if gender == constants.DEFAULT_GENDER:
+    return value
+
+  default_value = _FormatMessage(item, lang, constants.DEFAULT_GENDER)
+  assert default_value is not None
+  if value != default_value:
+    return value
+
+  return None
+
+
+# Some strings are not translated, and instead appear as English even in the
+# alternate-locale xml files. These can be deduped to save binary size.
+def _GetLangDedupedValue(item, lang, value):
+  assert value is not None
+
+  if lang == 'en' or lang == '':
+    return value
+
+  default_value = _FormatMessage(item, 'en', constants.DEFAULT_GENDER)
+  assert default_value is not None
+  if value != default_value:
+    return value
+
+  return None
 
 
 def ShouldOutputNode(node, tagged_only):
@@ -195,7 +241,7 @@ def _FormatPluralMessage(message):
   return ''.join(lines)
 
 
-def _FormatMessage(item, lang):
+def _FormatMessage(item, lang, gender):
   """Writes out a single string as a <resource/> element."""
 
   mangled_name = item.GetTextualIds()[0]
@@ -204,7 +250,7 @@ def _FormatMessage(item, lang):
     raise Exception('Unexpected resource name: %s' % mangled_name)
   name = match.group('name').lower()
 
-  value = item.ws_at_start + item.Translate(lang) + item.ws_at_end
+  value = item.ws_at_start + item.Translate(lang, gender) + item.ws_at_end
   # Replace < > & with &lt; &gt; &amp; to ensure we generate valid XML and
   # replace ' " with \' \" to conform to Android's string formatting rules.
   value = xml.sax.saxutils.escape(value, {"'": "\\'", '"': '\\"'})

@@ -16,12 +16,14 @@ See also the general instructions about the dangling pointer detector:
     - [Observer callback](#observer-callback)
     - [Challenging lifespan](#challenging-lifespan)
     - [Cyclic pointers](#cyclic-pointers)
-    - [Fallback solution](#fallback-solution)
+    - [Fallback solution](#what-to-do-about-dangling-pointers-the-dangling-pointer-does-not-own-the-deleted-object-fallback-solution)
   - [`Case 3` The pointer manages ownership over the object](#the-pointer-manages-ownership-over-the-object)
     - [Smart pointers](#smart-pointers)
     - [Object vended from C API](#object-vended-from-c-api)
     - [Object conditionally owned](#object-conditionally-owned)
-    - [Fallback solution](#fallback-solution-1)
+    - [Fallback solution](#what-to-do-about-dangling-pointers-the-pointer-manages-ownership-over-the-object-fallback-solution)
+- [What to do about unretained dangling pointers](./unretained_dangling_ptr_guide.md)
+- [I can't figure out which pointer is dangling](#i-can_t-figure-out-which-pointer-is-dangling)
 - [FAQ - Why dangling pointers matter](#faq-why-dangling-pointers-matter)
 
 ## What to do about dangling pointers
@@ -72,6 +74,15 @@ One good practice is make owning members (`unique_ptr<>`, `scoped_refptr<>`)
 appear before unowned members (`raw_ptr<>`), and to make the unowned members
 appear last in the class, since the unowned members often refer to resources
 owned by the owning members or the class itself.
+
+One sub-category of destruction order issues is related to `KeyedService`s which
+need to correctly
+[declare their dependencies](https://source.chromium.org/chromium/chromium/src/+/main:components/keyed_service/core/keyed_service_base_factory.h;l=60-62;drc=8ba1bad80dc22235693a0dd41fe55c0fd2dbdabd)
+and
+[are expected to drop references](https://source.chromium.org/chromium/chromium/src/+/main:components/keyed_service/core/keyed_service.h;l=12-13;drc=8ba1bad80dc22235693a0dd41fe55c0fd2dbdabd)
+to their dependencies in their
+[`Shutdown`](https://source.chromium.org/chromium/chromium/src/+/main:components/keyed_service/core/keyed_service.h;l=36-39;drc=8ba1bad80dc22235693a0dd41fe55c0fd2dbdabd) method
+(i.e. before their destructor runs).
 
 #### Observer callback
 
@@ -188,6 +199,15 @@ the dangling raw_ptr.
 |Before|After |
 |--|--|
 |`ExternalAPIDelete(ptr_);`|`ExternalAPIDelete(ptr_.ExtractAsDangling());`|
+
+## I can't figure out which pointer is dangling
+
+Usually this is a matter of straightforward reasoning, but should all else
+fail, another option is to re-build with the alternative dangling pointer
+detector as described in
+[docs/dangling_ptr.md](./dangling_ptr.md#alternative-dangling-pointer-detector-experimental).
+This will show the stacks for object creation, object destruction, and the
+destruction of the object containing the dangling ptr member.
 
 ## FAQ - Why dangling pointers matter
 

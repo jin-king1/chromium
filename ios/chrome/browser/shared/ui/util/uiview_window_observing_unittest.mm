@@ -2,16 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import "ios/chrome/browser/shared/ui/util/util_swift.h"
-
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/shared/ui/util/util_swift.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 // Calls a block when receiving a KVO notification.
 @interface Observer : NSObject
@@ -35,7 +31,8 @@
 class UIViewWindowObservingTest : public PlatformTest {
  protected:
   UIViewWindowObservingTest()
-      : window_([[UIWindow alloc] init]),
+      : window_([[UIWindow alloc]
+            initWithWindowScene:chrome_test_util::GetAnyWindowScene()]),
         view_([[UIView alloc] init]),
         observer_([[Observer alloc] init]) {
     [view_

@@ -10,14 +10,22 @@
 
 #include "base/containers/flat_set.h"
 #include "base/memory/weak_ptr.h"
+#include "base/types/pass_key.h"
 #include "base/values.h"
-#include "chrome/browser/web_applications/web_app_id.h"
+#include "components/webapps/common/web_app_id.h"
 
-namespace content {
-struct PartitionedLockHolder;
+namespace base {
+class Clock;
 }
 
 namespace web_app {
+
+class VisitedManifestManager;
+class WebAppLockManager;
+class WebContentsManager;
+class WebAppOriginAssociationManager;
+class PartitionedLockHolder;
+class WebAppCommandScheduler;
 
 // Represents a lock in the WebAppProvider system. Locks can be acquired by
 // creating one of the subclasses of this class, and using the
@@ -33,7 +41,6 @@ class LockDescription {
   };
 
   LockDescription(LockDescription&&);
-  LockDescription& operator=(LockDescription&&);
 
   LockDescription(const LockDescription&) = delete;
   LockDescription& operator=(const LockDescription&) = delete;
@@ -42,7 +49,7 @@ class LockDescription {
 
   Type type() const { return type_; }
 
-  const base::flat_set<AppId>& app_ids() const { return app_ids_; }
+  const base::flat_set<webapps::AppId>& app_ids() const { return app_ids_; }
 
   // Shortcut methods looking at the `type()`. Returns if this lock includes an
   // exclusive lock on the shared web contents.
@@ -51,7 +58,7 @@ class LockDescription {
   base::Value AsDebugValue() const;
 
  protected:
-  explicit LockDescription(base::flat_set<AppId> app_ids, Type type);
+  explicit LockDescription(base::flat_set<webapps::AppId> app_ids, Type type);
 
  private:
   enum class LockLevel {
@@ -60,10 +67,8 @@ class LockDescription {
     kMaxValue = kApp,
   };
 
-  const base::flat_set<AppId> app_ids_{};
+  const base::flat_set<webapps::AppId> app_ids_;
   const Type type_;
-
-  base::WeakPtrFactory<LockDescription> weak_factory_{this};
 };
 
 std::ostream& operator<<(std::ostream& os,
@@ -72,19 +77,44 @@ std::ostream& operator<<(std::ostream& os,
 // See `WebAppLockManager` for how to use locks. Destruction of this class will
 // release the lock or cancel the lock request if it is not acquired yet.
 //
-// Note: Accessing a lock will CHECK-fail if the WebAppProvider system has
-// shutdown (or the profile has shut down).
+// Note: Accessing a lock before it is granted or after the WebAppProvider
+// system has shutdown (or the profile has shut down) will CHECK-fail.
 class Lock {
  public:
-  Lock() = delete;
-  ~Lock();
+  virtual ~Lock();
+
+  // Returns if the lock is granted. If this returns `false`, then all accessors
+  // on this method will CHECK-fail.
+  bool IsGranted() const;
+
+  // Resources that are available on all locks:
+  // This will CHECK-fail if `IsGranted()` returns false.
+  WebContentsManager& web_contents_manager();
+  // This will CHECK-fail if `IsGranted()` returns false.
+  VisitedManifestManager& visited_manifest_manager();
+  // Will CHECK-fail if accessed before the lock is granted.
+  WebAppOriginAssociationManager& origin_association_manager();
+
+  WebAppCommandScheduler& scheduler();
+
+  // Convenience method for accessing the clock on the WebAppProvider.
+  base::Clock& clock();
+
+  // Used by WebAppLockManager to manage locks and upgrading.
+  PartitionedLockHolder& InitializeLockHolderForAcquire(
+      base::PassKey<WebAppLockManager>);
+  PartitionedLockHolder& InitializeLockHolderForUpgrade(
+      std::unique_ptr<Lock> from_lock,
+      base::PassKey<WebAppLockManager>);
 
  protected:
-  explicit Lock(std::unique_ptr<content::PartitionedLockHolder> holder);
+  Lock();
+  // Will CHECK-fail if called more than once.
+  void GrantLockResources(WebAppLockManager& lock_manager);
 
  private:
-  friend class WebAppLockManager;
-  std::unique_ptr<content::PartitionedLockHolder> holder_;
+  std::unique_ptr<PartitionedLockHolder> holder_;
+  base::WeakPtr<WebAppLockManager> lock_manager_;
 };
 
 }  // namespace web_app

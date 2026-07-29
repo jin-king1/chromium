@@ -6,6 +6,7 @@
 #define CHROMEOS_ASH_COMPONENTS_QUICK_START_QUICK_START_MESSAGE_H_
 
 #include <string>
+#include "base/types/expected.h"
 #include "base/values.h"
 #include "chromeos/ash/components/quick_start/quick_start_message_type.h"
 
@@ -16,22 +17,36 @@ namespace ash::quick_start {
 // used by both request builders and parsers.
 class QuickStartMessage {
  public:
+  enum class ReadError {
+    INVALID_JSON,
+    MISSING_MESSAGE_PAYLOAD,
+    BASE64_DESERIALIZATION_FAILURE,
+    UNEXPECTED_MESSAGE_TYPE,
+  };
+
+  using ReadResult =
+      base::expected<std::unique_ptr<QuickStartMessage>, ReadError>;
+
   explicit QuickStartMessage(QuickStartMessageType message_type);
   QuickStartMessage(QuickStartMessageType message_type,
-                    base::Value::Dict payload);
+                    base::DictValue payload);
   QuickStartMessage(QuickStartMessage&) = delete;
   QuickStartMessage& operator=(QuickStartMessage&) = delete;
   ~QuickStartMessage();
 
-  base::Value::Dict* GetPayload();
-  std::unique_ptr<base::Value::Dict> GenerateEncodedMessage();
+  base::DictValue* GetPayload();
+  QuickStartMessageType get_type() { return message_type_; }
+  std::unique_ptr<base::DictValue> GenerateEncodedMessage();
 
   // Read a message from raw data.
   // NOTE: This function must be called in a process isolated from the
   // browser process - it will fail otherwise.
-  static std::unique_ptr<QuickStartMessage> ReadMessage(
-      std::vector<uint8_t> data,
-      QuickStartMessageType message_type);
+  static base::expected<std::unique_ptr<QuickStartMessage>,
+                        QuickStartMessage::ReadError>
+  ReadMessage(std::vector<uint8_t> data);
+  static base::expected<std::unique_ptr<QuickStartMessage>,
+                        QuickStartMessage::ReadError>
+  ReadMessage(std::vector<uint8_t> data, QuickStartMessageType message_type);
 
   static void DisableSandboxCheckForTesting();
 
@@ -40,7 +55,7 @@ class QuickStartMessage {
   // sandbox
   static bool enable_sandbox_checks_;
   QuickStartMessageType message_type_;
-  base::Value::Dict payload_;
+  base::DictValue payload_;
 };
 
 }  // namespace ash::quick_start

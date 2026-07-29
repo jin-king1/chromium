@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "cc/paint/paint_flags.h"
 #include "components/vector_icons/vector_icons.h"
@@ -17,8 +16,8 @@
 #include "content/browser/web_contents/web_contents_impl.h"
 #include "content/public/browser/overscroll_configuration.h"
 #include "content/public/browser/preloading.h"
-#include "third_party/skia/include/core/SkDrawLooper.h"
 #include "ui/aura/window.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_delegate.h"
 #include "ui/compositor/paint_recorder.h"
@@ -44,7 +43,7 @@ constexpr SkColor kArrowColorAfterActivation = SK_ColorWHITE;
 
 // Parameters defining the background circle of the affordance.
 constexpr int kBackgroundRadius = 20;
-constexpr SkColor kBackgroundColorBeforeActication = SK_ColorWHITE;
+constexpr SkColor kBackgroundColorBeforeActivation = SK_ColorWHITE;
 constexpr SkColor kBackgroundColorAfterActivation = gfx::kGoogleBlue600;
 constexpr int kBgShadowOffsetY = 2;
 constexpr int kBgShadowBlurRadius = 8;
@@ -196,10 +195,10 @@ class Affordance : public ui::LayerDelegate, public gfx::AnimationDelegate {
 
   // Root layer of the affordance. This is used to clip the affordance to the
   // content bounds.
-  ui::Layer root_layer_;
+  ui::LayerNotDrawn root_layer_;
 
   // Layer that actually paints the affordance.
-  ui::Layer painted_layer_;
+  ui::LayerTextured painted_layer_;
 
   // Image icon of the arrow inside the affordance.
   raw_ptr<const gfx::VectorIcon> arrow_icon_ = nullptr;
@@ -217,19 +216,19 @@ Affordance::Affordance(GestureNavSimple* owner,
                        OverscrollMode mode,
                        const gfx::Rect& content_bounds,
                        float max_drag_progress)
-    : owner_(owner),
-      mode_(mode),
-      max_drag_progress_(max_drag_progress),
-      root_layer_(ui::LAYER_NOT_DRAWN),
-      painted_layer_(ui::LAYER_TEXTURED) {
+    : owner_(owner), mode_(mode), max_drag_progress_(max_drag_progress) {
   DCHECK(mode_ == OVERSCROLL_EAST || mode_ == OVERSCROLL_WEST ||
          mode_ == OVERSCROLL_SOUTH);
   if (mode_ == OVERSCROLL_EAST) {
-    arrow_icon_ = &vector_icons::kBackArrowIcon;
+    arrow_icon_ =
+        &(features::IsRoundedIconsEnabled() ? vector_icons::kArrowBackIcon
+                                            : vector_icons::kBackArrowOldIcon);
   } else if (mode_ == OVERSCROLL_WEST) {
-    arrow_icon_ = &vector_icons::kForwardArrowIcon;
+    arrow_icon_ = &(features::IsRoundedIconsEnabled()
+                        ? vector_icons::kArrowForwardIcon
+                        : vector_icons::kForwardArrowOldIcon);
   } else if (mode_ == OVERSCROLL_SOUTH) {
-    arrow_icon_ = &vector_icons::kReloadIcon;
+    arrow_icon_ = &vector_icons::kReloadCustomIcon;
   }
 
   DCHECK(arrow_icon_);
@@ -404,7 +403,7 @@ void Affordance::OnPaintLayer(const ui::PaintContext& context) {
   bg_flags.setAntiAlias(true);
   bg_flags.setStyle(cc::PaintFlags::kFill_Style);
   bg_flags.setColor(progress >= 1.0f ? kBackgroundColorAfterActivation
-                                     : kBackgroundColorBeforeActication);
+                                     : kBackgroundColorBeforeActivation);
   gfx::ShadowValues shadow;
   shadow.emplace_back(gfx::Vector2d(0, kBgShadowOffsetY), kBgShadowBlurRadius,
                       kBgShadowColor);
@@ -432,7 +431,6 @@ void Affordance::AnimationProgressed(const gfx::Animation* animation) {
   switch (state_) {
     case State::DRAGGING:
       NOTREACHED();
-      break;
     case State::ABORTING:
       SetAbortProgress(animation->GetCurrentValue());
       break;
@@ -456,7 +454,7 @@ void GestureNavSimple::OnAffordanceAnimationEnded() {
 }
 
 gfx::Size GestureNavSimple::GetDisplaySize() const {
-  return display::Screen::GetScreen()
+  return display::Screen::Get()
       ->GetDisplayNearestView(web_contents_->GetNativeView())
       .size();
 }
@@ -526,13 +524,13 @@ void GestureNavSimple::OnOverscrollModeChange(OverscrollMode old_mode,
   // Do not start a new gesture-nav if overscroll-behavior-x is not auto.
   if ((new_mode == OverscrollMode::OVERSCROLL_EAST ||
        new_mode == OverscrollMode::OVERSCROLL_WEST) &&
-      behavior.x != cc::OverscrollBehavior::Type::kAuto) {
+      !behavior.PropagatesXScroll()) {
     return;
   }
 
   // Do not start a new pull-to-refresh if overscroll-behavior-y is not auto.
   if (new_mode == OverscrollMode::OVERSCROLL_SOUTH &&
-      behavior.y != cc::OverscrollBehavior::Type::kAuto) {
+      !behavior.PropagatesYScroll()) {
     return;
   }
 
@@ -575,15 +573,16 @@ void GestureNavSimple::OnOverscrollModeChange(OverscrollMode old_mode,
   const float start_threshold =
       is_touchpad ? OverscrollConfig::kStartTouchpadThresholdDips
                   : OverscrollConfig::kStartTouchscreenThresholdDips;
+  const float complete_percent =
+      is_touchpad ? OverscrollConfig::kCompleteTouchpadThresholdPercent
+                  : OverscrollConfig::kCompleteTouchscreenThresholdPercent;
+
   const gfx::Size size = GetDisplaySize();
   const int max_size = std::max(size.width(), size.height());
-  completion_threshold_ =
-      max_size *
-          (is_touchpad
-               ? OverscrollConfig::kCompleteTouchpadThresholdPercent
-               : OverscrollConfig::kCompleteTouchscreenThresholdPercent) -
-      start_threshold;
-  DCHECK_LE(0, completion_threshold_);
+
+  completion_threshold_ = max_size * complete_percent - start_threshold;
+  DCHECK_LE(0, completion_threshold_) << " for display size " << size.ToString()
+                                      << " and is_touchpad=" << is_touchpad;
 
   max_delta_ = max_size - start_threshold;
   DCHECK_LE(0, max_delta_);
@@ -603,11 +602,11 @@ void GestureNavSimple::OnOverscrollModeChange(OverscrollMode old_mode,
   parent->StackAtTop(affordance_->root_layer());
 }
 
-absl::optional<float> GestureNavSimple::GetMaxOverscrollDelta() const {
+std::optional<float> GestureNavSimple::GetMaxOverscrollDelta() const {
   if (affordance_) {
     return max_delta_;
   }
-  return absl::nullopt;
+  return std::nullopt;
 }
 
 }  // namespace content

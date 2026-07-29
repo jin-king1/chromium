@@ -4,118 +4,79 @@
 
 import logging
 import os
-import shutil
+import sys
 
 import pytest
 
-from chrome.test.variations import test_utils
-from contextlib import contextmanager
-from selenium import webdriver
-from selenium.common.exceptions import WebDriverException
-from selenium.webdriver import ChromeOptions
-from selenium.webdriver.chrome.service import Service
-from typing import Optional
-
 pytest_plugins = [
+  'chrome.test.variations.fixtures.cipd',
+  'chrome.test.variations.fixtures.driver',
   'chrome.test.variations.fixtures.http',
+  'chrome.test.variations.fixtures.result_sink',
   'chrome.test.variations.fixtures.seed_locator',
   'chrome.test.variations.fixtures.skia_gold',
+  'chrome.test.variations.fixtures.features',
+  'chrome.test.variations.fixtures.test_options'
 ]
 
-def pytest_addoption(parser):
-  # By default, running on the hosted platform.
-  parser.addoption('--target-platform',
-                   default=test_utils.get_hosted_platform(),
-                   dest='target_platform',
-                   choices=['linux', 'win', 'mac', 'android', 'cros',
-                            'lacros'],
-                   help='If present, run for the target platform, '
-                   'defaults to the host platform.')
 
-  parser.addoption('--channel',
-                   default='dev',
-                   choices=['dev', 'canary', 'beta', 'stable', 'extended'],
-                   help='The channel of Chrome to download.')
+def pytest_addoption(parser: pytest.Parser):
+  # These are not currently used but supplied from the test runner, we need to
+  # ignore them for now so it will not stop the script.
+  parser.addoption('--isolated-script-test-repeat',
+                   '--isolated-script-test-filter',
+                   '--isolated-script-test-launcher-retry-limit',
+                   '--isolated-script-test-perf-output',
+                   '--git-revision',
+                   '--gerrit-issue',
+                   '--gerrit-patchset',
+                   '--buildbucket-id',
+                   '--logs-dir')
 
-  # parser.addoption('--dcheck',
-  #                  action='store_true',
-  #                  help='Whether to download DCHECK build. '
-  #                  'Note this is only available in dev or canary.')
+  parser.addoption('--isolated-script-test-output',
+                   '--write-full-results-to',
+                   '--json-results-file',
+                   dest='json_results_file',
+                   help='If present, store test results on this path.')
 
-  parser.addoption('--chromedriver',
-                   help='The path to the existing chromedriver. '
-                   'This will ignore --channel and skip downloading.')
+  parser.addoption('--root-build-dir',
+                   dest='root_build_dir',
+                   help='The path to build output directory. It can be '
+                   'relative to the source root or the absolute path. The path '
+                   'will be added to python search path.')
 
-# pylint: disable=redefined-outer-name
-@pytest.fixture(scope="session")
-def chromedriver_path(pytestconfig) -> str:
-  """Returns a path to the chromedriver."""
-  if cd_path := pytestconfig.getoption('chromedriver'):
-    cd_path = os.path.abspath(cd_path)
-    assert os.path.isfile(cd_path), (
-      f'Given chromedriver doesn\'t exist. ({cd_path})')
-    return cd_path
+  parser.addoption('--magic-vm-cache',
+                   dest='magic_vm_cache',
+                   help='Path to the magic CrOS VM cache dir. See the comment '
+                   '"magic_cros_vm_cache" in mixins.star for more info.')
 
-  platform = pytestconfig.getoption('target_platform')
-  channel = pytestconfig.getoption('channel')
-  # dcheck = pytestconfig.getoption('dcheck')
+def setup_java_path(src_dir: str):
+  java_home = os.path.join(src_dir, 'third_party', 'jdk', 'current')
+  java_bin = os.path.join(java_home, 'bin')
+  os.environ['JAVA_HOME'] = java_home
+  os.environ['PATH'] = java_bin + os.pathsep + os.environ['PATH']
 
-  # https://developer.chrome.com/docs/versionhistory/reference/#platform-identifiers
-  downloaded_dir = None
-  if platform == "linux":
-    ver = test_utils.find_version('linux', channel)
-    downloaded_dir = test_utils.download_chrome_linux(version=str(ver))
-  elif platform == "mac":
-    ver = test_utils.find_version('mac_arm64', channel)
-    downloaded_dir = test_utils.download_chrome_mac(version=str(ver))
-  elif platform == "win":
-    ver = test_utils.find_version('win64', channel)
-    downloaded_dir = test_utils.download_chrome_win(version=str(ver))
-  else:
-    raise RuntimeError(f'Given platform ({platform}) is not supported.')
 
-  return os.path.join(downloaded_dir, 'chromedriver')
+def pytest_cmdline_main(config: pytest.Config):
+  src_dir = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), *([os.pardir] * 3)))
 
-@pytest.fixture
-def driver_factory(pytestconfig,
-                   chromedriver_path: str,
-                   tmp_path_factory: pytest.TempPathFactory):
-  """Returns a factory that creates a webdriver."""
-  @contextmanager
-  def factory(seed_file: Optional[str] = None,
-              chrome_options: Optional[ChromeOptions] = None):
-    # Crashpad is a separate process and its dump locations is set via env
-    # variable.
-    crash_dump_dir = tmp_path_factory.mktemp('crash', True)
-    os.environ['BREAKPAD_DUMP_LOCATION'] = str(crash_dump_dir)
+  setup_java_path(src_dir)
+  root_build_dir = config.getoption('root_build_dir')
+  # Adds the output dir to the search path so the generated files can be
+  # imported.
+  if root_build_dir:
+    if not os.path.isabs(root_build_dir):
+      root_build_dir = os.path.join(src_dir, root_build_dir)
+    logging.info('setting root dir:', root_build_dir)
+    assert os.path.exists(root_build_dir)
+    sys.path.append(os.path.abspath(root_build_dir))
 
-    chrome_options = chrome_options or ChromeOptions()
-    chrome_options.add_argument('disable-field-trial-config')
-
-    if seed_file:
-      assert os.path.exists(seed_file)
-      chrome_options.add_argument(f'variations-test-seed-path={seed_file}')
-      chrome_options.add_argument(
-        f'fake-variations-channel={pytestconfig.getoption("channel")}')
-    chrome_options.add_experimental_option('excludeSwitches',
-                                           ['disable-background-networking'])
-    driver = None
-    try:
-      logging.info('Launching Chrome w/ caps: %s',
-                   chrome_options.to_capabilities())
-      driver = webdriver.Chrome(service=Service(chromedriver_path),
-                                options=chrome_options)
-      yield driver
-    except WebDriverException as e:
-      # Report this to be part of test result.
-      if os.listdir(crash_dump_dir):
-        logging.error('Chrome crashed and exited abnormally.\n%s', e)
-      else:
-        logging.error('Uncaught WebDriver exception thrown.\n%s', e)
-      raise
-    finally:
-      if driver:
-        driver.quit()
-      shutil.rmtree(crash_dump_dir, ignore_errors=True)
-
-  return factory
+  # Copied from chromeos/test_runner.py, the same logic to activate vm cache.
+  # https://crsrc.org/c/build/chromeos/test_runner.py;l=989;drc=32666e4204efdc594c7e3cbaa22f18dbc0966b81
+  magic_vm_cache = config.getoption('magic_vm_cache')
+  if magic_vm_cache:
+    full_vm_cache_path = os.path.join(src_dir, magic_vm_cache)
+    if os.path.exists(full_vm_cache_path):
+      with open(os.path.join(full_vm_cache_path, 'swarming.txt'), 'w') as f:
+        f.write('non-empty file to make swarming persist this cache')

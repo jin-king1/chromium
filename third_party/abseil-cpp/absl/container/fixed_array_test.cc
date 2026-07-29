@@ -17,20 +17,24 @@
 #include <stdio.h>
 
 #include <cstring>
+#include <forward_list>
 #include <list>
 #include <memory>
 #include <numeric>
 #include <scoped_allocator>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include "absl/base/config.h"
 #include "absl/base/internal/exception_testing.h"
+#include "absl/base/internal/hardening.h"
+#include "absl/base/internal/iterator_traits_test_helper.h"
 #include "absl/base/options.h"
-#include "absl/container/internal/counting_allocator.h"
+#include "absl/container/internal/test_allocator.h"
 #include "absl/hash/hash_testing.h"
 #include "absl/memory/memory.h"
 
@@ -109,7 +113,7 @@ TEST(FixedArrayTest, CopyCtor) {
 TEST(FixedArrayTest, MoveCtor) {
   absl::FixedArray<std::unique_ptr<int>, 10> on_stack(5);
   for (int i = 0; i < 5; ++i) {
-    on_stack[i] = absl::make_unique<int>(i);
+    on_stack[i] = std::make_unique<int>(i);
   }
 
   absl::FixedArray<std::unique_ptr<int>, 10> stack_copy = std::move(on_stack);
@@ -118,7 +122,7 @@ TEST(FixedArrayTest, MoveCtor) {
 
   absl::FixedArray<std::unique_ptr<int>, 10> allocated(15);
   for (int i = 0; i < 15; ++i) {
-    allocated[i] = absl::make_unique<int>(i);
+    allocated[i] = std::make_unique<int>(i);
   }
 
   absl::FixedArray<std::unique_ptr<int>, 10> alloced_copy =
@@ -193,6 +197,7 @@ TEST(FixedArrayTest, AtThrows) {
 
 TEST(FixedArrayTest, Hardened) {
 #if !defined(NDEBUG) || ABSL_OPTION_HARDENED
+  absl::base_internal::ScopedSetAbslHardeningForTesting hardener(true);
   absl::FixedArray<int> a = {1, 2, 3};
   EXPECT_EQ(a[2], 3);
   EXPECT_DEATH_IF_SUPPORTED(a[3], "");
@@ -304,7 +309,7 @@ static void TestArrayOfArrays(int n) {
     using InnerArray = ConstructionTester[elements_per_inner_array];
     // Heap-allocate the FixedArray to avoid blowing the stack frame.
     auto array_ptr =
-        absl::make_unique<absl::FixedArray<InnerArray, inline_elements>>(n);
+        std::make_unique<absl::FixedArray<InnerArray, inline_elements>>(n);
     auto& array = *array_ptr;
 
     ASSERT_EQ(array.size(), n);
@@ -409,6 +414,20 @@ TEST(IteratorConstructorTest, FromBidirectionalIteratorRange) {
   EXPECT_THAT(fixed, testing::ElementsAreArray(kInput));
 }
 
+TEST(IteratorConstructorTest, FromCpp20ForwardIteratorRange) {
+  std::forward_list<int> const kUnzippedInput = {2, 3, 5, 7, 11, 13, 17};
+  absl::base_internal::Cpp20ForwardZipIterator<
+      std::forward_list<int>::const_iterator> const
+      begin(std::begin(kUnzippedInput), std::begin(kUnzippedInput));
+  absl::base_internal::
+      Cpp20ForwardZipIterator<std::forward_list<int>::const_iterator> const end(
+          std::end(kUnzippedInput), std::end(kUnzippedInput));
+
+  std::forward_list<std::pair<int, int>> const items(begin, end);
+  absl::FixedArray<std::pair<int, int>> const fixed(begin, end);
+  EXPECT_THAT(fixed, testing::ElementsAreArray(items));
+}
+
 TEST(InitListConstructorTest, InitListConstruction) {
   absl::FixedArray<int> fixed = {1, 2, 3};
   EXPECT_THAT(fixed, testing::ElementsAreArray({1, 2, 3}));
@@ -419,7 +438,7 @@ TEST(FillConstructorTest, NonEmptyArrays) {
   EXPECT_THAT(stack_array, testing::ElementsAreArray({1, 1, 1, 1}));
 
   absl::FixedArray<int, 0> heap_array(4, 1);
-  EXPECT_THAT(stack_array, testing::ElementsAreArray({1, 1, 1, 1}));
+  EXPECT_THAT(heap_array, testing::ElementsAreArray({1, 1, 1, 1}));
 }
 
 TEST(FillConstructorTest, EmptyArray) {
@@ -518,7 +537,10 @@ struct PickyDelete {
   }
 };
 
-TEST(FixedArrayTest, UsesGlobalAlloc) { absl::FixedArray<PickyDelete, 0> a(5); }
+TEST(FixedArrayTest, UsesGlobalAlloc) {
+  absl::FixedArray<PickyDelete, 0> a(5);
+  EXPECT_EQ(a.size(), 5);
+}
 
 TEST(FixedArrayTest, Data) {
   static const int kInput[] = {2, 3, 5, 7, 11, 13, 17};
@@ -766,6 +788,23 @@ TEST(AllocatorSupportTest, SizeValAllocConstructor) {
     EXPECT_EQ(allocated, len * sizeof(int));
     EXPECT_THAT(arr, AllOf(SizeIs(len), Each(0)));
   }
+}
+
+TEST(AllocatorSupportTest, PropagatesStatefulAllocator) {
+  constexpr size_t inlined_size = 4;
+  using Alloc = absl::container_internal::CountingAllocator<int>;
+  using AllocFxdArr = absl::FixedArray<int, inlined_size, Alloc>;
+
+  auto len = inlined_size * 2;
+  auto val = 0;
+  int64_t allocated = 0;
+  AllocFxdArr arr(len, val, Alloc(&allocated));
+
+  EXPECT_EQ(allocated, len * sizeof(int));
+
+  AllocFxdArr copy = arr;
+  EXPECT_EQ(allocated, len * sizeof(int) * 2);
+  EXPECT_EQ(copy, arr);
 }
 
 #ifdef ABSL_HAVE_ADDRESS_SANITIZER

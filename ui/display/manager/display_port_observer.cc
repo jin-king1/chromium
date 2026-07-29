@@ -9,6 +9,7 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
@@ -20,18 +21,45 @@ namespace display {
 
 namespace {
 
+base::FilePath* g_allowed_sys_path_root_for_testing = nullptr;
+
 const LazyRE2 kTypecConnUeventPattern = {R"(TYPEC_PORT=port(\d+))"};
 
+// Upper bound on the size of the sysfs attribute files read below. The
+// `connector_id` attribute holds a single integer and `uevent` is a short
+// list of key/value pairs, so this leaves ample headroom.
+constexpr size_t kMaxSysfsAttrSize = 1024;
+
+const base::FilePath& GetAllowedSysPathRoot() {
+  if (g_allowed_sys_path_root_for_testing) {
+    return *g_allowed_sys_path_root_for_testing;
+  }
+  static const base::NoDestructor<base::FilePath> root("/sys");
+  return *root;
+}
+
 std::vector<uint32_t> ParseDrmSysfsAndFindPort(
-    const DisplayConfigurator::DisplayStateList& display_states) {
+    const std::vector<std::pair<uint64_t, base::FilePath>>&
+        base_connector_id_and_syspath) {
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
   std::vector<uint32_t> port_nums;
-  for (auto* state : display_states) {
-    // Each DisplaySnapshot holds the `sys_path` of a DRM device (i.e.
-    // /sys/class/drm/cardX).
-    base::FileEnumerator enumerator(state->sys_path(), false,
-                                    base::FileEnumerator::DIRECTORIES);
+  // Each pair is from each DisplaySnapshot.
+  for (const auto& pair : base_connector_id_and_syspath) {
+    auto base_connector_id = pair.first;
+    const auto& sys_path = pair.second;
+
+    // Ensure the sys_path is safe to read.
+    if (sys_path.ReferencesParent() ||
+        (sys_path != GetAllowedSysPathRoot() &&
+         !GetAllowedSysPathRoot().IsParent(sys_path))) {
+      continue;
+    }
+
+    // `sys_path` of a DRM device, i.e. /sys/class/drm/cardX.
+    base::FileEnumerator enumerator(sys_path, false,
+                                    base::FileEnumerator::DIRECTORIES,
+                                    FILE_PATH_LITERAL("card*-DP-*"));
     // Each directory in `sys_path` represents a connector, so we fetch each
     // connector's ID by reading the `/sys/class/drm/*/connector_id` file
     // (e.g. /sys/class/drm/card0/card0-DP-1/connector_id stores 256). We use
@@ -41,8 +69,9 @@ std::vector<uint32_t> ParseDrmSysfsAndFindPort(
          path = enumerator.Next()) {
       std::string connector_id_str;
       uint64_t connector_id_int;
-      if (!base::ReadFileToString(path.Append("connector_id"),
-                                  &connector_id_str)) {
+      if (!base::ReadFileToStringWithMaxSize(path.Append("connector_id"),
+                                             &connector_id_str,
+                                             kMaxSysfsAttrSize)) {
         continue;
       }
       base::TrimWhitespaceASCII(connector_id_str, base::TRIM_ALL,
@@ -52,7 +81,7 @@ std::vector<uint32_t> ParseDrmSysfsAndFindPort(
                      << path.value();
         continue;
       }
-      if (connector_id_int != state->base_connector_id()) {
+      if (connector_id_int != base_connector_id) {
         continue;
       }
       // A connector with a matching id is found at this point, so break the
@@ -64,8 +93,9 @@ std::vector<uint32_t> ParseDrmSysfsAndFindPort(
       // may not be present for older kernel and firmware.
       std::string typec_conn_uevent;
       uint32_t port_num;
-      if (!base::ReadFileToString(path.Append("typec_connector/uevent"),
-                                  &typec_conn_uevent)) {
+      if (!base::ReadFileToStringWithMaxSize(
+              path.Append("typec_connector/uevent"), &typec_conn_uevent,
+              kMaxSysfsAttrSize)) {
         break;
       }
       if (!RE2::PartialMatch(typec_conn_uevent, *kTypecConnUeventPattern,
@@ -98,12 +128,12 @@ DisplayPortObserver::~DisplayPortObserver() {
   }
 }
 
-void DisplayPortObserver::OnDisplayModeChanged(
+void DisplayPortObserver::OnDisplayConfigurationChanged(
     const DisplayConfigurator::DisplayStateList& display_states) {
   // If no changes in base connector ids, then assume no changes on ports, so
   // return early to prevent overkill.
   std::set<uint64_t> base_connector_ids_;
-  for (auto* state : display_states) {
+  for (display::DisplaySnapshot* state : display_states) {
     base_connector_ids_.insert(state->base_connector_id());
   }
   if (base_connector_ids_ == prev_base_connector_ids_) {
@@ -111,22 +141,44 @@ void DisplayPortObserver::OnDisplayModeChanged(
   }
   prev_base_connector_ids_ = base_connector_ids_;
 
+  // For each DisplaySnapshot, extract base_connector_id and sys_path.
+  std::vector<std::pair<uint64_t, base::FilePath>>
+      base_connector_id_and_syspath;
+  for (display::DisplaySnapshot* state : display_states) {
+    base_connector_id_and_syspath.push_back(
+        std::make_pair(state->base_connector_id(), state->sys_path()));
+  }
+
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE,
       {base::MayBlock(), base::TaskPriority::BEST_EFFORT,
        base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
-      base::BindOnce(&ParseDrmSysfsAndFindPort, display_states),
+      base::BindOnce(&ParseDrmSysfsAndFindPort, base_connector_id_and_syspath),
       base::BindOnce(&DisplayPortObserver::SetTypeCPortsUsingDisplays,
                      weak_ptr_factory_.GetWeakPtr()));
 }
 
-void DisplayPortObserver::OnDisplayModeChangeFailed(
+void DisplayPortObserver::OnDisplayConfigurationChangeFailed(
     const DisplayConfigurator::DisplayStateList& displays,
     MultipleDisplayState failed_new_state) {}
 
 void DisplayPortObserver::SetTypeCPortsUsingDisplays(
     std::vector<uint32_t> port_nums) {
   on_port_change_callback_.Run(port_nums);
+}
+
+// static
+void DisplayPortObserver::SetAllowedSysPathRootForTesting(
+    const base::FilePath& root) {
+  if (root.empty()) {
+    delete g_allowed_sys_path_root_for_testing;
+    g_allowed_sys_path_root_for_testing = nullptr;
+    return;
+  }
+  if (!g_allowed_sys_path_root_for_testing) {
+    g_allowed_sys_path_root_for_testing = new base::FilePath();
+  }
+  *g_allowed_sys_path_root_for_testing = root;
 }
 
 }  // namespace display

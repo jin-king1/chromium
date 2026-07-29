@@ -33,7 +33,9 @@ class POLICY_EXPORT ProfileCloudPolicyStore : public DesktopCloudPolicyStore {
   ProfileCloudPolicyStore(
       const base::FilePath& policy_path,
       const base::FilePath& key_path,
-      scoped_refptr<base::SequencedTaskRunner> background_task_runner);
+      const std::string& policy_type,
+      scoped_refptr<base::SequencedTaskRunner> background_task_runner,
+      bool is_dasherless = false);
 
   ProfileCloudPolicyStore(const ProfileCloudPolicyStore&) = delete;
   ProfileCloudPolicyStore& operator=(const ProfileCloudPolicyStore&) = delete;
@@ -42,10 +44,17 @@ class POLICY_EXPORT ProfileCloudPolicyStore : public DesktopCloudPolicyStore {
   // Creates a ProfileCloudPolicyStore instance.
   static std::unique_ptr<ProfileCloudPolicyStore> Create(
       const base::FilePath& profile_dir,
-      scoped_refptr<base::SequencedTaskRunner> background_task_runner);
+      scoped_refptr<base::SequencedTaskRunner> background_task_runner,
+      bool is_dasherless = false);
+
+  // Creates a ProfileCloudPolicyStore instance for extension install policy.
+  static std::unique_ptr<ProfileCloudPolicyStore> CreateForExtensionInstall(
+      const base::FilePath& profile_dir,
+      scoped_refptr<base::SequencedTaskRunner> background_task_runner,
+      bool is_dasherless = false);
 
   // override UserCloudPolicyStoreBase
-  std::unique_ptr<UserCloudPolicyValidator> CreateValidator(
+  std::unique_ptr<CloudPolicyValidatorBase> CreateValidator(
       std::unique_ptr<enterprise_management::PolicyFetchResponse> policy,
       CloudPolicyValidatorBase::ValidateTimestampOption option) override;
 
@@ -55,7 +64,9 @@ class POLICY_EXPORT ProfileCloudPolicyStore : public DesktopCloudPolicyStore {
       std::unique_ptr<enterprise_management::PolicyFetchResponse> policy,
       std::unique_ptr<enterprise_management::PolicySigningKey> key,
       bool validate_in_background,
-      UserCloudPolicyValidator::CompletionCallback callback) override;
+      CloudPolicyValidatorBase::CompletionCallback callback) override;
+
+  bool is_dasherless_;
 };
 
 }  // namespace policy

@@ -4,15 +4,11 @@
 
 #include "chrome/browser/ui/views/page_action/page_action_icon_loading_indicator_view.h"
 
-#include "base/location.h"
-#include "base/time/default_tick_clock.h"
-#include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/base/theme_provider.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
 #include "ui/gfx/paint_throbber.h"
+#include "ui/views/property_effects.h"
 
 PageActionIconLoadingIndicatorView::PageActionIconLoadingIndicatorView(
     PageActionIconView* parent)
@@ -27,8 +23,9 @@ PageActionIconLoadingIndicatorView::~PageActionIconLoadingIndicatorView() {
 }
 
 void PageActionIconLoadingIndicatorView::SetAnimating(bool animating) {
-  if (!throbber_start_time_ == !animating)
+  if (!throbber_start_time_ == !animating) {
     return;
+  }
 
   SetVisible(animating);
   if (animating) {
@@ -38,7 +35,7 @@ void PageActionIconLoadingIndicatorView::SetAnimating(bool animating) {
     throbber_start_time_.reset();
     animation_.Reset();
   }
-  OnPropertyChanged(&throbber_start_time_, views::kPropertyEffectsNone);
+  OnPropertyChanged(&throbber_start_time_, views::PropertyEffects::kNone);
 }
 
 bool PageActionIconLoadingIndicatorView::GetAnimating() const {
@@ -46,8 +43,9 @@ bool PageActionIconLoadingIndicatorView::GetAnimating() const {
 }
 
 void PageActionIconLoadingIndicatorView::OnPaint(gfx::Canvas* canvas) {
-  if (!throbber_start_time_)
+  if (!throbber_start_time_) {
     return;
+  }
 
   const SkColor color = GetColorProvider()->GetColor(ui::kColorThrobber);
   constexpr int kThrobberStrokeWidth = 2;
@@ -67,6 +65,6 @@ void PageActionIconLoadingIndicatorView::AnimationProgressed(
   SchedulePaint();
 }
 
-BEGIN_METADATA(PageActionIconLoadingIndicatorView, views::View)
+BEGIN_METADATA(PageActionIconLoadingIndicatorView)
 ADD_PROPERTY_METADATA(bool, Animating)
 END_METADATA

@@ -18,8 +18,9 @@ namespace protocol {
 TargetAutoAttacher::TargetAutoAttacher() = default;
 
 TargetAutoAttacher::~TargetAutoAttacher() {
-  for (auto& client : clients_)
+  for (auto& client : clients_) {
     client.AutoAttacherDestroyed(this);
+  }
 }
 
 bool TargetAutoAttacher::auto_attach() const {
@@ -40,18 +41,14 @@ TargetAutoAttacher::HandleNavigation(NavigationRequest* navigation_request,
   // |new_host| can be nullptr for navigation that doesn't commmit
   // (e.g. download). Skip possibly detaching the old agent host so the DevTools
   // message logged via the old RFH can be seen.
-  if (!new_host)
+  if (!new_host) {
     return nullptr;
+  }
 
   scoped_refptr<RenderFrameDevToolsAgentHost> agent_host =
       RenderFrameDevToolsAgentHost::FindForDangling(frame_tree_node);
 
-  bool is_portal_main_frame =
-      frame_tree_node->IsMainFrame() &&
-      static_cast<WebContentsImpl*>(WebContents::FromRenderFrameHost(new_host))
-          ->IsPortal();
-  bool needs_host_attached =
-      new_host->is_local_root_subframe() || is_portal_main_frame;
+  bool needs_host_attached = new_host->is_local_root_subframe();
 
   if (needs_host_attached) {
     if (!agent_host) {
@@ -69,8 +66,9 @@ TargetAutoAttacher::HandleNavigation(NavigationRequest* navigation_request,
 
   // At this point we don't need a host, so we must auto detach if we auto
   // attached earlier.
-  if (agent_host)
+  if (agent_host) {
     DispatchAutoDetach(agent_host.get());
+  }
 
   return nullptr;
 }
@@ -83,8 +81,9 @@ void TargetAutoAttacher::AddClient(Client* client,
                                    bool wait_for_debugger_on_start,
                                    base::OnceClosure callback) {
   clients_.AddObserver(client);
-  if (wait_for_debugger_on_start)
+  if (wait_for_debugger_on_start) {
     clients_requesting_wait_for_debugger_.insert(client);
+  }
   UpdateAutoAttach(std::move(callback));
 }
 
@@ -93,10 +92,11 @@ void TargetAutoAttacher::UpdateWaitForDebuggerOnStart(
     bool wait_for_debugger_on_start,
     base::OnceClosure callback) {
   DCHECK(clients_.HasObserver(client));
-  if (wait_for_debugger_on_start)
+  if (wait_for_debugger_on_start) {
     clients_requesting_wait_for_debugger_.insert(client);
-  else
+  } else {
     clients_requesting_wait_for_debugger_.erase(client);
+  }
   UpdateAutoAttach(std::move(callback));
 }
 
@@ -104,46 +104,53 @@ void TargetAutoAttacher::RemoveClient(Client* client) {
   clients_.RemoveObserver(client);
   clients_requesting_wait_for_debugger_.erase(client);
   DCHECK(clients_requesting_wait_for_debugger_.empty() || !clients_.empty());
-  if (clients_.empty() || clients_requesting_wait_for_debugger_.empty())
+  if (clients_.empty() || clients_requesting_wait_for_debugger_.empty()) {
     UpdateAutoAttach(base::DoNothing());
-}
-
-void TargetAutoAttacher::AppendNavigationThrottles(
-    NavigationHandle* navigation_handle,
-    std::vector<std::unique_ptr<NavigationThrottle>>* throttles) {
-  for (auto& client : clients_) {
-    std::unique_ptr<NavigationThrottle> throttle =
-        client.CreateThrottleForNavigation(this, navigation_handle);
-    if (throttle)
-      throttles->push_back(std::move(throttle));
   }
 }
 
-void TargetAutoAttacher::DispatchAutoAttach(DevToolsAgentHost* host,
+void TargetAutoAttacher::CreateAndAddNavigationThrottles(
+    NavigationThrottleRegistry& registry) {
+  for (auto& client : clients_) {
+        client.MaybeCreateAndAddNavigationThrottle(this, registry);
+  }
+}
+
+bool TargetAutoAttacher::DispatchAutoAttach(DevToolsAgentHost* host,
                                             bool waiting_for_debugger) {
+  bool should_pause = false;
   for (auto& client : clients_) {
-    client.AutoAttach(
-        this, host,
+    bool client_waiting =
         waiting_for_debugger &&
-            clients_requesting_wait_for_debugger_.contains(&client));
+        clients_requesting_wait_for_debugger_.contains(&client);
+    if (client.AutoAttach(this, host, client_waiting) && client_waiting) {
+      should_pause = true;
+    }
   }
+  // Also handle the case where the target was already attached via a different
+  // path (e.g. DevToolsAgentHostCreated). In that case a session exists and
+  // can send Runtime.runIfWaitingForDebugger, so it is safe to pause.
+  return should_pause || (waiting_for_debugger && host->IsAttached());
 }
 
 void TargetAutoAttacher::DispatchAutoDetach(DevToolsAgentHost* host) {
-  for (auto& client : clients_)
+  for (auto& client : clients_) {
     client.AutoDetach(this, host);
+  }
 }
 
 void TargetAutoAttacher::DispatchSetAttachedTargetsOfType(
     const base::flat_set<scoped_refptr<DevToolsAgentHost>>& hosts,
     const std::string& type) {
-  for (auto& client : clients_)
+  for (auto& client : clients_) {
     client.SetAttachedTargetsOfType(this, hosts, type);
+  }
 }
 
 void TargetAutoAttacher::DispatchTargetInfoChanged(DevToolsAgentHost* host) {
-  for (auto& client : clients_)
+  for (auto& client : clients_) {
     client.TargetInfoChanged(host);
+  }
 }
 
 RendererAutoAttacherBase::RendererAutoAttacherBase(

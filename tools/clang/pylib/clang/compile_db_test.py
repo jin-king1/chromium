@@ -14,13 +14,13 @@ import compile_db
 
 # Input compile DB.
 _TEST_COMPILE_DB = [
-    # Verifies that gomacc.exe is removed.
+    # Verifies that rewrapper.exe is removed.
     {
-        'command': r'C:\gomacc.exe C:\clang-cl.exe /blah',
+        'command': r'C:\rewrapper.exe C:\clang-cl.exe /blah',
     },
-    # Verifies a goma path containing a space.
+    # Verifies a rewrapper path containing a space.
     {
-        'command': r'"C:\Program Files\gomacc.exe" C:\clang-cl.exe /blah',
+        'command': r'"C:\Program Files\rewrapper.exe" C:\clang-cl.exe /blah',
     },
     # Includes a string define.
     {
@@ -93,21 +93,10 @@ class CompileDbTest(unittest.TestCase):
         'command':
         r'clang -g -Xclang -fuse-ctor-homing -funroll-loops test.cc'
     }]
-    self.assertEquals(compile_db.ProcessCompileDatabase(input_db, []),
-                      [{
-                          'command': r'clang -g -funroll-loops test.cc'
-                      }])
-
-  def testGomaccPathFiltered(self):
-    sys.platform = 'linux2'
-    input_db = [{
-        'command':
-        r'clang -g --gomacc-path /path/to/gomacc -funroll-loops test.cc'
-    }]
-    self.assertEquals(compile_db.ProcessCompileDatabase(input_db, []),
-                      [{
-                          'command': r'clang -g -funroll-loops test.cc'
-                      }])
+    self.assertEqual(compile_db.ProcessCompileDatabase(input_db, []),
+                     [{
+                         'command': r'clang -g -funroll-loops test.cc'
+                     }])
 
   def testProfileSampleUseFiltered(self):
     sys.platform = 'linux2'
@@ -115,21 +104,91 @@ class CompileDbTest(unittest.TestCase):
         'command':
         r'clang -g -fprofile-sample-use=../path/to.prof -funroll-loops test.cc'
     }]
-    self.assertEquals(compile_db.ProcessCompileDatabase(input_db, []),
-                      [{
-                          'command': r'clang -g -funroll-loops test.cc'
-                      }])
+    self.assertEqual(compile_db.ProcessCompileDatabase(input_db, []),
+                     [{
+                         'command': r'clang -g -funroll-loops test.cc'
+                     }])
 
   def testFilterArgs(self):
     sys.platform = 'linux2'
     input_db = [{'command': r'clang -g -ffile-compilation-dir=. -O3 test.cc'}]
-    self.assertEquals(
+    self.assertEqual(
         compile_db.ProcessCompileDatabase(
             input_db,
             ['-ffile-compilation-dir=.', '-frandom-flag-that-does-not-exist']),
         [{
             'command': r'clang -g -O3 test.cc'
         }])
+
+  def testRewrapperRemoved(self):
+    sys.platform = 'linux2'
+    input_db = [{
+        'command':
+        r'./buildtools/reclient/rewrapper ./bin/clang++ -O3 test.cc',
+    }]
+    self.assertEqual(compile_db.ProcessCompileDatabase(input_db, []),
+                     [{
+                         'command': r'./bin/clang++ -O3 test.cc'
+                     }])
+
+  def testRewrapperArgsRemoved(self):
+    sys.platform = 'linux2'
+    input_db = [{
+        'command':
+        r'./buildtools/reclient/rewrapper'
+        r' -cfg=./buildtools/reclient_cfgs/.../rewrapper_linux.cfg'
+        r' -exec_root=/chromium/src/'
+        r' ./bin/clang++ -O3 test.cc',
+    }]
+    self.assertEqual(compile_db.ProcessCompileDatabase(input_db, []),
+                     [{
+                         'command': r'./bin/clang++ -O3 test.cc'
+                     }])
+
+  def testClangWrapperRemoved(self):
+    sys.platform = 'linux2'
+    # Test for clang_code_coverage_wrapper.py
+    input_db = [{
+        'command':
+        r'python3 ../../build/toolchain/clang_code_coverage_wrapper.py '
+        r'--target-os=linux ../../third_party/llvm-build/Release+Asserts/bin/clang++ '
+        r'-O3 test.cc',
+    }]
+    self.assertEqual(compile_db.ProcessCompileDatabase(input_db, []), [{
+        'command':
+        r'../../third_party/llvm-build/Release+Asserts/bin/clang++ '
+        r'-O3 test.cc'
+    }])
+
+    # Test for multiple versions and prefixes.
+    input_db = [
+        {
+            'command': r'some_other_wrapper.py ./bin/clang-15 -O3 test.cc',
+        },
+        {
+            'command': r'some_other_wrapper.py ./bin/clang++-15 -O3 test.cc',
+        },
+    ]
+    self.assertEqual(
+        compile_db.ProcessCompileDatabase(input_db, []),
+        [
+            {
+                'command': r'./bin/clang-15 -O3 test.cc'
+            },
+            {
+                'command': r'./bin/clang++-15 -O3 test.cc'
+            },
+        ],
+    )
+
+    # Test for bare compiler (no wrapper).
+    input_db = [{
+        'command': r'clang++ -O3 test.cc',
+    }]
+    self.assertEqual(compile_db.ProcessCompileDatabase(input_db, []),
+                     [{
+                         'command': r'clang++ -O3 test.cc'
+                     }])
 
 
 if __name__ == '__main__':

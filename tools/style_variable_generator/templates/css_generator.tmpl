@@ -12,6 +12,15 @@
 :root {
   color-scheme: light dark;
 }
+{%- if font_faces %}
+{%- for _, value in font_faces.items() %}
+
+@font-face {
+  font-family: "{{value.family}}";
+  src: local("{{value.local_src}}");
+}
+{%- endfor %}
+{%- endif %}
 {% macro render_variables_for_mode(mode) -%}
 {%- for model_name, color in colors[mode].items() %}
 {%-   if needs_rgb_variant(color) %}
@@ -36,7 +45,7 @@
 {#
 The :not(body) adds extra selector specificity so that these colors 'win'
 against paper-styles/color.html.
-TODO(https://crbug.com/1062154): Remove once deprecated colors are removed from
+TODO(crbug.com/40122747): Remove once deprecated colors are removed from
 Chrome OS pages.
 -#}
 html:not(body) {
@@ -52,6 +61,7 @@ html {
 {%-     endfor %}
 
 {%- endif %}
+
 
 {%- if typefaces %}
 
@@ -88,7 +98,7 @@ html {
 {#-
 The :not(body) adds extra selector specificity so that these colors 'win'
 against paper-styles/color.html.
-TODO(https://crbug.com/1062154): Remove once deprecated colors are removed from
+TODO(crbug.com/40122747): Remove once deprecated colors are removed from
 Chrome OS pages.
 #}
 html:not(body) {

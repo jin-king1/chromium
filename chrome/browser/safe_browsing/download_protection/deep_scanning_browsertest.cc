@@ -3,8 +3,10 @@
 // found in the LICENSE file.
 
 #include <memory>
+#include <optional>
 
 #include "base/base64.h"
+#include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
@@ -14,7 +16,6 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
 #include "chrome/browser/download/download_commands.h"
@@ -23,23 +24,20 @@
 #include "chrome/browser/download/download_item_model.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/enterprise/connectors/connectors_service.h"
+#include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client.h"
 #include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client_factory.h"
+#include "chrome/browser/enterprise/connectors/test/deep_scanning_browsertest_base.h"
+#include "chrome/browser/enterprise/connectors/test/deep_scanning_test_utils.h"
 #include "chrome/browser/enterprise/identifiers/profile_id_service_factory.h"
-#include "chrome/browser/extensions/api/safe_browsing_private/safe_browsing_private_event_router.h"
-#include "chrome/browser/extensions/api/safe_browsing_private/safe_browsing_private_event_router_factory.h"
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/safe_browsing/cloud_content_scanning/binary_fcm_service.h"
-#include "chrome/browser/safe_browsing/cloud_content_scanning/binary_upload_service.h"
 #include "chrome/browser/safe_browsing/cloud_content_scanning/cloud_binary_upload_service.h"
 #include "chrome/browser/safe_browsing/cloud_content_scanning/cloud_binary_upload_service_factory.h"
-#include "chrome/browser/safe_browsing/cloud_content_scanning/deep_scanning_browsertest_base.h"
-#include "chrome/browser/safe_browsing/cloud_content_scanning/deep_scanning_test_utils.h"
 #include "chrome/browser/safe_browsing/download_protection/deep_scanning_request.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
-#include "chrome/browser/safe_browsing/download_protection/ppapi_download_request.h"
 #include "chrome/browser/safe_browsing/test_safe_browsing_service.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/views/file_system_access/file_system_access_test_utils.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -49,7 +47,12 @@
 #include "components/download/public/common/download_features.h"
 #include "components/enterprise/browser/identifiers/profile_id_service.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/binary_upload_service.h"
+#include "components/enterprise/connectors/core/cloud_content_scanning/common.h"
+#include "components/enterprise/connectors/core/reporting_constants.h"
+#include "components/enterprise/obfuscation/core/utils.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_client.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/content/common/file_type_policies_test_util.h"
 #include "components/safe_browsing/core/browser/db/test_database_manager.h"
@@ -62,6 +65,7 @@
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/save_page_type.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
 #include "content/public/test/test_utils.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -75,9 +79,18 @@ namespace {
 
 constexpr char kUserName[] = "test@chromium.org";
 
-// Extract the metadata proto from the raw request string. Returns true on
-// success.
-bool GetUploadMetadata(
+constexpr char kResumableUploadUrl[] =
+    "http://uploads.google.com?upload_id=ABC&upload_protocol=resumable";
+
+constexpr int64_t kSingleChunkObfuscationOverhead =
+    enterprise_obfuscation::kKeySize + enterprise_obfuscation::kNonceSize +
+    enterprise_obfuscation::kAuthTagSize;
+
+constexpr char kTestContent[] = "test content";
+
+// Extract the metadata proto from the raw request string based on multipart
+// upload protocol. Returns true on success.
+bool GetMultipartUploadMetadata(
     const std::string& upload_request,
     enterprise_connectors::ContentAnalysisRequest* out_proto) {
   // The request is of the following format, see multipart_uploader.h for
@@ -105,39 +118,49 @@ bool GetUploadMetadata(
   return out_proto->ParseFromString(serialized_metadata);
 }
 
+// Extract the metadata proto from the raw request string based on resumable
+// upload protocol. Returns true on success.
+bool GetResumableUploadMetadata(
+    const std::string& upload_request,
+    enterprise_connectors::ContentAnalysisRequest* out_proto) {
+  // The request content is of the following format, see resumable_uploader.h
+  // for details: "metadata\r\n"
+  size_t boundary_end = upload_request.find("\r\n");
+  std::string encoded_metadata = upload_request.substr(0, boundary_end);
+
+  std::string serialized_metadata;
+  base::Base64Decode(encoded_metadata, &serialized_metadata);
+
+  return out_proto->ParseFromString(serialized_metadata);
+}
 }  // namespace
 
-class FakeBinaryFCMService : public BinaryFCMService {
- public:
-  FakeBinaryFCMService() {}
-
-  void GetInstanceID(GetInstanceIDCallback callback) override {
-    std::move(callback).Run("test_instance_id");
-  }
-
-  void UnregisterInstanceID(const std::string& token,
-                            UnregisterInstanceIDCallback callback) override {
-    // Always successfully unregister.
-    std::move(callback).Run(true);
-  }
-
-  bool Connected() override { return true; }
-};
-
 // Integration tests for download deep scanning behavior, only mocking network
-// traffic and FCM dependencies.
+// traffic.
 class DownloadDeepScanningBrowserTestBase
-    : public DeepScanningBrowserTestBase,
+    : public enterprise_connectors::test::DeepScanningBrowserTestBase,
       public content::DownloadManager::Observer,
       public download::DownloadItem::Observer {
  public:
   // |connectors_machine_scope| indicates whether the Connector prefs such as
   // OnFileDownloadedEnterpriseConnector and OnSecurityEventEnterpriseConnector
   // should be set at the machine or user scope.
+  // |is_consumer| indicates whether the content scan is a consumer or an
+  // enterprise scan.
+  // |is_obfuscated| indicates whether the downloaded file has been obfuscated
+  // to prevent user access. Currently, this is done while waiting for an
+  // enterprise deep scan verdict.
   explicit DownloadDeepScanningBrowserTestBase(bool connectors_machine_scope,
-                                               bool is_consumer)
+                                               bool is_consumer,
+                                               bool is_obfuscated)
       : is_consumer_(is_consumer),
-        connectors_machine_scope_(connectors_machine_scope) {}
+        is_obfuscated_(is_obfuscated),
+        connectors_machine_scope_(connectors_machine_scope) {
+    is_obfuscated_ ? enabled_features_.push_back(
+                         enterprise_obfuscation::kEnterpriseFileObfuscation)
+                   : disabled_features_.push_back(
+                         enterprise_obfuscation::kEnterpriseFileObfuscation);
+  }
 
   void OnDownloadCreated(content::DownloadManager* manager,
                          download::DownloadItem* item) override {
@@ -150,34 +173,34 @@ class DownloadDeepScanningBrowserTestBase
   }
 
   void SetUpReporting() {
-    SetOnSecurityEventReporting(browser()->profile()->GetPrefs(),
-                                /*enabled*/ true, /*enabled_event_names*/ {},
-                                /*enabled_opt_in_events*/ {},
-                                connectors_machine_scope());
+    enterprise_connectors::test::SetOnSecurityEventReporting(
+        browser()->GetProfile()->GetPrefs(),
+        /*enabled*/ true, /*enabled_event_names*/ {},
+        /*enabled_opt_in_events*/ {}, connectors_machine_scope());
     client_ = std::make_unique<policy::MockCloudPolicyClient>();
     client_->SetDMToken("dm_token");
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
-        browser()->profile())
+        browser()->GetProfile())
         ->SetBrowserCloudPolicyClientForTesting(client_.get());
 #else
     if (connectors_machine_scope()) {
       enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
-          browser()->profile())
+          browser()->GetProfile())
           ->SetBrowserCloudPolicyClientForTesting(client_.get());
     } else {
       enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
-          browser()->profile())
+          browser()->GetProfile())
           ->SetProfileCloudPolicyClientForTesting(client_.get());
     }
 #endif
     identity_test_environment_ =
         std::make_unique<signin::IdentityTestEnvironment>();
     identity_test_environment_->MakePrimaryAccountAvailable(
-        kUserName, signin::ConsentLevel::kSync);
-    extensions::SafeBrowsingPrivateEventRouterFactory::GetForProfile(
-        browser()->profile())
+        kUserName, signin::ConsentLevel::kSignin);
+    enterprise_connectors::RealtimeReportingClientFactory::GetForProfile(
+        browser()->GetProfile())
         ->SetIdentityManagerForTesting(
             identity_test_environment_->identity_manager());
   }
@@ -186,8 +209,10 @@ class DownloadDeepScanningBrowserTestBase
 
  protected:
   void SetUp() override {
+    scoped_feature_list_.InitWithFeatures(std::move(enabled_features_),
+                                          std::move(disabled_features_));
     test_sb_factory_ = std::make_unique<TestSafeBrowsingServiceFactory>();
-    test_sb_factory_->UseV4LocalDatabaseManager();
+    test_sb_factory_->UseSBLocalDatabaseManager();
     SafeBrowsingService::RegisterFactory(test_sb_factory_.get());
 
     InProcessBrowserTest::SetUp();
@@ -210,18 +235,20 @@ class DownloadDeepScanningBrowserTestBase
     if (!is_consumer_) {
       AuthorizeForDeepScanning();
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
       SetDMTokenForTesting(policy::DMToken::CreateValidToken("dm_token"));
 #else
       if (connectors_machine_scope()) {
         SetDMTokenForTesting(policy::DMToken::CreateValidToken("dm_token"));
       } else {
-        SetProfileDMToken(browser()->profile(), "dm_token");
+        enterprise_connectors::test::SetProfileDMToken(browser()->GetProfile(),
+                                                       "dm_token");
       }
 #endif
-      SetAnalysisConnector(browser()->profile()->GetPrefs(),
-                           enterprise_connectors::FILE_DOWNLOADED,
-                           R"({
+      enterprise_connectors::test::SetAnalysisConnector(
+          browser()->GetProfile()->GetPrefs(),
+          enterprise_connectors::FILE_DOWNLOADED,
+          R"({
                               "service_provider": "google",
                               "enable": [
                                 {
@@ -232,13 +259,13 @@ class DownloadDeepScanningBrowserTestBase
                               "block_until_verdict": 1,
                               "block_password_protected": true
                             })",
-                           connectors_machine_scope());
+          connectors_machine_scope());
     }
   }
 
   void WaitForDownloadToFinish() {
     content::DownloadManager* download_manager =
-        browser()->profile()->GetDownloadManager();
+        browser()->GetProfile()->GetDownloadManager();
     content::DownloadTestObserverTerminal observer(
         download_manager, 1,
         content::DownloadTestObserver::ON_DANGEROUS_DOWNLOAD_QUIT);
@@ -260,13 +287,14 @@ class DownloadDeepScanningBrowserTestBase
   void ExpectMetadataResponse(const ClientDownloadResponse& response) {
     test_sb_factory_->test_safe_browsing_service()
         ->GetTestUrlLoaderFactory()
-        ->AddResponse(PPAPIDownloadRequest::GetDownloadRequestUrl().spec(),
+        ->AddResponse(test_sb_factory_->test_safe_browsing_service()
+                          ->download_protection_service()
+                          ->GetDownloadRequestUrl()
+                          .spec(),
                       response.SerializeAsString());
   }
 
-  void ExpectContentAnalysisSynchronousResponse(
-      const enterprise_connectors::ContentAnalysisResponse& response,
-      const std::vector<std::string>& tags) {
+  void PrepareConnectorUrl(const std::vector<std::string>& tags) {
     if (is_consumer_) {
       connector_url_ =
           "https://safebrowsing.google.com/safebrowsing/uploads/consumer";
@@ -278,6 +306,41 @@ class DownloadDeepScanningBrowserTestBase
         connector_url_ += ("&tag=" + tag);
       }
     }
+  }
+
+  void ExpectContentAnalysisResumableMetadataResponse(
+      const std::vector<std::string>& tags) {
+    PrepareConnectorUrl(tags);
+
+    auto metadata_response_head = network::CreateURLResponseHead(net::HTTP_OK);
+    metadata_response_head->headers->AddHeader("X-Goog-Upload-Status",
+                                               "active");
+    metadata_response_head->headers->AddHeader("X-Goog-Upload-URL",
+                                               kResumableUploadUrl);
+    test_sb_factory_->test_safe_browsing_service()
+        ->GetTestUrlLoaderFactory()
+        ->AddResponse(GURL(connector_url_), std::move(metadata_response_head),
+                      "metadata_response",
+                      network::URLLoaderCompletionStatus(net::OK));
+  }
+
+  void ExpectContentAnalysisResumableContentResponse(
+      const enterprise_connectors::ContentAnalysisResponse& response) {
+    auto content_response_head = network::CreateURLResponseHead(net::HTTP_OK);
+    content_response_head->headers->AddHeader("X-Goog-Upload-Status", "final");
+
+    test_sb_factory_->test_safe_browsing_service()
+        ->GetTestUrlLoaderFactory()
+        ->AddResponse(GURL(kResumableUploadUrl),
+                      std::move(content_response_head),
+                      response.SerializeAsString(),
+                      network::URLLoaderCompletionStatus(net::OK));
+  }
+
+  void ExpectContentAnalysisMultipartResponse(
+      const enterprise_connectors::ContentAnalysisResponse& response,
+      const std::vector<std::string>& tags) {
+    PrepareConnectorUrl(tags);
 
     test_sb_factory_->test_safe_browsing_service()
         ->GetTestUrlLoaderFactory()
@@ -287,17 +350,7 @@ class DownloadDeepScanningBrowserTestBase
   void ExpectContentAnalysisUploadFailure(
       net::HttpStatusCode status_code,
       const std::vector<std::string>& tags) {
-    if (is_consumer_) {
-      connector_url_ =
-          "https://safebrowsing.google.com/safebrowsing/uploads/consumer";
-    } else {
-      connector_url_ =
-          "https://safebrowsing.google.com/safebrowsing/uploads/"
-          "scan?device_token=dm_token&connector=OnFileDownloaded";
-      for (const std::string& tag : tags) {
-        connector_url_ += ("&tag=" + tag);
-      }
-    }
+    PrepareConnectorUrl(tags);
 
     test_sb_factory_->test_safe_browsing_service()
         ->GetTestUrlLoaderFactory()
@@ -310,8 +363,6 @@ class DownloadDeepScanningBrowserTestBase
     return test_file_directory;
   }
 
-  FakeBinaryFCMService* binary_fcm_service() { return binary_fcm_service_; }
-
   TestSafeBrowsingServiceFactory* test_sb_factory() {
     return test_sb_factory_.get();
   }
@@ -320,13 +371,14 @@ class DownloadDeepScanningBrowserTestBase
     return last_request_;
   }
 
-  const base::flat_set<download::DownloadItem*>& download_items() {
+  const base::flat_set<raw_ptr<download::DownloadItem, CtnExperimental>>&
+  download_items() {
     return download_items_;
   }
 
   void SetBinaryUploadServiceTestFactory() {
     CloudBinaryUploadServiceFactory::GetInstance()->SetTestingFactory(
-        browser()->profile(),
+        browser()->GetProfile(),
         base::BindRepeating(
             &DownloadDeepScanningBrowserTestBase::CreateBinaryUploadService,
             base::Unretained(this)));
@@ -334,7 +386,7 @@ class DownloadDeepScanningBrowserTestBase
 
   void ObserveDownloadManager() {
     content::DownloadManager* download_manager =
-        browser()->profile()->GetDownloadManager();
+        browser()->GetProfile()->GetDownloadManager();
     download_manager->AddObserver(this);
   }
 
@@ -349,33 +401,28 @@ class DownloadDeepScanningBrowserTestBase
             base::Unretained(this)));
   }
 
-  template <typename T>
-  void SendFcmMessage(const T& response) {
-    std::string encoded_proto;
-    base::Base64Encode(response.SerializeAsString(), &encoded_proto);
-    gcm::IncomingMessage gcm_message;
-    gcm_message.data["proto"] = encoded_proto;
-    binary_fcm_service()->OnMessage("app_id", gcm_message);
-  }
-
   void AuthorizeForDeepScanning() {
-    static_cast<safe_browsing::CloudBinaryUploadService*>(
-        CloudBinaryUploadServiceFactory::GetForProfile(browser()->profile()))
-        ->SetAuthForTesting("dm_token", /*authorized=*/true);
+    static_cast<enterprise_connectors::CloudBinaryUploadServiceBase*>(
+        CloudBinaryUploadServiceFactory::GetForProfile(browser()->GetProfile()))
+        ->SetAuthForTesting("dm_token",
+                            /*auth_check_result=*/enterprise_connectors::
+                                ScanRequestUploadResult::kSuccess);
   }
 
   bool connectors_machine_scope() const { return connectors_machine_scope_; }
 
+  bool is_obfuscated() const { return is_obfuscated_; }
+
   std::string GetProfileIdentifier() const {
-#if BUILDFLAG(IS_CHROMEOS_ASH)
-    return browser()->profile()->GetPath().AsUTF8Unsafe();
+#if BUILDFLAG(IS_CHROMEOS)
+    return browser()->GetProfile()->GetPath().AsUTF8Unsafe();
 #else
     if (connectors_machine_scope_) {
-      return browser()->profile()->GetPath().AsUTF8Unsafe();
+      return browser()->GetProfile()->GetPath().AsUTF8Unsafe();
     }
     auto* profile_id_service =
         enterprise::ProfileIdServiceFactory::GetForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     if (profile_id_service && profile_id_service->GetProfileId().has_value()) {
       return profile_id_service->GetProfileId().value();
     }
@@ -383,17 +430,18 @@ class DownloadDeepScanningBrowserTestBase
 #endif
   }
 
+  std::vector<base::test::FeatureRef> enabled_features_;
+  std::vector<base::test::FeatureRef> disabled_features_;
+
  private:
   std::unique_ptr<KeyedService> CreateBinaryUploadService(
       content::BrowserContext* browser_context) {
-    std::unique_ptr<FakeBinaryFCMService> binary_fcm_service =
-        std::make_unique<FakeBinaryFCMService>();
-    binary_fcm_service_ = binary_fcm_service.get();
     Profile* profile = Profile::FromBrowserContext(browser_context);
-    return std::make_unique<safe_browsing::CloudBinaryUploadService>(
+    return std::make_unique<
+        enterprise_connectors::CloudBinaryUploadServiceBase>(
         g_browser_process->safe_browsing_service()->GetURLLoaderFactory(
             profile),
-        profile, std::move(binary_fcm_service));
+        std::make_unique<safe_browsing::CloudBinaryUploadService>(profile));
   }
 
   std::string GetDataPipeUploadData(const network::ResourceRequest& request) {
@@ -424,10 +472,11 @@ class DownloadDeepScanningBrowserTestBase
     EXPECT_TRUE(data_pipe_consumer.is_valid());
     std::string body;
     while (true) {
-      char buffer[1024];
-      uint32_t read_size = sizeof(buffer);
+      std::string buffer(1024, '\0');
+      size_t actually_read_bytes = 0;
       MojoResult result = data_pipe_consumer->ReadData(
-          buffer, &read_size, MOJO_READ_DATA_FLAG_NONE);
+          MOJO_READ_DATA_FLAG_NONE, base::as_writable_byte_span(buffer),
+          actually_read_bytes);
       if (result == MOJO_RESULT_SHOULD_WAIT) {
         base::RunLoop().RunUntilIdle();
         continue;
@@ -435,52 +484,78 @@ class DownloadDeepScanningBrowserTestBase
       if (result != MOJO_RESULT_OK) {
         break;
       }
-      body.append(buffer, read_size);
+      body.append(std::string_view(buffer).substr(0, actually_read_bytes));
     }
 
     return body;
   }
 
-  void InterceptRequest(const network::ResourceRequest& request) {
-    if (is_consumer_) {
-      if (request.url == safe_browsing::CloudBinaryUploadService::GetUploadUrl(
-                             /*is_consumer_scan_eligible=*/true)) {
-        ASSERT_TRUE(
-            GetUploadMetadata(GetDataPipeUploadData(request), &last_request_));
-        if (waiting_for_upload_closure_) {
-          std::move(waiting_for_upload_closure_).Run();
-        }
-      }
-    } else {
-      if (request.url == safe_browsing::CloudBinaryUploadService::GetUploadUrl(
-                             /*is_consumer_scan_eligible=*/false)) {
-        ASSERT_TRUE(
-            GetUploadMetadata(GetDataPipeUploadData(request), &last_request_));
-        if (waiting_for_upload_closure_) {
-          std::move(waiting_for_upload_closure_).Run();
-        }
-      }
-
-      if (request.url == connector_url_) {
-        ASSERT_TRUE(
-            GetUploadMetadata(GetDataPipeUploadData(request), &last_request_));
-        if (waiting_for_upload_closure_) {
-          std::move(waiting_for_upload_closure_).Run();
-        }
-      }
+  bool MaybeHandleDownloadRequest(const network::ResourceRequest& request) {
+    if (request.url != test_sb_factory_->test_safe_browsing_service()
+                           ->download_protection_service()
+                           ->GetDownloadRequestUrl()) {
+      return false;
     }
+    if (waiting_for_metadata_closure_) {
+      std::move(waiting_for_metadata_closure_).Run();
+    }
+    return true;
+  }
 
-    if (request.url == PPAPIDownloadRequest::GetDownloadRequestUrl()) {
-      if (waiting_for_metadata_closure_) {
-        std::move(waiting_for_metadata_closure_).Run();
+  void HandleConsumerRequest(const network::ResourceRequest& request) {
+    if (request.url ==
+        enterprise_connectors::CloudBinaryUploadServiceBase::GetUploadUrl(
+            /*is_consumer_scan_eligible=*/true)) {
+      ASSERT_TRUE(GetMultipartUploadMetadata(GetDataPipeUploadData(request),
+                                             &last_request_));
+      if (waiting_for_upload_closure_) {
+        std::move(waiting_for_upload_closure_).Run();
       }
     }
   }
 
+  void HandleEnterpriseRequest(const network::ResourceRequest& request) {
+    if (request.url == GURL(kResumableUploadUrl)) {
+      GetDataPipeUploadData(request);
+      if (waiting_for_upload_closure_) {
+        std::move(waiting_for_upload_closure_).Run();
+      }
+      return;
+    }
+
+    if (request.url ==
+        enterprise_connectors::CloudBinaryUploadServiceBase::GetUploadUrl(
+            /*is_consumer_scan_eligible=*/false)) {
+      ASSERT_TRUE(GetMultipartUploadMetadata(GetDataPipeUploadData(request),
+                                             &last_request_));
+      if (waiting_for_upload_closure_) {
+        std::move(waiting_for_upload_closure_).Run();
+      }
+      return;
+    }
+
+    if (request.url == connector_url_) {
+      ASSERT_TRUE(GetResumableUploadMetadata(network::GetUploadData(request),
+                                             &last_request_));
+    }
+  }
+
+  void InterceptRequest(const network::ResourceRequest& request) {
+    if (MaybeHandleDownloadRequest(request)) {
+      return;
+    }
+    if (is_consumer_) {
+      HandleConsumerRequest(request);
+      return;
+    }
+    HandleEnterpriseRequest(request);
+  }
+
+  base::test::ScopedFeatureList scoped_feature_list_;
   bool is_consumer_;
+  bool is_obfuscated_;
 
   std::unique_ptr<TestSafeBrowsingServiceFactory> test_sb_factory_;
-  raw_ptr<FakeBinaryFCMService, DanglingUntriaged> binary_fcm_service_;
 
   enterprise_connectors::ContentAnalysisRequest last_request_;
 
@@ -489,7 +564,8 @@ class DownloadDeepScanningBrowserTestBase
   base::OnceClosure waiting_for_upload_closure_;
   base::OnceClosure waiting_for_metadata_closure_;
 
-  base::flat_set<download::DownloadItem*> download_items_;
+  base::flat_set<raw_ptr<download::DownloadItem, CtnExperimental>>
+      download_items_;
 
   std::unique_ptr<policy::MockCloudPolicyClient> client_;
   std::unique_ptr<signin::IdentityTestEnvironment> identity_test_environment_;
@@ -504,19 +580,52 @@ class ConsumerDeepScanningBrowserTest
  public:
   ConsumerDeepScanningBrowserTest()
       : DownloadDeepScanningBrowserTestBase(/*connectors_machine_scope=*/true,
-                                            /*is_consumer=*/true) {}
+                                            /*is_consumer=*/true,
+                                            /*is_obfuscated=*/false) {}
 };
+
+IN_PROC_BROWSER_TEST_F(ConsumerDeepScanningBrowserTest, ErrorIndicatesFailure) {
+  SetSafeBrowsingState(browser()->GetProfile()->GetPrefs(),
+                       SafeBrowsingState::ENHANCED_PROTECTION);
+
+  ClientDownloadResponse metadata_response;
+  metadata_response.set_request_deep_scan(true);
+  ExpectMetadataResponse(metadata_response);
+
+  GURL url = embedded_test_server()->GetURL(
+      "/safe_browsing/download_protection/zipfile_two_archives.zip");
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+
+  ExpectContentAnalysisUploadFailure(net::HTTP_INTERNAL_SERVER_ERROR, {});
+
+  WaitForDownloadToFinish();
+
+  ASSERT_EQ(download_items().size(), 1u);
+  download::DownloadItem* download = *download_items().begin();
+  EXPECT_EQ(download->GetState(), download::DownloadItem::COMPLETE);
+  EXPECT_EQ(
+      download->GetDangerType(),
+      download::DownloadDangerType::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_FAILED);
+}
 
 class DownloadDeepScanningBrowserTest
     : public DownloadDeepScanningBrowserTestBase,
-      public testing::WithParamInterface<bool> {
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
   DownloadDeepScanningBrowserTest()
-      : DownloadDeepScanningBrowserTestBase(GetParam(), /*is_consumer=*/false) {
-  }
+      : DownloadDeepScanningBrowserTestBase(
+            /*connectors_machine_scope=*/std::get<0>(GetParam()),
+            /*is_consumer=*/false,
+            /*is_obfuscated=*/std::get<1>(GetParam())) {}
 };
 
-INSTANTIATE_TEST_SUITE_P(, DownloadDeepScanningBrowserTest, testing::Bool());
+INSTANTIATE_TEST_SUITE_P(,
+                         DownloadDeepScanningBrowserTest,
+                         testing::Combine(
+                             /*connectors_machine_scope=*/testing::Bool(),
+                             /*is_obfuscated=*/testing::Bool()));
 
 IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
                        SafeDownloadHasCorrectDangerType) {
@@ -535,7 +644,15 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   dlp_result->set_tag("dlp");
   dlp_result->set_status(
       enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  ExpectContentAnalysisSynchronousResponse(sync_response, {"dlp", "malware"});
+
+  // The malware scan finishes synchronously, and doesn't find anything.
+  auto* malware_result = sync_response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
 
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
@@ -545,18 +662,69 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
 
   WaitForDeepScanRequest();
 
-  // The malware scan finishes asynchronously, and doesn't find anything.
-  enterprise_connectors::ContentAnalysisResponse async_response;
-  async_response.set_request_token(last_request().request_token());
-  auto* malware_result = async_response.add_results();
-  malware_result->set_tag("malware");
-  malware_result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  SendFcmMessage(async_response);
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
 
   WaitForDownloadToFinish();
 
   // The file should be deep scanned, and safe.
+  ASSERT_EQ(download_items().size(), 1u);
+  download::DownloadItem* item = *download_items().begin();
+  EXPECT_EQ(
+      item->GetDangerType(),
+      download::DownloadDangerType::DOWNLOAD_DANGER_TYPE_DEEP_SCANNED_SAFE);
+  EXPECT_EQ(item->GetState(), download::DownloadItem::COMPLETE);
+}
+
+IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest, DataURLDownloadIsTruncated) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+
+  ClientDownloadResponse metadata_response;
+  metadata_response.set_verdict(ClientDownloadResponse::SAFE);
+  ExpectMetadataResponse(metadata_response);
+
+  enterprise_connectors::ContentAnalysisResponse sync_response;
+  auto* dlp_result = sync_response.add_results();
+  dlp_result->set_tag("dlp");
+  dlp_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  auto* malware_result = sync_response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
+
+  // Needs to be an octet-stream to trigger download
+  std::string data_url_string = "data:application/octet-stream;base64,";
+  data_url_string.append(3000, 'A');
+  GURL url(data_url_string);
+
+  ui_test_utils::NavigateToURLWithDisposition(
+      browser(), url, WindowOpenDisposition::CURRENT_TAB,
+      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
+
+  WaitForDeepScanRequest();
+
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
+
+  // The truncate limit is 1024 characters, but may be less to ensure a valid
+  // base64 encoding.
+  EXPECT_LE(last_request().request_data().url().size(), 1024u);
+  EXPECT_GT(last_request().request_data().referrer_chain_size(), 0);
+  EXPECT_LE(last_request().request_data().referrer_chain(0).url().size(), 1024u);
+
+  ASSERT_TRUE(last_request().request_data().has_csd());
+  ASSERT_GT(last_request().request_data().csd().referrer_chain_size(), 0);
+  ASSERT_GT(last_request().request_data().csd().resources_size(), 0);
+  EXPECT_LE(last_request().request_data().csd().resources(0).url().size(), 1024u);
+  EXPECT_LE(last_request().request_data().csd().url().size(), 1024u);
+
+  WaitForDownloadToFinish();
+
   ASSERT_EQ(download_items().size(), 1u);
   download::DownloadItem* item = *download_items().begin();
   EXPECT_EQ(
@@ -581,7 +749,15 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest, FailedScanFailsOpen) {
   dlp_result->set_tag("dlp");
   dlp_result->set_status(
       enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  ExpectContentAnalysisSynchronousResponse(sync_response, {"dlp", "malware"});
+
+  // The malware scan finishes synchronously, and fails.
+  auto* malware_result = sync_response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::FAILURE);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
 
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
@@ -591,14 +767,8 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest, FailedScanFailsOpen) {
 
   WaitForDeepScanRequest();
 
-  // The malware scan finishes asynchronously, and fails
-  enterprise_connectors::ContentAnalysisResponse async_response;
-  async_response.set_request_token(last_request().request_token());
-  auto* malware_result = async_response.add_results();
-  malware_result->set_tag("malware");
-  malware_result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::FAILURE);
-  SendFcmMessage(async_response);
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
 
   WaitForDownloadToFinish();
 
@@ -627,7 +797,18 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   dlp_result->set_tag("dlp");
   dlp_result->set_status(
       enterprise_connectors::ContentAnalysisResponse::Result::FAILURE);
-  ExpectContentAnalysisSynchronousResponse(sync_response, {"dlp", "malware"});
+
+  // The malware scan finishes synchronously, and finds malware.
+  auto* malware_result = sync_response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+  auto* malware_rule = malware_result->add_triggered_rules();
+  malware_rule->set_action(enterprise_connectors::TriggeredRule::BLOCK);
+  malware_rule->set_rule_name("malware");
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
 
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
@@ -637,17 +818,8 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
 
   WaitForDeepScanRequest();
 
-  // The malware scan finishes asynchronously, and finds malware.
-  enterprise_connectors::ContentAnalysisResponse async_response;
-  async_response.set_request_token(last_request().request_token());
-  auto* malware_result = async_response.add_results();
-  malware_result->set_tag("malware");
-  malware_result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  auto* malware_rule = malware_result->add_triggered_rules();
-  malware_rule->set_action(enterprise_connectors::TriggeredRule::BLOCK);
-  malware_rule->set_rule_name("malware");
-  SendFcmMessage(async_response);
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
 
   WaitForDownloadToFinish();
 
@@ -679,7 +851,15 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
       enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
   auto* dlp_rule = dlp_result->add_triggered_rules();
   dlp_rule->set_action(enterprise_connectors::TriggeredRule::BLOCK);
-  ExpectContentAnalysisSynchronousResponse(sync_response, {"dlp", "malware"});
+
+  // The malware scan finishes synchronously, and fails.
+  auto* malware_result = sync_response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::FAILURE);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
 
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
@@ -689,14 +869,8 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
 
   WaitForDeepScanRequest();
 
-  // The malware scan finishes asynchronously, and fails.
-  enterprise_connectors::ContentAnalysisResponse async_response;
-  async_response.set_request_token(last_request().request_token());
-  auto* malware_result = async_response.add_results();
-  malware_result->set_tag("malware");
-  malware_result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::FAILURE);
-  SendFcmMessage(async_response);
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
 
   WaitForDownloadToFinish();
 
@@ -709,8 +883,16 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   EXPECT_EQ(item->GetState(), download::DownloadItem::INTERRUPTED);
 }
 
+// Regardless of resumable or multipart upload protocol, when a file is password
+// protected and the `block_password_protected` setting is on, the file should
+// be blocked.
 IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
                        PasswordProtectedTxtFilesAreBlocked) {
+  // TODO(crbug.com/378490429): Add support for obfuscated password protected
+  // files.
+  if (is_obfuscated()) {
+    GTEST_SKIP() << "Encryption status cannot be detected in obfuscated files.";
+  }
   // This allows the blocking DM token reads happening on profile-Connector
   // triggers.
   base::ScopedAllowBlockingForTesting allow_blocking;
@@ -737,102 +919,10 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   EXPECT_EQ(item->GetState(), download::DownloadItem::INTERRUPTED);
 }
 
-IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest, MultipleFCMResponses) {
-  // This allows the blocking DM token reads happening on profile-Connector
-  // triggers.
-  base::ScopedAllowBlockingForTesting allow_blocking;
-
-  SetUpReporting();
-  base::HistogramTester histograms;
-
-  // The file is SAFE according to the metadata check
-  ClientDownloadResponse metadata_response;
-  metadata_response.set_verdict(ClientDownloadResponse::SAFE);
-  ExpectMetadataResponse(metadata_response);
-
-  // No scan runs synchronously.
-  enterprise_connectors::ContentAnalysisResponse sync_response;
-  ExpectContentAnalysisSynchronousResponse(sync_response, {"dlp", "malware"});
-
-  GURL url = embedded_test_server()->GetURL(
-      "/safe_browsing/download_protection/zipfile_two_archives.zip");
-  ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
-
-  WaitForDeepScanRequest();
-
-  // The malware scan finishes asynchronously, and finds malware.
-  enterprise_connectors::ContentAnalysisResponse async_response_1;
-  async_response_1.set_request_token(last_request().request_token());
-  auto* result = async_response_1.add_results();
-  result->set_tag("malware");
-  result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  auto* malware_rule_1 = result->add_triggered_rules();
-  malware_rule_1->set_action(enterprise_connectors::TriggeredRule::BLOCK);
-  malware_rule_1->set_rule_name("malware");
-  SendFcmMessage(async_response_1);
-
-  // A single unsafe event should be recorded for this request.
-  std::set<std::string> zip_types = {"application/zip",
-                                     "application/x-zip-compressed"};
-  EventReportValidator validator(client());
-  validator.ExpectDangerousDeepScanningResult(
-      /*url*/ url.spec(),
-      /*source*/ "",
-      /*destination*/ "",
-      /*filename*/ "zipfile_two_archives.zip",
-      // sha256sum chrome/test/data/safe_browsing/download_protection/\
-      // zipfile_two_archives.zip |  tr '[:lower:]' '[:upper:]'
-      /*sha*/
-      "339C8FFDAE735C4F1846D0E6FF07FBD85CAEE6D96045AAEF5B30F3220836643C",
-      /*threat_type*/ "DANGEROUS",
-      /*trigger*/
-      extensions::SafeBrowsingPrivateEventRouter::kTriggerFileDownload,
-      /*mimetypes*/ &zip_types,
-      /*size*/ 276,
-      /*result*/ EventResultToString(EventResult::WARNED),
-      /*username*/ kUserName,
-      /*profile_identifier*/ GetProfileIdentifier(),
-      /*scan_id*/ last_request().request_token());
-
-  // The DLP scan finishes asynchronously, and finds nothing. The malware result
-  // is attached to the response again.
-  enterprise_connectors::ContentAnalysisResponse async_response_2;
-  async_response_2.set_request_token(last_request().request_token());
-  auto* malware_result = async_response_2.add_results();
-  malware_result->set_tag("malware");
-  malware_result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  auto* malware_rule_2 = malware_result->add_triggered_rules();
-  malware_rule_2->set_action(enterprise_connectors::TriggeredRule::BLOCK);
-  malware_rule_2->set_rule_name("malware");
-  auto* dlp_result = async_response_2.add_results();
-  dlp_result->set_tag("dlp");
-  dlp_result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  SendFcmMessage(async_response_2);
-
-  // The file should be blocked.
-  ASSERT_EQ(download_items().size(), 1u);
-  download::DownloadItem* item = *download_items().begin();
-  EXPECT_EQ(
-      item->GetDangerType(),
-      download::DownloadDangerType::DOWNLOAD_DANGER_TYPE_DANGEROUS_CONTENT);
-  EXPECT_EQ(item->GetState(), download::DownloadItem::IN_PROGRESS);
-
-  // UMAs for this request should only be recorded once.
-  histograms.ExpectUniqueSample("SafeBrowsingBinaryUploadRequest.Result",
-                                BinaryUploadService::Result::SUCCESS, 1);
-  histograms.ExpectUniqueSample("SafeBrowsingBinaryUploadRequest.DlpResult",
-                                true, 1);
-  histograms.ExpectUniqueSample("SafeBrowsingBinaryUploadRequest.MalwareResult",
-                                true, 1);
-}
-
+// TODO(https://crbug.com/414822762): Reenable the test once the flakiness is
+// fixed.
 IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
-                       DlpAndMalwareViolations) {
+                       DISABLED_DlpAndMalwareViolations) {
   // This allows the blocking DM token reads happening on profile-Connector
   // triggers.
   base::ScopedAllowBlockingForTesting allow_blocking;
@@ -863,30 +953,43 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   auto* malware_rule = malware_result->add_triggered_rules();
   malware_rule->set_action(enterprise_connectors::TriggeredRule::WARN);
   malware_rule->set_rule_name("uws");
-  ExpectContentAnalysisSynchronousResponse(sync_response, {"dlp", "malware"});
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
 
   WaitForDeepScanRequest();
 
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
+
   // Both the DLP and malware violations generate an event.
+  base::RunLoop run_loop;
   std::set<std::string> zip_types = {"application/zip",
                                      "application/x-zip-compressed"};
-  EventReportValidator validator(client());
+  enterprise_connectors::test::EventReportValidator validator(client());
+  validator.SetDoneClosure(run_loop.QuitClosure());
   validator.ExpectSensitiveDataEventAndDangerousDeepScanningResult(
       /*url*/ url.spec(),
+      /*tab_url*/ url.spec(),
       /*source*/ "",
       /*destination*/ "",
-      /*filename*/ "zipfile_two_archives.zip",
+      /*filename*/
+      connectors_machine_scope()
+          ? (*download_items().begin())->GetTargetFilePath().AsUTF8Unsafe()
+          : "zipfile_two_archives.zip",
       // sha256sum chrome/test/data/safe_browsing/download_protection/\
       // zipfile_two_archives.zip |  tr '[:lower:]' '[:upper:]'
       /*sha*/
       "339C8FFDAE735C4F1846D0E6FF07FBD85CAEE6D96045AAEF5B30F3220836643C",
       /*threat_type*/ "POTENTIALLY_UNWANTED",
       /*trigger*/
-      extensions::SafeBrowsingPrivateEventRouter::kTriggerFileDownload,
+      enterprise_connectors::kFileDownloadDataTransferEventTrigger,
       /*dlp_verdict*/ *dlp_result,
       /*mimetypes*/ &zip_types,
-      /*size*/ 276,
-      /*result*/ EventResultToString(EventResult::WARNED),
+      /*size*/ is_obfuscated() ? 276 + kSingleChunkObfuscationOverhead : 276,
+      /*result*/
+      enterprise_connectors::EventResultToString(
+          enterprise_connectors::EventResult::WARNED),
       /*username*/ kUserName,
       /*profile_identifier*/ GetProfileIdentifier(),
       /*scan_id*/ last_request().request_token());
@@ -901,12 +1004,14 @@ IN_PROC_BROWSER_TEST_P(DownloadDeepScanningBrowserTest,
   EXPECT_EQ(item->GetState(), download::DownloadItem::IN_PROGRESS);
 
   // UMAs for this request should only be recorded once.
-  histograms.ExpectUniqueSample("SafeBrowsingBinaryUploadRequest.Result",
-                                BinaryUploadService::Result::SUCCESS, 1);
+  histograms.ExpectUniqueSample(
+      "SafeBrowsingBinaryUploadRequest.Result",
+      enterprise_connectors::ScanRequestUploadResult::kSuccess, 1);
   histograms.ExpectUniqueSample("SafeBrowsingBinaryUploadRequest.DlpResult",
                                 true, 1);
   histograms.ExpectUniqueSample("SafeBrowsingBinaryUploadRequest.MalwareResult",
                                 true, 1);
+  run_loop.Run();
 }
 
 class DownloadRestrictionsDeepScanningBrowserTest
@@ -914,19 +1019,22 @@ class DownloadRestrictionsDeepScanningBrowserTest
       public testing::WithParamInterface<bool> {
  public:
   DownloadRestrictionsDeepScanningBrowserTest()
-      : DownloadDeepScanningBrowserTestBase(GetParam(), /*is_consumer=*/false) {
-  }
+      : DownloadDeepScanningBrowserTestBase(
+            /*connectors_machine_scope=*/GetParam(),
+            /*is_consumer=*/false,
+            /*is_obfuscated=*/false) {}
   ~DownloadRestrictionsDeepScanningBrowserTest() override = default;
 
   void SetUpOnMainThread() override {
     DownloadDeepScanningBrowserTestBase::SetUpOnMainThread();
 
-    browser()->profile()->GetPrefs()->SetInteger(
-        prefs::kDownloadRestrictions,
-        static_cast<int>(DownloadPrefs::DownloadRestriction::DANGEROUS_FILES));
-    SetAnalysisConnector(browser()->profile()->GetPrefs(),
-                         enterprise_connectors::FILE_DOWNLOADED,
-                         R"({
+    browser()->GetProfile()->GetPrefs()->SetInteger(
+        policy::policy_prefs::kDownloadRestrictions,
+        static_cast<int>(policy::DownloadRestriction::DANGEROUS_FILES));
+    enterprise_connectors::test::SetAnalysisConnector(
+        browser()->GetProfile()->GetPrefs(),
+        enterprise_connectors::FILE_DOWNLOADED,
+        R"({
                               "service_provider": "google",
                               "enable": [
                                 {
@@ -936,8 +1044,11 @@ class DownloadRestrictionsDeepScanningBrowserTest
                               ],
                               "block_until_verdict": 1
                             })",
-                         connectors_machine_scope());
+        connectors_machine_scope());
   }
+
+ private:
+  base::test::ScopedFeatureList feature_list;
 };
 
 INSTANTIATE_TEST_SUITE_P(,
@@ -959,27 +1070,56 @@ IN_PROC_BROWSER_TEST_P(DownloadRestrictionsDeepScanningBrowserTest,
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
 
-  EventReportValidator validator(client());
+  base::FilePath main_file = DownloadPrefs(browser()->GetProfile())
+                                 .DownloadPath()
+                                 .AppendASCII("zipfile_two_archives.zip");
+  base::RunLoop run_loop;
+  enterprise_connectors::test::EventReportValidator validator(client());
+  validator.SetDoneClosure(run_loop.QuitClosure());
   std::set<std::string> zip_types = {"application/zip",
                                      "application/x-zip-compressed"};
-  validator.ExpectDangerousDownloadEvent(
-      /*url*/ url.spec(),
-      /*filename*/ "zipfile_two_archives.zip",
-      // sha256sum chrome/test/data/safe_browsing/download_protection/\
-      // zipfile_two_archives.zip |  tr '[:lower:]' '[:upper:]'
-      /*sha*/ "",
-      /*threat_type*/ "DANGEROUS_FILE_TYPE",
-      /*trigger*/
-      extensions::SafeBrowsingPrivateEventRouter::kTriggerFileDownload,
-      /*mimetypes*/ &zip_types,
-      /*size*/ 276,
-      /*result*/ EventResultToString(EventResult::BLOCKED),
-      /*username*/ kUserName,
-      /*profile_identifier*/ GetProfileIdentifier());
+
+  chrome::cros::reporting::proto::SafeBrowsingDangerousDownloadEvent
+      expected_event;
+  expected_event.set_url(url.spec());
+  expected_event.set_tab_url(url.spec());
+  expected_event.set_source("");
+  expected_event.set_destination("");
+#if BUILDFLAG(IS_CHROMEOS)
+  expected_event.set_file_name("zipfile_two_archives.zip");
+#else
+  connectors_machine_scope()
+      ? expected_event.set_file_name(main_file.AsUTF8Unsafe())
+      : expected_event.set_file_name("zipfile_two_archives.zip");
+#endif
+  expected_event.set_content_size(276);
+  expected_event.set_download_digest_sha256("");
+  expected_event.set_threat_type(
+      chrome::cros::reporting::proto::SafeBrowsingDangerousDownloadEvent::
+          DANGEROUS_FILE_TYPE);
+
+  expected_event.set_trigger(
+      chrome::cros::reporting::proto::DataTransferEventTrigger::FILE_DOWNLOAD);
+
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_BLOCKED);
+  expected_event.set_clicked_through(false);
+
+  ::chrome::cros::reporting::proto::UrlInfo referrers;
+  referrers.set_url(url.spec());
+  referrers.set_ip(embedded_test_server()->base_url().host());
+  *expected_event.add_referrers() = referrers;
+
+  expected_event.set_profile_identifier(GetProfileIdentifier());
+  expected_event.set_profile_user_name(kUserName);
+
+  validator.ExpectDangerousDownloadEvent(std::move(expected_event), &zip_types);
 
   WaitForDownloadToFinish();
+
+  run_loop.Run();
 
   ASSERT_EQ(download_items().size(), 1u);
   download::DownloadItem* item = *download_items().begin();
@@ -990,26 +1130,30 @@ IN_PROC_BROWSER_TEST_P(DownloadRestrictionsDeepScanningBrowserTest,
 
 class AllowlistedUrlDeepScanningBrowserTest
     : public DownloadDeepScanningBrowserTestBase,
-      public testing::WithParamInterface<bool> {
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
   AllowlistedUrlDeepScanningBrowserTest()
-      : DownloadDeepScanningBrowserTestBase(GetParam(), /*is_consumer=*/false) {
-  }
+      : DownloadDeepScanningBrowserTestBase(
+            /*connectors_machine_scope=*/std::get<0>(GetParam()),
+            /*is_consumer=*/false,
+            /*is_obfuscated=*/std::get<1>(GetParam())) {}
   ~AllowlistedUrlDeepScanningBrowserTest() override = default;
 
   void SetUpOnMainThread() override {
     DownloadDeepScanningBrowserTestBase::SetUpOnMainThread();
 
-    base::Value::List domain_list;
-    domain_list.Append(embedded_test_server()->base_url().host_piece());
-    browser()->profile()->GetPrefs()->SetList(
+    base::ListValue domain_list;
+    domain_list.Append(embedded_test_server()->base_url().host());
+    browser()->GetProfile()->GetPrefs()->SetList(
         prefs::kSafeBrowsingAllowlistDomains, std::move(domain_list));
   }
 };
 
 INSTANTIATE_TEST_SUITE_P(,
                          AllowlistedUrlDeepScanningBrowserTest,
-                         testing::Bool());
+                         testing::Combine(
+                             /*connectors_machine_scope=*/testing::Bool(),
+                             /*is_obfuscated=*/testing::Bool()));
 
 IN_PROC_BROWSER_TEST_P(AllowlistedUrlDeepScanningBrowserTest,
                        AllowlistedUrlStillDoesDlpAndMalware) {
@@ -1037,15 +1181,19 @@ IN_PROC_BROWSER_TEST_P(AllowlistedUrlDeepScanningBrowserTest,
   result->set_status(
       enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
 
-  ExpectContentAnalysisSynchronousResponse(sync_response, {"dlp", "malware"});
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(sync_response);
 
   GURL url = embedded_test_server()->GetURL(
       "/safe_browsing/download_protection/zipfile_two_archives.zip");
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
 
   WaitForDeepScanRequest();
+
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
 
   WaitForDownloadToFinish();
 
@@ -1074,7 +1222,6 @@ class WaitForModalObserver : public DeepScanningRequest::Observer {
 
   void Wait() { run_loop_.Run(); }
 
-  void OnModalShown(DeepScanningRequest* request) override { run_loop_.Quit(); }
   void OnFinish(DeepScanningRequest* request) override {
     request_->RemoveObserver(this);
     request_ = nullptr;
@@ -1112,139 +1259,16 @@ class WaitForFinishObserver : public DeepScanningRequest::Observer {
   base::RunLoop run_loop_;
 };
 
-IN_PROC_BROWSER_TEST_F(ConsumerDeepScanningBrowserTest,
-                       RetriableErrorShowsModal) {
-  SetSafeBrowsingState(browser()->profile()->GetPrefs(),
-                       SafeBrowsingState::ENHANCED_PROTECTION);
-
-  ClientDownloadResponse metadata_response;
-  metadata_response.set_request_deep_scan(true);
-  ExpectMetadataResponse(metadata_response);
-
-  GURL url = embedded_test_server()->GetURL(
-      "/safe_browsing/download_protection/zipfile_two_archives.zip");
-  ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
-
-  // Wait for download to show the prompt
-  {
-    content::DownloadManager* download_manager =
-        browser()->profile()->GetDownloadManager();
-    content::DownloadTestObserverTerminal observer(
-        download_manager, 1,
-        content::DownloadTestObserver::ON_DANGEROUS_DOWNLOAD_QUIT);
-    observer.WaitForFinished();
-  }
-
-  // Trigger upload, bypassing the prompt
-  {
-    ASSERT_EQ(download_items().size(), 1u);
-    DownloadItemModel model(*download_items().begin());
-    DownloadCommands(model.GetWeakPtr())
-        .ExecuteCommand(DownloadCommands::DEEP_SCAN);
-  }
-
-  ExpectContentAnalysisUploadFailure(net::HTTP_INTERNAL_SERVER_ERROR, {});
-
-  // Wait for the modal dialog
-  {
-    auto deep_scan_requests = test_sb_factory()
-                                  ->test_safe_browsing_service()
-                                  ->download_protection_service()
-                                  ->GetDeepScanningRequests();
-    ASSERT_EQ(deep_scan_requests.size(), 1u);
-    WaitForModalObserver observer(*deep_scan_requests.begin());
-    observer.Wait();
-  }
-
-  web_modal::WebContentsModalDialogManager* web_contents_modal_dialog_manager =
-      web_modal::WebContentsModalDialogManager::FromWebContents(
-          browser()->tab_strip_model()->GetActiveWebContents());
-  EXPECT_TRUE(web_contents_modal_dialog_manager->IsDialogActive());
-
-  // If the dialog remains open, the download remains in progress. This blocks
-  // shutdown, so close the modal.
-  web_contents_modal_dialog_manager->CloseAllDialogs();
-
-  WaitForDownloadToFinish();
-
-  ASSERT_EQ(download_items().size(), 1u);
-  download::DownloadItem* download = *download_items().begin();
-  EXPECT_EQ(download->GetState(), download::DownloadItem::COMPLETE);
-  EXPECT_EQ(download->GetDangerType(),
-            download::DownloadDangerType::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
-}
-
-IN_PROC_BROWSER_TEST_F(ConsumerDeepScanningBrowserTest,
-                       NonretriableErrorDoesNotShowModal) {
-  SetSafeBrowsingState(browser()->profile()->GetPrefs(),
-                       SafeBrowsingState::ENHANCED_PROTECTION);
-
-  ClientDownloadResponse metadata_response;
-  metadata_response.set_request_deep_scan(true);
-  ExpectMetadataResponse(metadata_response);
-
-  // An encrypted file will always be encrypted, and therefore not suitable for
-  // deep scanning.
-  GURL url = embedded_test_server()->GetURL(
-      "/safe_browsing/download_protection/encrypted.zip");
-  ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
-
-  // Wait for download to show the prompt
-  {
-    content::DownloadManager* download_manager =
-        browser()->profile()->GetDownloadManager();
-    content::DownloadTestObserverTerminal observer(
-        download_manager, 1,
-        content::DownloadTestObserver::ON_DANGEROUS_DOWNLOAD_QUIT);
-    observer.WaitForFinished();
-  }
-
-  // Trigger upload, bypassing the prompt
-  {
-    ASSERT_EQ(download_items().size(), 1u);
-    DownloadItemModel model(*download_items().begin());
-    DownloadCommands(model.GetWeakPtr())
-        .ExecuteCommand(DownloadCommands::DEEP_SCAN);
-  }
-
-  // Wait for deep scanning to finish
-  {
-    auto deep_scan_requests = test_sb_factory()
-                                  ->test_safe_browsing_service()
-                                  ->download_protection_service()
-                                  ->GetDeepScanningRequests();
-    ASSERT_EQ(deep_scan_requests.size(), 1u);
-    WaitForFinishObserver observer(*deep_scan_requests.begin());
-    observer.Wait();
-  }
-
-  web_modal::WebContentsModalDialogManager* web_contents_modal_dialog_manager =
-      web_modal::WebContentsModalDialogManager::FromWebContents(
-          browser()->tab_strip_model()->GetActiveWebContents());
-  EXPECT_FALSE(web_contents_modal_dialog_manager->IsDialogActive());
-
-  WaitForDownloadToFinish();
-
-  ASSERT_EQ(download_items().size(), 1u);
-  download::DownloadItem* download = *download_items().begin();
-  EXPECT_EQ(download->GetState(), download::DownloadItem::COMPLETE);
-  EXPECT_EQ(download->GetDangerType(),
-            download::DownloadDangerType::DOWNLOAD_DANGER_TYPE_NOT_DANGEROUS);
-}
-
 class SavePackageDeepScanningBrowserTest
     : public DownloadDeepScanningBrowserTestBase {
  public:
   SavePackageDeepScanningBrowserTest()
       : DownloadDeepScanningBrowserTestBase(/*connectors_machine_scope=*/true,
-                                            /*is_consumer=*/false) {}
+                                            /*is_consumer=*/false,
+                                            /*is_obfuscated=*/false) {}
 
   base::FilePath GetSaveDir() {
-    return DownloadPrefs(browser()->profile()).DownloadPath();
+    return DownloadPrefs(browser()->GetProfile()).DownloadPath();
   }
 
   base::FilePath GetTestFilePath() {
@@ -1258,32 +1282,31 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, Allowed) {
   EXPECT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("/save_page/text.txt")));
 
-  // No scan runs synchronously.
-  ExpectContentAnalysisSynchronousResponse(
-      enterprise_connectors::ContentAnalysisResponse(), {"dlp"});
+  enterprise_connectors::ContentAnalysisResponse response;
+  auto* result = response.add_results();
+  result->set_tag("dlp");
+  result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp"});
+  ExpectContentAnalysisResumableContentResponse(response);
 
   base::RunLoop run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(), run_loop.QuitClosure());
+      browser()->GetProfile()->GetDownloadManager(), run_loop.QuitClosure());
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
   ASSERT_TRUE(browser()->tab_strip_model()->GetActiveWebContents()->SavePage(
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
 
-  // The async scanning response indicates the file has no sensitive data.
-  enterprise_connectors::ContentAnalysisResponse response;
-  auto* result = response.add_results();
-  response.set_request_token(last_request().request_token());
-  result->set_tag("dlp");
-  result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::SAVE_AS_DOWNLOAD);
 
-  // That response should not trigger a security event.
-  EventReportValidator validator(client());
+  // The response should not trigger a security event.
+  enterprise_connectors::test::EventReportValidator validator(client());
   validator.ExpectNoReport();
 
-  SendFcmMessage(response);
   run_loop.Run();
 
   ASSERT_EQ(download_items().size(), 1u);
@@ -1305,13 +1328,21 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, Blocked) {
   GURL url = embedded_test_server()->GetURL("/save_page/text.txt");
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
-  // No scan runs synchronously.
-  ExpectContentAnalysisSynchronousResponse(
-      enterprise_connectors::ContentAnalysisResponse(), {"dlp"});
+  // Prepares a scanning response that indicates the file should be blocked.
+  enterprise_connectors::ContentAnalysisResponse response;
+  auto* result = response.add_results();
+  result->set_tag("dlp");
+  result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+  auto* dlp_verdict = result->add_triggered_rules();
+  dlp_verdict->set_action(enterprise_connectors::TriggeredRule::BLOCK);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp"});
+  ExpectContentAnalysisResumableContentResponse(response);
 
   base::RunLoop run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(), run_loop.QuitClosure(),
+      browser()->GetProfile()->GetDownloadManager(), run_loop.QuitClosure(),
       {download::DownloadItem::INTERRUPTED});
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
@@ -1319,37 +1350,51 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, Blocked) {
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
 
-  // The async scanning response indicates the file should be blocked.
-  enterprise_connectors::ContentAnalysisResponse response;
-  auto* result = response.add_results();
-  response.set_request_token(last_request().request_token());
-  result->set_tag("dlp");
-  result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  auto* dlp_verdict = result->add_triggered_rules();
-  dlp_verdict->set_action(enterprise_connectors::TriggeredRule::BLOCK);
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::SAVE_AS_DOWNLOAD);
 
-  // That blocking response should trigger a security event.
-  EventReportValidator validator(client());
+  // The blocking response should trigger a security event.
+  base::RunLoop validator_run_loop;
+  enterprise_connectors::test::EventReportValidator validator(client());
+  validator.SetDoneClosure(validator_run_loop.QuitClosure());
   std::set<std::string> mimetypes = {"text/plain"};
-  validator.ExpectSensitiveDataEvent(
-      /*url*/ url.spec(),
-      /*source*/ "",
-      /*destination*/ "",
-      /*filename*/ "text.htm",
-      // sha256sum chrome/test/data/save_page/text.txt | tr a-f A-F
-      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD",
-      /*trigger*/
-      extensions::SafeBrowsingPrivateEventRouter::kTriggerFileDownload,
-      /*dlp_verdict*/ *result,
-      /*mimetypes*/ &mimetypes,
-      /*size*/ 54,
-      /*result*/ EventResultToString(EventResult::BLOCKED),
-      /*username*/ kUserName,
-      /*profile_identifier*/ GetProfileIdentifier(),
-      /*scan_id*/ last_request().request_token());
 
-  SendFcmMessage(response);
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
+  expected_event.set_url(url.spec());
+  expected_event.set_tab_url(url.spec());
+  expected_event.set_source("");
+  expected_event.set_destination("");
+  expected_event.set_download_digest_sha_256(
+      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD");
+#if BUILDFLAG(IS_CHROMEOS)
+  expected_event.set_file_name("text.htm");
+#else
+  expected_event.set_file_name(main_file.AsUTF8Unsafe());
+#endif
+  expected_event.set_content_type("text/plain");
+  expected_event.set_content_size(54);
+  expected_event.set_scan_id(last_request().request_token());
+  expected_event.set_trigger(
+      chrome::cros::reporting::proto::DataTransferEventTrigger::FILE_DOWNLOAD);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_BLOCKED);
+  expected_event.set_clicked_through(false);
+
+  chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule;
+  triggered_rule.set_action(
+      chrome::cros::reporting::proto::TriggeredRuleInfo::BLOCK);
+  *expected_event.add_triggered_rule_info() = triggered_rule;
+
+  ::chrome::cros::reporting::proto::UrlInfo referrers;
+  referrers.set_url(url.spec());
+  referrers.set_ip(embedded_test_server()->base_url().host());
+  *expected_event.add_referrers() = referrers;
+
+  expected_event.set_profile_identifier(GetProfileIdentifier());
+  expected_event.set_profile_user_name(kUserName);
+
+  validator.ExpectSensitiveDataEvent(std::move(expected_event));
+
   run_loop.Run();
 
   ASSERT_EQ(download_items().size(), 1u);
@@ -1362,6 +1407,7 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, Blocked) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   EXPECT_FALSE(base::PathExists(main_file));
   EXPECT_FALSE(base::PathExists(extra_files_dir));
+  validator_run_loop.Run();
 }
 
 IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, KeepAfterWarning) {
@@ -1370,13 +1416,21 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, KeepAfterWarning) {
   GURL url = embedded_test_server()->GetURL("/save_page/text.txt");
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
-  // No scan runs synchronously.
-  ExpectContentAnalysisSynchronousResponse(
-      enterprise_connectors::ContentAnalysisResponse(), {"dlp"});
+  // Prepares a scanning response that indicates the file should warn the user.
+  enterprise_connectors::ContentAnalysisResponse response;
+  auto* result = response.add_results();
+  result->set_tag("dlp");
+  result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+  auto* dlp_verdict = result->add_triggered_rules();
+  dlp_verdict->set_action(enterprise_connectors::TriggeredRule::WARN);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp"});
+  ExpectContentAnalysisResumableContentResponse(response);
 
   base::RunLoop save_package_run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(),
+      browser()->GetProfile()->GetDownloadManager(),
       save_package_run_loop.QuitClosure(), {download::DownloadItem::COMPLETE});
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
@@ -1384,39 +1438,50 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, KeepAfterWarning) {
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
 
-  // The async scanning response indicates the file should warn the user.
-  enterprise_connectors::ContentAnalysisResponse response;
-  auto* result = response.add_results();
-  response.set_request_token(last_request().request_token());
-  result->set_tag("dlp");
-  result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  auto* dlp_verdict = result->add_triggered_rules();
-  dlp_verdict->set_action(enterprise_connectors::TriggeredRule::WARN);
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::SAVE_AS_DOWNLOAD);
 
-  // That warning response should trigger a security event.
+  // The warning response should trigger a security event.
   base::RunLoop validator_run_loop;
-  EventReportValidator validator(client());
+  enterprise_connectors::test::EventReportValidator validator(client());
   validator.SetDoneClosure(validator_run_loop.QuitClosure());
   std::set<std::string> mimetypes = {"text/plain"};
-  validator.ExpectSensitiveDataEvent(
-      /*url*/ url.spec(),
-      /*source*/ "",
-      /*destination*/ "",
-      /*filename*/ "text.htm",
-      // sha256sum chrome/test/data/save_page/text.txt | tr a-f A-F
-      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD",
-      /*trigger*/
-      extensions::SafeBrowsingPrivateEventRouter::kTriggerFileDownload,
-      /*dlp_verdict*/ *result,
-      /*mimetypes*/ &mimetypes,
-      /*size*/ 54,
-      /*result*/ EventResultToString(EventResult::WARNED),
-      /*username*/ kUserName,
-      /*profile_identifier*/ GetProfileIdentifier(),
-      /*scan_id*/ last_request().request_token());
 
-  SendFcmMessage(response);
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
+  expected_event.set_url(url.spec());
+  expected_event.set_tab_url(url.spec());
+  expected_event.set_source("");
+  expected_event.set_destination("");
+  expected_event.set_download_digest_sha_256(
+      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD");
+#if BUILDFLAG(IS_CHROMEOS)
+  expected_event.set_file_name("text.htm");
+#else
+  expected_event.set_file_name(main_file.AsUTF8Unsafe());
+#endif
+  expected_event.set_content_type("text/plain");
+  expected_event.set_content_size(54);
+  expected_event.set_scan_id(last_request().request_token());
+  expected_event.set_trigger(
+      chrome::cros::reporting::proto::DataTransferEventTrigger::FILE_DOWNLOAD);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_WARNED);
+  expected_event.set_clicked_through(false);
+
+  chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule;
+  triggered_rule.set_action(
+      chrome::cros::reporting::proto::TriggeredRuleInfo::WARN);
+  *expected_event.add_triggered_rule_info() = triggered_rule;
+
+  ::chrome::cros::reporting::proto::UrlInfo referrers;
+  referrers.set_url(url.spec());
+  referrers.set_ip(embedded_test_server()->base_url().host());
+  *expected_event.add_referrers() = referrers;
+
+  expected_event.set_profile_identifier(GetProfileIdentifier());
+  expected_event.set_profile_user_name(kUserName);
+
+  validator.ExpectSensitiveDataEvent(std::move(expected_event));
   validator_run_loop.Run();
 
   // The warning has been received but neither "keep" or "discard" has been
@@ -1435,22 +1500,46 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, KeepAfterWarning) {
 
   // Keeping the save package will generate a second warning event, complete the
   // download and move the file to its final destination.
-  validator.ExpectSensitiveDataEvent(
-      /*url*/ url.spec(),
-      /*source*/ "",
-      /*destination*/ "",
-      /*filename*/ "text.htm",
-      // sha256sum chrome/test/data/save_page/text.txt | tr a-f A-F
-      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD",
-      /*trigger*/
-      extensions::SafeBrowsingPrivateEventRouter::kTriggerFileDownload,
-      /*dlp_verdict*/ *result,
-      /*mimetypes*/ &mimetypes,
-      /*size*/ 54,
-      /*result*/ EventResultToString(EventResult::BYPASSED),
-      /*username*/ kUserName,
-      /*profile_identifier*/ GetProfileIdentifier(),
-      /*scan_id*/ last_request().request_token());
+
+  base::RunLoop validator_warn_run_loop;
+  enterprise_connectors::test::EventReportValidator validator_warn(client());
+  validator_warn.SetDoneClosure(validator_warn_run_loop.QuitClosure());
+
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event2;
+  expected_event2.set_url(url.spec());
+  expected_event2.set_tab_url(url.spec());
+  expected_event2.set_source("");
+  expected_event2.set_destination("");
+  expected_event2.set_download_digest_sha_256(
+      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD");
+#if BUILDFLAG(IS_CHROMEOS)
+  expected_event2.set_file_name("text.htm");
+#else
+  expected_event2.set_file_name(main_file.AsUTF8Unsafe());
+#endif
+  expected_event2.set_content_type("text/plain");
+  expected_event2.set_content_size(54);
+  expected_event2.set_scan_id(last_request().request_token());
+  expected_event2.set_trigger(
+      chrome::cros::reporting::proto::DataTransferEventTrigger::FILE_DOWNLOAD);
+  expected_event2.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_BYPASSED);
+  expected_event2.set_clicked_through(true);
+
+  chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule2;
+  triggered_rule2.set_action(
+      chrome::cros::reporting::proto::TriggeredRuleInfo::WARN);
+  *expected_event2.add_triggered_rule_info() = triggered_rule2;
+
+  ::chrome::cros::reporting::proto::UrlInfo referrers2;
+  referrers2.set_url(url.spec());
+  referrers2.set_ip(embedded_test_server()->base_url().host());
+  *expected_event2.add_referrers() = referrers2;
+
+  expected_event2.set_profile_identifier(GetProfileIdentifier());
+  expected_event2.set_profile_user_name(kUserName);
+
+  validator_warn.ExpectSensitiveDataEvent(std::move(expected_event2));
 
   DownloadItemModel model(item);
   DownloadCommands(model.GetWeakPtr()).ExecuteCommand(DownloadCommands::KEEP);
@@ -1464,6 +1553,7 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, KeepAfterWarning) {
   EXPECT_TRUE(base::PathExists(main_file));
   EXPECT_TRUE(base::ContentsEqual(GetTestFilePath(), main_file));
   EXPECT_FALSE(base::PathExists(extra_files_dir));
+  validator_warn_run_loop.Run();
 }
 
 IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest,
@@ -1473,13 +1563,21 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest,
   GURL url = embedded_test_server()->GetURL("/save_page/text.txt");
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
-  // No scan runs synchronously.
-  ExpectContentAnalysisSynchronousResponse(
-      enterprise_connectors::ContentAnalysisResponse(), {"dlp"});
+  // Prepares a scanning response that indicates the file should warn the user.
+  enterprise_connectors::ContentAnalysisResponse response;
+  auto* result = response.add_results();
+  result->set_tag("dlp");
+  result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+  auto* dlp_verdict = result->add_triggered_rules();
+  dlp_verdict->set_action(enterprise_connectors::TriggeredRule::WARN);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp"});
+  ExpectContentAnalysisResumableContentResponse(response);
 
   base::RunLoop save_package_run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(),
+      browser()->GetProfile()->GetDownloadManager(),
       save_package_run_loop.QuitClosure(), {download::DownloadItem::CANCELLED});
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
@@ -1487,39 +1585,51 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest,
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
 
-  // The async scanning response indicates the file should warn the user.
-  enterprise_connectors::ContentAnalysisResponse response;
-  auto* result = response.add_results();
-  response.set_request_token(last_request().request_token());
-  result->set_tag("dlp");
-  result->set_status(
-      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  auto* dlp_verdict = result->add_triggered_rules();
-  dlp_verdict->set_action(enterprise_connectors::TriggeredRule::WARN);
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::SAVE_AS_DOWNLOAD);
 
   // That warning response should trigger a security event.
   base::RunLoop validator_run_loop;
-  EventReportValidator validator(client());
+  enterprise_connectors::test::EventReportValidator validator(client());
   validator.SetDoneClosure(validator_run_loop.QuitClosure());
   std::set<std::string> mimetypes = {"text/plain"};
-  validator.ExpectSensitiveDataEvent(
-      /*url*/ url.spec(),
-      /*source*/ "",
-      /*destination*/ "",
-      /*filename*/ "text.htm",
-      // sha256sum chrome/test/data/save_page/text.txt | tr a-f A-F
-      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD",
-      /*trigger*/
-      extensions::SafeBrowsingPrivateEventRouter::kTriggerFileDownload,
-      /*dlp_verdict*/ *result,
-      /*mimetypes*/ &mimetypes,
-      /*size*/ 54,
-      /*result*/ EventResultToString(EventResult::WARNED),
-      /*username*/ kUserName,
-      /*profile_identifier*/ GetProfileIdentifier(),
-      /*scan_id*/ last_request().request_token());
 
-  SendFcmMessage(response);
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
+  expected_event.set_url(url.spec());
+  expected_event.set_tab_url(url.spec());
+  expected_event.set_source("");
+  expected_event.set_destination("");
+  expected_event.set_download_digest_sha_256(
+      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD");
+#if BUILDFLAG(IS_CHROMEOS)
+  expected_event.set_file_name("text.htm");
+#else
+  expected_event.set_file_name(main_file.AsUTF8Unsafe());
+#endif
+  expected_event.set_content_type("text/plain");
+  expected_event.set_content_size(54);
+  expected_event.set_scan_id(last_request().request_token());
+  expected_event.set_trigger(
+      chrome::cros::reporting::proto::DataTransferEventTrigger::FILE_DOWNLOAD);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_WARNED);
+  expected_event.set_clicked_through(false);
+
+  chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule;
+  triggered_rule.set_action(
+      chrome::cros::reporting::proto::TriggeredRuleInfo::WARN);
+  *expected_event.add_triggered_rule_info() = triggered_rule;
+
+  ::chrome::cros::reporting::proto::UrlInfo referrers;
+  referrers.set_url(url.spec());
+  referrers.set_ip(embedded_test_server()->base_url().host());
+  *expected_event.add_referrers() = referrers;
+
+  expected_event.set_profile_identifier(GetProfileIdentifier());
+  expected_event.set_profile_user_name(kUserName);
+
+  validator.ExpectSensitiveDataEvent(std::move(expected_event));
+
   validator_run_loop.Run();
 
   // The warning has been received but neither "keep" or "discard" has been
@@ -1553,19 +1663,70 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, OpenNow) {
   GURL url = embedded_test_server()->GetURL("/save_page/text.txt");
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
 
-  // No scan runs synchronously.
-  ExpectContentAnalysisSynchronousResponse(
-      enterprise_connectors::ContentAnalysisResponse(), {"dlp"});
+  enterprise_connectors::ContentAnalysisResponse response;
+  auto* result = response.add_results();
+  result->set_tag("dlp");
+  result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+  auto* dlp_verdict = result->add_triggered_rules();
+  dlp_verdict->set_action(enterprise_connectors::TriggeredRule::BLOCK);
+
+  base::RunLoop validator_run_loop;
+  enterprise_connectors::test::EventReportValidator validator(client());
+  validator.SetDoneClosure(validator_run_loop.QuitClosure());
+  std::set<std::string> mimetypes = {"text/plain"};
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp"});
+  ExpectContentAnalysisResumableContentResponse(response);
 
   base::RunLoop save_package_run_loop;
   content::SavePackageFinishedObserver observer(
-      browser()->profile()->GetDownloadManager(),
+      browser()->GetProfile()->GetDownloadManager(),
       save_package_run_loop.QuitClosure(), {download::DownloadItem::COMPLETE});
   base::FilePath main_file = GetSaveDir().AppendASCII("text.htm");
   base::FilePath extra_files_dir = GetSaveDir().AppendASCII("text_files");
   ASSERT_TRUE(browser()->tab_strip_model()->GetActiveWebContents()->SavePage(
       main_file, extra_files_dir, content::SAVE_PAGE_TYPE_AS_ONLY_HTML));
   WaitForDeepScanRequest();
+
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
+  expected_event.set_url(url.spec());
+  expected_event.set_tab_url(url.spec());
+  expected_event.set_source("");
+  expected_event.set_destination("");
+  expected_event.set_download_digest_sha_256(
+      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD");
+#if BUILDFLAG(IS_CHROMEOS)
+  expected_event.set_file_name("text.htm");
+#else
+  expected_event.set_file_name(main_file.AsUTF8Unsafe());
+#endif
+  expected_event.set_content_type("text/plain");
+  expected_event.set_content_size(54);
+  expected_event.set_scan_id(last_request().request_token());
+  expected_event.set_trigger(
+      chrome::cros::reporting::proto::DataTransferEventTrigger::FILE_DOWNLOAD);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_BLOCKED);
+  expected_event.set_clicked_through(false);
+
+  chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule;
+  triggered_rule.set_action(
+      chrome::cros::reporting::proto::TriggeredRuleInfo::BLOCK);
+  *expected_event.add_triggered_rule_info() = triggered_rule;
+
+  ::chrome::cros::reporting::proto::UrlInfo referrers;
+  referrers.set_url(url.spec());
+  referrers.set_ip(embedded_test_server()->base_url().host());
+  *expected_event.add_referrers() = referrers;
+
+  expected_event.set_profile_identifier(GetProfileIdentifier());
+  expected_event.set_profile_user_name(kUserName);
+
+  validator.ExpectSensitiveDataEvent(std::move(expected_event));
+
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::SAVE_AS_DOWNLOAD);
 
   // Opening the save package before the async response is obtained will
   // generate a warning event once it does come back, complete the
@@ -1576,6 +1737,8 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, OpenNow) {
   model.CompleteSafeBrowsingScan();
   save_package_run_loop.Run();
 
+  validator_run_loop.Run();
+
   EXPECT_EQ(item->GetDangerType(),
             download::DownloadDangerType::DOWNLOAD_DANGER_TYPE_USER_VALIDATED);
   EXPECT_EQ(item->GetState(), download::DownloadItem::COMPLETE);
@@ -1584,41 +1747,332 @@ IN_PROC_BROWSER_TEST_F(SavePackageDeepScanningBrowserTest, OpenNow) {
   EXPECT_TRUE(base::PathExists(main_file));
   EXPECT_TRUE(base::ContentsEqual(GetTestFilePath(), main_file));
   EXPECT_FALSE(base::PathExists(extra_files_dir));
+}
 
-  // After the verdict is obtained, send the FCM message to confirm the
-  // appropriate event is reported.
+class FileSystemAccessDeepScanningBrowserTest
+    : public DownloadDeepScanningBrowserTestBase {
+ public:
+  FileSystemAccessDeepScanningBrowserTest()
+      : DownloadDeepScanningBrowserTestBase(/*connectors_machine_scope=*/true,
+                                            /*is_consumer=*/false,
+                                            /*is_obfuscated=*/false) {
+    enabled_features_.push_back(
+        safe_browsing::kEnterpriseFileSystemAccessDeepScan);
+  }
+
+  void SetUpOnMainThread() override {
+    DownloadDeepScanningBrowserTestBase::SetUpOnMainThread();
+
+    // Setup a temporary directory for the file save path.
+    ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
+
+    // Have file save path automatically selected by picker.
+    ui::SelectFileDialog::SetFactory(
+        std::make_unique<SelectPredeterminedFileDialogFactory>(
+            std::vector<base::FilePath>{GetTestFilePath()}));
+
+    // Navigate to a simple page for FS API calls to run from.
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(
+        browser(), embedded_test_server()->GetURL("/title1.html")));
+  }
+
+  void TearDownOnMainThread() override {
+    ui::SelectFileDialog::SetFactory(nullptr);
+    DownloadDeepScanningBrowserTestBase::TearDownOnMainThread();
+  }
+
+  base::FilePath GetTestFilePath() {
+    return temp_dir_.GetPath().AppendASCII("test_fsa_file.txt");
+  }
+
+  void InitiateWriteViaFSA(content::WebContents* web_contents,
+                           const std::string& content) {
+    // Script that triggers FSA API write. Executes async and creates promise.
+    constexpr char js_script[] = R"(
+      window.fsaPromise = (async (content) => {
+        const handle = await window.showSaveFilePicker();
+        const writable = await handle.createWritable();
+        await writable.write(content);
+        await writable.close();
+      })($1);
+    )";
+
+    content::ExecuteScriptAsync(web_contents,
+                                content::JsReplace(js_script, content));
+  }
+
+ protected:
+  base::ScopedTempDir temp_dir_;
+};
+
+// For FSA writes that trigger a block deep scan verdict, write should be
+// blocked and the destination file empty.
+IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest, BlockedWrite) {
+  SetUpReporting();
+
+  // Prepare the scan response with DLP block and successful malware scan.
   enterprise_connectors::ContentAnalysisResponse response;
-  auto* result = response.add_results();
-  response.set_request_token(last_request().request_token());
-  result->set_tag("dlp");
-  result->set_status(
+  auto* dlp_result = response.add_results();
+  dlp_result->set_tag("dlp");
+  dlp_result->set_status(
       enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
-  auto* dlp_verdict = result->add_triggered_rules();
-  dlp_verdict->set_action(enterprise_connectors::TriggeredRule::BLOCK);
+  auto* dlp_rule = dlp_result->add_triggered_rules();
+  dlp_rule->set_action(enterprise_connectors::TriggeredRule::BLOCK);
+
+  auto* malware_result = response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(response);
+
+  // Setup message queue for JS responses.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
+  content::DOMMessageQueue message_queue(web_contents);
 
   base::RunLoop validator_run_loop;
-  EventReportValidator validator(client());
+  enterprise_connectors::test::EventReportValidator validator(client());
   validator.SetDoneClosure(validator_run_loop.QuitClosure());
-  std::set<std::string> mimetypes = {"text/plain"};
-  validator.ExpectSensitiveDataEvent(
-      /*url*/ url.spec(),
-      /*source*/ "",
-      /*destination*/ "",
-      /*filename*/ "text.htm",
-      // sha256sum chrome/test/data/save_page/text.txt | tr a-f A-F
-      "9789A2E12D50EFA4B891D4EF95C5189FA4C98E34C84E1F8017CD8F574CA035DD",
-      /*trigger*/
-      extensions::SafeBrowsingPrivateEventRouter::kTriggerFileDownload,
-      /*dlp_verdict*/ *result,
-      /*mimetypes*/ &mimetypes,
-      /*size*/ 54,
-      /*result*/ EventResultToString(EventResult::BLOCKED),
-      /*username*/ kUserName,
-      /*profile_identifier*/ GetProfileIdentifier(),
-      /*scan_id*/ last_request().request_token());
 
-  SendFcmMessage(response);
+  InitiateWriteViaFSA(web_contents, kTestContent);
+
+  WaitForDeepScanRequest();
+
+  GURL url = embedded_test_server()->GetURL("/title1.html");
+  std::set<std::string> mimetypes = {"text/plain"};
+
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
+  expected_event.set_url(url.spec());
+  expected_event.set_tab_url(url.spec());
+  expected_event.set_source("");
+  expected_event.set_destination("");
+  expected_event.set_download_digest_sha_256(
+      "6AE8A75555209FD6C44157C0AED8016E763FF435A19CF186F76863140143FF72");
+#if BUILDFLAG(IS_CHROMEOS)
+  expected_event.set_file_name("test_fsa_file.txt");
+#else
+  expected_event.set_file_name(GetTestFilePath().AsUTF8Unsafe());
+#endif
+  expected_event.set_content_type("text/plain");
+  expected_event.set_content_size(sizeof(kTestContent) - 1);
+  expected_event.set_scan_id(last_request().request_token());
+  expected_event.set_trigger(
+      chrome::cros::reporting::proto::DataTransferEventTrigger::FILE_DOWNLOAD);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_BLOCKED);
+  expected_event.set_clicked_through(false);
+
+  chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule;
+  triggered_rule.set_action(
+      chrome::cros::reporting::proto::TriggeredRuleInfo::BLOCK);
+  *expected_event.add_triggered_rule_info() = triggered_rule;
+
+  ::chrome::cros::reporting::proto::UrlInfo referrers;
+  referrers.set_url(url.spec());
+  referrers.set_ip(embedded_test_server()->base_url().host());
+  *expected_event.add_referrers() = referrers;
+
+  expected_event.set_profile_identifier(GetProfileIdentifier());
+  expected_event.set_profile_user_name(kUserName);
+
+  validator.ExpectSensitiveDataEvent(std::move(expected_event));
+
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
+
   validator_run_loop.Run();
+
+  content::EvalJsResult result =
+      content::EvalJs(web_contents, "window.fsaPromise");
+
+  // TODO(crbug.com/407065784): Improve error message for SB checks.
+  ASSERT_THAT(
+      result,
+      content::EvalJsResult::ErrorIs(
+          "a JavaScript error: \"AbortError: Blocked by Safe Browsing.\"\n"));
+
+  // File is created but remains empty due to block.
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  EXPECT_TRUE(base::PathExists(GetTestFilePath()));
+  EXPECT_EQ(0, base::GetFileSize(GetTestFilePath()));
+}
+
+// For FSA writes that trigger a safe deep scan verdict, write should be allowed
+// and the destination file populated appropriately.
+IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest, AllowedWrite) {
+  SetUpReporting();
+
+  // Prepare the scan response with no DLP or malware rules triggered.
+  enterprise_connectors::ContentAnalysisResponse response;
+  auto* dlp_result = response.add_results();
+  dlp_result->set_tag("dlp");
+  dlp_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  auto* malware_result = response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(response);
+
+  // Setup message queue for JS responses.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
+  content::DOMMessageQueue message_queue(web_contents);
+
+  InitiateWriteViaFSA(web_contents, kTestContent);
+
+  WaitForDeepScanRequest();
+
+  EXPECT_EQ(last_request().reason(),
+            enterprise_connectors::ContentAnalysisRequest::NORMAL_DOWNLOAD);
+
+  ASSERT_TRUE(content::ExecJs(web_contents, "window.fsaPromise"));
+
+  // Checks that file is written successfully.
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  EXPECT_TRUE(base::PathExists(GetTestFilePath()));
+
+  std::string file_content;
+  EXPECT_TRUE(base::ReadFileToString(GetTestFilePath(), &file_content));
+  EXPECT_EQ(file_content, kTestContent);
+}
+
+// For FSA writes that trigger a warn deep scan verdict, write should be allowed
+// and the destination file populated appropriately.
+IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest, WarnedWrite) {
+  SetUpReporting();
+
+  // Prepare the scan response with warn DLP rule triggered.
+  enterprise_connectors::ContentAnalysisResponse response;
+  auto* dlp_result = response.add_results();
+  dlp_result->set_tag("dlp");
+  dlp_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+  auto* dlp_rule = dlp_result->add_triggered_rules();
+  dlp_rule->set_action(enterprise_connectors::TriggeredRule::WARN);
+
+  auto* malware_result = response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::SUCCESS);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(response);
+
+  // Setup message queue for JS responses.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
+  content::DOMMessageQueue message_queue(web_contents);
+
+  base::RunLoop validator_run_loop;
+  enterprise_connectors::test::EventReportValidator validator(client());
+  validator.SetDoneClosure(validator_run_loop.QuitClosure());
+
+  InitiateWriteViaFSA(web_contents, kTestContent);
+
+  WaitForDeepScanRequest();
+
+  GURL url = embedded_test_server()->GetURL("/title1.html");
+  std::set<std::string> mimetypes = {"text/plain"};
+
+  chrome::cros::reporting::proto::DlpSensitiveDataEvent expected_event;
+  expected_event.set_url(url.spec());
+  expected_event.set_tab_url(url.spec());
+  expected_event.set_source("");
+  expected_event.set_destination("");
+  expected_event.set_download_digest_sha_256(
+      "6AE8A75555209FD6C44157C0AED8016E763FF435A19CF186F76863140143FF72");
+#if BUILDFLAG(IS_CHROMEOS)
+  expected_event.set_file_name("test_fsa_file.txt");
+#else
+  expected_event.set_file_name(GetTestFilePath().AsUTF8Unsafe());
+#endif
+  expected_event.set_content_type("text/plain");
+  expected_event.set_content_size(sizeof(kTestContent) - 1);
+  expected_event.set_scan_id(last_request().request_token());
+  expected_event.set_trigger(
+      chrome::cros::reporting::proto::DataTransferEventTrigger::FILE_DOWNLOAD);
+  expected_event.set_event_result(
+      chrome::cros::reporting::proto::EventResult::EVENT_RESULT_WARNED);
+  expected_event.set_clicked_through(false);
+
+  chrome::cros::reporting::proto::TriggeredRuleInfo triggered_rule;
+  triggered_rule.set_action(
+      chrome::cros::reporting::proto::TriggeredRuleInfo::WARN);
+  *expected_event.add_triggered_rule_info() = triggered_rule;
+
+  ::chrome::cros::reporting::proto::UrlInfo referrers;
+  referrers.set_url(url.spec());
+  referrers.set_ip(embedded_test_server()->base_url().host());
+  *expected_event.add_referrers() = referrers;
+
+  expected_event.set_profile_identifier(GetProfileIdentifier());
+  expected_event.set_profile_user_name(kUserName);
+
+  validator.ExpectSensitiveDataEvent(std::move(expected_event));
+
+  validator_run_loop.Run();
+
+  // For warn verdicts, we allow the write to happen as there is currently no
+  // dialog that allows the user to bypass warnings.
+  ASSERT_TRUE(content::ExecJs(web_contents, "window.fsaPromise"));
+
+  // Checks that file is written successfully.
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  EXPECT_TRUE(base::PathExists(GetTestFilePath()));
+
+  std::string file_content;
+  EXPECT_TRUE(base::ReadFileToString(GetTestFilePath(), &file_content));
+  EXPECT_EQ(file_content, kTestContent);
+}
+
+// Fail-open behavior for failed deep scan requests on FSA writes.
+IN_PROC_BROWSER_TEST_F(FileSystemAccessDeepScanningBrowserTest,
+                       DeepScanFailure) {
+  SetUpReporting();
+
+  // Configure scan response with failed status.
+  enterprise_connectors::ContentAnalysisResponse response;
+  auto* dlp_result = response.add_results();
+  dlp_result->set_tag("dlp");
+  dlp_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::FAILURE);
+
+  auto* malware_result = response.add_results();
+  malware_result->set_tag("malware");
+  malware_result->set_status(
+      enterprise_connectors::ContentAnalysisResponse::Result::FAILURE);
+
+  ExpectContentAnalysisResumableMetadataResponse({"dlp", "malware"});
+  ExpectContentAnalysisResumableContentResponse(response);
+
+  // Setup message queue for JS responses.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(web_contents);
+  content::DOMMessageQueue message_queue(web_contents);
+
+  InitiateWriteViaFSA(web_contents, kTestContent);
+
+  WaitForDeepScanRequest();
+
+  // When scan fails, write should still succeed (fail-open behavior).
+  ASSERT_TRUE(content::ExecJs(web_contents, "window.fsaPromise"));
+
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  EXPECT_TRUE(base::PathExists(GetTestFilePath()));
+
+  std::string file_content;
+  EXPECT_TRUE(base::ReadFileToString(GetTestFilePath(), &file_content));
+  EXPECT_EQ(file_content, kTestContent);
 }
 
 }  // namespace safe_browsing

@@ -16,6 +16,8 @@
 
 namespace media {
 
+class PulseLoopbackManager;
+
 class MEDIA_EXPORT AudioManagerPulse : public AudioManagerBase {
  public:
   AudioManagerPulse(std::unique_ptr<AudioThread> audio_thread,
@@ -31,11 +33,11 @@ class MEDIA_EXPORT AudioManagerPulse : public AudioManagerBase {
   // Implementation of AudioManager.
   bool HasAudioOutputDevices() override;
   bool HasAudioInputDevices() override;
-  void GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
-  void GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
+  bool GetAudioInputDeviceNames(AudioDeviceNames* device_names) override;
+  bool GetAudioOutputDeviceNames(AudioDeviceNames* device_names) override;
   AudioParameters GetInputStreamParameters(
       const std::string& device_id) override;
-  const char* GetName() override;
+  const std::string_view GetName() override;
 
   // Implementation of AudioManagerBase.
   AudioOutputStream* MakeLinearOutputStream(
@@ -67,7 +69,7 @@ class MEDIA_EXPORT AudioManagerPulse : public AudioManagerBase {
       const AudioParameters& input_params) override;
 
  private:
-  void GetAudioDeviceNames(bool input, media::AudioDeviceNames* device_names);
+  bool GetAudioDeviceNames(bool input, media::AudioDeviceNames* device_names);
 
   // Callback to get the devices' info like names, used by GetInputDevices().
   static void InputDevicesInfoCallback(pa_context* context,
@@ -106,6 +108,7 @@ class MEDIA_EXPORT AudioManagerPulse : public AudioManagerBase {
   raw_ptr<pa_threaded_mainloop> input_mainloop_;
   raw_ptr<pa_context> input_context_;
   raw_ptr<AudioDeviceNames> devices_;
+  std::unique_ptr<PulseLoopbackManager> loopback_manager_;
   int native_input_sample_rate_;
   int native_channel_count_;
   std::string default_source_name_;

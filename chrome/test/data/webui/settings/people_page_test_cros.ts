@@ -7,7 +7,8 @@ import 'chrome://settings/lazy_load.js';
 import 'chrome://settings/settings.js';
 
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {AccountManagerBrowserProxy, AccountManagerBrowserProxyImpl, loadTimeData, pageVisibility, ProfileInfoBrowserProxyImpl, Router, SettingsPeoplePageElement, StatusAction, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
+import type {AccountManagerBrowserProxy, CrLinkRowElement, SettingsPeoplePageElement} from 'chrome://settings/settings.js';
+import {AccountManagerBrowserProxyImpl, loadTimeData, ProfileInfoBrowserProxyImpl, Router, SignedInState, StatusAction, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
@@ -79,7 +80,6 @@ suite('Chrome OS', function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     peoplePage = document.createElement('settings-people-page');
     peoplePage.prefs = DEFAULT_PREFS;
-    peoplePage.pageVisibility = pageVisibility;
     document.body.appendChild(peoplePage);
 
     await accountManagerBrowserProxy.whenCalled('getAccounts');
@@ -91,32 +91,46 @@ suite('Chrome OS', function() {
     peoplePage.remove();
   });
 
-  test('GAIA name and picture', async () => {
-    chai.assert.include(
-        peoplePage.shadowRoot!.querySelector<HTMLElement>(
-                                  '#profile-icon')!.style.backgroundImage,
-        'data:image/png;base64,primaryAccountPicData');
+  test('GAIA name and picture', () => {
+    assertTrue(
+        peoplePage.shadowRoot!.querySelector<HTMLElement>('#profile-icon')!
+            .style.backgroundImage.includes(
+                'data:image/png;base64,primaryAccountPicData'));
     assertEquals(
         'Primary Account',
         peoplePage.shadowRoot!.querySelector(
-                                  '#profile-name')!.textContent!.trim());
+                                  '#profile-name')!.textContent.trim());
   });
 
   test('profile row is actionable', () => {
     // Simulate a signed-in user.
     simulateSyncStatus({
-      signedIn: true,
+      signedInState: SignedInState.SYNCING,
       statusAction: StatusAction.NO_ACTION,
     });
 
     // Profile row opens account manager, so the row is actionable.
     const profileRow = peoplePage.shadowRoot!.querySelector('#profile-row');
     assertTrue(!!profileRow);
-    assertTrue(profileRow!.hasAttribute('actionable'));
+    assertTrue(profileRow.hasAttribute('actionable'));
     const subpageArrow = peoplePage.shadowRoot!.querySelector<HTMLElement>(
         '#profile-subpage-arrow');
     assertTrue(!!subpageArrow);
-    assertFalse(subpageArrow!.hidden);
+    assertFalse(subpageArrow.hidden);
+  });
+
+  test('SyncSetupSubLabelUpdatedForPassphraseError', () => {
+    simulateSyncStatus({
+      signedInState: SignedInState.SYNCING,
+      hasError: true,
+      statusAction: StatusAction.ENTER_PASSPHRASE,
+      statusText:
+          'To use and save Chromium data in your Google Account, enter your passphrase',
+    });
+
+    const syncSetupRow =
+        peoplePage.shadowRoot!.querySelector<CrLinkRowElement>('#sync-setup')!;
+    assertEquals(peoplePage.syncStatus!.statusText, syncSetupRow.subLabel);
   });
 });
 
@@ -138,7 +152,6 @@ suite('Chrome OS with account manager disabled', function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     peoplePage = document.createElement('settings-people-page');
     peoplePage.prefs = DEFAULT_PREFS;
-    peoplePage.pageVisibility = pageVisibility;
     document.body.appendChild(peoplePage);
 
     await syncBrowserProxy.whenCalled('getSyncStatus');
@@ -152,7 +165,7 @@ suite('Chrome OS with account manager disabled', function() {
   test('profile row is not actionable', () => {
     // Simulate a signed-in user.
     simulateSyncStatus({
-      signedIn: true,
+      signedInState: SignedInState.SYNCING,
       statusAction: StatusAction.NO_ACTION,
     });
 
@@ -160,18 +173,65 @@ suite('Chrome OS with account manager disabled', function() {
     const profileIcon =
         peoplePage.shadowRoot!.querySelector<HTMLElement>('#profile-icon');
     assertTrue(!!profileIcon);
-    assertFalse(profileIcon!.hasAttribute('actionable'));
+    assertFalse(profileIcon.hasAttribute('actionable'));
     const profileRow = peoplePage.shadowRoot!.querySelector('#profile-row');
     assertTrue(!!profileRow);
-    assertFalse(profileRow!.hasAttribute('actionable'));
+    assertFalse(profileRow.hasAttribute('actionable'));
     const subpageArrow = peoplePage.shadowRoot!.querySelector<HTMLElement>(
         '#profile-subpage-arrow');
     assertTrue(!!subpageArrow!);
-    assertTrue(subpageArrow!.hidden);
+    assertTrue(subpageArrow.hidden);
 
     // Clicking on profile icon doesn't navigate to a new route.
     const oldRoute = Router.getInstance().getCurrentRoute();
-    profileIcon!.click();
+    profileIcon.click();
     assertEquals(oldRoute, Router.getInstance().getCurrentRoute());
+  });
+});
+
+suite('Chrome OS with replaceSyncPromosWithSignInPromos enabled', function() {
+  suiteSetup(function() {
+    loadTimeData.overrideValues({
+      isAccountManagerEnabled: true,
+      replaceSyncPromosWithSignInPromos: true,
+    });
+  });
+
+  setup(async function() {
+    syncBrowserProxy = new TestSyncBrowserProxy();
+    SyncBrowserProxyImpl.setInstance(syncBrowserProxy);
+
+    profileInfoBrowserProxy = new TestProfileInfoBrowserProxy();
+    ProfileInfoBrowserProxyImpl.setInstance(profileInfoBrowserProxy);
+
+    accountManagerBrowserProxy = new TestAccountManagerBrowserProxy();
+    AccountManagerBrowserProxyImpl.setInstance(accountManagerBrowserProxy);
+
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    peoplePage = document.createElement('settings-people-page');
+    peoplePage.prefs = DEFAULT_PREFS;
+    document.body.appendChild(peoplePage);
+
+    await accountManagerBrowserProxy.whenCalled('getAccounts');
+    await syncBrowserProxy.whenCalled('getSyncStatus');
+    flush();
+  });
+
+  teardown(function() {
+    peoplePage.remove();
+  });
+
+  test('SyncSetupRowSublabel_PassphraseError', () => {
+    simulateSyncStatus({
+      signedInState: SignedInState.SYNCING,
+      hasError: true,
+      statusAction: StatusAction.ENTER_PASSPHRASE,
+      statusText:
+          'To use and save Chromium data in your Google Account, enter your passphrase',
+    });
+
+    const syncSetupRow =
+        peoplePage.shadowRoot!.querySelector<CrLinkRowElement>('#sync-setup')!;
+    assertEquals(peoplePage.syncStatus!.statusText, syncSetupRow.subLabel);
   });
 });

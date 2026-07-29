@@ -13,10 +13,11 @@
 namespace android_webview {
 namespace internal {
 
+// Lifetime: Temporary
 class ScopedAppGLStateRestoreImplAngle : public ScopedAppGLStateRestore::Impl {
  public:
-  ScopedAppGLStateRestoreImplAngle(ScopedAppGLStateRestore::CallMode mode,
-                                   bool save_restore);
+  explicit ScopedAppGLStateRestoreImplAngle(
+      ScopedAppGLStateRestore::CallMode mode);
 
   ScopedAppGLStateRestoreImplAngle(const ScopedAppGLStateRestoreImplAngle&) =
       delete;

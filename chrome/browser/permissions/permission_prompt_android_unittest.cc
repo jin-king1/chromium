@@ -45,13 +45,14 @@ class PermissionPromptAndroidTest : public ChromeRenderViewHostTestHarness {
   raw_ptr<permissions::PermissionRequestManager> permission_request_manager_;
 };
 
-// Tests the situation in crbug.com/1016233
+// Tests the situation in crbug.com/40654163
 TEST_F(PermissionPromptAndroidTest, TabCloseMiniInfoBarClosesCleanly) {
   // Create a notification request. This causes an infobar to appear.
-  permissions::MockPermissionRequest request(
-      permissions::RequestType::kNotifications);
+  permissions::MockPermissionRequest::MockPermissionRequestState state;
+  auto request = std::make_unique<permissions::MockPermissionRequest>(
+      permissions::RequestType::kNotifications, state.GetWeakPtr());
   permission_request_manager()->AddRequest(
-      web_contents()->GetPrimaryMainFrame(), &request);
+      web_contents()->GetPrimaryMainFrame(), std::move(request));
 
   base::RunLoop().RunUntilIdle();
 
@@ -65,22 +66,22 @@ TEST_F(PermissionPromptAndroidTest, TabCloseMiniInfoBarClosesCleanly) {
 
   // If no DCHECK has been hit, and the infobar has been closed, the test
   // passes.
-  EXPECT_TRUE(request.finished());
+  EXPECT_TRUE(state.finished);
 }
 
-// Tests the situation in crbug.com/1016233
+// Tests the situation in crbug.com/40654163
 TEST_F(PermissionPromptAndroidTest, RemoveAllInfoBarsWithOtherObservers) {
   // Create a notification request. This causes an infobar to appear.
-  permissions::MockPermissionRequest request(
+  auto request = std::make_unique<permissions::MockPermissionRequest>(
       permissions::RequestType::kNotifications);
   permission_request_manager()->AddRequest(
-      web_contents()->GetPrimaryMainFrame(), &request);
+      web_contents()->GetPrimaryMainFrame(), std::move(request));
 
   base::RunLoop().RunUntilIdle();
 
-  // Destroy web contents. This triggered the situation in crbug.com/1016233, as
-  // it causes the destruction of the permission prompt after the destruction of
-  // the infobar manager.
+  // Destroy web contents. This triggered the situation in crbug.com/40654163,
+  // as it causes the destruction of the permission prompt after the destruction
+  // of the infobar manager.
   DeleteContents();
 
   // Wait for all the WebContentsObserver's to handle the fact that the

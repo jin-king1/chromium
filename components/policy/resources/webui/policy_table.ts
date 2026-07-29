@@ -2,15 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import './strings.m.js';
+import '/strings.m.js';
 import './policy_precedence_row.js';
 import './policy_row.js';
+import './policy_table_header_cell.js';
 
-import {CustomElement} from 'chrome://resources/js/custom_element.js';
-import {getRequiredElement} from 'chrome://resources/js/util_ts.js';
+import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
-import {Policy, PolicyRowElement} from './policy_row.js';
-import {getTemplate} from './policy_table.html.js';
+import type {Policy} from './policy_row.js';
+import {getCss} from './policy_table.css.js';
+import {getHtml} from './policy_table.html.js';
 
 export interface PolicyTableModel {
   id?: string;
@@ -20,89 +22,99 @@ export interface PolicyTableModel {
   precedenceOrder?: string[];
 }
 
-export class PolicyTableElement extends CustomElement {
-  static override get template() {
-    return getTemplate();
+export class PolicyTableElement extends CrLitElement {
+  static get is() {
+    return 'policy-table';
   }
 
-  filterPattern: string = '';
-
-  update(dataModel: PolicyTableModel) {
-    // Clear policies
-    const mainContent = this.shadowRoot!.querySelector('.main');
-    const policies = this.shadowRoot!.querySelectorAll('.policy-data');
-    this.shadowRoot!.querySelector('.header')!.textContent = dataModel.name;
-    this.shadowRoot!.querySelector('.id')!.textContent = dataModel.id || null;
-    (this.shadowRoot!.querySelector('.id') as HTMLElement)!.hidden =
-        !dataModel.id;
-    policies.forEach(row => mainContent!.removeChild(row));
-
-    dataModel.policies
-        .sort((a, b) => {
-          if ((a.value !== undefined && b.value !== undefined) ||
-              a.value === b.value) {
-            if (a.link !== undefined && b.link !== undefined) {
-              // Sorting the policies in ascending alpha order.
-              return a.name > b.name ? 1 : -1;
-            }
-
-            // Sorting so unknown policies are last.
-            return a.link !== undefined ? -1 : 1;
-          }
-
-          // Sorting so unset values are last.
-          return a.value !== undefined ? -1 : 1;
-        })
-        .forEach((policy: Policy) => {
-          const policyRow: PolicyRowElement =
-              document.createElement('policy-row');
-          policyRow.initialize(policy);
-          mainContent!.appendChild(policyRow);
-        });
-    this.filter();
-
-    // Show the current policy precedence order in the Policy Precedence table.
-    if (dataModel.name === 'Policy Precedence') {
-      // Clear previous precedence row.
-      const precedenceRowOld =
-          this.shadowRoot!.querySelectorAll('.policy-precedence-data');
-      precedenceRowOld.forEach(row => mainContent!.removeChild(row));
-      if (dataModel.precedenceOrder != undefined) {
-        const precedenceRow = document.createElement('policy-precedence-row');
-        precedenceRow.initialize(dataModel.precedenceOrder);
-        mainContent!.appendChild(precedenceRow);
-      }
-    }
+  static override get styles() {
+    return getCss();
   }
 
-  /**
-   * Set the filter pattern. Only policies whose name contains |pattern| are
-   * shown in the policy table. The filter is case insensitive. It can be
-   * disabled by setting |pattern| to an empty string.
-   */
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
+    return {
+      dataModel: {type: Object},
+      filterPattern: {type: String},
+      showUnset: {type: Boolean},
+      sortAscending: {type: Boolean},
+      mostRecentSortedColumn: {type: String},
+      sortedPolicies: {type: Array},
+    };
+  }
+
+  accessor dataModel: PolicyTableModel|null = null;
+  accessor filterPattern: string = '';
+  accessor showUnset: boolean = false;
+  accessor sortAscending: boolean = true;
+  accessor mostRecentSortedColumn: keyof Policy = 'name';
+  accessor sortedPolicies: Policy[] = [];
+  updateDataModel(dataModel: PolicyTableModel) {
+    this.dataModel = dataModel;
+  }
+
   setFilterPattern(pattern: string) {
     this.filterPattern = pattern.toLowerCase();
-    this.filter();
   }
 
-  /**
-   * Filter policies. Only policies whose name contains the filter pattern are
-   * shown in the table. Furthermore, policies whose value is not currently
-   * set are only shown if the corresponding checkbox is checked.
-   */
-  filter() {
-    const showUnset =
-        (getRequiredElement('show-unset') as HTMLInputElement)!.checked;
-    const policies = this.shadowRoot!.querySelectorAll('.policy-data');
-    for (let i = 0; i < policies.length; i++) {
-      const policyDisplay = policies[i] as PolicyRowElement;
-      policyDisplay!.hidden =
-          policyDisplay!.policy!.value === undefined && !showUnset ||
-          policyDisplay!.policy!.name.toLowerCase().indexOf(
-              this.filterPattern) === -1;
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+    if (changedProperties.has('dataModel') ||
+        changedProperties.has('sortAscending') ||
+        changedProperties.has('mostRecentSortedColumn')) {
+      this.sortedPolicies = this.getSortedPolicies();
     }
-    this.shadowRoot!.querySelector<HTMLElement>('.no-policy')!.hidden =
-        !!this.shadowRoot!.querySelector('.policy-data:not([hidden])');
+  }
+
+  protected sortColumn(ascending: boolean, field: keyof Policy) {
+    this.sortAscending = ascending;
+    this.mostRecentSortedColumn = field;
+  }
+
+  protected onSortChanged(
+      e: CustomEvent<{field: keyof Policy, ascending: boolean}>) {
+    this.sortColumn(e.detail.ascending, e.detail.field);
+  }
+
+  protected getSortedPolicies(): Policy[] {
+    if (!this.dataModel || !this.dataModel.policies) {
+      return [];
+    }
+
+    const sorted = [...this.dataModel.policies];
+    const orderMultiplier = this.sortAscending ? 1 : -1;
+    const field = this.mostRecentSortedColumn;
+
+    sorted.sort((a, b) => {
+      if ((a.value !== undefined && b.value !== undefined) ||
+          a.value === b.value) {
+        if (a.link !== undefined && b.link !== undefined) {
+          if (field !== 'name' && a[field] === b[field]) {
+            return orderMultiplier * (a.name > b.name ? 1 : -1);
+          }
+          return orderMultiplier *
+              ((a[field] as string) > (b[field] as string) ? 1 : -1);
+        }
+        return a.link !== undefined ? -1 : 1;
+      }
+      return a.value !== undefined ? -1 : 1;
+    });
+
+    return sorted;
+  }
+
+  protected isPolicyHidden(policy: Policy): boolean {
+    const matchesSearch =
+        policy.name.toLowerCase().includes(this.filterPattern);
+    const isSet = policy.value !== undefined;
+    return !(matchesSearch && (isSet || this.showUnset));
+  }
+
+  protected hasVisiblePolicies(): boolean {
+    return this.sortedPolicies.some(policy => !this.isPolicyHidden(policy));
   }
 }
 
@@ -111,4 +123,5 @@ declare global {
     'policy-table': PolicyTableElement;
   }
 }
-customElements.define('policy-table', PolicyTableElement);
+
+customElements.define(PolicyTableElement.is, PolicyTableElement);

@@ -4,11 +4,11 @@
 
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
 
+#include "base/feature_list.h"
+
 namespace privacy_sandbox {
 
-BASE_FEATURE(kPrivacySandboxSettings4,
-             "PrivacySandboxSettings4",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kPrivacySandboxSettings4, base::FEATURE_ENABLED_BY_DEFAULT);
 
 const char kPrivacySandboxSettings4ConsentRequiredName[] = "consent-required";
 const char kPrivacySandboxSettings4NoticeRequiredName[] = "notice-required";
@@ -21,8 +21,6 @@ const char kPrivacySandboxSettings4ForceShowNoticeEeaForTestingName[] =
     "force-show-notice-eea-for-testing";
 const char kPrivacySandboxSettings4ForceShowNoticeRestrictedForTestingName[] =
     "force-show-notice-restricted-for-testing";
-const char kPrivacySandboxSettings4ForceRestrictedUserForTestingName[] =
-    "force-restricted-user";
 const char kPrivacySandboxSettings4ShowSampleDataForTestingName[] =
     "show-sample-data";
 
@@ -52,49 +50,39 @@ const base::FeatureParam<bool>
     kPrivacySandboxSettings4ForceShowNoticeRestrictedForTesting{
         &kPrivacySandboxSettings4,
         kPrivacySandboxSettings4ForceShowNoticeRestrictedForTestingName, false};
-const base::FeatureParam<bool>
-    kPrivacySandboxSettings4ForceRestrictedUserForTesting{
-        &kPrivacySandboxSettings4,
-        kPrivacySandboxSettings4ForceRestrictedUserForTestingName, false};
 const base::FeatureParam<bool> kPrivacySandboxSettings4ShowSampleDataForTesting{
     &kPrivacySandboxSettings4,
     kPrivacySandboxSettings4ShowSampleDataForTestingName, false};
 
-BASE_FEATURE(kPrivacySandboxSettings3,
-             "PrivacySandboxSettings3",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-const base::FeatureParam<bool> kPrivacySandboxSettings3ConsentRequired{
-    &kPrivacySandboxSettings3, "consent-required", false};
-const base::FeatureParam<bool> kPrivacySandboxSettings3NoticeRequired{
-    &kPrivacySandboxSettings3, "notice-required", false};
 
-const base::FeatureParam<bool>
-    kPrivacySandboxSettings3ForceShowConsentForTesting{
-        &kPrivacySandboxSettings3, "force-show-consent-for-testing", false};
-const base::FeatureParam<bool>
-    kPrivacySandboxSettings3ForceShowNoticeForTesting{
-        &kPrivacySandboxSettings3, "force-show-notice-for-testing", false};
-const base::FeatureParam<bool> kPrivacySandboxSettings3ShowSampleDataForTesting{
-    &kPrivacySandboxSettings3, "show-sample-data", false};
-const base::FeatureParam<bool> kPrivacySandboxSettings3DisablePromptForTesting{
-    &kPrivacySandboxSettings3, "disable-dialog-for-testing", false};
-
-BASE_FEATURE(kOverridePrivacySandboxSettingsLocalTesting,
-             "OverridePrivacySandboxSettingsLocalTesting",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kDisablePrivacySandboxPrompts,
-             "DisablePrivacySandboxPrompts",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
-BASE_FEATURE(kPrivacySandboxFirstPartySetsUI,
-             "PrivacySandboxFirstPartySetsUI",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-const base::FeatureParam<bool> kPrivacySandboxFirstPartySetsUISampleSets{
-    &kPrivacySandboxFirstPartySetsUI, "use-sample-sets", false};
+BASE_FEATURE(kDisablePrivacySandboxPrompts, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEnforcePrivacySandboxAttestations,
-             "EnforcePrivacySandboxAttestations",
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kDefaultAllowPrivacySandboxAttestations,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
+const char kPrivacySandboxEnrollmentOverrides[] =
+    "privacy-sandbox-enrollment-overrides";
+
+#if BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kPrivacySandboxAttestationsLoadFromAPKAsset,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
+
+BASE_FEATURE(kPrivateAggregationDebugReportingIgnoreSiteExceptions,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+
+BASE_FEATURE(kRelatedWebsiteSetsUi, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPsDualWritePrefsToNoticeStorage,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+
+BASE_FEATURE(kPrivacySandboxNoticeFramework, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPrivacySandboxAdPrivacyUxDeprecation,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 }  // namespace privacy_sandbox

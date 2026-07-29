@@ -4,14 +4,9 @@
 
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_header_footer_item.h"
 
-#import "ios/chrome/browser/shared/ui/table_view/chrome_table_view_styler.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace {
 
@@ -29,9 +24,7 @@ TEST_F(TableViewHeaderFooterItemTest,
       [headerFooterView isMemberOfClass:[UITableViewHeaderFooterView class]]);
   EXPECT_EQ(UIAccessibilityTraitNone, [headerFooterView accessibilityTraits]);
   EXPECT_FALSE([headerFooterView accessibilityIdentifier]);
-
-  ChromeTableViewStyler* styler = [[ChromeTableViewStyler alloc] init];
-  [item configureHeaderFooterView:headerFooterView withStyler:styler];
+  [item configureHeaderFooterView:headerFooterView];
   EXPECT_EQ(UIAccessibilityTraitButton, [headerFooterView accessibilityTraits]);
   EXPECT_NSEQ(@"test_identifier", [headerFooterView accessibilityIdentifier]);
 }

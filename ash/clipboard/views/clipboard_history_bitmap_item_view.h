@@ -6,7 +6,6 @@
 #define ASH_CLIPBOARD_VIEWS_CLIPBOARD_HISTORY_BITMAP_ITEM_VIEW_H_
 
 #include "ash/clipboard/views/clipboard_history_item_view.h"
-#include "base/memory/raw_ptr.h"
 #include "base/unguessable_token.h"
 #include "ui/base/clipboard/clipboard_data.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -16,8 +15,9 @@ class ClipboardHistory;
 
 // The menu item showing a bitmap.
 class ClipboardHistoryBitmapItemView : public ClipboardHistoryItemView {
+  METADATA_HEADER(ClipboardHistoryBitmapItemView, ClipboardHistoryItemView)
+
  public:
-  METADATA_HEADER(ClipboardHistoryBitmapItemView);
   ClipboardHistoryBitmapItemView(const base::UnguessableToken& item_id,
                                  const ClipboardHistory* clipboard_history,
                                  views::MenuItemView* container);

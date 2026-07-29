@@ -1,12 +1,8 @@
-// Copyright 2021 The Chromium Authors. All rights reserved.
+// Copyright 2021 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {
-  assert,
-  assertExists,
-  assertInstanceof,
-} from '../assert.js';
+import {assert, assertExists, assertInstanceof} from '../assert.js';
 import * as dom from '../dom.js';
 import {Box, Line, Point, Size, Vector, vectorFromPoints} from '../geometry.js';
 import {I18nString} from '../i18n_string.js';
@@ -305,15 +301,15 @@ export class DocumentFixMode {
           let moveX = 0;
           let moveY = 0;
           for (const keyIdx of pressedKeyIndices) {
-            const announceMoveXY = KEY_MOVEMENTS[keyIdx];
-            announceMoveX += announceMoveXY.x;
-            announceMoveY += announceMoveXY.y;
+            const announceMoveXy = KEY_MOVEMENTS[keyIdx];
+            announceMoveX += announceMoveXy.x;
+            announceMoveY += announceMoveXy.y;
             const movementIndex =
                 (keyIdx + this.getRotationIndex(this.rotation)) %
                 KEY_MOVEMENTS.length;
-            const moveXY = KEY_MOVEMENTS[movementIndex];
-            moveX += moveXY.x;
-            moveY += moveXY.y;
+            const moveXy = KEY_MOVEMENTS[movementIndex];
+            moveX += moveXy.x;
+            moveY += moveXy.y;
           }
           announcer.updateMovement(announceMoveX, announceMoveY);
           const {x: curX, y: curY} = corner.pt;
@@ -556,7 +552,7 @@ export class DocumentFixMode {
       const cornerIndex =
           (this.getRotationIndex(this.rotation) + index) % this.corners.length;
       const cornElement = this.corners[cornerIndex].el;
-      cornElement.setAttribute('i18n-aria', label);
+      cornElement.setAttribute('i18n-label', label);
     }
     util.setupI18nElements(this.root);
   }

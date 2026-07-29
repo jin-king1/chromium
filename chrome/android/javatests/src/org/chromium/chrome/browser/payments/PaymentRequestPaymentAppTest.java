@@ -10,7 +10,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.CommandLineFlags;
+import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.payments.PaymentRequestTestRule.AppPresence;
@@ -19,15 +21,14 @@ import org.chromium.chrome.browser.payments.PaymentRequestTestRule.FactorySpeed;
 import org.chromium.chrome.browser.payments.PaymentRequestTestRule.TestFactory;
 import org.chromium.chrome.browser.payments.PaymentRequestTestRule.TestPay;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.content_public.browser.test.util.TestThreadUtils;
+import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.concurrent.TimeoutException;
 
-/**
- * A payment integration test for a merchant that requests payment via Bob Pay.
- */
+/** A payment integration test for a merchant that requests payment via Bob Pay. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@DisableIf.Device(DeviceFormFactor.DESKTOP) // https://crbug.com/376100658
 public class PaymentRequestPaymentAppTest {
     @Rule
     public PaymentRequestTestRule mPaymentRequestTestRule =
@@ -78,15 +79,19 @@ public class PaymentRequestPaymentAppTest {
     @MediumTest
     @Feature({"Payments"})
     public void testAppsCreatedAfterDismissShouldNotCrash() throws TimeoutException {
-        TestFactory factory = mPaymentRequestTestRule.addPaymentAppFactory(
-                AppPresence.HAVE_APPS, FactorySpeed.FAST_FACTORY);
+        TestFactory factory =
+                mPaymentRequestTestRule.addPaymentAppFactory(
+                        AppPresence.HAVE_APPS, FactorySpeed.FAST_FACTORY);
         mPaymentRequestTestRule.clickNodeAndWait("buy", mPaymentRequestTestRule.getDismissed());
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            factory.getDelegateForTest().onPaymentAppCreated(
-                    new TestPay("https://bobpay.test", AppSpeed.FAST_APP));
-            factory.getDelegateForTest().onPaymentAppCreated(
-                    new TestPay("https://alicepay.test", AppSpeed.FAST_APP));
-        });
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    factory.getDelegateForTest()
+                            .onPaymentAppCreated(
+                                    new TestPay("https://bobpay.test", AppSpeed.FAST_APP));
+                    factory.getDelegateForTest()
+                            .onPaymentAppCreated(
+                                    new TestPay("https://alicepay.test", AppSpeed.FAST_APP));
+                });
         mPaymentRequestTestRule.expectResultContains(new String[] {"\"transaction\": 1337"});
     }
 
@@ -95,13 +100,15 @@ public class PaymentRequestPaymentAppTest {
     @MediumTest
     @Feature({"Payments"})
     public void testFactoryActivityAfterDismissShouldNotCrash() throws TimeoutException {
-        TestFactory factory = mPaymentRequestTestRule.addPaymentAppFactory(
-                AppPresence.HAVE_APPS, FactorySpeed.FAST_FACTORY);
+        TestFactory factory =
+                mPaymentRequestTestRule.addPaymentAppFactory(
+                        AppPresence.HAVE_APPS, FactorySpeed.FAST_FACTORY);
         mPaymentRequestTestRule.clickNodeAndWait("buy", mPaymentRequestTestRule.getDismissed());
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            factory.getDelegateForTest().onCanMakePaymentCalculated(true);
-            factory.getDelegateForTest().onDoneCreatingPaymentApps(factory);
-        });
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    factory.getDelegateForTest().onCanMakePaymentCalculated(true);
+                    factory.getDelegateForTest().onDoneCreatingPaymentApps(factory);
+                });
         mPaymentRequestTestRule.expectResultContains(new String[] {"\"transaction\": 1337"});
     }
 
@@ -143,8 +150,11 @@ public class PaymentRequestPaymentAppTest {
     @MediumTest
     @Feature({"Payments"})
     public void testPayViaDelayedFastBobPay() throws TimeoutException {
-        mPaymentRequestTestRule.addPaymentAppFactory("https://bobpay.test", AppPresence.HAVE_APPS,
-                FactorySpeed.FAST_FACTORY, AppSpeed.FAST_APP);
+        mPaymentRequestTestRule.addPaymentAppFactory(
+                "https://bobpay.test",
+                AppPresence.HAVE_APPS,
+                FactorySpeed.FAST_FACTORY,
+                AppSpeed.FAST_APP);
         mPaymentRequestTestRule.clickNodeAndWait("buy", mPaymentRequestTestRule.getDismissed());
         mPaymentRequestTestRule.expectResultContains(
                 new String[] {"https://bobpay.test", "\"transaction\"", "1337"});
@@ -158,8 +168,11 @@ public class PaymentRequestPaymentAppTest {
     @MediumTest
     @Feature({"Payments"})
     public void testPayViaDelayedSlowBobPay() throws TimeoutException {
-        mPaymentRequestTestRule.addPaymentAppFactory("https://bobpay.test", AppPresence.HAVE_APPS,
-                FactorySpeed.SLOW_FACTORY, AppSpeed.SLOW_APP);
+        mPaymentRequestTestRule.addPaymentAppFactory(
+                "https://bobpay.test",
+                AppPresence.HAVE_APPS,
+                FactorySpeed.SLOW_FACTORY,
+                AppSpeed.SLOW_APP);
         mPaymentRequestTestRule.clickNodeAndWait("buy", mPaymentRequestTestRule.getDismissed());
         mPaymentRequestTestRule.expectResultContains(
                 new String[] {"https://bobpay.test", "\"transaction\"", "1337"});

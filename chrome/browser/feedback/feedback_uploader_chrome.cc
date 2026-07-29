@@ -14,7 +14,6 @@
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_access_token_fetcher.h"
-#include "components/signin/public/identity_manager/scope_set.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -23,7 +22,9 @@
 #include "services/network/public/cpp/resource_request.h"
 
 #if BUILDFLAG(PLATFORM_CFM)
+#include "base/check_deref.h"
 #include "chrome/browser/ash/policy/enrollment/enrollment_requisition_manager.h"
+#include "chrome/browser/browser_process.h"
 #include "chrome/browser/device_identity/device_identity_provider.h"
 #include "chrome/browser/device_identity/device_oauth2_token_service_factory.h"
 #endif  // BUILDFLAG(PLATFORM_CFM)
@@ -34,8 +35,6 @@ namespace {
 
 constexpr char kAuthenticationErrorLogMessage[] =
     "Feedback report will be sent without authentication.";
-
-constexpr char kConsumer[] = "feedback_uploader_chrome";
 
 void QueueSingleReport(base::WeakPtr<feedback::FeedbackUploader> uploader,
                        scoped_refptr<FeedbackReport> report) {
@@ -71,10 +70,15 @@ FeedbackUploaderChrome::FeedbackUploaderChrome(content::BrowserContext* context)
       FROM_HERE,
       base::BindOnce(&FeedbackReport::LoadReportsAndQueue,
                      feedback_reports_path(),
-                     base::BindRepeating(&QueueSingleReport, AsWeakPtr())));
+                     base::BindRepeating(&QueueSingleReport,
+                                         weak_ptr_factory_.GetWeakPtr())));
 }
 
 FeedbackUploaderChrome::~FeedbackUploaderChrome() = default;
+
+base::WeakPtr<FeedbackUploader> FeedbackUploaderChrome::AsWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
+}
 
 void FeedbackUploaderChrome::PrimaryAccountAccessTokenAvailable(
     GoogleServiceAuthError error,
@@ -113,7 +117,7 @@ void FeedbackUploaderChrome::StartDispatchingReport() {
 
   access_token_.clear();
 
-  // TODO(crbug.com/849591): Instead of getting the IdentityManager from the
+  // TODO(crbug.com/40579328): Instead of getting the IdentityManager from the
   // profile, we should pass the IdentityManager to FeedbackUploaderChrome's
   // ctor.
   Profile* profile = Profile::FromBrowserContext(context_);
@@ -125,11 +129,9 @@ void FeedbackUploaderChrome::StartDispatchingReport() {
   // has its own privacy notice.
   if (identity_manager &&
       identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
-    signin::ScopeSet scopes;
-    scopes.insert(GaiaConstants::kSupportContentOAuth2Scope);
     primary_account_token_fetcher_ =
         std::make_unique<signin::PrimaryAccountAccessTokenFetcher>(
-            kConsumer, identity_manager, scopes,
+            signin::OAuthConsumerId::kFeedbackUploader, identity_manager,
             base::BindOnce(
                 &FeedbackUploaderChrome::PrimaryAccountAccessTokenAvailable,
                 base::Unretained(this)),
@@ -148,9 +150,10 @@ void FeedbackUploaderChrome::StartDispatchingReport() {
       std::make_unique<DeviceIdentityProvider>(deviceTokenService);
 
   // Flag indicating that a device was intended to be used as a CFM.
-  bool isMeetDevice =
-      policy::EnrollmentRequisitionManager::IsRemoraRequisition();
+  bool isMeetDevice = policy::EnrollmentRequisitionManager::IsMeetDevice(
+      CHECK_DEREF(g_browser_process->local_state()));
   if (isMeetDevice && !device_identity_provider->GetActiveAccountId().empty()) {
+    char kConsumer[] = "feedback_uploader";
     OAuth2AccessTokenManager::ScopeSet scopes;
     scopes.insert(GaiaConstants::kSupportContentOAuth2Scope);
     active_account_token_fetcher_ = device_identity_provider->FetchAccessToken(

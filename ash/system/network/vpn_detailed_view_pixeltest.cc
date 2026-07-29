@@ -5,7 +5,6 @@
 #include <utility>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/system/network/tray_network_state_model.h"
 #include "ash/system/network/vpn_detailed_view.h"
 #include "ash/system/unified/quick_settings_view.h"
@@ -15,8 +14,6 @@
 #include "ash/test/pixel/ash_pixel_differ.h"
 #include "ash/test/pixel/ash_pixel_test_init_params.h"
 #include "base/memory/raw_ptr.h"
-#include "base/test/scoped_feature_list.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
 #include "chromeos/services/network_config/public/mojom/network_types.mojom.h"
 #include "ui/views/view.h"
@@ -45,10 +42,7 @@ constexpr char kExtensionProviderName[] = "extension_provider_name";
 // Pixel test for the VPN list that is shown in the quick settings VPN sub-page.
 class VpnDetailedViewPixelTest : public AshTestBase {
  public:
-  VpnDetailedViewPixelTest() {
-    feature_list_.InitWithFeatures(
-        {features::kQsRevamp, chromeos::features::kJelly}, {});
-  }
+  VpnDetailedViewPixelTest() = default;
 
   // AshTestBase:
   void SetUp() override {
@@ -62,17 +56,21 @@ class VpnDetailedViewPixelTest : public AshTestBase {
         ->unified_system_tray_controller()
         ->ShowVPNDetailedView();
 
-    views::View* detailed_view_container =
-        system_tray->bubble()->quick_settings_view()->detailed_view();
-    ASSERT_TRUE(detailed_view_container);
-    ASSERT_FALSE(detailed_view_container->children().empty());
-    views::View* detailed_view = detailed_view_container->children()[0];
+    TrayDetailedView* detailed_view =
+        system_tray->bubble()
+            ->quick_settings_view()
+            ->GetDetailedViewForTest<TrayDetailedView>();
     ASSERT_TRUE(detailed_view);
     ASSERT_TRUE(views::IsViewClass<VpnDetailedView>(detailed_view));
     vpn_detailed_view_ = static_cast<VpnDetailedView*>(detailed_view);
   }
 
-  absl::optional<pixel_test::InitParams> CreatePixelTestInitParams()
+  void TearDown() override {
+    vpn_detailed_view_ = nullptr;
+    AshTestBase::TearDown();
+  }
+
+  std::optional<pixel_test::InitParams> CreatePixelTestInitParams()
       const override {
     return pixel_test::InitParams();
   }
@@ -119,8 +117,7 @@ class VpnDetailedViewPixelTest : public AshTestBase {
     vpn_detailed_view_->OnGetNetworkStateList(std::move(networks));
   }
 
-  base::test::ScopedFeatureList feature_list_;
-  raw_ptr<VpnDetailedView, ExperimentalAsh> vpn_detailed_view_ = nullptr;
+  raw_ptr<VpnDetailedView> vpn_detailed_view_ = nullptr;
 };
 
 TEST_F(VpnDetailedViewPixelTest, OnlyBuiltInVpn) {
@@ -129,7 +126,7 @@ TEST_F(VpnDetailedViewPixelTest, OnlyBuiltInVpn) {
   // Compare pixels.
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "check_view",
-      /*revision_number=*/1, vpn_detailed_view_));
+      /*revision_number=*/12, vpn_detailed_view_));
 }
 
 TEST_F(VpnDetailedViewPixelTest, MultipleVpns) {
@@ -138,7 +135,7 @@ TEST_F(VpnDetailedViewPixelTest, MultipleVpns) {
   // Compare pixels.
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
       "check_view",
-      /*revision_number=*/1, vpn_detailed_view_));
+      /*revision_number=*/12, vpn_detailed_view_));
 }
 
 }  // namespace ash

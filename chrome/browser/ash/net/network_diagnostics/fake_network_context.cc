@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/notreached.h"
 #include "services/network/public/mojom/host_resolver.mojom.h"
@@ -27,13 +28,12 @@ net::IPEndPoint FakeIPAddress() {
 FakeNetworkContext::DnsResult::DnsResult(
     int32_t result,
     net::ResolveErrorInfo resolve_error_info,
-    absl::optional<net::AddressList> resolved_addresses,
-    absl::optional<net::HostResolverEndpointResults>
-        endpoint_results_with_metadata)
+    net::AddressList resolved_addresses,
+    net::HostResolverEndpointResults alternative_endpoints)
     : result_(result),
-      resolve_error_info_(resolve_error_info),
-      resolved_addresses_(resolved_addresses),
-      endpoint_results_with_metadata_(endpoint_results_with_metadata) {}
+      resolve_error_info_(std::move(resolve_error_info)),
+      resolved_addresses_(std::move(resolved_addresses)),
+      alternative_endpoints_(std::move(alternative_endpoints)) {}
 
 FakeNetworkContext::DnsResult::~DnsResult() = default;
 
@@ -56,20 +56,20 @@ void FakeNetworkContext::ResolveHost(
     rpc->OnComplete(fake_dns_result_->result_,
                     fake_dns_result_->resolve_error_info_,
                     fake_dns_result_->resolved_addresses_,
-                    fake_dns_result_->endpoint_results_with_metadata_);
+                    fake_dns_result_->alternative_endpoints_);
   } else {
     CHECK(!fake_dns_results_.empty());
     auto dns_result = std::move(fake_dns_results_.front());
     fake_dns_results_.pop_front();
     rpc->OnComplete(dns_result->result_, dns_result->resolve_error_info_,
                     dns_result->resolved_addresses_,
-                    dns_result->endpoint_results_with_metadata_);
+                    dns_result->alternative_endpoints_);
   }
   rpc.reset();
 }
 
 void FakeNetworkContext::CreateTCPConnectedSocket(
-    const absl::optional<net::IPEndPoint>& local_addr,
+    const std::optional<net::IPEndPoint>& local_addr,
     const net::AddressList& remote_addr_list,
     network::mojom::TCPConnectedSocketOptionsPtr tcp_connected_socket_options,
     const net::MutableNetworkTrafficAnnotationTag& traffic_annotation,
@@ -112,7 +112,7 @@ void FakeNetworkContext::CreateUDPSocket(
 }
 
 void FakeNetworkContext::SetTCPConnectCode(
-    absl::optional<net::Error>& tcp_connect_code) {
+    std::optional<net::Error>& tcp_connect_code) {
   if (tcp_connect_code.has_value()) {
     tcp_connect_code_ = tcp_connect_code.value();
     fake_tcp_connected_socket_ = std::make_unique<FakeTCPConnectedSocket>();
@@ -120,7 +120,7 @@ void FakeNetworkContext::SetTCPConnectCode(
 }
 
 void FakeNetworkContext::SetTLSUpgradeCode(
-    absl::optional<net::Error>& tls_upgrade_code) {
+    std::optional<net::Error>& tls_upgrade_code) {
   if (tls_upgrade_code.has_value()) {
     DCHECK(fake_tcp_connected_socket_);
 

@@ -6,7 +6,6 @@
 
 #include <utility>
 
-#include "ash/components/arc/arc_features.h"
 #include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
@@ -24,25 +23,25 @@
 #include "chrome/browser/ash/policy/core/user_cloud_policy_store_ash.h"
 #include "chrome/browser/ash/policy/external_data/user_cloud_external_data_manager.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/ash/settings/cros_settings.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/policy/schema_registry_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_features.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
 #include "chromeos/ash/components/dbus/userdataauth/cryptohome_misc_client.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
+#include "chromeos/ash/components/settings/cros_settings.h"
+#include "chromeos/ash/components/settings/user_login_permission_tracker.h"
+#include "chromeos/ash/experiences/arc/arc_features.h"
 #include "chromeos/dbus/constants/dbus_paths.h"
 #include "components/policy/core/common/cloud/cloud_external_data_manager.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
 #include "components/policy/core/common/configuration_policy_provider.h"
+#include "components/policy/core/common/features.h"
 #include "components/policy/policy_constants.h"
 #include "components/signin/public/identity_manager/account_managed_status_finder.h"
 #include "components/user_manager/known_user.h"
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
+#include "components/user_manager/user_names.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 
 namespace policy {
@@ -74,15 +73,22 @@ constexpr base::TimeDelta kPolicyRefreshTimeout = base::Seconds(10);
 void OnUserPolicyFatalError(const AccountId& account_id) {
   user_manager::UserManager::Get()->SaveForceOnlineSignin(
       account_id, true /* force_online_signin */);
-  chrome::AttemptUserExit();
+  session_manager::SessionManager::Get()->RequestSignOut();
 }
 
 }  // namespace
 
 std::unique_ptr<UserCloudPolicyManagerAsh> CreateUserCloudPolicyManagerAsh(
+    PrefService* local_state,
+    scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+    BrowserPolicyConnectorAsh* browser_policy_connector_ash,
     Profile* profile,
     bool force_immediate_load,
     scoped_refptr<base::SequencedTaskRunner> background_task_runner) {
+  CHECK(local_state);
+  CHECK(shared_url_loader_factory);
+  CHECK(browser_policy_connector_ash);
+
   // Don't initialize cloud policy for the signin and the lock screen profile.
   if (!ash::ProfileHelper::IsUserProfile(profile)) {
     return nullptr;
@@ -96,21 +102,19 @@ std::unique_ptr<UserCloudPolicyManagerAsh> CreateUserCloudPolicyManagerAsh(
       ash::ProfileHelper::Get()->GetUserByProfile(profile);
   CHECK(user);
 
-  user_manager::KnownUser known_user(g_browser_process->local_state());
+  user_manager::KnownUser known_user(local_state);
   // User policy exists for enterprise accounts:
   // - For regular cloud-managed users (those who have a GAIA account), a
   //   |UserCloudPolicyManagerAsh| is created here.
   // - For device-local accounts, policy is provided by
   //   |DeviceLocalAccountPolicyService|.
-  // For non-enterprise accounts only for users with type USER_TYPE_CHILD
+  // For non-enterprise accounts only for users with type kChild
   //   |UserCloudPolicyManagerAsh| is created here.
   // All other user types do not have user policy.
   const AccountId& account_id = user->GetAccountId();
-  if (user->GetType() != user_manager::USER_TYPE_CHILD &&
-      signin::AccountManagedStatusFinder::IsEnterpriseUserBasedOnEmail(
-          account_id.GetUserEmail()) ==
-          signin::AccountManagedStatusFinder::EmailEnterpriseStatus::
-              kKnownNonEnterprise) {
+  if (user->GetType() != user_manager::UserType::kChild &&
+      !signin::AccountManagedStatusFinder::MayBeEnterpriseUserBasedOnEmail(
+          account_id.GetUserEmail())) {
     DLOG(WARNING) << "No policy loaded for known non-enterprise user";
     // Mark this profile as not requiring policy.
     known_user.SetProfileRequiresPolicy(
@@ -118,28 +122,24 @@ std::unique_ptr<UserCloudPolicyManagerAsh> CreateUserCloudPolicyManagerAsh(
     return nullptr;
   }
 
-  BrowserPolicyConnectorAsh* connector =
-      g_browser_process->platform_part()->browser_policy_connector_ash();
   switch (account_id.GetAccountType()) {
     case AccountType::UNKNOWN:
     case AccountType::GOOGLE:
       // TODO(tnagel): Return nullptr for unknown accounts once AccountId
-      // migration is finished.  (KioskAppManager still needs to be migrated.)
+      // migration is finished.  (KioskChromeAppManager still needs to be
+      // migrated.)
       if (!user->HasGaiaAccount()) {
         DLOG(WARNING) << "No policy for users without Gaia accounts";
         return nullptr;
       }
       break;
-    case AccountType::ACTIVE_DIRECTORY:
-      NOTREACHED_NORETURN();
   }
 
   const ProfileRequiresPolicy requires_policy_user_property =
       known_user.GetProfileRequiresPolicy(account_id);
   const base::CommandLine* command_line =
       base::CommandLine::ForCurrentProcess();
-  const bool is_stub_user =
-      user_manager::UserManager::Get()->IsStubAccountId(account_id);
+  const bool is_stub_user = account_id == user_manager::StubAccountId();
 
   // If true, we don't know if we've ever checked for policy for this user, so
   // we need to do a policy check during initialization. This differs from
@@ -160,7 +160,7 @@ std::unique_ptr<UserCloudPolicyManagerAsh> CreateUserCloudPolicyManagerAsh(
   if (policy_check_required && force_immediate_load) {
     LOG(ERROR) << "Exiting non-stub session because browser restarted before"
                << " profile was initialized.";
-    chrome::AttemptUserExit();
+    session_manager::SessionManager::Get()->RequestSignOut();
     return nullptr;
   }
 
@@ -205,8 +205,7 @@ std::unique_ptr<UserCloudPolicyManagerAsh> CreateUserCloudPolicyManagerAsh(
   // block signin. Policy refresh will fail without the token that is available
   // only after profile initialization.
   const bool policy_refresh_requires_oauth_token =
-      user->GetType() == user_manager::USER_TYPE_CHILD &&
-      base::FeatureList::IsEnabled(features::kDMServerOAuthForChildUser);
+      user->GetType() == user_manager::UserType::kChild;
 
   base::TimeDelta policy_refresh_timeout;
   if (block_profile_init_on_policy_refresh &&
@@ -221,7 +220,7 @@ std::unique_ptr<UserCloudPolicyManagerAsh> CreateUserCloudPolicyManagerAsh(
   }
 
   DeviceManagementService* device_management_service =
-      connector->device_management_service();
+      browser_policy_connector_ash->device_management_service();
   if (block_profile_init_on_policy_refresh) {
     device_management_service->ScheduleInitialization(0);
   }
@@ -237,7 +236,18 @@ std::unique_ptr<UserCloudPolicyManagerAsh> CreateUserCloudPolicyManagerAsh(
   std::unique_ptr<UserCloudPolicyStoreAsh> store =
       std::make_unique<UserCloudPolicyStoreAsh>(
           ash::CryptohomeMiscClient::Get(), ash::SessionManagerClient::Get(),
-          background_task_runner, account_id, policy_key_dir);
+          background_task_runner, account_id, policy_key_dir,
+          dm_protocol::GetChromeUserPolicyType());
+
+  std::unique_ptr<UserCloudPolicyStoreAsh> extension_install_store =
+      base::FeatureList::IsEnabled(
+          features::kEnableExtensionInstallPolicyFetching)
+          ? std::make_unique<UserCloudPolicyStoreAsh>(
+                ash::CryptohomeMiscClient::Get(),
+                ash::SessionManagerClient::Get(), background_task_runner,
+                account_id, policy_key_dir,
+                dm_protocol::kChromeExtensionInstallUserCloudPolicyType)
+          : nullptr;
 
   scoped_refptr<base::SequencedTaskRunner> backend_task_runner =
       base::ThreadPool::CreateSequencedTaskRunner(
@@ -251,29 +261,28 @@ std::unique_ptr<UserCloudPolicyManagerAsh> CreateUserCloudPolicyManagerAsh(
     store->LoadImmediately();
   }
 
+  // TODO(crbug.com/452305191): Create the right store for ChromeOS.
   std::unique_ptr<UserCloudPolicyManagerAsh> manager =
       std::make_unique<UserCloudPolicyManagerAsh>(
-          profile, std::move(store), std::move(external_data_manager),
-          component_policy_cache_dir, enforcement_type,
-          g_browser_process->local_state(), policy_refresh_timeout,
+          local_state, std::move(shared_url_loader_factory),
+          browser_policy_connector_ash, profile, std::move(store),
+          std::move(extension_install_store), std::move(external_data_manager),
+          component_policy_cache_dir, enforcement_type, policy_refresh_timeout,
           base::BindOnce(&OnUserPolicyFatalError, account_id), account_id,
           base::SingleThreadTaskRunner::GetCurrentDefault());
 
   bool wildcard_match = false;
-  if (connector->IsDeviceEnterpriseManaged() &&
-      ash::CrosSettings::Get()->IsUserAllowlisted(
+  if (ash::InstallAttributes::Get()->IsEnterpriseManaged() &&
+      ash::UserLoginPermissionTracker::Get()->IsUserAllowlisted(
           account_id.GetUserEmail(), &wildcard_match, user->GetType()) &&
       wildcard_match &&
-      signin::AccountManagedStatusFinder::IsEnterpriseUserBasedOnEmail(
-          account_id.GetUserEmail()) ==
-          signin::AccountManagedStatusFinder::EmailEnterpriseStatus::kUnknown) {
+      signin::AccountManagedStatusFinder::MayBeEnterpriseUserBasedOnEmail(
+          account_id.GetUserEmail())) {
     manager->EnableWildcardLoginCheck(account_id.GetUserEmail());
   }
 
   manager->Init(profile->GetPolicySchemaRegistryService()->registry());
-  manager->ConnectManagementService(
-      device_management_service,
-      g_browser_process->shared_url_loader_factory());
+  manager->ConnectManagementService(device_management_service);
   return manager;
 }
 

@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_SERVICES_STORAGE_PUBLIC_CPP_QUOTA_ERROR_OR_H_
 #define COMPONENTS_SERVICES_STORAGE_PUBLIC_CPP_QUOTA_ERROR_OR_H_
 
+#include <tuple>
+
 #include "base/types/expected.h"
 
 namespace storage {
@@ -21,17 +23,26 @@ enum class QuotaError {
   kFileOperationError = 5,
   kInvalidExpiration = 6,
   kQuotaExceeded = 7,
-  kMaxValue = kQuotaExceeded
+  kDatabaseDisabled = 8,
+  kStorageKeyError = 9,
+  kMaxValue = kStorageKeyError,
 };
 
 struct DetailedQuotaError {
-  DetailedQuotaError(QuotaError error) : quota_error(error) {}
+  // NOLINTNEXTLINE(google-explicit-constructor)
+  constexpr DetailedQuotaError(QuotaError error) : quota_error(error) {}
 
-  bool operator==(QuotaError error) const { return quota_error == error; }
+  friend constexpr bool operator==(const DetailedQuotaError&,
+                                   const DetailedQuotaError&) = default;
 
   QuotaError quota_error;
   int sqlite_error = 0;
 };
+
+constexpr bool operator==(QuotaError error,
+                          const DetailedQuotaError& detailed_error) {
+  return DetailedQuotaError(error) == detailed_error;
+}
 
 // Helper for methods which perform database operations which may fail. Objects
 // of this type can on either a QuotaError or a result value of arbitrary type.

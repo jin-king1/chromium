@@ -10,6 +10,7 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
+#include "components/trusted_vault/securebox.h"
 #include "components/trusted_vault/trusted_vault_access_token_fetcher.h"
 #include "components/trusted_vault/trusted_vault_connection.h"
 #include "url/gurl.h"
@@ -20,6 +21,8 @@ class SharedURLLoaderFactory;
 }  // namespace network
 
 namespace trusted_vault {
+
+enum class SecurityDomainId;
 
 // This class is created on UI thread and used/destroyed on trusted vault
 // backend thread.
@@ -33,8 +36,13 @@ class TrustedVaultConnectionImpl : public TrustedVaultConnection {
   // retries in case of transient errors. Exposed for testing.
   static constexpr base::TimeDelta kMaxJoinSecurityDomainRetryDuration =
       base::Hours(1);
+  // Specifies how long RotateSharedKeyRequest could be delayed due to
+  // retries in case of transient errors. Exposed for testing.
+  static constexpr base::TimeDelta kMaxKeyRotationRetryDuration =
+      base::Seconds(10);
 
   TrustedVaultConnectionImpl(
+      SecurityDomainId security_domain,
       const GURL& trusted_vault_service_url,
       std::unique_ptr<network::PendingSharedURLLoaderFactory>
           pending_url_loader_factory,
@@ -47,17 +55,16 @@ class TrustedVaultConnectionImpl : public TrustedVaultConnection {
 
   std::unique_ptr<Request> RegisterAuthenticationFactor(
       const CoreAccountInfo& account_info,
-      const std::vector<std::vector<uint8_t>>& trusted_vault_keys,
-      int last_trusted_vault_key_version,
+      const MemberKeysSource& member_keys_source,
       const SecureBoxPublicKey& authentication_factor_public_key,
-      AuthenticationFactorType authentication_factor_type,
-      absl::optional<int> authentication_factor_type_hint,
+      AuthenticationFactorTypeAndRegistrationParams
+          authentication_factor_type_and_registration_params,
       RegisterAuthenticationFactorCallback callback) override;
 
-  std::unique_ptr<Request> RegisterDeviceWithoutKeys(
+  std::unique_ptr<Request> RegisterLocalDeviceWithoutKeys(
       const CoreAccountInfo& account_info,
       const SecureBoxPublicKey& device_public_key,
-      RegisterDeviceWithoutKeysCallback callback) override;
+      RegisterAuthenticationFactorCallback callback) override;
 
   std::unique_ptr<Request> DownloadNewKeys(
       const CoreAccountInfo& account_info,
@@ -69,15 +76,38 @@ class TrustedVaultConnectionImpl : public TrustedVaultConnection {
       const CoreAccountInfo& account_info,
       IsRecoverabilityDegradedCallback callback) override;
 
+  std::unique_ptr<Request> DownloadGaiaPasswordPublicKey(
+      const CoreAccountInfo& account_info,
+      DownloadGaiaPasswordPublicKeyCallback callback) override;
+
+  std::unique_ptr<Request> RotateSharedKey(
+      const CoreAccountInfo& account_info,
+      const trusted_vault_pb::RotateSharedKeyRequest& request,
+      RotateSharedKeyCallback callback) override;
+
+  std::unique_ptr<TrustedVaultConnection::Request>
+  DownloadAuthenticationFactorsRegistrationState(
+      const CoreAccountInfo& account_info,
+      DownloadAuthenticationFactorsRegistrationStateCallback callback,
+      base::RepeatingClosure keep_alive_callback) override;
+
+  std::unique_ptr<Request> DownloadAuthenticationFactorsRegistrationState(
+      const CoreAccountInfo& account_info,
+      std::set<trusted_vault_pb::SecurityDomainMember_MemberType>
+          recovery_factor_filter,
+      DownloadAuthenticationFactorsRegistrationStateCallback callback,
+      base::RepeatingClosure keep_alive_callback) override;
+
  private:
   std::unique_ptr<Request> SendJoinSecurityDomainsRequest(
       const CoreAccountInfo& account_info,
-      const std::vector<std::vector<uint8_t>>& trusted_vault_keys,
-      int last_trusted_vault_key_version,
+      const MemberKeysSource& member_keys_source,
       const SecureBoxPublicKey& authentication_factor_public_key,
-      AuthenticationFactorType authentication_factor_type,
-      absl::optional<int> authentication_factor_type_hint,
+      AuthenticationFactorTypeAndRegistrationParams
+          authentication_factor_type_and_registration_params,
       JoinSecurityDomainsCallback callback);
+
+  const SecurityDomainId security_domain_;
 
   // SharedURLLoaderFactory is created lazily, because it needs to be done on
   // the backend sequence, while this class ctor is called on UI thread.

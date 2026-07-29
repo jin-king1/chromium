@@ -4,68 +4,31 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions.base;
 
-import android.content.Context;
-import android.content.Intent;
-import android.util.SparseBooleanArray;
-
-import androidx.annotation.NonNull;
-import androidx.collection.ArraySet;
-
-import org.chromium.chrome.browser.omnibox.R;
-import org.chromium.chrome.browser.omnibox.suggestions.ActionChipsDelegate;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
-import org.chromium.chrome.browser.omnibox.suggestions.SuggestionsMetrics;
 import org.chromium.components.browser_ui.widget.chips.ChipProperties;
 import org.chromium.components.omnibox.AutocompleteMatch;
-import org.chromium.components.omnibox.EntityInfoProto;
+import org.chromium.components.omnibox.action.ActionPresentationMode;
 import org.chromium.components.omnibox.action.OmniboxAction;
-import org.chromium.components.omnibox.action.OmniboxActionInSuggest;
-import org.chromium.components.omnibox.action.OmniboxActionType;
-import org.chromium.components.omnibox.action.OmniboxPedal;
+import org.chromium.components.omnibox.action.OmniboxActionDelegate;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.modelutil.PropertyModel;
 
-import java.util.Set;
-
-/**
- * A class that handles model creation for the Action Chips.
- */
+/** A class that handles model creation for the Action Chips. */
+@NullMarked
 public class ActionChipsProcessor {
-    private final @NonNull Context mContext;
-    private final @NonNull ActionChipsDelegate mActionChipsDelegate;
-    private final @NonNull SuggestionHost mSuggestionHost;
-    private final @NonNull Set<Integer> mLastVisiblePedals = new ArraySet<>();
-    private final @NonNull SparseBooleanArray mActionInSuggestShownOrUsed =
-            new SparseBooleanArray();
-    private final boolean mDialerAvailable;
-    private int mJourneysActionShownPosition = -1;
+    private final SuggestionHost mSuggestionHost;
+    private final OmniboxActionDelegate mActionDelegate;
 
     /**
-     * @param context An Android context.
      * @param suggestionHost Component receiving suggestion events.
-     * @param actionChipsDelegate A delegate that will responsible for pedals.
+     * @param actionDelegate Delegate for OmniboxAction execution.
      */
-    public ActionChipsProcessor(@NonNull Context context, @NonNull SuggestionHost suggestionHost,
-            @NonNull ActionChipsDelegate actionChipsDelegate) {
-        mContext = context;
+    public ActionChipsProcessor(
+            SuggestionHost suggestionHost, OmniboxActionDelegate actionDelegate) {
         mSuggestionHost = suggestionHost;
-        mActionChipsDelegate = actionChipsDelegate;
-
-        // TODO(crbug/1418077): Migrate this to OmniboxActionInSuggest along with execute logic.
-        var pm = mContext.getPackageManager();
-        var dialIntent = new Intent(Intent.ACTION_DIAL);
-        mDialerAvailable = !pm.queryIntentActivities(dialIntent, 0).isEmpty();
-    }
-
-    public void onUrlFocusChange(boolean hasFocus) {
-        if (!hasFocus) {
-            recordActionsShown();
-        }
-    }
-
-    public void onSuggestionsReceived() {
-        mActionInSuggestShownOrUsed.clear();
+        mActionDelegate = actionDelegate;
     }
 
     /**
@@ -76,128 +39,51 @@ public class ActionChipsProcessor {
      * @param position The position of the suggestion with OmniboxAction(s) on the suggestion list.
      */
     public void populateModel(AutocompleteMatch suggestion, PropertyModel model, int position) {
-        if (!doesProcessSuggestion(suggestion, position)) {
+        if (suggestion.getActions().isEmpty() || suggestion.getTakeoverAction() != null) {
             model.set(ActionChipsProperties.ACTION_CHIPS, null);
             return;
         }
 
-        var actionChipList = suggestion.getActions();
+        var actions = suggestion.getActions();
         var modelList = new ModelList();
 
-        // The header item increases lead-in padding before the first actual chip is shown.
-        // In default state, the chips will align with the suggestion text, but when scrolled
-        // the chips may show up under the decoration.
-        modelList.add(new ListItem(ActionChipsProperties.ViewType.HEADER, new PropertyModel()));
-
-        for (OmniboxAction chip : actionChipList) {
-            if (!actionSupported(chip)) continue;
+        for (OmniboxAction action : actions) {
+            // Skip the action that is shown as button, instead of chip.
+            if (action.presentationMode != ActionPresentationMode.CHIP) {
+                continue;
+            }
 
             final var chipModel =
                     new PropertyModel.Builder(ChipProperties.ALL_KEYS)
-                            .with(ChipProperties.TEXT, chip.hint)
-                            .with(ChipProperties.CONTENT_DESCRIPTION,
-                                    mContext.getString(
-                                            R.string.accessibility_omnibox_pedal, chip.hint))
+                            .with(ChipProperties.TEXT, action.hint)
+                            .with(ChipProperties.CONTENT_DESCRIPTION, action.accessibilityHint)
                             .with(ChipProperties.ENABLED, true)
-                            .with(ChipProperties.CLICK_HANDLER, m -> executeAction(chip, position))
-                            .with(ChipProperties.ICON, chip.icon.iconRes)
-                            .with(ChipProperties.APPLY_ICON_TINT, chip.icon.tintWithTextColor)
+                            .with(
+                                    ChipProperties.CLICK_HANDLER,
+                                    m -> executeAction(action, position))
+                            .with(
+                                    ChipProperties.SELECT_HANDLER,
+                                    isSelected ->
+                                            action.onActionFocusedFromKeyboard(
+                                                    isSelected, mActionDelegate))
+                            .with(ChipProperties.ICON, action.icon.chipIconRes)
+                            .with(ChipProperties.APPLY_ICON_TINT, action.icon.tintWithTextColor)
+                            .with(
+                                    ChipProperties.PRIMARY_TEXT_APPEARANCE,
+                                    action.primaryTextAppearance)
                             .build();
 
             modelList.add(new ListItem(ActionChipsProperties.ViewType.CHIP, chipModel));
-
-            // TODO(crbug/1418077): Move this to appropriate implementations.
-            switch (chip.actionId) {
-                case OmniboxActionType.PEDAL:
-                    mLastVisiblePedals.add(OmniboxPedal.from(chip).pedalId);
-                    break;
-
-                case OmniboxActionType.HISTORY_CLUSTERS:
-                    mJourneysActionShownPosition = position;
-                    break;
-
-                case OmniboxActionType.ACTION_IN_SUGGEST:
-                    var actionType = OmniboxActionInSuggest.from(chip)
-                                             .actionInfo.getActionType()
-                                             .getNumber();
-                    mActionInSuggestShownOrUsed.put(actionType, false);
-                    break;
-            }
+        }
+        if (modelList.size() == 0) {
+            return;
         }
 
         model.set(ActionChipsProperties.ACTION_CHIPS, modelList);
     }
 
-    private boolean doesProcessSuggestion(AutocompleteMatch suggestion, int position) {
-        // TODO(crbug/1418077): Migrate this to OmniboxActionInSuggest along with execute logic.
-        for (int index = 0; index < suggestion.getActions().size(); ++index) {
-            if (actionSupported(suggestion.getActions().get(index))) return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Evaluates whether a given action is supported.
-     * TODO(crbug/1418077): Migrate this to OmniboxActionInSuggest along with execute logic.
-     */
-    private boolean actionSupported(@NonNull OmniboxAction action) {
-        switch (action.actionId) {
-            case OmniboxActionType.PEDAL:
-            case OmniboxActionType.HISTORY_CLUSTERS:
-                return true;
-
-            case OmniboxActionType.ACTION_IN_SUGGEST:
-                return OmniboxActionInSuggest.from(action).actionInfo.getActionType().getNumber()
-                        != EntityInfoProto.ActionInfo.ActionType.CALL_VALUE
-                        || mDialerAvailable;
-        }
-        return false;
-    }
-
-    /**
-     * Invoke action associated with the ActionChip.
-     *
-     * TODO(crbug/1418077): Move this to appropriate implementations.
-     */
-    private void executeAction(@NonNull OmniboxAction action, int position) {
-        switch (action.actionId) {
-            case OmniboxActionType.HISTORY_CLUSTERS:
-                SuggestionsMetrics.recordResumeJourneyClick(position);
-                break;
-
-            case OmniboxActionType.ACTION_IN_SUGGEST:
-                var actionType =
-                        OmniboxActionInSuggest.from(action).actionInfo.getActionType().getNumber();
-                mActionInSuggestShownOrUsed.put(actionType, true);
-                break;
-        }
-        mSuggestionHost.finishInteraction();
-        mActionChipsDelegate.execute(action);
-    }
-
-    /**
-     * Record the actions shown for all action types (Journeys + any pedals).
-     *
-     * TODO(crbug/1418077): Move this to appropriate implementations.
-     */
-    private void recordActionsShown() {
-        for (Integer pedal : mLastVisiblePedals) {
-            SuggestionsMetrics.recordPedalShown(pedal);
-        }
-
-        for (var actionIndex = 0; actionIndex < mActionInSuggestShownOrUsed.size(); actionIndex++) {
-            int actionType = mActionInSuggestShownOrUsed.keyAt(actionIndex);
-            boolean wasUsed = mActionInSuggestShownOrUsed.valueAt(actionIndex);
-            SuggestionsMetrics.recordActionInSuggestShown(actionType);
-            if (wasUsed) {
-                SuggestionsMetrics.recordActionInSuggestUsed(actionType);
-            }
-        }
-
-        SuggestionsMetrics.recordResumeJourneyShown(mJourneysActionShownPosition);
-
-        mJourneysActionShownPosition = -1;
-        mLastVisiblePedals.clear();
+    /** Invoke action associated with the ActionChip. */
+    private void executeAction(OmniboxAction action, int position) {
+        mSuggestionHost.onOmniboxActionClicked(action, position);
     }
 }

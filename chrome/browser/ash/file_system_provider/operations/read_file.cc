@@ -10,13 +10,12 @@
 #include <string>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/trace_event/trace_event.h"
 #include "chrome/common/extensions/api/file_system_provider.h"
 #include "chrome/common/extensions/api/file_system_provider_internal.h"
 
-namespace ash {
-namespace file_system_provider {
-namespace operations {
+namespace ash::file_system_provider::operations {
 namespace {
 
 // Convert |value| into |output|. If parsing fails, then returns a negative
@@ -34,11 +33,27 @@ int CopyRequestValueToBuffer(const RequestValue& value,
 
   const size_t chunk_size = params->data.size();
 
-  // Check for overflows.
-  if (chunk_size > static_cast<size_t>(buffer_length) - buffer_offset)
+  if (buffer_offset < 0 || buffer_length < 0) {
     return -1;
+  }
 
-  memcpy(buffer->data() + buffer_offset, params->data.data(), chunk_size);
+  const size_t offset_size = static_cast<size_t>(buffer_offset);
+  const size_t buffer_length_size = static_cast<size_t>(buffer_length);
+  const size_t buffer_capacity = buffer->span().size();
+
+  // Check for overflows. Validate against both the IOBuffer's true capacity,
+  // and the caller-supplied buffer_length, because the latter is untrusted.
+  if (offset_size > buffer_capacity || offset_size > buffer_length_size) {
+    return -1;
+  }
+
+  if (chunk_size > buffer_capacity - offset_size ||
+      chunk_size > buffer_length_size - offset_size) {
+    return -1;
+  }
+
+  UNSAFE_TODO(
+      memcpy(buffer->data() + buffer_offset, params->data.data(), chunk_size));
 
   return chunk_size;
 }
@@ -61,8 +76,7 @@ ReadFile::ReadFile(
       current_offset_(0),
       callback_(std::move(callback)) {}
 
-ReadFile::~ReadFile() {
-}
+ReadFile::~ReadFile() = default;
 
 bool ReadFile::Execute(int request_id) {
   using extensions::api::file_system_provider::ReadFileRequestedOptions;
@@ -83,7 +97,7 @@ bool ReadFile::Execute(int request_id) {
           options));
 }
 
-void ReadFile::OnSuccess(int /* request_id */,
+void ReadFile::OnSuccess(/*request_id=*/int,
                          const RequestValue& result,
                          bool has_more) {
   TRACE_EVENT0("file_system_provider", "ReadFile::OnSuccess");
@@ -93,7 +107,7 @@ void ReadFile::OnSuccess(int /* request_id */,
   if (copy_result < 0) {
     LOG(ERROR) << "Failed to parse a response for the read file operation.";
     callback_.Run(
-        0 /* chunk_length */, false /* has_more */, base::File::FILE_ERROR_IO);
+        /*chunk_length=*/0, /*has_more=*/false, base::File::FILE_ERROR_IO);
     return;
   }
 
@@ -102,13 +116,11 @@ void ReadFile::OnSuccess(int /* request_id */,
   callback_.Run(copy_result, has_more, base::File::FILE_OK);
 }
 
-void ReadFile::OnError(int /* request_id */,
-                       const RequestValue& /* result */,
+void ReadFile::OnError(/*request_id=*/int,
+                       /*result=*/const RequestValue&,
                        base::File::Error error) {
   TRACE_EVENT0("file_system_provider", "ReadFile::OnError");
-  callback_.Run(0 /* chunk_length */, false /* has_more */, error);
+  callback_.Run(/*chunk_length=*/0, /*has_more=*/false, error);
 }
 
-}  // namespace operations
-}  // namespace file_system_provider
-}  // namespace ash
+}  // namespace ash::file_system_provider::operations

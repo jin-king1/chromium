@@ -79,7 +79,7 @@ def GetPkgConfigPrefixToStrip(options, args):
   # from pkg-config's |prefix| variable.
   prefix = subprocess.check_output([options.pkg_config,
       "--variable=prefix"] + args, env=os.environ).decode('utf-8')
-  if prefix[-4] == '/usr':
+  if prefix[:4] == '/usr':
     return prefix[4:]
   return prefix
 
@@ -105,13 +105,6 @@ def RewritePath(path, strip_prefix, sysroot):
 
 
 def main():
-  # If this is run on non-Linux platforms, just return nothing and indicate
-  # success. This allows us to "kind of emulate" a Linux build from other
-  # platforms.
-  if "linux" not in sys.platform:
-    print("[[],[],[],[],[]]")
-    return 0
-
   parser = OptionParser()
   parser.add_option('-d', '--debug', action='store_true')
   parser.add_option('-p', action='store', dest='pkg_config', type='string',
@@ -128,6 +121,16 @@ def main():
   parser.add_option('--version-as-components', action='store_true',
                     dest='version_as_components')
   (options, args) = parser.parse_args()
+
+  # If this is run on non-Linux platforms, just return nothing and indicate
+  # success. This allows us to "kind of emulate" a Linux build from other
+  # platforms.
+  if "linux" not in sys.platform:
+    if options.dridriverdir or options.libdir:
+      sys.stdout.write("")
+      return 0
+    print("[[],[],[],[],[]]")
+    return 0
 
   # Make a list of regular expressions to strip out.
   strip_out = []
@@ -216,7 +219,7 @@ def main():
 
   for flag in all_flags[:]:
     if len(flag) == 0 or MatchesAnyRegexp(flag, strip_out):
-      continue;
+      continue
 
     if flag[:2] == '-l':
       libs.append(RewritePath(flag[2:], prefix, sysroot))
@@ -239,7 +242,12 @@ def main():
   # Output a GN array, the first one is the cflags, the second are the libs. The
   # JSON formatter prints GN compatible lists when everything is a list of
   # strings.
-  print(json.dumps([includes, cflags, libs, lib_dirs]))
+  print(
+      json.dumps(
+          [sorted(includes),
+           sorted(cflags),
+           sorted(libs),
+           sorted(lib_dirs)]))
   return 0
 
 

@@ -31,7 +31,7 @@ def _RunCompiler(args,
 
   java_srcjars = args.java_srcjars
 
-  # Use jar_path's directory to ensure paths are relative (needed for goma).
+  # Use jar_path's directory to ensure paths are relative (needed for rbe).
   temp_dir = jar_path + '.staging'
   build_utils.DeleteDirectory(temp_dir)
   os.makedirs(temp_dir)
@@ -73,7 +73,7 @@ def _RunCompiler(args,
     # Pass source paths as response files to avoid extremely long command
     # lines that are tedius to debug.
     source_files_rsp_path = os.path.join(temp_dir, 'files_list.txt')
-    with open(source_files_rsp_path, 'w') as f:
+    with open(source_files_rsp_path, 'w', encoding='utf-8') as f:
       f.write(' '.join(source_files))
     cmd += ['@' + source_files_rsp_path]
 
@@ -109,13 +109,13 @@ def _ParseOptions(argv):
       help='Subdirectory within target_gen_dir to place extracted srcjars and '
       'annotation processor output for codesearch to find.')
   parser.add_argument('--classpath', action='append', help='Classpath to use.')
+  parser.add_argument('--compiler-plugin-jar',
+                      help='Path to compiler plugin JAR.')
   parser.add_argument(
       '--chromium-code',
       action='store_true',
       help='Whether code being compiled should be built with stricter '
       'warnings for chromium code.')
-  parser.add_argument('--gomacc-path',
-                      help='When set, prefix kotlinc command with gomacc')
   parser.add_argument('--warnings-as-errors',
                       action='store_true',
                       help='Treat all warnings as errors.')
@@ -146,12 +146,11 @@ def main(argv):
   argv = build_utils.ExpandFileArgs(argv)
   args, source_files = _ParseOptions(argv)
 
-  kotlinc_cmd = []
-  if args.gomacc_path:
-    kotlinc_cmd.append(args.gomacc_path)
-  kotlinc_cmd.append(build_utils.KOTLINC_PATH)
+  kotlinc_cmd = [build_utils.KOTLINC_PATH]
 
   kotlinc_cmd += [
+      "-jvm-target",
+      "11",
       '-no-jdk',  # Avoid depending on the bundled JDK.
       # Avoid depending on the bundled Kotlin stdlib. This may have a version
       # skew with the one in //third_party/android_deps (which is the one we
@@ -159,7 +158,14 @@ def main(argv):
       '-no-stdlib',
       # Avoid depending on the bundled Kotlin reflect libs.
       '-no-reflect',
+      # We typically set a default of 1G for java commands, see
+      # build_utils.JavaCmd. This may help prevent OOMs.
+      '-J-Xmx1G',
   ]
+  if args.compiler_plugin_jar:
+    kotlinc_cmd += [
+        f'-Xplugin={args.compiler_plugin_jar}',
+    ]
 
   if args.generated_dir:
     # Delete any stale files in the generated directory. The purpose of

@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/platform/scheduler/main_thread/frame_task_queue_controller.h"
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
@@ -44,7 +45,7 @@ FrameTaskQueueController::GetTaskQueue(
   if (!task_queues_.Contains(queue_traits.Key()))
     CreateTaskQueue(queue_traits);
   auto it = task_queues_.find(queue_traits.Key());
-  DCHECK(it != task_queues_.end());
+  CHECK(it != task_queues_.end());
   return it->value;
 }
 
@@ -111,8 +112,7 @@ void FrameTaskQueueController::TaskQueueCreated(
   all_task_queues_and_voters_.push_back(
       TaskQueueAndEnabledVoterPair(task_queue.get(), voter.get()));
 
-  DCHECK(task_queue_enabled_voters_.find(task_queue) ==
-         task_queue_enabled_voters_.end());
+  DCHECK(!task_queue_enabled_voters_.Contains(task_queue));
   task_queue_enabled_voters_.insert(task_queue, std::move(voter));
 }
 
@@ -121,14 +121,11 @@ void FrameTaskQueueController::RemoveTaskQueueAndVoter(
   DCHECK(task_queue_enabled_voters_.Contains(queue));
   task_queue_enabled_voters_.erase(queue);
 
-  bool found_task_queue = false;
-  for (auto* it = all_task_queues_and_voters_.begin();
-       it != all_task_queues_and_voters_.end(); ++it) {
-    if (it->first == queue) {
-      found_task_queue = true;
-      all_task_queues_and_voters_.erase(it);
-      break;
-    }
+  auto it = std::ranges::find(all_task_queues_and_voters_, queue,
+                              &TaskQueueAndEnabledVoterPair::first);
+  bool found_task_queue = it != all_task_queues_and_voters_.end();
+  if (found_task_queue) {
+    all_task_queues_and_voters_.erase(it);
   }
   DCHECK(found_task_queue);
 }

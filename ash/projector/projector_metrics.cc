@@ -16,9 +16,6 @@ namespace {
 
 constexpr char kProjectorToolbarHistogramName[] = "Ash.Projector.Toolbar";
 
-constexpr char kProjectorMarkerColorHistogramName[] =
-    "Ash.Projector.MarkerColor";
-
 constexpr char kProjectorCreationFlowHistogramName[] =
     "Ash.Projector.CreationFlow";
 
@@ -34,9 +31,6 @@ constexpr char kProjectorPendingScreencastBatchIOTaskDurationHistogramName[] =
 constexpr char kProjectorPendingScreencastChangeIntervalHistogramName[] =
     "Ash.Projector.PendingScreencastChangeInterval";
 
-constexpr char kProjectorPolicyChangeHandlingErrorHistogramName[] =
-    "Ash.Projector.PolicyChangeHandlingError";
-
 constexpr char
     kProjectorOnDeviceToServerSpeechRecognitionFallbackReasonHistogramName[] =
         "Ash.Projector.OnDeviceToServerSpeechRecognitionFallbackReason";
@@ -51,7 +45,7 @@ constexpr char kSpeechRecognitionEndStateServerBased[] =
 // mode or not.
 std::string GetHistogramName(const std::string& prefix) {
   std::string mode =
-      Shell::Get()->IsInTabletMode() ? ".TabletMode" : ".ClamshellMode";
+      display::Screen::Get()->InTabletMode() ? ".TabletMode" : ".ClamshellMode";
   return prefix + mode;
 }
 
@@ -65,11 +59,6 @@ inline std::string GetSpeechRecognitionHistogramName(bool is_on_device) {
 void RecordToolbarMetrics(ProjectorToolbar button) {
   base::UmaHistogramEnumeration(
       GetHistogramName(kProjectorToolbarHistogramName), button);
-}
-
-void RecordMarkerColorMetrics(ProjectorMarkerColor color) {
-  base::UmaHistogramEnumeration(
-      GetHistogramName(kProjectorMarkerColorHistogramName), color);
 }
 
 void RecordCreationFlowMetrics(ProjectorCreationFlow step) {
@@ -98,17 +87,9 @@ void RecordCreationFlowError(int message_id) {
       break;
     default:
       NOTREACHED();
-      break;
   }
   base::UmaHistogramEnumeration(
       GetHistogramName(kProjectorCreationFlowErrorHistogramName), error);
-}
-
-ASH_EXPORT void RecordPolicyChangeHandlingError(
-    ProjectorPolicyChangeHandlingError error) {
-  base::UmaHistogramEnumeration(
-      GetHistogramName(kProjectorPolicyChangeHandlingErrorHistogramName),
-      error);
 }
 
 ASH_EXPORT void RecordPendingScreencastBatchIOTaskDuration(

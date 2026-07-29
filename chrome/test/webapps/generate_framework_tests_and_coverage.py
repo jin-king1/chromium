@@ -135,14 +135,15 @@ def generate_framework_tests_and_coverage(
     all_partitions = [default_partition]
     all_partitions.extend(custom_partitions)
 
-    (existing_tests_ids_by_platform_set,
-     disabled_test_ids_by_platform) = find_existing_and_disabled_tests(
+    (existing_tests_ids_names_by_platform_set,
+     disabled_test_ids_names_by_platform) = find_existing_and_disabled_tests(
          all_partitions, required_coverage_by_platform_set, delete_in_place)
 
     # Print all diffs that are required.
     compare_and_print_tests_to_remove_and_add(
-        existing_tests_ids_by_platform_set, required_coverage_by_platform_set,
-        custom_partitions, default_partition, add_to_file)
+        existing_tests_ids_names_by_platform_set,
+        required_coverage_by_platform_set, custom_partitions,
+        default_partition, add_to_file)
 
     if suppress_coverage:
         return
@@ -150,10 +151,11 @@ def generate_framework_tests_and_coverage(
     # To calculate coverage we need to incorporate any disabled tests.
     # Remove any disabled tests from the generated tests per platform.
     for platform, tests in generated_tests_by_platform.items():
-        disabled_tests = disabled_test_ids_by_platform.get(platform, [])
+        disabled_tests = disabled_test_ids_names_by_platform.get(platform, [])
+        disabled_test_ids = set([test_id for (test_id, _) in disabled_tests])
         tests_minus_disabled: List[CoverageTest] = []
         for test in tests:
-            if test.id not in disabled_tests:
+            if test.id not in disabled_test_ids:
                 tests_minus_disabled.append(test)
             else:
                 logging.info("Removing disabled test from coverage: " +
@@ -222,7 +224,8 @@ def main(argv=None):
     default_tests_location = os.path.join(script_dir, "..", "..", "browser",
                                           "ui", "views", "web_apps")
     sync_tests_location = os.path.join(script_dir, "..", "..", "browser",
-                                       "sync", "test", "integration")
+                                       "sync", "test", "integration",
+                                       "web_apps")
 
     # These describe where existing browsertests are to be found, and where the
     # script runner will be directed to write tests to.
@@ -231,13 +234,15 @@ def main(argv=None):
             action_name_prefixes={"switch_profile_clients", "sync_"},
             browsertest_dir=sync_tests_location,
             test_file_prefix="two_client_web_apps_integration_test",
-            test_fixture="WebAppIntegration")
+            test_fixture="WebAppIntegration",
+            is_parameterized=True)
     ]
     default_partition = TestPartitionDescription(
         action_name_prefixes=set(),
         browsertest_dir=default_tests_location,
         test_file_prefix="web_app_integration_browsertest",
-        test_fixture="WebAppIntegration")
+        test_fixture="WebAppIntegration",
+        is_parameterized=False)
 
     graph_output_dir = None
     if options.graphs:

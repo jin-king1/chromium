@@ -43,6 +43,7 @@
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/network/form_data_encoder.h"
 #include "third_party/blink/renderer/platform/wtf/text/line_ending.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -57,8 +58,7 @@ class FormDataIterationSource final
 
   bool FetchNextItem(ScriptState* script_state,
                      String& name,
-                     V8FormDataEntryValue*& value,
-                     ExceptionState& exception_state) override {
+                     V8FormDataEntryValue*& value) override {
     if (current_ >= form_data_->size())
       return false;
 
@@ -85,14 +85,14 @@ class FormDataIterationSource final
 
 }  // namespace
 
-FormData::FormData(const WTF::TextEncoding& encoding) : encoding_(encoding) {}
+FormData::FormData(const TextEncoding& encoding) : encoding_(encoding) {}
 
 FormData::FormData(const FormData& form_data)
     : encoding_(form_data.encoding_),
       entries_(form_data.entries_),
       contains_password_data_(form_data.contains_password_data_) {}
 
-FormData::FormData() : encoding_(UTF8Encoding()) {}
+FormData::FormData() : encoding_(Utf8Encoding()) {}
 
 FormData* FormData::Create(HTMLFormElement* form,
                            ExceptionState& exception_state) {
@@ -128,7 +128,7 @@ FormData* FormData::Create(HTMLFormElement* form,
   }
   // 1.2. Let list be the result of constructing the entry list for form and
   // submitter.
-  FormData* form_data = form->ConstructEntryList(control, UTF8Encoding());
+  FormData* form_data = form->ConstructEntryList(control, Utf8Encoding());
   // 1.3. If list is null, then throw an "InvalidStateError" DOMException.
   if (!form_data) {
     exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
@@ -259,7 +259,7 @@ void FormData::AppendFromElement(const String& name, const String& value) {
 }
 
 std::string FormData::Encode(const String& string) const {
-  return encoding_.Encode(string, WTF::kEntitiesForUnencodables);
+  return encoding_.Encode(string, UnencodableHandling::kXmlCharRef);
 }
 
 scoped_refptr<EncodedFormData> FormData::EncodeFormData(
@@ -274,17 +274,16 @@ scoped_refptr<EncodedFormData> FormData::EncodeFormData(
             : Encode(entry->Value()),
         encoding_type);
   }
-  form_data->AppendData(encoded_data.data(), encoded_data.size());
+  form_data->AppendData(encoded_data);
   return form_data;
 }
 
 scoped_refptr<EncodedFormData> FormData::EncodeMultiPartFormData() {
   scoped_refptr<EncodedFormData> form_data = EncodedFormData::Create();
   form_data->SetBoundary(FormDataEncoder::GenerateUniqueBoundaryString());
-  Vector<char> encoded_data;
   for (const auto& entry : Entries()) {
     Vector<char> header;
-    FormDataEncoder::BeginMultiPartHeader(header, form_data->Boundary().data(),
+    FormDataEncoder::BeginMultiPartHeader(header, form_data->Boundary(),
                                           Encode(entry->name()));
 
     // If the current type is blob, then we also need to include the
@@ -327,7 +326,7 @@ scoped_refptr<EncodedFormData> FormData::EncodeMultiPartFormData() {
     FormDataEncoder::FinishMultiPartHeader(header);
 
     // Append body
-    form_data->AppendData(header.data(), header.size());
+    form_data->AppendData(header);
     if (entry->GetBlob()) {
       if (entry->GetBlob()->HasBackingFile()) {
         auto* file = To<File>(entry->GetBlob());
@@ -335,27 +334,25 @@ scoped_refptr<EncodedFormData> FormData::EncodeMultiPartFormData() {
         if (!file->GetPath().empty())
           form_data->AppendFile(file->GetPath(), file->LastModifiedTime());
       } else {
-        form_data->AppendBlob(entry->GetBlob()->Uuid(),
-                              entry->GetBlob()->GetBlobDataHandle());
+        form_data->AppendBlob(entry->GetBlob()->GetBlobDataHandle());
       }
     } else {
       std::string encoded_value =
-          Encode(NormalizeLineEndingsToCRLF(entry->Value()));
-      form_data->AppendData(
-          encoded_value.c_str(),
-          base::checked_cast<wtf_size_t>(encoded_value.length()));
+          Encode(NormalizeLineEndingsToCrLf(entry->Value()));
+      form_data->AppendData(encoded_value);
     }
-    form_data->AppendData("\r\n", 2);
+    form_data->AppendData(base::span_from_cstring("\r\n"));
   }
+
+  Vector<char> encoded_data;
   FormDataEncoder::AddBoundaryToMultiPartHeader(
-      encoded_data, form_data->Boundary().data(), true);
-  form_data->AppendData(encoded_data.data(), encoded_data.size());
+      encoded_data, form_data->Boundary(), /*is_last_boundary=*/true);
+  form_data->AppendData(encoded_data);
   return form_data;
 }
 
 PairSyncIterable<FormData>::IterationSource* FormData::CreateIterationSource(
-    ScriptState*,
-    ExceptionState&) {
+    ScriptState*) {
   return MakeGarbageCollected<FormDataIterationSource>(this);
 }
 
@@ -413,25 +410,28 @@ void FormData::AppendToControlState(FormControlState& state) const {
   }
 }
 
-FormData* FormData::CreateFromControlState(const FormControlState& state,
+FormData* FormData::CreateFromControlState(ExecutionContext& execution_context,
+                                           const FormControlState& state,
                                            wtf_size_t& index) {
-  bool ok = false;
-  uint64_t length = state[index].ToUInt64Strict(&ok);
-  if (!ok)
+  auto length = StringToUint64(state[index], NumberParsingOptions::Strict());
+  if (!length) {
     return nullptr;
+  }
   auto* form_data = MakeGarbageCollected<FormData>();
   ++index;
-  for (uint64_t j = 0; j < length; ++j) {
+  for (uint64_t j = 0; j < *length; ++j) {
     // Need at least three items.
     if (index + 2 >= state.ValueSize())
       return nullptr;
     const String& name = state[index++];
     const String& entry_type = state[index++];
     if (entry_type == "File") {
-      if (auto* file = File::CreateFromControlState(state, index))
+      if (auto* file =
+              File::CreateFromControlState(&execution_context, state, index)) {
         form_data->append(name, file);
-      else
+      } else {
         return nullptr;
+      }
     } else if (entry_type == "USVString") {
       form_data->append(name, state[index++]);
     } else {

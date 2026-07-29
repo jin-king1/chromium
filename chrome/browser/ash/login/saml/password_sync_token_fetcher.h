@@ -6,14 +6,16 @@
 #define CHROME_BROWSER_ASH_LOGIN_SAML_PASSWORD_SYNC_TOKEN_FETCHER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "components/signin/public/identity_manager/access_token_info.h"
 #include "google_apis/gaia/google_service_auth_error.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 
 class Profile;
 
@@ -40,7 +42,7 @@ class PasswordSyncTokenFetcher final {
   enum class RequestType { kNone, kCreateToken, kGetToken, kVerifyToken };
 
   // Error types will be tracked by UMA histograms.
-  // TODO(crbug.com/1112896)
+  // TODO(crbug.com/40143230)
   enum class ErrorType {
     kMissingAccessToken,
     kRequestBodyNotSerialized,
@@ -81,13 +83,13 @@ class PasswordSyncTokenFetcher final {
   void OnAccessTokenFetchComplete(GoogleServiceAuthError error,
                                   signin::AccessTokenInfo token_info);
   void FetchSyncToken(const std::string& access_token);
-  void OnSimpleLoaderComplete(std::unique_ptr<std::string> response_body);
-  void ProcessValidTokenResponse(base::Value::Dict json_response);
+  void OnSimpleLoaderComplete(std::optional<std::string> response_body);
+  void ProcessValidTokenResponse(base::DictValue json_response);
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
-  const raw_ptr<Profile, ExperimentalAsh> profile_;
+  const raw_ptr<Profile> profile_;
   // `consumer_` to call back when this request completes.
-  const raw_ptr<Consumer, ExperimentalAsh> consumer_;
+  const raw_ptr<Consumer> consumer_;
 
   std::unique_ptr<network::SimpleURLLoader> simple_url_loader_;
   std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher>

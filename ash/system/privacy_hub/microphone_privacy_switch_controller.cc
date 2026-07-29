@@ -8,13 +8,13 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
-#include "ash/public/cpp/sensor_disabled_notification_delegate.h"
 #include "ash/public/cpp/session/session_observer.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/system/privacy_hub/privacy_hub_controller.h"
 #include "ash/system/privacy_hub/privacy_hub_notification_controller.h"
+#include "ash/system/privacy_hub/sensor_disabled_notification_delegate.h"
 #include "ash/system/system_notification_controller.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -60,8 +60,17 @@ MicrophonePrivacySwitchController::~MicrophonePrivacySwitchController() {
   CrasAudioHandler::Get()->RemoveAudioObserver(this);
 }
 
+// static
+MicrophonePrivacySwitchController* MicrophonePrivacySwitchController::Get() {
+  auto* privacy_hub_controller = PrivacyHubController::Get();
+  return privacy_hub_controller
+             ? privacy_hub_controller->microphone_controller()
+             : nullptr;
+}
+
 void MicrophonePrivacySwitchController::OnActiveUserPrefServiceChanged(
     PrefService* pref_service) {
+  CHECK(pref_service);
   // Subscribing again to pref changes.
   pref_change_registrar_ = std::make_unique<PrefChangeRegistrar>();
   pref_change_registrar_->Init(pref_service);
@@ -76,6 +85,16 @@ void MicrophonePrivacySwitchController::OnActiveUserPrefServiceChanged(
   SetSystemMute();
 }
 
+bool MicrophonePrivacySwitchController::IsMicrophoneUsageAllowed() const {
+  const PrefService* pref_service = prefs();
+  if (!pref_service) {
+    LOG(WARNING)
+        << "PrefService not available. Blocking microphone access by default.";
+    return false;
+  }
+  return pref_service->GetBoolean(prefs::kUserMicrophoneAllowed);
+}
+
 void MicrophonePrivacySwitchController::OnInputMuteChanged(
     bool mute_on,
     CrasAudioHandler::InputMuteChangeMethod method) {
@@ -87,17 +106,17 @@ void MicrophonePrivacySwitchController::OnInputMuteChanged(
     SetMicrophoneNotificationVisible(false);
   }
 
-  // `pref_change_registrar_` is only initialized after a user logs in.
-  if (pref_change_registrar_ == nullptr) {
+  PrefService* const pref_service = prefs();
+  if (pref_service == nullptr) {
+    LOG(WARNING) << "PrefService not available. Cannot sync microphone mute "
+                    "change to preference.";
     return;
   }
 
-  PrefService* prefs = pref_change_registrar_->prefs();
-  DCHECK(prefs);
-
   const bool microphone_allowed = !mute_on;
-  if (prefs->GetBoolean(prefs::kUserMicrophoneAllowed) != microphone_allowed) {
-    prefs->SetBoolean(prefs::kUserMicrophoneAllowed, microphone_allowed);
+  if (pref_service->GetBoolean(prefs::kUserMicrophoneAllowed) !=
+      microphone_allowed) {
+    pref_service->SetBoolean(prefs::kUserMicrophoneAllowed, microphone_allowed);
   }
 }
 
@@ -228,6 +247,26 @@ void MicrophonePrivacySwitchController::UpdateMicrophoneNotification() {
     privacy_hub_notification_controller->UpdateSoftwareSwitchNotification(
         SensorDisabledNotificationDelegate::Sensor::kMicrophone);
   }
+}
+
+PrefService* MicrophonePrivacySwitchController::prefs() {
+  if (pref_change_registrar_) {
+    return pref_change_registrar_->prefs();
+  }
+  if (Shell::HasInstance() && Shell::Get()->session_controller()) {
+    return Shell::Get()->session_controller()->GetActivePrefService();
+  }
+  return nullptr;
+}
+
+const PrefService* MicrophonePrivacySwitchController::prefs() const {
+  if (pref_change_registrar_) {
+    return pref_change_registrar_->prefs();
+  }
+  if (Shell::HasInstance() && Shell::Get()->session_controller()) {
+    return Shell::Get()->session_controller()->GetActivePrefService();
+  }
+  return nullptr;
 }
 
 }  // namespace ash

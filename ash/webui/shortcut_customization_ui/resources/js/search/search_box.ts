@@ -2,25 +2,27 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://resources/cr_elements/chromeos/cros_color_overrides.css.js';
-import 'chrome://resources/cr_elements/cr_toolbar/cr_toolbar_search_field.js';
+import 'chrome://resources/ash/common/cr_elements/cros_color_overrides.css.js';
+import 'chrome://resources/ash/common/cr_elements/cr_toolbar/cr_toolbar_search_field.js';
 import './search_result_row.js';
 import 'chrome://resources/polymer/v3_0/iron-dropdown/iron-dropdown.js';
 import 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
 
+import {getInstance as getAnnouncerInstance} from 'chrome://resources/ash/common/cr_elements/cr_a11y_announcer/cr_a11y_announcer.js';
+import {CrToolbarSearchFieldElement} from 'chrome://resources/ash/common/cr_elements/cr_toolbar/cr_toolbar_search_field.js';
+import {I18nMixin} from 'chrome://resources/ash/common/cr_elements/i18n_mixin.js';
 import {strictQuery} from 'chrome://resources/ash/common/typescript_utils/strict_query.js';
-import {getInstance as getAnnouncerInstance} from 'chrome://resources/cr_elements/cr_a11y_announcer/cr_a11y_announcer.js';
-import {CrToolbarSearchFieldElement} from 'chrome://resources/cr_elements/cr_toolbar/cr_toolbar_search_field.js';
-import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {assert} from 'chrome://resources/js/assert_ts.js';
-import {IronDropdownElement} from 'chrome://resources/polymer/v3_0/iron-dropdown/iron-dropdown.js';
-import {IronListElement} from 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
-import {PolymerElementProperties} from 'chrome://resources/polymer/v3_0/polymer/interfaces.js';
+import {assert} from 'chrome://resources/js/assert.js';
+import type {IronDropdownElement} from 'chrome://resources/polymer/v3_0/iron-dropdown/iron-dropdown.js';
+import type {IronListElement} from 'chrome://resources/polymer/v3_0/iron-list/iron-list.js';
+import type {PolymerElementProperties} from 'chrome://resources/polymer/v3_0/polymer/interfaces.js';
 import {afterNextRender, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-import {SearchResultsAvailabilityObserverInterface, SearchResultsAvailabilityObserverReceiver} from '../../mojom-webui/ash/webui/shortcut_customization_ui/backend/search/search.mojom-webui.js';
-import {stringToMojoString16} from '../mojo_utils.js';
-import {AcceleratorState, MojoSearchResult, ShortcutSearchHandlerInterface} from '../shortcut_types.js';
+import type {SearchResultsAvailabilityObserverInterface} from '../../mojom-webui/search.mojom-webui.js';
+import {SearchResultsAvailabilityObserverReceiver} from '../../mojom-webui/search.mojom-webui.js';
+import type {MojoSearchResult, ShortcutSearchHandlerInterface} from '../shortcut_types.js';
+import {AcceleratorState} from '../shortcut_types.js';
+import {isCustomizationAllowed} from '../shortcut_utils.js';
 
 import {getTemplate} from './search_box.html.js';
 import {SearchResultRowElement} from './search_result_row.js';
@@ -32,8 +34,6 @@ import {getShortcutSearchHandler} from './shortcut_search_handler.js';
  * results.
  */
 
-// TODO(longbowei): This value is temporary. Update it once more information is
-// provided.
 const MAX_NUM_RESULTS = 5;
 // This number was chosen arbitrarily to be a reasonable limit. Most
 // searches will not be anywhere close to this.
@@ -107,17 +107,17 @@ export class SearchBoxElement extends SearchBoxElementBase implements
     };
   }
 
-  hasSearchQuery: boolean;
-  searchResults: MojoSearchResult[];
-  shouldShowDropdown: boolean;
-  private lastFocused: HTMLElement|null;
-  private listBlurred: boolean;
+  declare hasSearchQuery: boolean;
+  declare searchResults: MojoSearchResult[];
+  declare shouldShowDropdown: boolean;
+  declare private lastFocused: HTMLElement|null;
+  declare private listBlurred: boolean;
   private resizeObserver: ResizeObserver;
   private searchInputElement: HTMLInputElement;
-  private searchResultsExist: boolean;
-  private selectedItem: MojoSearchResult;
+  declare private searchResultsExist: boolean;
+  declare private selectedItem: MojoSearchResult;
   private shortcutSearchHandler: ShortcutSearchHandlerInterface;
-  private spinnerActive: boolean;
+  declare private spinnerActive: boolean;
 
   constructor() {
     super();
@@ -388,8 +388,14 @@ export class SearchBoxElement extends SearchBoxElementBase implements
 
     this.spinnerActive = true;
 
-    this.shortcutSearchHandler
-        .search(stringToMojoString16(query), MAX_NUM_RESULTS)
+    // In some cases, the backend will return search results that are later
+    // filtered out by `this.filterSearchResults`. When that happens, the UI
+    // should still show MAX_NUM_RESULTS results if there are other matching
+    // results. To achieve this, we request more results than we need, and then
+    // cap the number of search results to MAX_NUM_RESULTS.
+    const maxNumberOfSearchResults = MAX_NUM_RESULTS * 3;
+
+    this.shortcutSearchHandler.search(query, maxNumberOfSearchResults)
         .then((response) => {
           this.onSearchResultsReceived(query, response.results);
           this.dispatchEvent(new CustomEvent(
@@ -405,7 +411,12 @@ export class SearchBoxElement extends SearchBoxElementBase implements
     }
 
     this.spinnerActive = false;
+
     this.searchResults = this.filterSearchResults(results);
+
+    // In `this.fetchSearchResults`, we queried for a multiple of
+    // MAX_NUM_RESULTS, so cap the size of the results here after filtering.
+    this.searchResults = this.searchResults.slice(0, MAX_NUM_RESULTS);
 
     // This invalidates whatever SearchResultRow element was previously focused,
     // since it's likely that the element has been removed after the search.
@@ -414,25 +425,35 @@ export class SearchBoxElement extends SearchBoxElementBase implements
 
   /**
    * Filter the given search results to hide accelerators and results that are
-   * disabled because their keys are unavailable. This filtering matches the
-   * behavior of the Shortcut app's main list of shortcuts.
+   * disabled because their keys are unavailable or they are disabled by user.
+   * This filtering matches the behavior of the Shortcut app's main list of
+   * shortcuts.
    * @param searchResults the search results to filter.
    * @returns the given search results with disabled keys and results with no
    *     keys filtered out.
    */
   private filterSearchResults(searchResults: MojoSearchResult[]):
       MojoSearchResult[] {
-    return searchResults
-        // Hide accelerators that are disabled because the keys are
-        // unavailable.
-        .map(
-            result => ({
-              ...result,
-              acceleratorInfos: result.acceleratorInfos.filter(
-                  a => a.state !== AcceleratorState.kDisabledByUnavailableKeys),
-            }))
-        // Hide results that don't contain any accelerators.
-        .filter(result => result.acceleratorInfos.length > 0);
+    const enabledSearchResults =
+        searchResults
+            // Hide accelerators that are disabled because the keys are
+            // unavailable.
+            .map(result => ({
+                   ...result,
+                   acceleratorInfos: result.acceleratorInfos.filter(
+                       a => a.state !==
+                               AcceleratorState.kDisabledByUnavailableKeys &&
+                           a.state !== AcceleratorState.kDisabledByUser),
+                 }));
+
+    // If customization is not allowed, hide results that don't contain any
+    // accelerators.
+    if (!isCustomizationAllowed()) {
+      return enabledSearchResults.filter(
+          result => result.acceleratorInfos.length > 0);
+    }
+
+    return enabledSearchResults;
   }
 }
 

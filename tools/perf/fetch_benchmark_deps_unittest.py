@@ -28,7 +28,9 @@ class FetchBenchmarkDepsUnittest(unittest.TestCase):
   py_utils.cloud_storage.GetFilesInDirectoryIfChanged
   """
 
-  def testFetchWPRs(self):
+  @mock.patch.object(fetch_benchmark_deps, 'GetCrossbenchStorySets')
+  def testFetchWPRs(self, mock_get_crossbench):
+    mock_get_crossbench.return_value = []
     test_name = 'system_health.common_desktop'
     deps_fd, deps_path = tempfile.mkstemp()
     args = [test_name, '--output-deps=%s' % deps_path]
@@ -62,7 +64,9 @@ class FetchBenchmarkDepsUnittest(unittest.TestCase):
       output_count += 1
     self.assertTrue(output_count > 0)
 
-  def testFetchServingDirs(self):
+  @mock.patch.object(fetch_benchmark_deps, 'GetCrossbenchStorySets')
+  def testFetchServingDirs(self, mock_get_crossbench):
+    mock_get_crossbench.return_value = []
     args = ['media.desktop']
     with mock.patch.object(archive_info.WprArchiveInfo,
         'DownloadArchivesIfNeeded', autospec=True) as mock_download:
@@ -76,3 +80,15 @@ class FetchBenchmarkDepsUnittest(unittest.TestCase):
         mock_get.assert_called_once_with(
             os.path.join(path_util.GetPerfStorySetsDir(), 'media_cases'),
             cloud_storage.PARTNER_BUCKET)
+
+  def testFetchDepsForCrossbench(self):
+    with mock.patch.object(archive_info.WprArchiveInfo,
+                           'DownloadArchivesIfNeeded',
+                           autospec=True) as mock_download:
+      mock_download.return_value = True
+
+      cb_story_sets = fetch_benchmark_deps.GetCrossbenchStorySets()
+      for story_set in cb_story_sets:
+        fetch_benchmark_deps.DownloadCrossbench(story_set)
+
+      self.assertTrue(mock_download.called)

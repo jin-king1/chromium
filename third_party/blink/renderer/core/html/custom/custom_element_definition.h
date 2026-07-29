@@ -9,7 +9,7 @@
 #include "third_party/blink/renderer/bindings/core/v8/v8_typedefs.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/create_element_flags.h"
-#include "third_party/blink/renderer/core/dom/element_rare_data_field.h"
+#include "third_party/blink/renderer/core/dom/node_rare_data_field.h"
 #include "third_party/blink/renderer/core/html/custom/custom_element_descriptor.h"
 #include "third_party/blink/renderer/platform/bindings/name_client.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -35,14 +35,14 @@ enum class FormAssociationFlag {
 class CORE_EXPORT CustomElementDefinition
     : public GarbageCollected<CustomElementDefinition>,
       public NameClient,
-      public ElementRareDataField {
+      public NodeRareDataField {
  public:
   CustomElementDefinition(const CustomElementDefinition&) = delete;
   CustomElementDefinition& operator=(const CustomElementDefinition&) = delete;
   ~CustomElementDefinition() override;
 
   void Trace(Visitor*) const override;
-  const char* NameInHeapSnapshot() const override {
+  const char* GetHumanReadableName() const override {
     return "CustomElementDefinition";
   }
 
@@ -63,7 +63,8 @@ class CORE_EXPORT CustomElementDefinition
   HTMLElement* CreateElementForConstructor(Document&);
   virtual HTMLElement* CreateAutonomousCustomElementSync(
       Document&,
-      const QualifiedName&) = 0;
+      const QualifiedName&,
+      CustomElementRegistry*) = 0;
   HTMLElement* CreateElement(Document&,
                              const QualifiedName&,
                              const CreateElementFlags);
@@ -72,6 +73,7 @@ class CORE_EXPORT CustomElementDefinition
 
   virtual bool HasConnectedCallback() const = 0;
   virtual bool HasDisconnectedCallback() const = 0;
+  virtual bool HasConnectedMoveCallback() const = 0;
   virtual bool HasAdoptedCallback() const = 0;
   bool HasAttributeChangedCallback(const QualifiedName&) const;
   bool HasStyleAttributeChangedCallback() const;
@@ -79,9 +81,11 @@ class CORE_EXPORT CustomElementDefinition
   virtual bool HasFormResetCallback() const = 0;
   virtual bool HasFormDisabledCallback() const = 0;
   virtual bool HasFormStateRestoreCallback() const = 0;
+  virtual bool HasToolFillCallback() const = 0;
 
   virtual void RunConnectedCallback(Element&) = 0;
   virtual void RunDisconnectedCallback(Element&) = 0;
+  virtual void RunConnectedMoveCallback(Element&) = 0;
   virtual void RunAdoptedCallback(Element&,
                                   Document& old_owner,
                                   Document& new_owner) = 0;
@@ -96,10 +100,12 @@ class CORE_EXPORT CustomElementDefinition
   virtual void RunFormStateRestoreCallback(Element& element,
                                            const V8ControlValue* value,
                                            const String& mode) = 0;
+  virtual void RunToolFillCallback(Element& element, const String& value) = 0;
 
   void EnqueueUpgradeReaction(Element&);
   void EnqueueConnectedCallback(Element&);
   void EnqueueDisconnectedCallback(Element&);
+  void EnqueueConnectedMoveCallback(Element&);
   void EnqueueAdoptedCallback(Element&,
                               Document& old_owner,
                               Document& new_owner);

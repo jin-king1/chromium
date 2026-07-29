@@ -4,10 +4,13 @@
 
 #include "ash/system/time/calendar_up_next_view.h"
 
+#include <optional>
+#include <utility>
+
 #include "ash/public/cpp/test/test_system_tray_client.h"
 #include "ash/shell.h"
 #include "ash/system/model/system_tray_model.h"
-#include "ash/system/time/calendar_event_list_item_view_jelly.h"
+#include "ash/system/time/calendar_event_list_item_view.h"
 #include "ash/system/time/calendar_unittest_utils.h"
 #include "ash/system/time/calendar_view_controller.h"
 #include "ash/system/tray/tray_constants.h"
@@ -16,6 +19,8 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/time/time.h"
+#include "google_apis/calendar/calendar_api_requests.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/scroll_view.h"
 
@@ -27,9 +32,10 @@ std::unique_ptr<google_apis::calendar::CalendarEvent> CreateEvent(
     const base::Time start_time,
     const base::Time end_time,
     bool all_day_event = false,
-    const GURL video_conference_url = GURL()) {
+    const GURL video_conference_url = GURL(),
+    const char* summary = "summary") {
   return calendar_test_utils::CreateEvent(
-      "id_0", "summary_0", start_time, end_time,
+      "id_0", summary, start_time, end_time,
       google_apis::calendar::CalendarEvent::EventStatus::kConfirmed,
       google_apis::calendar::CalendarEvent::ResponseStatus::kAccepted,
       all_day_event, video_conference_url);
@@ -38,7 +44,8 @@ std::unique_ptr<google_apis::calendar::CalendarEvent> CreateEvent(
 std::list<std::unique_ptr<google_apis::calendar::CalendarEvent>>
 CreateUpcomingEvents(int event_count = 1,
                      bool all_day_event = false,
-                     const GURL video_conference_url = GURL()) {
+                     const GURL video_conference_url = GURL(),
+                     const char* summary = "summary") {
   std::list<std::unique_ptr<google_apis::calendar::CalendarEvent>> events;
   auto event_in_ten_mins_start_time =
       base::subtle::TimeNowIgnoringOverride().LocalMidnight() +
@@ -48,7 +55,7 @@ CreateUpcomingEvents(int event_count = 1,
   for (int i = 0; i < event_count; ++i) {
     events.push_back(CreateEvent(event_in_ten_mins_start_time,
                                  event_in_ten_mins_end_time, all_day_event,
-                                 video_conference_url));
+                                 video_conference_url, summary));
   }
 
   return events;
@@ -66,9 +73,12 @@ class CalendarUpNextViewTest : public AshTestBase {
   void SetUp() override {
     AshTestBase::SetUp();
     controller_ = std::make_unique<CalendarViewController>();
+    normal_duration_.emplace(
+        gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
   }
 
   void TearDown() override {
+    normal_duration_.reset();
     controller_.reset();
     AshTestBase::TearDown();
   }
@@ -85,11 +95,12 @@ class CalendarUpNextViewTest : public AshTestBase {
     Shell::Get()->system_tray_model()->calendar_model()->OnEventsFetched(
         calendar_utils::GetStartOfMonthUTC(
             base::subtle::TimeNowIgnoringOverride().LocalMidnight()),
+        google_apis::calendar::kPrimaryCalendarId,
         google_apis::ApiErrorCode::HTTP_SUCCESS,
         calendar_test_utils::CreateMockEventList(std::move(events)).get());
 
-    auto up_next_view =
-        std::make_unique<CalendarUpNextView>(controller_.get(), callback);
+    auto up_next_view = std::make_unique<CalendarUpNextView>(
+        controller_.get(), std::move(callback));
     up_next_view_ = widget_->SetContentsView(std::move(up_next_view));
     // Set the widget to reflect the CalendarUpNextView size in reality. If we
     // don't then the view will never be scrollable.
@@ -163,8 +174,9 @@ class CalendarUpNextViewTest : public AshTestBase {
   }
 
   std::unique_ptr<views::Widget> widget_;
-  raw_ptr<CalendarUpNextView, ExperimentalAsh> up_next_view_;
+  raw_ptr<CalendarUpNextView> up_next_view_;
   std::unique_ptr<CalendarViewController> controller_;
+  std::optional<gfx::ScopedAnimationDurationScaleMode> normal_duration_;
 };
 
 TEST_F(CalendarUpNextViewTest, ShouldShowMultipleUpcomingEvents) {
@@ -201,7 +213,7 @@ TEST_F(CalendarUpNextViewTest, ShouldShowMultipleUpcomingEvents) {
 }
 
 TEST_F(CalendarUpNextViewTest,
-       ShouldShowSingleEventTakingUpFullWidthOfParentView) {
+       ShouldShowSingleEventWithShortTitleTakingUpFullWidthOfParentView) {
   // Set time override.
   base::subtle::ScopedTimeClockOverrides time_override(
       []() { return base::subtle::TimeNowIgnoringOverride().LocalMidnight(); },
@@ -209,6 +221,24 @@ TEST_F(CalendarUpNextViewTest,
 
   // Create UpNextView with a single upcoming event.
   CreateUpNextView(CreateUpcomingEvents());
+
+  EXPECT_EQ(GetContentsView()->children().size(), size_t(1));
+  EXPECT_EQ(GetContentsView()->children()[0]->width(),
+            GetScrollView()->width());
+}
+
+TEST_F(CalendarUpNextViewTest,
+       ShouldShowSingleEventWithLongTitleTakingUpFullWidthOfParentView) {
+  // Set time override.
+  base::subtle::ScopedTimeClockOverrides time_override(
+      []() { return base::subtle::TimeNowIgnoringOverride().LocalMidnight(); },
+      nullptr, nullptr);
+
+  // Create UpNextView with a single upcoming event.
+  CreateUpNextView(
+      CreateUpcomingEvents(1, false, GURL(),
+                           "Meeting title with really long long long long long "
+                           "long long name that should ellipsis"));
 
   EXPECT_EQ(GetContentsView()->children().size(), size_t(1));
   EXPECT_EQ(GetContentsView()->children()[0]->width(),
@@ -228,6 +258,49 @@ TEST_F(CalendarUpNextViewTest,
 
   EXPECT_EQ(GetContentsView()->children().size(), size_t(event_count));
   EXPECT_EQ(ScrollPosition(), 0);
+
+  // Press scroll right. We should scroll past the first event + margin.
+  const int first_event_width =
+      GetContentsView()->children()[0]->GetContentsBounds().width() +
+      calendar_utils::kUpNextBetweenChildSpacing;
+  PressScrollRightButton();
+  EXPECT_EQ(ScrollPosition(), first_event_width);
+
+  // Press scroll right again. We should scroll past the second event +
+  // margin.
+  const int second_event_width =
+      GetContentsView()->children()[1]->GetContentsBounds().width() +
+      calendar_utils::kUpNextBetweenChildSpacing;
+  PressScrollRightButton();
+  EXPECT_EQ(ScrollPosition(), first_event_width + second_event_width);
+
+  // Press scroll left. Now we should be back to being past the first event +
+  // margin.
+  PressScrollLeftButton();
+  EXPECT_EQ(ScrollPosition(), first_event_width);
+
+  // Press scroll left again. We should be back at the beginning of the scroll
+  // view.
+  PressScrollLeftButton();
+  EXPECT_EQ(ScrollPosition(), 0);
+}
+
+TEST_F(CalendarUpNextViewTest,
+       ShouldScrollLeftAndRightWhenScrollButtonsArePressed_RTL) {
+  // Set time override.
+  base::subtle::ScopedTimeClockOverrides time_override(
+      []() { return base::subtle::TimeNowIgnoringOverride().LocalMidnight(); },
+      nullptr, nullptr);
+
+  // Add multiple upcoming events.
+  const int event_count = 5;
+  CreateUpNextView(CreateUpcomingEvents(event_count));
+
+  EXPECT_EQ(GetContentsView()->children().size(), size_t(event_count));
+  EXPECT_EQ(ScrollPosition(), 0);
+
+  // Sets the UI to be RTL.
+  base::i18n::SetRTLForTesting(true);
 
   // Press scroll right. We should scroll past the first event + margin.
   const int first_event_width =
@@ -489,11 +562,11 @@ TEST_F(CalendarUpNextViewTest, ShouldFocusViewsInCorrectOrder_WhenPressingTab) {
 
   // First the event list item view should be focused.
   PressTab();
-  auto* first_item = GetContentsView()->children()[0];
+  auto* first_item = GetContentsView()->children()[0].get();
   ASSERT_TRUE(first_item);
   EXPECT_EQ(first_item, focus_manager->GetFocusedView());
-  EXPECT_STREQ("CalendarEventListItemViewJelly",
-               focus_manager->GetFocusedView()->GetClassName());
+  EXPECT_EQ("CalendarEventListItemView",
+            focus_manager->GetFocusedView()->GetClassName());
 
   // Next, the "Join" button should be focused.
   PressTab();
@@ -502,11 +575,11 @@ TEST_F(CalendarUpNextViewTest, ShouldFocusViewsInCorrectOrder_WhenPressingTab) {
 
   // Next, the second event list item view should be focused.
   PressTab();
-  auto* second_item = GetContentsView()->children()[1];
+  auto* second_item = GetContentsView()->children()[1].get();
   ASSERT_TRUE(second_item);
   EXPECT_EQ(second_item, focus_manager->GetFocusedView());
-  EXPECT_STREQ("CalendarEventListItemViewJelly",
-               focus_manager->GetFocusedView()->GetClassName());
+  EXPECT_EQ("CalendarEventListItemView",
+            focus_manager->GetFocusedView()->GetClassName());
 
   // Next, the second event list item view "Join" button should be focused.
   PressTab();
@@ -526,8 +599,38 @@ TEST_F(CalendarUpNextViewTest, ShouldFocusViewsInCorrectOrder_WhenPressingTab) {
   // Going back again, the second event list item view should be focused.
   PressShiftTab();
   EXPECT_EQ(second_item, focus_manager->GetFocusedView());
-  EXPECT_STREQ("CalendarEventListItemViewJelly",
-               focus_manager->GetFocusedView()->GetClassName());
+  EXPECT_EQ("CalendarEventListItemView",
+            focus_manager->GetFocusedView()->GetClassName());
+}
+
+// Add unittest for the fix of this bug: b/286596205.
+TEST_F(CalendarUpNextViewTest, ShouldPreserveFocusAfterRefreshEvent) {
+  // Set time override.
+  base::subtle::ScopedTimeClockOverrides time_override(
+      []() { return base::subtle::TimeNowIgnoringOverride().LocalMidnight(); },
+      nullptr, nullptr);
+
+  // Create up next view with 2 upcoming google meet events.
+  CreateUpNextView(
+      CreateUpcomingEvents(2, false, GURL("https://meet.google.com/abc-123")));
+  EXPECT_EQ(GetContentsView()->children().size(), size_t(2));
+  auto* focus_manager = up_next_view()->GetFocusManager();
+
+  // First the event list item view should be focused.
+  PressTab();
+  auto* first_item = GetContentsView()->children()[0].get();
+  ASSERT_TRUE(first_item);
+  EXPECT_EQ(first_item, focus_manager->GetFocusedView());
+  EXPECT_EQ("CalendarEventListItemView",
+            focus_manager->GetFocusedView()->GetClassName());
+
+  up_next_view()->RefreshEvents();
+
+  // After refresh the events, the first event list item view should still be
+  // focused.
+  EXPECT_EQ(first_item, focus_manager->GetFocusedView());
+  EXPECT_EQ("CalendarEventListItemView",
+            focus_manager->GetFocusedView()->GetClassName());
 }
 
 class CalendarUpNextViewAnimationTest : public CalendarUpNextViewTest {
@@ -536,9 +639,13 @@ class CalendarUpNextViewAnimationTest : public CalendarUpNextViewTest {
       : CalendarUpNextViewTest(
             base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
 
-  void PressScrollLeftButton() override { LeftClickOn(GetScrollLeftButton()); }
+  void PressScrollLeftButton() override {
+    ASSERT_TRUE(GetScrollLeftButton()->GetEnabled());
+    LeftClickOn(GetScrollLeftButton());
+  }
 
   void PressScrollRightButton() override {
+    ASSERT_TRUE(GetScrollRightButton()->GetEnabled());
     LeftClickOn(GetScrollRightButton());
   }
 
@@ -551,9 +658,39 @@ class CalendarUpNextViewAnimationTest : public CalendarUpNextViewTest {
   const base::TimeDelta kAnimationFinishedDuration = base::Seconds(1);
 };
 
-// Flaky: https://crbug.com/1401505
 TEST_F(CalendarUpNextViewAnimationTest,
-       DISABLED_ShouldAnimateScrollView_WhenScrollButtonsArePressed) {
+       ShouldAnimateScrollView_WhenScrollButtonsArePressed) {
+  // This test is sensitive to the time at which events are created versus the
+  // time the UI component believes is "now".
+  //
+  // THE PROBLEM:
+  // 1. Event Creation Time: The `CreateUpcomingEvents` helper function uses
+  //    `base::subtle::TimeNowIgnoringOverride()`, which gets the REAL system
+  //    clock time to create event timestamps.
+  // 2. UI Component Time: The `CalendarUpNextView` and its data source,
+  //    `CalendarModel`, operate within the test's `TaskEnvironment`, which uses
+  //    a MOCK clock. By default, this mock clock starts at an arbitrary "time
+  //    zero" (e.g., a date in 1970).
+  // 3. Filtering Logic: The `CalendarModel` filters the events to only show
+  //    what is "up next" relative to its mock clock. When the mock clock is in
+  //    1970 and the events are for the current date, the model fails to
+  //    correctly identify the events as upcoming for "today". This results in
+  //    the view showing only a single event (not enough to require scrolling),
+  //    disabled scroll buttons, and a test failure.
+  //
+  // THE SOLUTION:
+  // This line synchronizes the clocks. It calculates the precise duration
+  // between the mock clock's starting time (`base::Time::Now()` within the test
+  // environment) and the beginning of the real world's current day
+  // (`LocalMidnight`). It then advances the mock clock by that duration. This
+  // ensures that when the `CalendarModel` performs its filtering, its sense of
+  // "now" is on the same day as the event timestamps. Using `LocalMidnight` is
+  // critical for predictability; it establishes a stable, consistent start
+  // time for the test, regardless of the time of day it is run, which is
+  // crucial for avoiding flakiness.
+  task_environment()->AdvanceClock(
+      base::subtle::TimeNowIgnoringOverride().LocalMidnight() -
+      base::Time::Now());
   // Add multiple upcoming events.
   const int event_count = 5;
   CreateUpNextView(CreateUpcomingEvents(event_count));

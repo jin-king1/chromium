@@ -23,41 +23,37 @@ const char kTranslateTimeToBeReady[] = "Translate.Translation.TimeToBeReady";
 const char kTranslateTimeToLoad[] = "Translate.Translation.TimeToLoad";
 const char kTranslateTimeToTranslate[] =
     "Translate.Translation.TimeToTranslate";
-const char kTranslateUserActionDuration[] = "Translate.UserActionDuration";
 const char kTranslateLanguageDeterminedDuration[] =
     "Translate.LanguageDeterminedDuration";
 const char kTranslatedLanguageDetectionContentLength[] =
     "Translate.Translation.LanguageDetection.ContentLength";
+
+const char kTranslateCompactInfobarEvent[] = "Translate.CompactInfobar.Event";
 
 }  // namespace metrics_internal
 
 void ReportLanguageVerification(LanguageVerificationType type) {
   base::UmaHistogramEnumeration(
       metrics_internal::kTranslateLanguageDetectionLanguageVerification, type,
-      LANGUAGE_VERIFICATION_MAX);
+      LanguageVerificationType::kMaxValue);
 }
 
 void ReportTimeToBeReady(double time_in_msec) {
-  UMA_HISTOGRAM_MEDIUM_TIMES(
+  DEPRECATED_UMA_HISTOGRAM_MEDIUM_TIMES(
       metrics_internal::kTranslateTimeToBeReady,
       base::Microseconds(static_cast<int64_t>(time_in_msec * 1000.0)));
 }
 
 void ReportTimeToLoad(double time_in_msec) {
-  UMA_HISTOGRAM_MEDIUM_TIMES(
+  DEPRECATED_UMA_HISTOGRAM_MEDIUM_TIMES(
       metrics_internal::kTranslateTimeToLoad,
       base::Microseconds(static_cast<int64_t>(time_in_msec * 1000.0)));
 }
 
 void ReportTimeToTranslate(double time_in_msec) {
-  UMA_HISTOGRAM_MEDIUM_TIMES(
+  DEPRECATED_UMA_HISTOGRAM_MEDIUM_TIMES(
       metrics_internal::kTranslateTimeToTranslate,
       base::Microseconds(static_cast<int64_t>(time_in_msec * 1000.0)));
-}
-
-void ReportUserActionDuration(base::TimeTicks begin, base::TimeTicks end) {
-  UMA_HISTOGRAM_LONG_TIMES(metrics_internal::kTranslateUserActionDuration,
-                           end - begin);
 }
 
 void ReportLanguageDeterminedDuration(base::TimeTicks begin,
@@ -78,6 +74,11 @@ void ReportTranslatedLanguageDetectionContentLength(size_t content_length) {
   base::UmaHistogramCounts100000(
       metrics_internal::kTranslatedLanguageDetectionContentLength,
       content_length);
+}
+
+void ReportCompactInfobarEvent(InfobarEvent event) {
+  UMA_HISTOGRAM_ENUMERATION(metrics_internal::kTranslateCompactInfobarEvent,
+                            event);
 }
 
 }  // namespace translate

@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/extensions/api/runtime/chrome_runtime_api_delegate.h"
+
 #include <memory>
 #include <set>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -16,22 +17,26 @@
 #include "base/scoped_observation.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/simple_test_tick_clock.h"
-#include "chrome/browser/extensions/api/runtime/chrome_runtime_api_delegate.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_with_install.h"
 #include "chrome/browser/extensions/test_extension_system.h"
-#include "chrome/browser/extensions/update_install_gate.h"
 #include "chrome/browser/extensions/updater/extension_updater.h"
+#include "extensions/browser/delayed_install_manager.h"
 #include "extensions/browser/event_router.h"
 #include "extensions/browser/event_router_factory.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/update_install_gate.h"
 #include "extensions/browser/updater/extension_downloader.h"
 #include "extensions/browser/updater/extension_downloader_test_delegate.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/extension_id.h"
 #include "extensions/common/verifier_formats.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -50,15 +55,15 @@ class TestEventRouter : public EventRouter {
   ~TestEventRouter() override = default;
 
   // An entry in our fake event registry.
-  using Entry = std::pair<std::string, std::string>;
+  using Entry = std::pair<ExtensionId, std::string>;
 
-  bool ExtensionHasEventListener(const std::string& extension_id,
+  bool ExtensionHasEventListener(const ExtensionId& extension_id,
                                  const std::string& event_name) const override {
-    return base::Contains(fake_registry_, Entry(extension_id, event_name));
+    return fake_registry_.contains(Entry(extension_id, event_name));
   }
 
   // Pretend that |extension_id| is listening for |event_name|.
-  void AddFakeListener(const std::string& extension_id,
+  void AddFakeListener(const ExtensionId& extension_id,
                        const std::string& event_name) {
     fake_registry_.insert(Entry(extension_id, event_name));
   }
@@ -83,7 +88,7 @@ class DownloaderTestDelegate : public ExtensionDownloaderTestDelegate {
 
   // On the next update check for extension |id|, we'll respond that no update
   // is available.
-  void AddNoUpdateResponse(const std::string& id) {
+  void AddNoUpdateResponse(const ExtensionId& id) {
     no_updates_.insert(id);
     if (updates_.find(id) != updates_.end()) {
       updates_.erase(id);
@@ -92,7 +97,7 @@ class DownloaderTestDelegate : public ExtensionDownloaderTestDelegate {
 
   // On the next update check for extension |id|, pretend that an update to
   // version |version| has been downloaded to |path|.
-  void AddUpdateResponse(const std::string& id,
+  void AddUpdateResponse(const ExtensionId& id,
                          const base::FilePath& path,
                          const std::string& version) {
     if (no_updates_.find(id) != no_updates_.end()) {
@@ -161,8 +166,8 @@ class DownloaderTestDelegate : public ExtensionDownloaderTestDelegate {
   // These keep track of what response we should give for update checks, keyed
   // by extension id. A given extension id should only appear in one or the
   // other.
-  std::set<std::string> no_updates_;
-  std::map<std::string, DownloadFinishedArgs> updates_;
+  std::set<ExtensionId> no_updates_;
+  std::map<ExtensionId, DownloadFinishedArgs> updates_;
 };
 
 // Helper to let test code wait for and return an update check result.
@@ -211,7 +216,7 @@ class ChromeRuntimeAPIDelegateTest : public ExtensionServiceTestWithInstall {
     InitializeExtensionServiceWithUpdater();
     runtime_delegate_ =
         std::make_unique<ChromeRuntimeAPIDelegate>(browser_context());
-    service()->updater()->SetExtensionCacheForTesting(nullptr);
+    ExtensionUpdater::Get(profile())->SetExtensionCacheForTesting(nullptr);
     EventRouterFactory::GetInstance()->SetTestingFactory(
         browser_context(),
         base::BindRepeating(&TestEventRouterFactoryFunction));
@@ -220,30 +225,33 @@ class ChromeRuntimeAPIDelegateTest : public ExtensionServiceTestWithInstall {
     // installation until the extension is idle.
     update_install_gate_ =
         std::make_unique<UpdateInstallGate>(service()->profile());
-    service()->RegisterInstallGate(ExtensionPrefs::DELAY_REASON_WAIT_FOR_IDLE,
-                                   update_install_gate_.get());
+    DelayedInstallManager::Get(browser_context())
+        ->RegisterInstallGate(ExtensionPrefs::DelayReason::kWaitForIdle,
+                              update_install_gate_.get());
     static_cast<TestExtensionSystem*>(ExtensionSystem::Get(browser_context()))
         ->SetReady();
   }
 
   void TearDown() override {
+    update_install_gate_.reset();
+    runtime_delegate_.reset();
     ExtensionDownloader::set_test_delegate(nullptr);
     ChromeRuntimeAPIDelegate::set_tick_clock_for_tests(nullptr);
     ExtensionServiceTestWithInstall::TearDown();
   }
 
-  // Uses runtime_delegate_ to run an update check for |id|, expecting
+  // Uses runtime_delegate_ to run an update check for |extension_id|, expecting
   // |expected_status| and (if an update was available) |expected_version|.
   // The |expected_status| should be one of 'throttled', 'no_update', or
   // 'update_available'.
   void DoUpdateCheck(
-      const std::string& id,
+      const ExtensionId& extension_id,
       const api::runtime::RequestUpdateCheckStatus& expected_status,
       const std::string& expected_version) {
     UpdateCheckResultCatcher catcher;
     EXPECT_TRUE(runtime_delegate_->CheckForUpdates(
-        id, base::BindOnce(&UpdateCheckResultCatcher::OnResult,
-                           base::Unretained(&catcher))));
+        extension_id, base::BindOnce(&UpdateCheckResultCatcher::OnResult,
+                                     base::Unretained(&catcher))));
     std::unique_ptr<RuntimeAPIDelegate::UpdateCheckResult> result =
         catcher.WaitForResult();
     ASSERT_NE(nullptr, result.get());
@@ -281,7 +289,7 @@ TEST_F(ChromeRuntimeAPIDelegateTest, RequestUpdateCheck) {
 
   // Start by installing version 1.
   scoped_refptr<const Extension> v1(InstallCRX(v1_path, INSTALL_NEW));
-  std::string id = v1->id();
+  ExtensionId id = v1->id();
 
   // Make it look like our test extension listens for the
   // runtime.onUpdateAvailable event, so that it won't be updated immediately
@@ -324,7 +332,7 @@ TEST_F(ChromeRuntimeAPIDelegateTest, RequestUpdateCheck) {
 
   // Reload the extension, causing the delayed update to v2 to happen, then do
   // another update check - we should get a no_update instead of throttled.
-  service()->ReloadExtension(id);
+  registrar()->ReloadExtension(id);
   const Extension* current =
       ExtensionRegistry::Get(browser_context())->GetInstalledExtension(id);
   ASSERT_NE(nullptr, current);
@@ -416,7 +424,7 @@ class ChromeRuntimeAPIDelegateReloadTest : public ChromeRuntimeAPIDelegateTest {
   ExtensionId extension_id_;
 };
 
-// Test failing on Linux: https://crbug.com/1321186
+// Test failing on Linux: https://crbug.com/40837231
 #if BUILDFLAG(IS_LINUX)
 #define MAYBE_TerminateExtensionWithTooManyReloads \
   DISABLED_TerminateExtensionWithTooManyReloads

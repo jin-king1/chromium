@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include <stdint.h>
+
 #include <cstddef>
 #include <utility>
 
@@ -28,13 +29,13 @@
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/mojom/webaudio/audio_context_manager.mojom-mojolpm.h"
 #include "third_party/blink/public/mojom/webaudio/audio_context_manager.mojom.h"
 #include "third_party/libprotobuf-mutator/src/src/libfuzzer/libfuzzer_macro.h"
 #include "url/origin.h"
 
-const char* kCmdline[] = {"audio_context_manager_mojolpm_fuzzer", nullptr};
+constexpr const char* kCmdline[] = {"audio_context_manager_mojolpm_fuzzer",
+                                    nullptr};
 
 content::mojolpm::FuzzerEnvironment& GetEnvironment() {
   static base::NoDestructor<content::mojolpm::FuzzerEnvironment> environment(

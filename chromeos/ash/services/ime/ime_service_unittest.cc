@@ -5,6 +5,7 @@
 #include "chromeos/ash/services/ime/ime_service.h"
 
 #include "ash/constants/ash_features.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
@@ -16,7 +17,6 @@
 #include "chromeos/ash/services/ime/public/mojom/input_engine.mojom.h"
 #include "chromeos/ash/services/ime/public/mojom/input_method.mojom.h"
 #include "chromeos/ash/services/ime/public/mojom/input_method_host.mojom.h"
-#include "chromeos/ash/services/ime/public/mojom/japanese_settings.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -33,7 +33,6 @@ namespace {
 
 const char kInvalidImeSpec[] = "ime_spec_never_support";
 constexpr char kValidImeSpec[] = "valid_spec";
-const std::vector<uint8_t> extra{0x66, 0x77, 0x88};
 
 void ConnectCallback(bool* success, bool result) {
   *success = result;
@@ -46,13 +45,13 @@ class TestDecoderState;
 // the only way to have a stateful fake is to have a global reference to it.
 TestDecoderState* g_test_decoder_state = nullptr;
 
-mojo::ScopedMessagePipeHandle MessagePipeHandleFromInt(uint32_t handle) {
+mojo::ScopedMessagePipeHandle MessagePipeHandleFromInt(uintptr_t handle) {
   return mojo::ScopedMessagePipeHandle(mojo::MessagePipeHandle(handle));
 }
 
 class TestDecoderState : public mojom::ConnectionFactory {
  public:
-  bool InitializeConnectionFactory(uint32_t receiver_pipe_handle) {
+  bool InitializeConnectionFactory(uintptr_t receiver_pipe_handle) {
     connection_factory_.reset();
     connection_factory_.Bind(mojo::PendingReceiver<mojom::ConnectionFactory>(
         MessagePipeHandleFromInt(receiver_pipe_handle)));
@@ -74,10 +73,9 @@ class TestDecoderState : public mojom::ConnectionFactory {
       ConnectToInputMethodCallback callback) override {
     std::move(callback).Run(/*bound=*/false);
   }
-  void ConnectToJapaneseDecoder(
-      mojo::PendingAssociatedReceiver<ime::mojom::JapaneseDecoder>
-          japanese_decoder,
-      ConnectToJapaneseDecoderCallback callback) override {
+  void Unused(
+      mojo::PendingAssociatedReceiver<ime::mojom::JpUnused> japanese_decoder,
+      UnusedCallback callback) override {
     std::move(callback).Run(/*bound=*/false);
   }
 
@@ -92,7 +90,7 @@ class TestImeSharedLibraryWrapper : public ImeSharedLibraryWrapper {
     return instance.get();
   }
 
-  absl::optional<ImeSharedLibraryWrapper::EntryPoints>
+  std::optional<ImeSharedLibraryWrapper::EntryPoints>
   MaybeLoadThenReturnEntryPoints() override {
     return entry_points_;
   }
@@ -104,21 +102,23 @@ class TestImeSharedLibraryWrapper : public ImeSharedLibraryWrapper {
     entry_points_ = {
         .init_proto_mode = [](ImeCrosPlatform* platform) {},
         .close_proto_mode = []() {},
-        .supports =
+        .proto_mode_supports =
             [](const char* ime_spec) {
-              return strcmp(kInvalidImeSpec, ime_spec) != 0;
+              return UNSAFE_TODO(strcmp(kInvalidImeSpec, ime_spec)) != 0;
             },
-        .activate_ime = [](const char* ime_spec,
-                           ImeClientDelegate* delegate) { return true; },
-        .process = [](const uint8_t* data, size_t size) {},
+        .proto_mode_activate_ime =
+            [](const char* ime_spec, ImeClientDelegate* delegate) {
+              return true;
+            },
+        .proto_mode_process = [](const uint8_t* data, size_t size) {},
         .init_mojo_mode = [](ImeCrosPlatform* platform) {},
         .close_mojo_mode = []() {},
-        .initialize_connection_factory =
-            [](uint32_t receiver_pipe_handle) {
+        .mojo_mode_initialize_connection_factory =
+            [](uintptr_t receiver_pipe_handle) {
               return g_test_decoder_state->InitializeConnectionFactory(
                   receiver_pipe_handle);
             },
-        .is_input_method_connected =
+        .mojo_mode_is_input_method_connected =
             []() { return g_test_decoder_state->IsConnected(); },
     };
   }
@@ -130,7 +130,7 @@ class TestImeSharedLibraryWrapper : public ImeSharedLibraryWrapper {
 
   ~TestImeSharedLibraryWrapper() override = default;
 
-  absl::optional<ImeSharedLibraryWrapper::EntryPoints> entry_points_;
+  std::optional<ImeSharedLibraryWrapper::EntryPoints> entry_points_;
 };
 
 struct MockInputMethodHost : public mojom::InputMethodHost {
@@ -152,16 +152,24 @@ struct MockInputMethodHost : public mojom::InputMethodHost {
   void FinishComposition() override {}
   void DeleteSurroundingText(uint32_t num_before_cursor,
                              uint32_t num_after_cursor) override {}
+  void ReplaceSurroundingText(uint32_t num_before_cursor,
+                              uint32_t num_after_cursor,
+                              const std::u16string& text) override {}
   void HandleAutocorrect(mojom::AutocorrectSpanPtr autocorrect_span) override {}
   void RequestSuggestions(mojom::SuggestionsRequestPtr request,
                           RequestSuggestionsCallback callback) override {}
   void DisplaySuggestions(
-      const std::vector<AssistiveSuggestion>& suggestions) override {}
+      const std::vector<AssistiveSuggestion>& suggestions,
+      const std::optional<SuggestionsTextContext>& context) override {}
   void UpdateCandidatesWindow(mojom::CandidatesWindowPtr window) override {}
   void RecordUkm(mojom::UkmEntryPtr entry) override {}
-  void ReportKoreanAction(mojom::KoreanAction action) override {}
-  void ReportKoreanSettings(mojom::KoreanSettingsPtr settings) override {}
-  void ReportSuggestionOpportunity(AssistiveSuggestionMode mode) override {}
+  void DEPRECATED_ReportKoreanAction(mojom::KoreanAction action) override {}
+  void DEPRECATED_ReportKoreanSettings(
+      mojom::KoreanSettingsPtr settings) override {}
+  void DEPRECATED_ReportSuggestionOpportunity(
+      AssistiveSuggestionMode mode) override {}
+  void DEPRECATED_ReportHistogramSample(mojom::BucketedHistogramPtr histogram,
+                                        uint16_t value) override {}
   void UpdateQuickSettings(
       mojom::InputMethodQuickSettingsPtr settings) override {}
 
@@ -205,16 +213,24 @@ class ImeServiceTest : public testing::Test, public mojom::InputMethodHost {
   void FinishComposition() override {}
   void DeleteSurroundingText(uint32_t num_before_cursor,
                              uint32_t num_after_cursor) override {}
+  void ReplaceSurroundingText(uint32_t num_before_cursor,
+                              uint32_t num_after_cursor,
+                              const std::u16string& text) override {}
   void HandleAutocorrect(mojom::AutocorrectSpanPtr autocorrect_span) override {}
   void RequestSuggestions(mojom::SuggestionsRequestPtr request,
                           RequestSuggestionsCallback callback) override {}
   void DisplaySuggestions(
-      const std::vector<AssistiveSuggestion>& suggestions) override {}
+      const std::vector<AssistiveSuggestion>& suggestions,
+      const std::optional<SuggestionsTextContext>& context) override {}
   void UpdateCandidatesWindow(mojom::CandidatesWindowPtr window) override {}
   void RecordUkm(mojom::UkmEntryPtr entry) override {}
-  void ReportKoreanAction(mojom::KoreanAction action) override {}
-  void ReportKoreanSettings(mojom::KoreanSettingsPtr settings) override {}
-  void ReportSuggestionOpportunity(AssistiveSuggestionMode mode) override {}
+  void DEPRECATED_ReportKoreanAction(mojom::KoreanAction action) override {}
+  void DEPRECATED_ReportKoreanSettings(
+      mojom::KoreanSettingsPtr settings) override {}
+  void DEPRECATED_ReportSuggestionOpportunity(
+      AssistiveSuggestionMode mode) override {}
+  void DEPRECATED_ReportHistogramSample(mojom::BucketedHistogramPtr histogram,
+                                        uint16_t value) override {}
   void UpdateQuickSettings(
       mojom::InputMethodQuickSettingsPtr settings) override {}
 
@@ -252,6 +268,7 @@ TEST_F(ImeServiceTest, ConnectInvalidImeEngineDoesNotConnectRemote) {
   MockInputChannel test_channel;
   mojo::Remote<mojom::InputChannel> remote_engine;
 
+  const std::vector<uint8_t> extra{0x66, 0x77, 0x88};
   remote_manager_->ConnectToImeEngine(
       kInvalidImeSpec, remote_engine.BindNewPipeAndPassReceiver(),
       test_channel.CreatePendingRemote(), extra,

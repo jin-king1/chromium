@@ -10,6 +10,7 @@
 #import <utility>
 
 #import "base/check_op.h"
+#import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
 #import "components/url_formatter/url_formatter.h"
 #import "ios/web/common/features.h"
@@ -21,10 +22,6 @@
 #import "ios/web/public/web_client.h"
 #import "ui/base/page_transition_types.h"
 #import "ui/gfx/text_elider.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace web {
 namespace {
@@ -46,11 +43,11 @@ bool ShouldSerializeReferrer(const Referrer& referrer) {
 
 using HttpRequestHeaders = NavigationItem::HttpRequestHeaders;
 
-// Value 50 was picked experimentally by examining Chrome for iOS UI. Tab strip
-// on 12.9" iPad Pro trucates the title to less than 50 characters (title that
-// only consists of letters "i"). Tab strip has the biggest surface to fit
-// title.
-const size_t kMaxTitleLength = 50;
+// Value 512 was picked as a tradeoff between saving memory from excessively
+// long titles, while preserving the entire title as often as possible for
+// features like Sync, where titles can be shared to other platforms that
+// have UI surfaces supporting longer titles than iOS.
+const size_t kMaxTitleLength = 512;
 
 // static
 std::unique_ptr<NavigationItem> NavigationItem::Create() {
@@ -60,13 +57,11 @@ std::unique_ptr<NavigationItem> NavigationItem::Create() {
 NavigationItemImpl::NavigationItemImpl()
     : unique_id_(GetUniqueIDInConstructor()) {}
 
-NavigationItemImpl::~NavigationItemImpl() {
-}
+NavigationItemImpl::~NavigationItemImpl() {}
 
 NavigationItemImpl::NavigationItemImpl(
     const proto::NavigationItemStorage& storage)
     : unique_id_(GetUniqueIDInConstructor()),
-      original_request_url_(storage.url()),
       referrer_(ReferrerFromProto(storage.referrer())),
       title_(base::UTF8ToUTF16(storage.title())),
       // Use reload transition type to avoid incorrect increase for other
@@ -75,17 +70,36 @@ NavigationItemImpl::NavigationItemImpl(
       timestamp_(TimeFromProto(storage.timestamp())),
       user_agent_type_(UserAgentTypeFromProto(storage.user_agent())),
       http_request_headers_(
-          HttpRequestHeadersFromProto(storage.http_request_headers())) {
-  // In the cases where the URL to be restored is not an HTTP URL, it is
-  // very likely that we can't restore the page (e.g. for files, it could
-  // be an external PDF that has been deleted), don't restore it to avoid
-  // issues.
+          HttpRequestHeadersFromProto(storage.http_request_headers())),
+      was_created_automatically_(storage.was_created_automatically()) {
+  if (!storage.internal_scroll_to_text_fragment().empty()) {
+    internal_scroll_to_text_fragment_ =
+        storage.internal_scroll_to_text_fragment();
+  }
+  // While the virtual URL is persisted, the original request URL and the
+  // non-virtual URL needs to be set upon NavigationItem creation. Since
+  // GetVirtualURL() returns `url_` for the non-overridden case, this will
+  // also update the virtual URL reported by this object.
+  url_ = original_request_url_ = GURL(storage.url());
+
+  if (!storage.security_scoped_file_resource().empty()) {
+    const std::string& bytes = storage.security_scoped_file_resource();
+    security_scoped_file_resource_ = [NSData dataWithBytes:bytes.data()
+                                                    length:bytes.size()];
+  }
+
+  // Restore the `virtual_url`. In case the `url` is invalid, it should be set
+  // to the the value saved for `virtual_url` (we never store `virtual_url` if
+  // equal to `url`, so restore to `url` only in that case).
   const GURL virtual_url(storage.virtual_url());
-  if (original_request_url_.SchemeIsHTTPOrHTTPS()) {
-    url_ = original_request_url_;
-    virtual_url_ = virtual_url;
-  } else {
-    url_ = virtual_url;
+  if (virtual_url.is_valid()) {
+    if (!url_.is_valid()) {
+      url_ = virtual_url;
+    } else {
+      if (virtual_url != url_) {
+        virtual_url_ = virtual_url;
+      }
+    }
   }
 }
 
@@ -108,6 +122,18 @@ void NavigationItemImpl::SerializeToProto(
   if (http_request_headers_.count) {
     SerializeHttpRequestHeadersToProto(http_request_headers_,
                                        *storage.mutable_http_request_headers());
+  }
+  if (security_scoped_file_resource_) {
+    storage.set_security_scoped_file_resource(
+        static_cast<const char*>(security_scoped_file_resource_.bytes),
+        security_scoped_file_resource_.length);
+  }
+  if (was_created_automatically_) {
+    storage.set_was_created_automatically(was_created_automatically_);
+  }
+  if (internal_scroll_to_text_fragment_.has_value()) {
+    storage.set_internal_scroll_to_text_fragment(
+        internal_scroll_to_text_fragment_.value());
   }
 }
 
@@ -154,8 +180,9 @@ const GURL& NavigationItemImpl::GetVirtualURL() const {
 }
 
 void NavigationItemImpl::SetTitle(const std::u16string& title) {
-  if (title_ == title)
+  if (title_ == title) {
     return;
+  }
 
   if (title.size() > kMaxTitleLength) {
     title_ = gfx::TruncateString(title, kMaxTitleLength, gfx::CHARACTER_BREAK);
@@ -169,16 +196,28 @@ const std::u16string& NavigationItemImpl::GetTitle() const {
   return title_;
 }
 
+void NavigationItemImpl::SetInternalScrollToTextFragment(
+    const std::optional<std::string>& internal_scroll_to_text_fragment) {
+  internal_scroll_to_text_fragment_ = internal_scroll_to_text_fragment;
+}
+
+const std::optional<std::string>&
+NavigationItemImpl::GetInternalScrollToTextFragment() const {
+  return internal_scroll_to_text_fragment_;
+}
+
 const std::u16string& NavigationItemImpl::GetTitleForDisplay() const {
   // Most pages have real titles. Don't even bother caching anything if this is
   // the case.
-  if (!title_.empty())
+  if (!title_.empty()) {
     return title_;
+  }
 
   // More complicated cases will use the URLs as the title. This result we will
   // cache since it's more complicated to compute.
-  if (!cached_display_title_.empty())
+  if (!cached_display_title_.empty()) {
     return cached_display_title_;
+  }
 
   // File urls have different display rules, so use one if it is present.
   cached_display_title_ = NavigationItemImpl::GetDisplayTitleForURL(
@@ -222,6 +261,14 @@ void NavigationItemImpl::SetUserAgentType(UserAgentType type) {
   user_agent_type_ = type;
 }
 
+void NavigationItemImpl::SetSecurityScopedFileResource(NSData* data) {
+  security_scoped_file_resource_ = [data copy];
+}
+
+NSData* NavigationItemImpl::GetSecurityScopedFileResource() {
+  return security_scoped_file_resource_;
+}
+
 void NavigationItemImpl::SetUntrusted() {
   is_untrusted_ = true;
 }
@@ -244,13 +291,15 @@ HttpRequestHeaders* NavigationItemImpl::GetHttpRequestHeaders() const {
 
 void NavigationItemImpl::AddHttpRequestHeaders(
     HttpRequestHeaders* additional_headers) {
-  if (!additional_headers)
+  if (!additional_headers) {
     return;
+  }
 
-  if (http_request_headers_)
+  if (http_request_headers_) {
     [http_request_headers_ addEntriesFromDictionary:additional_headers];
-  else
+  } else {
     http_request_headers_ = [additional_headers mutableCopy];
+  }
 }
 
 void NavigationItemImpl::SetHttpsUpgradeType(
@@ -289,12 +338,20 @@ bool NavigationItemImpl::IsCreatedFromHashChange() const {
   return is_created_from_hash_change_;
 }
 
+void NavigationItemImpl::SetWasCreatedAutomatically(bool value) {
+  was_created_automatically_ = value;
+}
+
+bool NavigationItemImpl::WasCreatedAutomatically() const {
+  return was_created_automatically_;
+}
+
 void NavigationItemImpl::SetShouldSkipSerialization(bool skip) {
   should_skip_serialization_ = skip;
 }
 
 bool NavigationItemImpl::ShouldSkipSerialization() const {
-  return should_skip_serialization_;
+  return should_skip_serialization_ || url_.spec().size() > url::kMaxURLChars;
 }
 
 void NavigationItemImpl::SetPostData(NSData* post_data) {
@@ -308,8 +365,9 @@ NSData* NavigationItemImpl::GetPostData() const {
 void NavigationItemImpl::RemoveHttpRequestHeaderForKey(NSString* key) {
   DCHECK(key);
   [http_request_headers_ removeObjectForKey:key];
-  if (![http_request_headers_ count])
+  if (![http_request_headers_ count]) {
     http_request_headers_ = nil;
+  }
 }
 
 void NavigationItemImpl::ResetHttpRequestHeaders() {
@@ -332,21 +390,24 @@ void NavigationItemImpl::RestoreStateFromItem(NavigationItem* other) {
   }
   if (url_ == other->GetURL()) {
     SetVirtualURL(other->GetVirtualURL());
+    SetSecurityScopedFileResource(other->GetSecurityScopedFileResource());
   }
 }
 
 // static
 std::u16string NavigationItemImpl::GetDisplayTitleForURL(const GURL& url) {
-  if (url.is_empty())
+  if (url.is_empty()) {
     return std::u16string();
+  }
 
   std::u16string title = url_formatter::FormatUrl(url);
 
   // For file:// URLs use the filename as the title, not the full path.
   if (url.SchemeIsFile()) {
     std::u16string::size_type slashpos = title.rfind('/');
-    if (slashpos != std::u16string::npos && slashpos != (title.size() - 1))
+    if (slashpos != std::u16string::npos && slashpos != (title.size() - 1)) {
       title = title.substr(slashpos + 1);
+    }
   }
 
   const size_t kMaxTitleChars = 4 * 1024;
@@ -368,7 +429,7 @@ NSString* NavigationItemImpl::GetDescription() const {
           base::UTF16ToUTF8(title_).c_str(), transition_type_,
           GetUserAgentTypeDescription(user_agent_type_).c_str(),
           is_created_from_hash_change_ ? @"true" : @"false",
-          navigation_initiation_type_,
+          static_cast<int>(navigation_initiation_type_),
           GetHttpsUpgradeTypeDescription(https_upgrade_type_).c_str()];
 }
 #endif
@@ -379,6 +440,7 @@ NavigationItemImpl::NavigationItemImpl(const NavigationItemImpl& item)
       url_(item.url_),
       referrer_(item.referrer_),
       virtual_url_(item.virtual_url_),
+      internal_scroll_to_text_fragment_(item.internal_scroll_to_text_fragment_),
       title_(item.title_),
       transition_type_(item.transition_type_),
       favicon_status_(item.favicon_status_),

@@ -9,14 +9,13 @@
 #include <stdint.h>
 
 #include <map>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/functional/callback.h"
 #include "components/services/storage/public/cpp/buckets/bucket_locator.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/mojom/quota/quota_types.mojom-forward.h"
 
 namespace blink {
@@ -44,7 +43,7 @@ using GetStorageKeysCallback =
     base::OnceCallback<void(const std::set<blink::StorageKey>& storage_keys)>;
 using GetUsageInfoCallback = base::OnceCallback<void(UsageInfoEntries)>;
 using GetBucketCallback =
-    base::OnceCallback<void(const absl::optional<BucketLocator>& bucket_info)>;
+    base::OnceCallback<void(const std::optional<BucketLocator>& bucket_info)>;
 
 // Simple template wrapper for a callback queue.
 template <typename CallbackType, typename... Args>

@@ -36,6 +36,12 @@ std::string ToString(const std::vector<Slot>& schedule) {
   return ss.str();
 }
 
+// Working with null and infinite `base::Time` instances are invalid and cause
+// undue complexity to account for. They should never be provided by the caller.
+bool IsValidTimestamp(const base::Time t) {
+  return !t.is_null() && !t.is_inf();
+}
+
 // The returned vector has one `Slot` per `ScheduleCheckpoint` and is
 // sorted by `Slot::time`. The time at which `Slot` <i> ends is by definition
 // `Slot` <i + 1>'s `time`. Also note that:
@@ -57,13 +63,31 @@ std::vector<Slot> BuildSchedule(const base::Time now,
   //
   // `end_time` must first be shifted by a whole number of days such that
   // `end_time` <= `now` < `end_time + kOneDay`.
+  //
+  // Example with `schedule_type` == `kSunsetToSunrise`:
+  // Start (sunset): 6:00 PM, End (sunrise): 6:00 AM, Now: 3:00 AM
+  //
+  //                                    3:00    6:00             18:00
+  // <---------------------------------- + ----- + --------------- + ----->
+  //                                     |       |                 |
+  //                                    now   end_time        start_time
   const base::TimeDelta amount_to_advance_end_time =
       (now - end_time).FloorToMultiple(kOneDay);
   end_time += amount_to_advance_end_time;
+  //    6:00                            3:00                    18:00
+  // <-- + ----------------------------- + ---------------------- + ----->
+  //     |                               |                        |
+  //  end_time                           now                  start_time
+  // (previous day)
 
   // Shift `start_time` such that
   // `end_time` <= `start_time` < `end_time + kOneDay`.
   start_time = ShiftWithinOneDayFrom(end_time, start_time);
+  //    6:00               18:00        3:00    6:00
+  // <-- + ----------------- + --------- + ----- + ---------------------->
+  //     |                   |           |       |
+  //  end_time          start_time      now   end_time
+  // (previous day)                          (current day)
 
   std::vector<Slot> schedule;
   switch (schedule_type) {
@@ -85,8 +109,12 @@ std::vector<Slot> BuildSchedule(const base::Time now,
     case ScheduleType::kNone:
       NOTREACHED() << "kNone ScheduleType does not support any automatic "
                       "feature changes";
-      break;
   }
+  //    6:00 10:00   16:00 18:00         3:00    6:00
+  // <-- + --- + ----- + --- + ---------- + ----- + ---------------------->
+  //     |     |       |     |            |       |
+  //  end_time morning late sunset       now   end_time
+  // (previous day)  afternoon               (current day)
   DVLOG(1) << "Schedule: " << ToString(schedule);
   return schedule;
 }
@@ -121,6 +149,9 @@ Position GetCurrentPosition(const base::Time now,
                             const base::Time start_time,
                             const base::Time end_time,
                             const ScheduleType schedule_type) {
+  CHECK(IsValidTimestamp(now));
+  CHECK(IsValidTimestamp(start_time));
+  CHECK(IsValidTimestamp(end_time));
   const std::vector<Slot> schedule =
       BuildSchedule(now, start_time, end_time, schedule_type);
   DCHECK(!schedule.empty());
@@ -137,11 +168,12 @@ Position GetCurrentPosition(const base::Time now,
   NOTREACHED() << "Failed to find ScheduleCheckpoint for now=" << now
                << " schedule:\n"
                << ToString(schedule);
-  return Position();
 }
 
 base::Time ShiftWithinOneDayFrom(const base::Time origin,
                                  const base::Time time_in) {
+  CHECK(IsValidTimestamp(origin));
+  CHECK(IsValidTimestamp(time_in));
   const base::TimeDelta amount_to_advance_time_in =
       (origin - time_in).CeilToMultiple(kOneDay);
   return time_in + amount_to_advance_time_in;

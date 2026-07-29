@@ -5,22 +5,23 @@
 #ifndef UI_DISPLAY_MAC_DISPLAY_LINK_MAC_H_
 #define UI_DISPLAY_MAC_DISPLAY_LINK_MAC_H_
 
-#include <QuartzCore/CVDisplayLink.h>
-
-#include <memory>
-#include <set>
-#include <vector>
-
+#include "base/apple/scoped_typeref.h"
 #include "base/functional/callback_forward.h"
-#include "base/mac/scoped_typeref.h"
 #include "base/memory/ref_counted.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "ui/display/display_export.h"
 
-namespace ui {
+namespace gpu {
+class ImageTransportSurfaceOverlayMacTest;
+}
 
-class DisplayLinkMac;
+namespace viz {
+class ExternalBeginFrameSourceMacTest;
+class MockDisplayLinkMac;
+}
+
+namespace ui {
 
 // VSync parameters parsed from CVDisplayLinkOutputCallback's parameters.
 struct DISPLAY_EXPORT VSyncParamsMac {
@@ -33,6 +34,8 @@ struct DISPLAY_EXPORT VSyncParamsMac {
   bool display_times_valid = false;
   base::TimeTicks display_timebase;
   base::TimeDelta display_interval;
+
+  int64_t drawable_id;
 };
 
 // Object used to control the lifetime of callbacks from DisplayLinkMac.
@@ -42,81 +45,112 @@ class DISPLAY_EXPORT VSyncCallbackMac {
   using Callback = base::RepeatingCallback<void(VSyncParamsMac)>;
   ~VSyncCallbackMac();
 
+  base::WeakPtr<VSyncCallbackMac> GetWeakPtr();
+
  private:
-  friend class DisplayLinkMac;
-  VSyncCallbackMac(scoped_refptr<DisplayLinkMac> display_link,
-                   Callback callback,
-                   bool do_callback_on_ctor_thread);
+  friend class CADisplayLinkMac;
+  friend class CAMetalDisplayLinkMac;
+  friend class CVDisplayLinkMac;
+  friend class DisplayLinkMacSharedState;
+  friend class ExternalDisplayLinkMac;
+  friend struct MetalObjCState;
+  friend struct ObjCState;
+  friend class viz::MockDisplayLinkMac;
 
-  // The DisplayLinkMac that `this` is observing is kept alive while `this` is
-  // alive.
-  scoped_refptr<DisplayLinkMac> display_link_;
+  friend class gpu::ImageTransportSurfaceOverlayMacTest;
+  friend class viz::ExternalBeginFrameSourceMacTest;
 
-  // The callback that will be run on the CVDisplayLink thread. If `this` was
-  // created with `do_callback_on_ctor_thread`, then this callback will post a
-  // task to the creating thread,
-  Callback callback_for_cvdisplaylink_thread_;
+  using UnregisterCallback = base::OnceCallback<void(VSyncCallbackMac*)>;
 
-  base::WeakPtrFactory<VSyncCallbackMac> weak_factory_;
+  explicit VSyncCallbackMac(UnregisterCallback unregister_callback,
+                            Callback callback,
+                            bool do_callback_on_ctor_thread);
+
+  // The callback to unregister `this` with its DisplayLinkMac.
+  UnregisterCallback unregister_callback_;
+
+  Callback callback_for_displaylink_thread_;
+
+  base::WeakPtrFactory<VSyncCallbackMac> weak_factory_{this};
 };
 
-class DISPLAY_EXPORT DisplayLinkMac
-    : public base::RefCountedThreadSafe<DisplayLinkMac> {
+class DISPLAY_EXPORT PresentationCallbackMac {
  public:
-  // Get the DisplayLinkMac for the specified display.
-  static scoped_refptr<DisplayLinkMac> GetForDisplay(
-      CGDirectDisplayID display_id);
+  using Callback = base::RepeatingCallback<void(int64_t, base::TimeTicks)>;
+  ~PresentationCallbackMac();
+
+  base::WeakPtr<PresentationCallbackMac> GetWeakPtr();
+
+ private:
+  friend class CAMetalDisplayLinkMac;
+  friend struct MetalObjCState;
+
+  using UnregisterCallback = base::OnceCallback<void(PresentationCallbackMac*)>;
+
+  explicit PresentationCallbackMac(UnregisterCallback unregister_callback,
+                                   Callback callback,
+                                   bool do_callback_on_ctor_thread);
+
+  // The callback to unregister `this` with its DisplayLinkMac.
+  UnregisterCallback unregister_callback_;
+
+  Callback callback_for_displaylink_thread_;
+
+  base::WeakPtrFactory<PresentationCallbackMac> weak_factory_{this};
+};
+
+class DISPLAY_EXPORT DisplayLinkMac : public base::RefCounted<DisplayLinkMac> {
+ public:
+  // Create a DisplayLinkMac for the specified display. The returned object may
+  // only be accessed on the thread on which it was retrieved.
+  static scoped_refptr<DisplayLinkMac> GetForDisplay(int64_t display_id);
+
+  static bool SupportsDisplayLinkMacInBrowser();
 
   // Register an observer callback.
   // * The specified callback will be called at every VSync tick, until the
   //   returned VSyncCallbackMac object is destroyed.
   // * The resulting VSyncCallbackMac object must be destroyed on the same
   //   thread on which it was created.
-  // * If `do_callback_on_register_thread` is true, then the callback is
-  //   guaranteed to be made on the calling thread and is guaranteed to be made
-  //   only if the resulting VSyncCallbackMac has not been destroyed.
-  // * If `do_callback_on_register_thread` is false then the callback may come
-  //   from any thread, and may happen after the resulting VSyncCallbackMac is
-  //   destroyed.
-  std::unique_ptr<VSyncCallbackMac> RegisterCallback(
-      VSyncCallbackMac::Callback callback,
-      bool do_callback_on_register_thread = true);
+  // * The callback is guaranteed to be made on the register thread.
+  virtual std::unique_ptr<VSyncCallbackMac> RegisterCallback(
+      VSyncCallbackMac::Callback callback) = 0;
 
-  // Get the panel/monitor refresh rate
-  double GetRefreshRate();
+  virtual std::unique_ptr<PresentationCallbackMac> RegisterPresentationCallback(
+      PresentationCallbackMac::Callback callback);
 
- private:
-  friend class base::RefCountedThreadSafe<DisplayLinkMac>;
-  friend class VSyncCallbackMac;
+  // Get the panel/monitor refresh interval
+  static base::TimeDelta GetScreenDefaultRefreshInterval(
+      int64_t vsync_display_id);
+  virtual base::TimeDelta GetRefreshInterval() const = 0;
+  virtual void GetRefreshIntervalRange(base::TimeDelta& min_interval,
+                                       base::TimeDelta& max_interval,
+                                       base::TimeDelta& granularity) const = 0;
 
-  DisplayLinkMac(CGDirectDisplayID display_id,
-                 base::ScopedTypeRef<CVDisplayLinkRef> display_link);
-  virtual ~DisplayLinkMac();
+  virtual void SetPreferredInterval(base::TimeDelta interval) = 0;
 
-  void UnregisterCallback(VSyncCallbackMac* callback);
+  // Retrieves the current (“now”) time of a given display link. Returns
+  // base::TimeTicks() if the current time is not available.
+  virtual base::TimeTicks GetCurrentTime() const = 0;
 
-  // Called by the system on the display link thread, and posts a call to
-  // the thread indicated in DisplayLinkMac::RegisterCallback().
-  static CVReturn DisplayLinkCallback(CVDisplayLinkRef display_link,
-                                      const CVTimeStamp* now,
-                                      const CVTimeStamp* output_time,
-                                      CVOptionFlags flags_in,
-                                      CVOptionFlags* flags_out,
-                                      void* context);
+  virtual void OnSuspend() {}
 
-  // The display that this display link is attached to.
-  CGDirectDisplayID display_id_;
+ protected:
+  friend class base::RefCounted<DisplayLinkMac>;
+  friend class CVDisplayLinkMac;
+  friend class CADisplayLinkMac;
+  friend class CAMetalDisplayLinkMac;
 
-  // CVDisplayLink for querying VSync timing info.
-  base::ScopedTypeRef<CVDisplayLinkRef> display_link_;
+  virtual ~DisplayLinkMac() = default;
 
-  // Each VSyncCallbackMac holds a reference to `this`. This member may
-  // be accessed on any thread while |globals.lock| is held. But it can only be
-  // modified on the main thread. |globals.lock| also guards DisplayLinkMac map.
-  std::set<VSyncCallbackMac*> callbacks_;
-
-  SEQUENCE_CHECKER(display_link_mac_sequence_checker_);
+  // This histogram tracks the creation status of CVDisplayLink or
+  // CADisplayLink. ExternalDisplayLinkMac is excluded due to potential IPC
+  // delays; for instance, ExternalBeginFrameSourceMac::SetVSyncDisplayID()
+  // might be triggered before Viz receives the display addition IPC.
+  static void RecordDisplayLinkCreation(bool success);
 };
+
+DISPLAY_EXPORT bool SkipPostTaskForCallbacks();
 
 }  // namespace ui
 

@@ -11,30 +11,26 @@
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/values.h"
-#include "chrome/browser/enterprise/connectors/device_trust/attestation/common/mock_attestation_service.h"
-#include "chrome/browser/enterprise/connectors/device_trust/common/common_types.h"
 #include "chrome/browser/enterprise/connectors/device_trust/device_trust_connector_service.h"
-#include "chrome/browser/enterprise/connectors/device_trust/device_trust_features.h"
-#include "chrome/browser/enterprise/connectors/device_trust/prefs.h"
-#include "chrome/browser/enterprise/connectors/device_trust/signals/mock_signals_service.h"
 #include "components/device_signals/core/common/signals_constants.h"
+#include "components/enterprise/device_trust/core/attestation/mock_attestation_service.h"
+#include "components/enterprise/device_trust/core/common_types.h"
+#include "components/enterprise/device_trust/core/signals/mock_signals_service.h"
+#include "components/enterprise/device_trust/prefs.h"
 #include "components/prefs/testing_pref_service.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using testing::_;
-using testing::Invoke;
 using testing::NotNull;
 
 namespace {
 
-base::Value::List GetOrigins() {
-  base::Value::List origins;
+base::ListValue GetOrigins() {
+  base::ListValue origins;
   origins.Append("example1.example.com");
   origins.Append("example2.example.com");
   return origins;
@@ -65,7 +61,7 @@ constexpr char kResultHistogramName[] =
     "Enterprise.DeviceTrust.Attestation.Result";
 
 std::string GetSerializedSignedChallenge(const std::string& response) {
-  absl::optional<base::Value> data = base::JSONReader::Read(
+  std::optional<base::Value> data = base::JSONReader::Read(
       response, base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS);
 
   // If json is malformed or it doesn't include the needed field return
@@ -90,15 +86,11 @@ namespace enterprise_connectors {
 using test::MockAttestationService;
 using test::MockSignalsService;
 
-class DeviceTrustServiceTest
-    : public testing::Test,
-      public ::testing::WithParamInterface<std::tuple<bool, bool>> {
+class DeviceTrustServiceTest : public testing::Test,
+                               public ::testing::WithParamInterface<bool> {
  protected:
   void SetUp() override {
     RegisterDeviceTrustConnectorProfilePrefs(prefs_.registry());
-
-    feature_list_.InitWithFeatureState(kDeviceTrustConnectorEnabled,
-                                       is_flag_enabled());
 
     levels_.insert(DTCPolicyLevel::kBrowser);
 
@@ -110,13 +102,17 @@ class DeviceTrustServiceTest
   }
 
   void EnableServicePolicy() {
-    prefs_.SetManagedPref(kContextAwareAccessSignalsAllowlistPref,
+    prefs_.SetManagedPref(kBrowserContextAwareAccessSignalsAllowlistPref,
+                          base::Value(GetOrigins()));
+    prefs_.SetManagedPref(kUserContextAwareAccessSignalsAllowlistPref,
                           base::Value(GetOrigins()));
   }
 
   void DisableServicePolicy() {
-    prefs_.SetManagedPref(kContextAwareAccessSignalsAllowlistPref,
-                          base::Value(base::Value::List()));
+    prefs_.SetManagedPref(kBrowserContextAwareAccessSignalsAllowlistPref,
+                          base::Value(base::ListValue()));
+    prefs_.SetManagedPref(kUserContextAwareAccessSignalsAllowlistPref,
+                          base::Value(base::ListValue()));
   }
 
   DeviceTrustService* CreateService() {
@@ -134,12 +130,7 @@ class DeviceTrustServiceTest
     return device_trust_service_.get();
   }
 
-  bool is_attestation_flow_enabled() {
-    return is_flag_enabled() && is_policy_enabled();
-  }
-
-  bool is_flag_enabled() { return std::get<0>(GetParam()); }
-  bool is_policy_enabled() { return std::get<1>(GetParam()); }
+  bool is_policy_enabled() { return GetParam(); }
 
   void TestFailToParseChallenge(std::string serialized_signed_challenge) {
     auto* device_trust_service = CreateService();
@@ -161,23 +152,20 @@ class DeviceTrustServiceTest
     EXPECT_FALSE(dt_response.attestation_result);
   }
 
-  base::test::SingleThreadTaskEnvironment task_environment_;
-  base::test::ScopedFeatureList feature_list_;
+  base::test::TaskEnvironment task_environment_;
   TestingPrefServiceSimple prefs_;
   std::unique_ptr<DeviceTrustConnectorService> connector_;
   std::unique_ptr<DeviceTrustService> device_trust_service_;
   raw_ptr<MockAttestationService> mock_attestation_service_;
   raw_ptr<MockSignalsService> mock_signals_service_;
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder;
   base::HistogramTester histogram_tester_;
   std::set<enterprise_connectors::DTCPolicyLevel> levels_;
 };
 
-// Tests that IsEnabled returns true only when the feature flag is enabled and
-// the policy has some URLs.
+// Tests that IsEnabled returns true only when the policy has some URLs.
 TEST_P(DeviceTrustServiceTest, IsEnabled) {
   auto* device_trust_service = CreateService();
-  EXPECT_EQ(is_attestation_flow_enabled(), device_trust_service->IsEnabled());
+  EXPECT_EQ(is_policy_enabled(), device_trust_service->IsEnabled());
 }
 
 // Tests that the service kicks off the attestation flow properly.
@@ -186,14 +174,14 @@ TEST_P(DeviceTrustServiceTest, BuildChallengeResponse) {
 
   std::string fake_display_name = "fake_display_name";
   EXPECT_CALL(*mock_signals_service_, CollectSignals(_))
-      .WillOnce(Invoke(
+      .WillOnce(
           [&fake_display_name](
-              base::OnceCallback<void(base::Value::Dict)> signals_callback) {
-            auto fake_signals = std::make_unique<base::Value::Dict>();
+              base::OnceCallback<void(base::DictValue)> signals_callback) {
+            auto fake_signals = std::make_unique<base::DictValue>();
             fake_signals->Set(device_signals::names::kDisplayName,
                               fake_display_name);
             std::move(signals_callback).Run(std::move(*fake_signals));
-          }));
+          });
 
   const DTAttestationResult result_code = DTAttestationResult::kSuccess;
   AttestationResponse attestation_response = {kAttestationResponse,
@@ -201,16 +189,15 @@ TEST_P(DeviceTrustServiceTest, BuildChallengeResponse) {
   EXPECT_CALL(*mock_attestation_service_,
               BuildChallengeResponseForVAChallenge(
                   GetSerializedSignedChallenge(kJsonChallenge), _, levels_, _))
-      .WillOnce(Invoke([&fake_display_name, &attestation_response](
-                           const std::string& challenge,
-                           const base::Value::Dict signals,
-                           const std::set<DTCPolicyLevel> levels,
-                           AttestationService::AttestationCallback callback) {
+      .WillOnce([&fake_display_name, &attestation_response](
+                    const std::string& challenge, const base::DictValue signals,
+                    const std::set<DTCPolicyLevel> levels,
+                    AttestationService::AttestationCallback callback) {
         EXPECT_EQ(
             signals.FindString(device_signals::names::kDisplayName)->c_str(),
             fake_display_name);
         std::move(callback).Run(attestation_response);
-      }));
+      });
 
   base::test::TestFuture<const DeviceTrustResponse&> future;
   device_trust_service->BuildChallengeResponse(
@@ -231,14 +218,14 @@ TEST_P(DeviceTrustServiceTest, AttestationFailure) {
 
   std::string fake_display_name = "fake_display_name";
   EXPECT_CALL(*mock_signals_service_, CollectSignals(_))
-      .WillOnce(Invoke(
+      .WillOnce(
           [&fake_display_name](
-              base::OnceCallback<void(base::Value::Dict)> signals_callback) {
-            auto fake_signals = std::make_unique<base::Value::Dict>();
+              base::OnceCallback<void(base::DictValue)> signals_callback) {
+            auto fake_signals = std::make_unique<base::DictValue>();
             fake_signals->Set(device_signals::names::kDisplayName,
                               fake_display_name);
             std::move(signals_callback).Run(std::move(*fake_signals));
-          }));
+          });
 
   const DTAttestationResult result_code =
       DTAttestationResult::kMissingSigningKey;
@@ -247,13 +234,12 @@ TEST_P(DeviceTrustServiceTest, AttestationFailure) {
   EXPECT_CALL(*mock_attestation_service_,
               BuildChallengeResponseForVAChallenge(
                   GetSerializedSignedChallenge(kJsonChallenge), _, levels_, _))
-      .WillOnce(Invoke([&attestation_response](
-                           const std::string& challenge,
-                           const base::Value::Dict signals,
-                           const std::set<DTCPolicyLevel> levels,
-                           AttestationService::AttestationCallback callback) {
+      .WillOnce([&attestation_response](
+                    const std::string& challenge, const base::DictValue signals,
+                    const std::set<DTCPolicyLevel> levels,
+                    AttestationService::AttestationCallback callback) {
         std::move(callback).Run(attestation_response);
-      }));
+      });
 
   base::test::TestFuture<const DeviceTrustResponse&> future;
   device_trust_service->BuildChallengeResponse(
@@ -281,8 +267,6 @@ TEST_P(DeviceTrustServiceTest, JsonInvalidEncode) {
   TestFailToParseChallenge("{\"challenge\": \"%% %% %%\"}");
 }
 
-INSTANTIATE_TEST_SUITE_P(All,
-                         DeviceTrustServiceTest,
-                         testing::Combine(testing::Bool(), testing::Bool()));
+INSTANTIATE_TEST_SUITE_P(All, DeviceTrustServiceTest, testing::Bool());
 
 }  // namespace enterprise_connectors

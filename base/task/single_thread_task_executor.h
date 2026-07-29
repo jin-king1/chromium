@@ -10,6 +10,7 @@
 #include "base/base_export.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/message_loop/message_pump_type.h"
+#include "base/task/sequence_manager/task_queue.h"
 #include "base/task/single_thread_task_runner.h"
 
 namespace base {
@@ -18,7 +19,6 @@ class MessagePump;
 
 namespace sequence_manager {
 class SequenceManager;
-class TaskQueue;
 }  // namespace sequence_manager
 
 // A simple single thread TaskExecutor intended for non-test usage. Tests should
@@ -27,11 +27,13 @@ class BASE_EXPORT SingleThreadTaskExecutor {
  public:
   // For MessagePumpType::CUSTOM use the constructor that takes a pump.
   explicit SingleThreadTaskExecutor(
-      MessagePumpType type = MessagePumpType::DEFAULT);
+      MessagePumpType type = MessagePumpType::DEFAULT,
+      bool is_main_thread = false);
 
   // Creates a SingleThreadTaskExecutor pumping from a custom |pump|.
   // The above constructor using MessagePumpType is generally preferred.
-  explicit SingleThreadTaskExecutor(std::unique_ptr<MessagePump> pump);
+  explicit SingleThreadTaskExecutor(std::unique_ptr<MessagePump> pump,
+                                    bool is_main_thread = false);
 
   SingleThreadTaskExecutor(const SingleThreadTaskExecutor&) = delete;
   SingleThreadTaskExecutor& operator=(const SingleThreadTaskExecutor&) = delete;
@@ -52,11 +54,12 @@ class BASE_EXPORT SingleThreadTaskExecutor {
   void SetWorkBatchSize(int work_batch_size);
 
  private:
-  explicit SingleThreadTaskExecutor(MessagePumpType type,
-                                    std::unique_ptr<MessagePump> pump);
+  SingleThreadTaskExecutor(MessagePumpType type,
+                           std::unique_ptr<MessagePump> pump,
+                           bool is_main_thread);
 
   std::unique_ptr<sequence_manager::SequenceManager> sequence_manager_;
-  scoped_refptr<sequence_manager::TaskQueue> default_task_queue_;
+  sequence_manager::TaskQueue::Handle default_task_queue_;
   MessagePumpType type_;
 };
 

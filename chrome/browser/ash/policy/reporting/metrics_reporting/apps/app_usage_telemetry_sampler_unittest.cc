@@ -5,76 +5,97 @@
 #include "chrome/browser/ash/policy/reporting/metrics_reporting/apps/app_usage_telemetry_sampler.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 
+#include "base/check_deref.h"
 #include "base/json/values_util.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/test/protobuf_matchers.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "base/values.h"
 #include "chrome/browser/apps/app_service/metrics/app_platform_metrics.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
+#include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chrome/test/base/testing_profile_manager.h"
+#include "components/account_id/account_id.h"
+#include "components/account_id/account_id_literal.h"
 #include "components/prefs/pref_service.h"
 #include "components/prefs/scoped_user_pref_update.h"
+#include "components/prefs/testing_pref_service.h"
 #include "components/reporting/proto/synced/metric_data.pb.h"
 #include "components/reporting/util/test_support_callbacks.h"
 #include "components/services/app_service/public/cpp/app_types.h"
 #include "components/services/app_service/public/protos/app_types.pb.h"
+#include "components/user_manager/fake_user_manager_delegate.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
+using ::base::test::EqualsProto;
 using ::testing::_;
+using ::testing::ElementsAre;
 using ::testing::Eq;
 using ::testing::NotNull;
-using ::testing::Pointwise;
 using ::testing::StrEq;
-using ::testing::UnorderedPointwise;
+using ::testing::UnorderedElementsAre;
 
 namespace reporting {
 namespace {
 
-constexpr char kTestUserEmail[] = "test@test.com";
 constexpr char kTestAppId[] = "TestApp";
+constexpr char kTestAppPublisherId[] = "com.google.test";
 
-// Checks equality of the two protos in an std::tuple. Useful for matching two
-// two protos using ::testing::Pointwise or ::testing::UnorderedPointwise.
-MATCHER(EqualsProto, "") {
-  std::string serialized1, serialized2;
-  std::get<0>(arg).SerializeToString(&serialized1);
-  std::get<1>(arg).SerializeToString(&serialized2);
-  return serialized1 == serialized2;
-}
+constexpr AccountId::Literal kTestAccountId =
+    AccountId::Literal::FromUserEmailGaiaId("test@test.com",
+                                            GaiaId::Literal("123456789"));
 
 class AppUsageTelemetrySamplerTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    // Set up user manager and test profile.
-    fake_user_manager_ = new ::ash::FakeChromeUserManager();
-    scoped_user_manager_ = std::make_unique<::user_manager::ScopedUserManager>(
-        base::WrapUnique(fake_user_manager_.get()));
-    AccountId account_id = AccountId::FromUserEmail(kTestUserEmail);
-    const ::user_manager::User* const user =
-        fake_user_manager_->AddUser(account_id);
-    fake_user_manager_->UserLoggedIn(account_id, user->username_hash(),
-                                     /*browser_restart=*/false,
-                                     /*is_child=*/false);
-    fake_user_manager_->SimulateUserProfileLoad(account_id);
-    profile_ = std::make_unique<TestingProfile>();
-    ::ash::ProfileHelper::Get()->SetUserToProfileMappingForTesting(
-        user, profile_.get());
+    // Set up user manager and profile manager.
+    user_manager_.Reset(std::make_unique<user_manager::UserManagerImpl>(
+        std::make_unique<user_manager::FakeUserManagerDelegate>(),
+        TestingBrowserProcess::GetGlobal()->GetTestingLocalState()));
+
+    ASSERT_TRUE(user_manager::TestHelper(user_manager_.Get())
+                    .AddRegularUser(kTestAccountId));
+
+    testing_profile_manager_ = std::make_unique<TestingProfileManager>(
+        TestingBrowserProcess::GetGlobal());
+    ASSERT_TRUE(testing_profile_manager_->SetUp());
+
+    // Create user session and its profile.
+    user_manager_->UserLoggedIn(
+        kTestAccountId,
+        user_manager::TestHelper::GetFakeUsernameHash(kTestAccountId));
+    ash::ScopedAccountIdAnnotator annotator(
+        testing_profile_manager_->profile_manager(), kTestAccountId);
+    profile_ = testing_profile_manager_->CreateTestingProfile(
+        std::string(kTestAccountId.GetUserEmail()));
+    user_manager_->OnUserProfileCreated(kTestAccountId, profile_->GetPrefs());
 
     // Set up app usage telemetry sampler for the test profile.
     app_usage_telemetry_sampler_ =
         std::make_unique<AppUsageTelemetrySampler>(profile_->GetWeakPtr());
+  }
+
+  void TearDown() override {
+    if (profile_) {
+      user_manager_->OnUserProfileWillBeDestroyed(kTestAccountId);
+      profile_ = nullptr;
+    }
+    testing_profile_manager_.reset();
+    user_manager_.Reset();
   }
 
   // Simulates app usage for the specified app usage duration by aggregating
@@ -85,7 +106,7 @@ class AppUsageTelemetrySamplerTest : public ::testing::Test {
     PrefService* const user_prefs = profile_->GetPrefs();
     if (!user_prefs->HasPrefPath(::apps::kAppUsageTime)) {
       // Create empty dictionary if none exists in the pref store.
-      user_prefs->SetDict(::apps::kAppUsageTime, base::Value::Dict());
+      user_prefs->SetDict(::apps::kAppUsageTime, base::DictValue());
     }
 
     ScopedDictPrefUpdate usage_dict_pref(profile_->GetPrefs(),
@@ -95,6 +116,7 @@ class AppUsageTelemetrySamplerTest : public ::testing::Test {
       // Create a new entry in the pref store with the specified running time.
       ::apps::AppPlatformMetrics::UsageTime usage_time;
       usage_time.app_id = kTestAppId;
+      usage_time.app_publisher_id = kTestAppPublisherId;
       usage_time.reporting_usage_time = usage_duration;
       usage_dict_pref->SetByDottedPath(instance_id_string,
                                        usage_time.ConvertToDict());
@@ -131,21 +153,33 @@ class AppUsageTelemetrySamplerTest : public ::testing::Test {
       const base::UnguessableToken& instance_id,
       const base::TimeDelta& running_time) const {
     AppUsageData::AppUsage app_usage;
-    app_usage.set_app_id(kTestAppId);
+    app_usage.set_app_id(kTestAppPublisherId);
     app_usage.set_app_type(::apps::ApplicationType::APPLICATION_TYPE_UNKNOWN);
     app_usage.set_app_instance_id(instance_id.ToString());
     app_usage.set_running_time_ms(running_time.InMilliseconds());
     return app_usage;
   }
 
-  content::BrowserTaskEnvironment task_environment_;
+  AppUsageTelemetrySampler& app_usage_telemetry_sampler() {
+    return CHECK_DEREF(app_usage_telemetry_sampler_.get());
+  }
 
-  std::unique_ptr<TestingProfile> profile_;
-  std::unique_ptr<AppUsageTelemetrySampler> app_usage_telemetry_sampler_;
+  Profile& profile() { return CHECK_DEREF(profile_.get()); }
+
+  void DeleteProfile() {
+    user_manager_->OnUserProfileWillBeDestroyed(kTestAccountId);
+    profile_ = nullptr;
+    testing_profile_manager_->DeleteAllTestingProfiles();
+  }
 
  private:
-  raw_ptr<::ash::FakeChromeUserManager> fake_user_manager_;
-  std::unique_ptr<::user_manager::ScopedUserManager> scoped_user_manager_;
+  content::BrowserTaskEnvironment task_environment_;
+
+  user_manager::ScopedUserManager user_manager_;
+  std::unique_ptr<TestingProfileManager> testing_profile_manager_;
+  raw_ptr<TestingProfile> profile_;
+
+  std::unique_ptr<AppUsageTelemetrySampler> app_usage_telemetry_sampler_;
 };
 
 TEST_F(AppUsageTelemetrySamplerTest, CollectAppUsageDataForInstance) {
@@ -154,13 +188,13 @@ TEST_F(AppUsageTelemetrySamplerTest, CollectAppUsageDataForInstance) {
       base::Minutes(2) + base::Microseconds(200);
   const base::UnguessableToken& kInstanceId = base::UnguessableToken::Create();
   CreateOrUpdateAppUsageForInstance(kInstanceId, kAppUsageDuration);
-  ASSERT_THAT(profile_->GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
+  ASSERT_THAT(profile().GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
               Eq(1UL));
 
   // Attempt to collect this data and verify reported data.
-  test::TestEvent<absl::optional<MetricData>> test_event;
-  app_usage_telemetry_sampler_->MaybeCollect(test_event.cb());
-  const absl::optional<MetricData> metric_data_result = test_event.result();
+  test::TestEvent<std::optional<MetricData>> test_event;
+  app_usage_telemetry_sampler().MaybeCollect(test_event.cb());
+  const std::optional<MetricData> metric_data_result = test_event.result();
   ASSERT_TRUE(metric_data_result.has_value());
   const MetricData& metric_data = metric_data_result.value();
   ASSERT_TRUE(metric_data.has_telemetry_data());
@@ -169,17 +203,16 @@ TEST_F(AppUsageTelemetrySamplerTest, CollectAppUsageDataForInstance) {
       metric_data.telemetry_data().app_telemetry().has_app_usage_data());
   EXPECT_THAT(
       metric_data.telemetry_data().app_telemetry().app_usage_data().app_usage(),
-      Pointwise(EqualsProto(),
-                {AppUsageProto(kInstanceId, kAppUsageDuration)}));
+      ElementsAre(EqualsProto(AppUsageProto(kInstanceId, kAppUsageDuration))));
 
   // Also verify usage data is reset in the pref store.
   VerifyAppUsageDataInPrefStoreForInstance(kInstanceId, base::TimeDelta());
 }
 
 TEST_F(AppUsageTelemetrySamplerTest, NoAppUsageData) {
-  test::TestEvent<absl::optional<MetricData>> test_event;
-  app_usage_telemetry_sampler_->MaybeCollect(test_event.cb());
-  const absl::optional<MetricData> metric_data_result = test_event.result();
+  test::TestEvent<std::optional<MetricData>> test_event;
+  app_usage_telemetry_sampler().MaybeCollect(test_event.cb());
+  const std::optional<MetricData> metric_data_result = test_event.result();
   ASSERT_FALSE(metric_data_result.has_value());
 }
 
@@ -188,15 +221,15 @@ TEST_F(AppUsageTelemetrySamplerTest, CollectResetAppUsageData) {
   static constexpr base::TimeDelta kAppUsageDuration = base::Minutes(2);
   const base::UnguessableToken& kInstanceId = base::UnguessableToken::Create();
   CreateOrUpdateAppUsageForInstance(kInstanceId, kAppUsageDuration);
-  ASSERT_THAT(profile_->GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
+  ASSERT_THAT(profile().GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
               Eq(1UL));
   VerifyAppUsageDataInPrefStoreForInstance(kInstanceId, kAppUsageDuration);
 
   // Attempt to collect this data and verify data is reset after it is reported.
   {
-    test::TestEvent<absl::optional<MetricData>> test_event;
-    app_usage_telemetry_sampler_->MaybeCollect(test_event.cb());
-    const absl::optional<MetricData> metric_data_result = test_event.result();
+    test::TestEvent<std::optional<MetricData>> test_event;
+    app_usage_telemetry_sampler().MaybeCollect(test_event.cb());
+    const std::optional<MetricData> metric_data_result = test_event.result();
     ASSERT_TRUE(metric_data_result.has_value());
     VerifyAppUsageDataInPrefStoreForInstance(kInstanceId, base::TimeDelta());
   }
@@ -204,9 +237,9 @@ TEST_F(AppUsageTelemetrySamplerTest, CollectResetAppUsageData) {
   // Attempt to collect data after it was reset in the previous step and verify
   // nothing is reported.
   {
-    test::TestEvent<absl::optional<MetricData>> test_event;
-    app_usage_telemetry_sampler_->MaybeCollect(test_event.cb());
-    const absl::optional<MetricData> metric_data_result = test_event.result();
+    test::TestEvent<std::optional<MetricData>> test_event;
+    app_usage_telemetry_sampler().MaybeCollect(test_event.cb());
+    const std::optional<MetricData> metric_data_result = test_event.result();
     ASSERT_FALSE(metric_data_result.has_value());
   }
 }
@@ -216,15 +249,15 @@ TEST_F(AppUsageTelemetrySamplerTest, CollectSubsequentAppUsageData) {
   static constexpr base::TimeDelta kAppUsageDuration = base::Minutes(2);
   const base::UnguessableToken& kInstanceId = base::UnguessableToken::Create();
   CreateOrUpdateAppUsageForInstance(kInstanceId, kAppUsageDuration);
-  ASSERT_THAT(profile_->GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
+  ASSERT_THAT(profile().GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
               Eq(1UL));
   VerifyAppUsageDataInPrefStoreForInstance(kInstanceId, kAppUsageDuration);
 
   // Attempt to collect this data and verify data is reset after it is reported.
   {
-    test::TestEvent<absl::optional<MetricData>> test_event;
-    app_usage_telemetry_sampler_->MaybeCollect(test_event.cb());
-    const absl::optional<MetricData> metric_data_result = test_event.result();
+    test::TestEvent<std::optional<MetricData>> test_event;
+    app_usage_telemetry_sampler().MaybeCollect(test_event.cb());
+    const std::optional<MetricData> metric_data_result = test_event.result();
     ASSERT_TRUE(metric_data_result.has_value());
     VerifyAppUsageDataInPrefStoreForInstance(kInstanceId, base::TimeDelta());
   }
@@ -235,9 +268,9 @@ TEST_F(AppUsageTelemetrySamplerTest, CollectSubsequentAppUsageData) {
   // Attempt to collect data and verify only data tracked from previous
   // collection is reported.
   {
-    test::TestEvent<absl::optional<MetricData>> test_event;
-    app_usage_telemetry_sampler_->MaybeCollect(test_event.cb());
-    const absl::optional<MetricData> metric_data_result = test_event.result();
+    test::TestEvent<std::optional<MetricData>> test_event;
+    app_usage_telemetry_sampler().MaybeCollect(test_event.cb());
+    const std::optional<MetricData> metric_data_result = test_event.result();
     ASSERT_TRUE(metric_data_result.has_value());
     const MetricData& metric_data = metric_data_result.value();
     ASSERT_TRUE(metric_data.has_telemetry_data());
@@ -248,8 +281,8 @@ TEST_F(AppUsageTelemetrySamplerTest, CollectSubsequentAppUsageData) {
                     .app_telemetry()
                     .app_usage_data()
                     .app_usage(),
-                Pointwise(EqualsProto(),
-                          {AppUsageProto(kInstanceId, kAppUsageDuration)}));
+                ElementsAre(EqualsProto(
+                    AppUsageProto(kInstanceId, kAppUsageDuration))));
     VerifyAppUsageDataInPrefStoreForInstance(kInstanceId, base::TimeDelta());
   }
 }
@@ -263,15 +296,15 @@ TEST_F(AppUsageTelemetrySamplerTest,
   const base::UnguessableToken& kInstanceId2 = base::UnguessableToken::Create();
   CreateOrUpdateAppUsageForInstance(kInstanceId1, kAppUsageDuration);
   CreateOrUpdateAppUsageForInstance(kInstanceId2, kAppUsageDuration);
-  ASSERT_THAT(profile_->GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
+  ASSERT_THAT(profile().GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
               Eq(2UL));
   VerifyAppUsageDataInPrefStoreForInstance(kInstanceId1, kAppUsageDuration);
   VerifyAppUsageDataInPrefStoreForInstance(kInstanceId2, kAppUsageDuration);
 
   // Attempt to collect usage data and verify data being reported.
-  test::TestEvent<absl::optional<MetricData>> test_event;
-  app_usage_telemetry_sampler_->MaybeCollect(test_event.cb());
-  const absl::optional<MetricData> metric_data_result = test_event.result();
+  test::TestEvent<std::optional<MetricData>> test_event;
+  app_usage_telemetry_sampler().MaybeCollect(test_event.cb());
+  const std::optional<MetricData> metric_data_result = test_event.result();
   ASSERT_TRUE(metric_data_result.has_value());
   const MetricData& metric_data = metric_data_result.value();
   ASSERT_TRUE(metric_data.has_telemetry_data());
@@ -280,9 +313,9 @@ TEST_F(AppUsageTelemetrySamplerTest,
       metric_data.telemetry_data().app_telemetry().has_app_usage_data());
   EXPECT_THAT(
       metric_data.telemetry_data().app_telemetry().app_usage_data().app_usage(),
-      UnorderedPointwise(EqualsProto(),
-                         {AppUsageProto(kInstanceId1, kAppUsageDuration),
-                          AppUsageProto(kInstanceId2, kAppUsageDuration)}));
+      UnorderedElementsAre(
+          EqualsProto(AppUsageProto(kInstanceId1, kAppUsageDuration)),
+          EqualsProto(AppUsageProto(kInstanceId2, kAppUsageDuration))));
 
   // Verify data is reset in the pref store now that it has been reported.
   VerifyAppUsageDataInPrefStoreForInstance(kInstanceId1, base::TimeDelta());
@@ -294,17 +327,16 @@ TEST_F(AppUsageTelemetrySamplerTest, CollectDataAfterProfileDestructed) {
   static constexpr base::TimeDelta kAppUsageDuration = base::Minutes(2);
   const base::UnguessableToken& kInstanceId = base::UnguessableToken::Create();
   CreateOrUpdateAppUsageForInstance(kInstanceId, kAppUsageDuration);
-  ASSERT_THAT(profile_->GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
+  ASSERT_THAT(profile().GetPrefs()->GetDict(::apps::kAppUsageTime).size(),
               Eq(1UL));
   VerifyAppUsageDataInPrefStoreForInstance(kInstanceId, kAppUsageDuration);
 
-  // Destroy the test profile.
-  profile_.reset();
+  DeleteProfile();
 
   // Attempt to collect usage data and verify no data is being reported.
-  test::TestEvent<absl::optional<MetricData>> test_event;
-  app_usage_telemetry_sampler_->MaybeCollect(test_event.cb());
-  const absl::optional<MetricData> metric_data_result = test_event.result();
+  test::TestEvent<std::optional<MetricData>> test_event;
+  app_usage_telemetry_sampler().MaybeCollect(test_event.cb());
+  const std::optional<MetricData> metric_data_result = test_event.result();
   ASSERT_FALSE(metric_data_result.has_value());
 }
 

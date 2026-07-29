@@ -7,14 +7,17 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_gtest_merge.py"
         },
+        "name": "foo_test",
+        "resultdb": {
+          "base_variant": {
+            "variant_key": "variant_val"
+          }
+        },
         "swarming": {
-          "can_use_on_swarming_builders": true,
-          "dimension_sets": [
-            {
-              "integrity": "high",
-              "os": "Linux"
-            }
-          ],
+          "dimensions": {
+            "integrity": "high",
+            "os": "Linux"
+          },
           "expiration": 120,
           "shards": 20,
           "value": "exception"

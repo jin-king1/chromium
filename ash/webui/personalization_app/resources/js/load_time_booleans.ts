@@ -9,14 +9,10 @@
  * Export them as functions so they reload the values when overridden in test.
  */
 
-import {loadTimeData} from 'chrome://resources/ash/common/load_time_data.m.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 
 export function isGooglePhotosIntegrationEnabled() {
   return loadTimeData.getBoolean('isGooglePhotosIntegrationEnabled');
-}
-
-export function isGooglePhotosSharedAlbumsEnabled() {
-  return loadTimeData.getBoolean('isGooglePhotosSharedAlbumsEnabled');
 }
 
 export function isAmbientModeAllowed() {
@@ -25,18 +21,6 @@ export function isAmbientModeAllowed() {
 
 export function isRgbKeyboardSupported() {
   return loadTimeData.getBoolean('isRgbKeyboardSupported');
-}
-
-export function isScreenSaverDurationEnabled() {
-  return loadTimeData.getBoolean('isScreenSaverDurationEnabled');
-}
-
-export function isScreenSaverPreviewEnabled() {
-  return loadTimeData.getBoolean('isScreenSaverPreviewEnabled');
-}
-
-export function isPersonalizationJellyEnabled() {
-  return loadTimeData.getBoolean('isPersonalizationJellyEnabled');
 }
 
 export function isMultiZoneRgbKeyboardSupported() {
@@ -49,4 +33,12 @@ export function isUserAvatarCustomizationSelectorsEnabled() {
 
 export function isTimeOfDayScreenSaverEnabled() {
   return loadTimeData.getBoolean('isTimeOfDayScreenSaverEnabled');
+}
+
+export function isTimeOfDayWallpaperEnabled() {
+  return loadTimeData.getBoolean('isTimeOfDayWallpaperEnabled');
+}
+
+export function isCrosPrivacyHubLocationEnabled() {
+  return loadTimeData.getBoolean('isCrosPrivacyHubLocationEnabled');
 }

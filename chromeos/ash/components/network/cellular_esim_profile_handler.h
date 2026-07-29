@@ -13,6 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
+#include "base/scoped_observation.h"
 #include "chromeos/ash/components/dbus/hermes/hermes_euicc_client.h"
 #include "chromeos/ash/components/dbus/hermes/hermes_manager_client.h"
 #include "chromeos/ash/components/dbus/hermes/hermes_profile_client.h"
@@ -137,9 +138,9 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) CellularESimProfileHandler
     // available profiles.
     std::vector<std::string> smds_activation_codes;
 
-    // The list of available profiles found from scanning with activation codes
+    // The list of paths to profiles found when scanning with activation codes
     // from |smds_activation_codes|.
-    std::vector<CellularESimProfile> profile_list;
+    std::vector<dbus::ObjectPath> profile_paths;
 
     RequestAvailableProfilesCallback callback;
   };
@@ -185,13 +186,17 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) CellularESimProfileHandler
       const dbus::ObjectPath& euicc_path,
       std::unique_ptr<RequestAvailableProfilesInfo> info,
       std::unique_ptr<CellularInhibitor::InhibitLock> inhibit_lock,
+      const std::string& smds_activation_code,
+      const base::TimeTicks start_time,
       HermesResponseStatus status,
       const std::vector<dbus::ObjectPath>& profile_paths);
+  void CompleteRequestAvailableProfiles(
+      const dbus::ObjectPath& euicc_path,
+      std::unique_ptr<RequestAvailableProfilesInfo> info);
 
-  raw_ptr<CellularInhibitor, ExperimentalAsh> cellular_inhibitor_ = nullptr;
+  raw_ptr<CellularInhibitor> cellular_inhibitor_ = nullptr;
 
-  raw_ptr<NetworkStateHandler, ExperimentalAsh> network_state_handler_ =
-      nullptr;
+  raw_ptr<NetworkStateHandler> network_state_handler_ = nullptr;
 
   base::ObserverList<Observer> observer_list_;
 
@@ -204,6 +209,13 @@ class COMPONENT_EXPORT(CHROMEOS_NETWORK) CellularESimProfileHandler
 
   // When a profile refresh is in progress, the callback.
   RefreshProfilesCallback callback_;
+
+  base::ScopedObservation<HermesManagerClient, HermesManagerClient::Observer>
+      hermes_manager_client_observer_{this};
+  base::ScopedObservation<HermesEuiccClient, HermesEuiccClient::Observer>
+      hermes_euicc_client_observer_{this};
+  base::ScopedObservation<HermesProfileClient, HermesProfileClient::Observer>
+      hermes_profile_client_observer_{this};
 
   base::WeakPtrFactory<CellularESimProfileHandler> weak_ptr_factory_{this};
 };

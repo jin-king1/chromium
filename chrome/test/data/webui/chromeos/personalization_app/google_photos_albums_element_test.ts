@@ -3,20 +3,20 @@
 // found in the LICENSE file.
 
 import 'chrome://personalization/strings.m.js';
-import 'chrome://webui-test/mojo_webui_test_support.js';
 
-import {fetchGooglePhotosAlbums, fetchGooglePhotosEnabled, fetchGooglePhotosSharedAlbums, getCountText, GooglePhotosAlbum, GooglePhotosAlbums, PersonalizationActionName, PersonalizationRouter, SetErrorAction, WallpaperGridItem} from 'chrome://personalization/js/personalization_app.js';
+import type {GooglePhotosAlbum, SetErrorAction, WallpaperGridItemElement} from 'chrome://personalization/js/personalization_app.js';
+import {fetchGooglePhotosAlbums, fetchGooglePhotosEnabled, fetchGooglePhotosSharedAlbums, getCountText, GooglePhotosAlbumsElement, PersonalizationActionName, PersonalizationRouterElement} from 'chrome://personalization/js/personalization_app.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
-import {assertDeepEquals, assertEquals, assertGT, assertNotEquals} from 'chrome://webui-test/chai_assert.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertGT, assertNotEquals} from 'chrome://webui-test/chai_assert.js';
 import {waitAfterNextRender} from 'chrome://webui-test/polymer_test_util.js';
 import {TestMock} from 'chrome://webui-test/test_mock.js';
 
 import {baseSetup, createSvgDataUrl, initElement, teardownElement} from './personalization_app_test_utils.js';
-import {TestPersonalizationStore} from './test_personalization_store.js';
-import {TestWallpaperProvider} from './test_wallpaper_interface_provider.js';
+import type {TestPersonalizationStore} from './test_personalization_store.js';
+import type {TestWallpaperProvider} from './test_wallpaper_interface_provider.js';
 
-suite('GooglePhotosAlbumsTest', function() {
-  let googlePhotosAlbumsElement: GooglePhotosAlbums|null;
+suite('GooglePhotosAlbumsElementTest', function() {
+  let googlePhotosAlbumsElement: GooglePhotosAlbumsElement|null;
   let personalizationStore: TestPersonalizationStore;
   let wallpaperProvider: TestWallpaperProvider;
 
@@ -65,9 +65,7 @@ suite('GooglePhotosAlbumsTest', function() {
         id: '9bd1d7a3-f995-4445-be47-53c5b58ce1cb',
         title: 'Album 0',
         photoCount: 0,
-        preview: {
-          url: createSvgDataUrl('svg-0'),
-        },
+        preview: createSvgDataUrl('svg-0'),
         timestamp: {internalValue: BigInt(`13318040939308000`)},
         isShared: false,
       },
@@ -75,9 +73,7 @@ suite('GooglePhotosAlbumsTest', function() {
         id: '0ec40478-9712-42e1-b5bf-3e75870ca042',
         title: 'Album 1',
         photoCount: 1,
-        preview: {
-          url: createSvgDataUrl('svg-1'),
-        },
+        preview: createSvgDataUrl('svg-1'),
         timestamp: {internalValue: BigInt(`13318040939307000`)},
         isShared: false,
       },
@@ -85,9 +81,7 @@ suite('GooglePhotosAlbumsTest', function() {
         id: '0a268a37-877a-4936-81d4-38cc84b0f596',
         title: 'Album 2',
         photoCount: 2,
-        preview: {
-          url: createSvgDataUrl('svg-2'),
-        },
+        preview: createSvgDataUrl('svg-2'),
         timestamp: {internalValue: BigInt(`13318040939306000`)},
         isShared: false,
       },
@@ -98,7 +92,7 @@ suite('GooglePhotosAlbumsTest', function() {
 
     // Initialize |googlePhotosAlbumsElement|.
     googlePhotosAlbumsElement =
-        initElement(GooglePhotosAlbums, {hidden: false});
+        initElement(GooglePhotosAlbumsElement, {hidden: false});
     await waitAfterNextRender(googlePhotosAlbumsElement);
 
     // The |personalizationStore| should be empty, so no albums should be
@@ -115,10 +109,11 @@ suite('GooglePhotosAlbumsTest', function() {
     await waitAfterNextRender(googlePhotosAlbumsElement);
 
     // The wallpaper controller is expected to impose max resolution.
-    albums.forEach(album => album.preview.url += '=s512');
+    albums.forEach(album => album.preview += '=s512');
 
     // Verify that the expected |albums| are rendered.
-    const albumEls = querySelectorAll(albumSelector) as WallpaperGridItem[];
+    const albumEls =
+        querySelectorAll(albumSelector) as WallpaperGridItemElement[];
 
     assertEquals(
         albumEls.length, albums.length, 'one wallpaper grid item per album');
@@ -134,12 +129,12 @@ suite('GooglePhotosAlbumsTest', function() {
       (dismissFromUser:
            boolean) => test('displays error when albums fail to load', async () => {
         // Set values returned by |wallpaperProvider|.
-        wallpaperProvider.setGooglePhotosAlbums(undefined);
-        wallpaperProvider.setGooglePhotosSharedAlbums(undefined);
+        wallpaperProvider.setGooglePhotosAlbums(null);
+        wallpaperProvider.setGooglePhotosSharedAlbums(null);
 
         // Initialize |googlePhotosAlbumsElement|.
         googlePhotosAlbumsElement =
-            initElement(GooglePhotosAlbums, {hidden: false});
+            initElement(GooglePhotosAlbumsElement, {hidden: false});
         await waitAfterNextRender(googlePhotosAlbumsElement);
 
         // Initialize Google Photos data in the |personalizationStore| and
@@ -178,7 +173,7 @@ suite('GooglePhotosAlbumsTest', function() {
           personalizationStore.data.error!.dismiss!.callback = resolve;
         });
         googlePhotosAlbumsElement.hidden = true;
-        assertEquals(await dismissCallbackPromise, /*fromUser=*/ false);
+        assertFalse(await dismissCallbackPromise);
         await new Promise<void>(resolve => setTimeout(resolve));
         assertEquals(
             wallpaperProvider.getCallCount('fetchGooglePhotosAlbums'), 0);
@@ -193,14 +188,14 @@ suite('GooglePhotosAlbumsTest', function() {
           id: `id-${i}`,
           title: `title-${i}`,
           photoCount: 1,
-          preview: {url: createSvgDataUrl(`svg-${i}`)},
+          preview: createSvgDataUrl(`svg-${i}`),
           timestamp: {internalValue: BigInt(`${photosCount - i}`)},
           isShared: false,
         }));
 
     // Initialize |googlePhotosAlbumsElement|.
     googlePhotosAlbumsElement =
-        initElement(GooglePhotosAlbums, {hidden: false});
+        initElement(GooglePhotosAlbumsElement, {hidden: false});
     await waitAfterNextRender(googlePhotosAlbumsElement);
 
     // Initially only placeholders should be present.
@@ -223,8 +218,8 @@ suite('GooglePhotosAlbumsTest', function() {
     });
 
     // Mock singleton |PersonalizationRouter|.
-    const router = TestMock.fromClass(PersonalizationRouter);
-    PersonalizationRouter.instance = () => router;
+    const router = TestMock.fromClass(PersonalizationRouterElement);
+    PersonalizationRouterElement.instance = () => router;
 
     // Mock |PersonalizationRouter.selectGooglePhotosAlbum()|.
     let selectedGooglePhotosAlbum: GooglePhotosAlbum|undefined;
@@ -277,7 +272,7 @@ suite('GooglePhotosAlbumsTest', function() {
             id: `id-${nextAlbumId}`,
             title: `title-${nextAlbumId}`,
             photoCount: 1,
-            preview: {url: `url-${nextAlbumId++}`},
+            preview: `url-${nextAlbumId++}`,
             timestamp: {internalValue: BigInt(`${nextAlbumId}`)},
             isShared: false,
           };
@@ -305,15 +300,15 @@ suite('GooglePhotosAlbumsTest', function() {
             id: `id-${nextAlbumId}`,
             title: `title-${nextAlbumId}`,
             photoCount: 1,
-            preview: {url: `url-${nextAlbumId++}`},
+            preview: `url-${nextAlbumId++}`,
             timestamp: {internalValue: BigInt(`${nextAlbumId}`)},
             isShared: false,
           };
         }));
 
     // Set the next albums resume token returned by |wallpaperProvider|. When
-    // resume token is undefined, it indicates no additional albums exist.
-    wallpaperProvider.setGooglePhotosAlbumsResumeToken(undefined);
+    // resume token is null, it indicates no additional albums exist.
+    wallpaperProvider.setGooglePhotosAlbumsResumeToken(null);
 
     // Restrict the viewport so that |googlePhotosAlbumsElement| will lazily
     // create albums instead of creating them all at once.
@@ -329,7 +324,7 @@ suite('GooglePhotosAlbumsTest', function() {
 
     // Initialize |googlePhotosAlbumsElement|.
     googlePhotosAlbumsElement =
-        initElement(GooglePhotosAlbums, {hidden: false});
+        initElement(GooglePhotosAlbumsElement, {hidden: false});
     await waitAfterNextRender(googlePhotosAlbumsElement);
 
     // Scroll to the bottom of the grid.

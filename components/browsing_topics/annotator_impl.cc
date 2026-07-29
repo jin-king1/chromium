@@ -4,17 +4,23 @@
 
 #include "components/browsing_topics/annotator_impl.h"
 
+#include <algorithm>
+#include <vector>
+
 #include "base/barrier_closure.h"
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
+#include "base/containers/fixed_flat_set.h"
+#include "base/dcheck_is_on.h"
 #include "base/files/file_util.h"
-#include "base/ranges/algorithm.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
-#include "components/optimization_guide/core/optimization_guide_model_provider.h"
+#include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
 #include "components/optimization_guide/proto/models.pb.h"
 #include "components/optimization_guide/proto/page_topics_model_metadata.pb.h"
 #include "components/optimization_guide/proto/page_topics_override_list.pb.h"
+#include "third_party/abseil-cpp/absl/strings/ascii.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/zlib/google/compression_utils.h"
 
 namespace browsing_topics {
@@ -51,33 +57,32 @@ void RecordOverrideListFileLoadResult(OverrideListFileLoadResult result) {
                                 result);
 }
 
-absl::optional<std::unordered_map<std::string, std::vector<int32_t>>>
+std::optional<std::unordered_map<std::string, std::vector<int32_t>>>
 LoadOverrideListFromFile(const base::FilePath& path) {
   if (!path.IsAbsolute() ||
       path.BaseName() != base::FilePath(kOverrideListBasePath)) {
-    NOTREACHED();
     // This is enforced by calling code, so no UMA in this case.
-    return absl::nullopt;
+    NOTREACHED();
   }
 
   std::string file_contents;
   if (!base::ReadFileToString(path, &file_contents)) {
     RecordOverrideListFileLoadResult(
         OverrideListFileLoadResult::kCouldNotReadFile);
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   if (!compression::GzipUncompress(file_contents, &file_contents)) {
     RecordOverrideListFileLoadResult(
         OverrideListFileLoadResult::kCouldNotUncompressFile);
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   optimization_guide::proto::PageTopicsOverrideList override_list_pb;
   if (!override_list_pb.ParseFromString(file_contents)) {
     RecordOverrideListFileLoadResult(
         OverrideListFileLoadResult::kCouldNotUnmarshalProtobuf);
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   std::unordered_map<std::string, std::vector<int32_t>> override_list;
@@ -98,10 +103,10 @@ LoadOverrideListFromFile(const base::FilePath& path) {
 // The full list of meaningless prefixes are:
 //   ^(www[0-9]*|web|ftp|wap|home)$
 //   ^(m|mobile|amp|w)$
-int MeaninglessPrefixLength(const std::string& host) {
+int MeaninglessPrefixLength(std::string_view host) {
   size_t len = host.size();
 
-  int dots = base::ranges::count(host, '.');
+  int dots = std::ranges::count(host, '.');
   if (dots < 2) {
     return 0;
   }
@@ -113,22 +118,34 @@ int MeaninglessPrefixLength(const std::string& host) {
       if (host[i] == '.') {
         return i + 1;
       }
-      if (!isdigit(host[i])) {
+      if (!absl::ascii_isdigit(static_cast<unsigned char>(host[i]))) {
         return 0;
       }
     }
   } else {
-    static const auto* kMeaninglessPrefixesLenMap = new std::set<std::string>(
-        {"web", "ftp", "wap", "home", "m", "w", "amp", "mobile"});
+    static constexpr auto kMeaninglessPrefixesLenSet =
+        base::MakeFixedFlatSet<std::string_view>(
+            {"web", "ftp", "wap", "home", "m", "w", "amp", "mobile"});
 
     size_t prefix_len = host.find('.');
-    std::string prefix = host.substr(0, prefix_len);
-    const auto& it = kMeaninglessPrefixesLenMap->find(prefix);
-    if (it != kMeaninglessPrefixesLenMap->end() && len > it->size() + 1) {
+    std::string_view prefix = host.substr(0, prefix_len);
+    const auto& it = kMeaninglessPrefixesLenSet.find(prefix);
+    if (it != kMeaninglessPrefixesLenSet.end() && len > it->size() + 1) {
       return it->size() + 1;
     }
   }
   return 0;
+}
+
+bool IsModelTaxonomyVersionSupported(int model_taxonomy_version) {
+  // Taxonomy version 1 is a special case, where the server would send nothing
+  // (i.e. use 0) for the taxonomy version.
+  if (blink::features::kBrowsingTopicsTaxonomyVersion.Get() == 1) {
+    return model_taxonomy_version == 0;
+  }
+
+  return model_taxonomy_version ==
+         blink::features::kBrowsingTopicsTaxonomyVersion.Get();
 }
 
 }  // namespace
@@ -136,24 +153,39 @@ int MeaninglessPrefixLength(const std::string& host) {
 AnnotatorImpl::AnnotatorImpl(
     optimization_guide::OptimizationGuideModelProvider* model_provider,
     scoped_refptr<base::SequencedTaskRunner> background_task_runner,
-    const absl::optional<optimization_guide::proto::Any>& model_metadata)
+    const std::optional<optimization_guide::proto::Any>& model_metadata)
     : BertModelHandler(
           model_provider,
           background_task_runner,
           optimization_guide::proto::OPTIMIZATION_TARGET_PAGE_TOPICS_V2,
           model_metadata),
       background_task_runner_(background_task_runner) {
-  // Handled manually at the end of every batch.
+  // Unloading the model is done via custom logic in this class.
   SetShouldUnloadModelOnComplete(false);
 }
 AnnotatorImpl::~AnnotatorImpl() = default;
 
 void AnnotatorImpl::NotifyWhenModelAvailable(base::OnceClosure callback) {
-  AddOnModelUpdatedCallback(std::move(callback));
+  if (GetBrowsingTopicsModelInfo().has_value()) {
+    std::move(callback).Run();
+    return;
+  }
+  model_available_callbacks_.AddUnsafe(std::move(callback));
 }
 
-absl::optional<optimization_guide::ModelInfo>
+std::optional<optimization_guide::ModelInfo>
 AnnotatorImpl::GetBrowsingTopicsModelInfo() const {
+#if DCHECK_IS_ON()
+  if (GetModelInfo()) {
+    DCHECK(GetModelInfo()->model_metadata);
+    std::optional<optimization_guide::proto::PageTopicsModelMetadata>
+        model_metadata = optimization_guide::ParsedAnyMetadata<
+            optimization_guide::proto::PageTopicsModelMetadata>(
+            *GetModelInfo()->model_metadata);
+    DCHECK(model_metadata);
+    DCHECK(IsModelTaxonomyVersionSupported(model_metadata->taxonomy_version()));
+  }
+#endif  // DCHECK_IS_ON()
   return GetModelInfo();
 }
 
@@ -174,7 +206,7 @@ void AnnotatorImpl::BatchAnnotate(BatchAnnotationCallback callback,
 void AnnotatorImpl::OnOverrideListLoadAttemptDone(
     BatchAnnotationCallback callback,
     const std::vector<std::string>& inputs,
-    absl::optional<std::unordered_map<std::string, std::vector<int32_t>>>
+    std::optional<std::unordered_map<std::string, std::vector<int32_t>>>
         override_list) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(override_list_file_path_);
@@ -220,7 +252,7 @@ void AnnotatorImpl::StartBatchAnnotate(BatchAnnotationCallback callback,
   for (size_t i = 0; i < inputs.size(); i++) {
     AnnotateSingleInput(
         /*single_input_done_signal=*/barrier_closure,
-        /*annotation=*/(annotations_ptr->data() + i));
+        /*annotation=*/&(*annotations_ptr)[i]);
   }
 }
 
@@ -294,7 +326,7 @@ void AnnotatorImpl::AnnotateSingleInput(
 void AnnotatorImpl::PostprocessCategoriesToBatchAnnotationResult(
     base::OnceClosure single_input_done_signal,
     Annotation* annotation,
-    const absl::optional<std::vector<tflite::task::core::Category>>& output) {
+    const std::optional<std::vector<tflite::task::core::Category>>& output) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (output) {
     annotation->topics = ExtractCategoriesFromModelOutput(*output).value_or(
@@ -305,27 +337,27 @@ void AnnotatorImpl::PostprocessCategoriesToBatchAnnotationResult(
   // |annotation| may have been destroyed, do not use it past here.
 }
 
-absl::optional<std::vector<int32_t>>
+std::optional<std::vector<int32_t>>
 AnnotatorImpl::ExtractCategoriesFromModelOutput(
     const std::vector<tflite::task::core::Category>& model_output) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  absl::optional<optimization_guide::proto::PageTopicsModelMetadata>
+  std::optional<optimization_guide::proto::PageTopicsModelMetadata>
       model_metadata = ParsedSupportedFeaturesForLoadedModel<
           optimization_guide::proto::PageTopicsModelMetadata>();
   if (!model_metadata) {
-    return absl::nullopt;
+    return std::nullopt;
   }
 
-  absl::optional<std::string> visibility_category_name =
+  std::optional<std::string> visibility_category_name =
       model_metadata->output_postprocessing_params().has_visibility_params() &&
               model_metadata->output_postprocessing_params()
                   .visibility_params()
                   .has_category_name()
-          ? absl::make_optional(model_metadata->output_postprocessing_params()
-                                    .visibility_params()
-                                    .category_name())
-          : absl::nullopt;
+          ? std::make_optional(model_metadata->output_postprocessing_params()
+                                   .visibility_params()
+                                   .category_name())
+          : std::nullopt;
 
   std::vector<std::pair<int32_t, float>> category_candidates;
 
@@ -345,7 +377,7 @@ AnnotatorImpl::ExtractCategoriesFromModelOutput(
   // Postprocess categories.
   if (!model_metadata->output_postprocessing_params().has_category_params()) {
     // No parameters for postprocessing, so just return.
-    return absl::nullopt;
+    return std::nullopt;
   }
   const optimization_guide::proto::PageTopicsCategoryPostprocessingParams
       category_params =
@@ -359,7 +391,7 @@ AnnotatorImpl::ExtractCategoriesFromModelOutput(
   size_t max_categories = static_cast<size_t>(category_params.max_categories());
   float total_weight = 0.0;
   float sum_positive_scores = 0.0;
-  absl::optional<std::pair<size_t, float>> none_idx_and_weight;
+  std::optional<std::pair<size_t, float>> none_idx_and_weight;
   std::vector<std::pair<int32_t, float>> categories;
   categories.reserve(max_categories);
   for (size_t i = 0; i < category_candidates.size() && i < max_categories;
@@ -379,46 +411,35 @@ AnnotatorImpl::ExtractCategoriesFromModelOutput(
 
   // Prune out categories that do not meet the minimum threshold.
   if (category_params.min_category_weight() > 0) {
-    categories.erase(
-        std::remove_if(categories.begin(), categories.end(),
-                       [&](const std::pair<int32_t, float>& category) {
-                         return category.second <
-                                category_params.min_category_weight();
-                       }),
-        categories.end());
+    std::erase_if(categories, [&](const std::pair<int32_t, float>& category) {
+      return category.second < category_params.min_category_weight();
+    });
   }
 
   // Prune out none weights.
   if (total_weight == 0) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   if (none_idx_and_weight) {
     if ((none_idx_and_weight->second / total_weight) >
         category_params.min_none_weight()) {
       // None weight is too strong.
-      return absl::nullopt;
+      return std::nullopt;
     }
     // None weight doesn't matter, so prune it out. Note that it may have
     // already been removed above if its weight was below the category min.
-    categories.erase(
-        std::remove_if(categories.begin(), categories.end(),
-                       [&](const std::pair<int32_t, float>& category) {
-                         return category.first == kNoneCategoryId;
-                       }),
-        categories.end());
+    std::erase_if(categories, [&](const std::pair<int32_t, float>& category) {
+      return category.first == kNoneCategoryId;
+    });
   }
 
   // Normalize category weights.
   float normalization_factor =
       sum_positive_scores > 0 ? sum_positive_scores : 1.0;
-  categories.erase(
-      std::remove_if(
-          categories.begin(), categories.end(),
-          [&](const std::pair<int32_t, float>& category) {
-            return (category.second / normalization_factor) <
-                   category_params.min_normalized_weight_within_top_n();
-          }),
-      categories.end());
+  std::erase_if(categories, [&](const std::pair<int32_t, float>& category) {
+    return (category.second / normalization_factor) <
+           category_params.min_normalized_weight_within_top_n();
+  });
 
   std::vector<int32_t> final_categories;
   final_categories.reserve(categories.size());
@@ -436,39 +457,55 @@ void AnnotatorImpl::UnloadModel() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   optimization_guide::BertModelHandler::UnloadModel();
-  override_list_ = absl::nullopt;
+  override_list_ = std::nullopt;
 }
 
 void AnnotatorImpl::OnModelUpdated(
     optimization_guide::proto::OptimizationTarget optimization_target,
-    const optimization_guide::ModelInfo& model_info) {
+    base::optional_ref<const optimization_guide::ModelInfo> model_info) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // First invoke parent to update internal status.
+  optimization_guide::BertModelHandler::OnModelUpdated(optimization_target,
+                                                       model_info);
+
   if (optimization_target !=
       optimization_guide::proto::OPTIMIZATION_TARGET_PAGE_TOPICS_V2) {
     return;
   }
 
-  optimization_guide::BertModelHandler::OnModelUpdated(optimization_target,
-                                                       model_info);
+  if (!model_info.has_value() || !model_info->model_metadata) {
+    return;
+  }
+
+  std::optional<optimization_guide::proto::PageTopicsModelMetadata>
+      model_metadata = optimization_guide::ParsedAnyMetadata<
+          optimization_guide::proto::PageTopicsModelMetadata>(
+          *model_info->model_metadata);
+  if (!model_metadata) {
+    return;
+  }
+
+  if (!IsModelTaxonomyVersionSupported(model_metadata->taxonomy_version())) {
+    // Also clear the model in the underlying model executor code so that it
+    // cannot be accidentally called on the wrong taxonomy version.
+    optimization_guide::BertModelHandler::OnModelUpdated(
+        optimization_guide::proto::OPTIMIZATION_TARGET_PAGE_TOPICS_V2,
+        std::nullopt);
+    return;
+  }
+  version_ = model_metadata->version();
 
   // New model, new override list.
-  override_list_file_path_ = absl::nullopt;
-  override_list_ = absl::nullopt;
+  override_list_file_path_ =
+      model_info->GetAdditionalFileWithBaseName(kOverrideListBasePath);
+  override_list_ = std::nullopt;
 
-  absl::optional<optimization_guide::proto::PageTopicsModelMetadata>
-      model_metadata = ParsedSupportedFeaturesForLoadedModel<
-          optimization_guide::proto::PageTopicsModelMetadata>();
-  if (model_metadata) {
-    version_ = model_metadata->version();
-  }
-
-  for (const base::FilePath& path : model_info.GetAdditionalFiles()) {
-    DCHECK(path.IsAbsolute());
-    if (path.BaseName() == base::FilePath(kOverrideListBasePath)) {
-      override_list_file_path_ = path;
-      break;
-    }
-  }
+  // Run any callbacks that were waiting for an updated model.
+  //
+  // This should always be the last statement in this method, after all internal
+  // state has been updated because these callbacks may trigger an immediate
+  // annotation request.
+  model_available_callbacks_.Notify();
 }
 
 }  // namespace browsing_topics

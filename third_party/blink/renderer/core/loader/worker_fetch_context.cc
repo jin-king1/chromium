@@ -11,6 +11,7 @@
 #include "third_party/blink/public/platform/web_worker_fetch_context.h"
 #include "third_party/blink/renderer/core/frame/deprecation/deprecation.h"
 #include "third_party/blink/renderer/core/loader/mixed_content_checker.h"
+#include "third_party/blink/renderer/core/loader/resource_initiator_helper.h"
 #include "third_party/blink/renderer/core/loader/subresource_filter.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
 #include "third_party/blink/renderer/core/timing/worker_global_scope_performance.h"
@@ -61,7 +62,7 @@ net::SiteForCookies WorkerFetchContext::GetSiteForCookies() const {
 
 scoped_refptr<const SecurityOrigin> WorkerFetchContext::GetTopFrameOrigin()
     const {
-  absl::optional<WebSecurityOrigin> top_frame_origin =
+  std::optional<WebSecurityOrigin> top_frame_origin =
       web_context_->TopFrameOrigin();
 
   // The top frame origin of shared and service workers is null.
@@ -78,14 +79,10 @@ SubresourceFilter* WorkerFetchContext::GetSubresourceFilter() const {
   return subresource_filter_.Get();
 }
 
-bool WorkerFetchContext::AllowScriptFromSource(const KURL& url) const {
-  if (!global_scope_->ContentSettingsClient()) {
-    return true;
-  }
-  // If we're on a worker, script should be enabled, so no need to plumb
-  // Settings::GetScriptEnabled() here.
-  return global_scope_->ContentSettingsClient()->AllowScriptFromSource(true,
-                                                                       url);
+bool WorkerFetchContext::AllowScript() const {
+  // Script is always allowed in worker fetch contexts, since the fact that
+  // they're running is already evidence that script is allowed.
+  return true;
 }
 
 bool WorkerFetchContext::ShouldBlockRequestByInspector(const KURL& url) const {
@@ -110,7 +107,7 @@ ContentSecurityPolicy* WorkerFetchContext::GetContentSecurityPolicyForWorld(
   return GetContentSecurityPolicy();
 }
 
-bool WorkerFetchContext::IsSVGImageChromeClient() const {
+bool WorkerFetchContext::IsIsolatedSVGChromeClient() const {
   return false;
 }
 
@@ -143,15 +140,15 @@ WorkerFetchContext::CreateWebSocketHandshakeThrottle() {
 bool WorkerFetchContext::ShouldBlockFetchByMixedContentCheck(
     mojom::blink::RequestContextType request_context,
     network::mojom::blink::IPAddressSpace target_address_space,
-    const absl::optional<ResourceRequest::RedirectInfo>& redirect_info,
+    base::optional_ref<const ResourceRequest::RedirectInfo> redirect_info,
     const KURL& url,
     ReportingDisposition reporting_disposition,
-    const absl::optional<String>& devtools_id) const {
-  RedirectStatus redirect_status = redirect_info
+    const String& devtools_id) const {
+  RedirectStatus redirect_status = redirect_info.has_value()
                                        ? RedirectStatus::kFollowedRedirect
                                        : RedirectStatus::kNoRedirect;
   const KURL& url_before_redirects =
-      redirect_info ? redirect_info->original_url : url;
+      redirect_info.has_value() ? redirect_info->original_url : url;
   return MixedContentChecker::ShouldBlockFetchOnWorker(
       *const_cast<WorkerFetchContext*>(this), request_context,
       url_before_redirects, redirect_status, url, reporting_disposition,
@@ -181,7 +178,7 @@ const KURL& WorkerFetchContext::Url() const {
 }
 
 ContentSecurityPolicy* WorkerFetchContext::GetContentSecurityPolicy() const {
-  return content_security_policy_;
+  return content_security_policy_.Get();
 }
 
 void WorkerFetchContext::PrepareRequest(
@@ -189,15 +186,23 @@ void WorkerFetchContext::PrepareRequest(
     ResourceLoaderOptions& options,
     WebScopedVirtualTimePauser& virtual_time_pauser,
     ResourceType resource_type) {
+  GetExecutionContext()->MaybeRecordNetworkRequestUrlForPushEvents(
+      request.Url());
   request.SetUkmSourceId(GetExecutionContext()->UkmSourceID());
 
   String user_agent = global_scope_->UserAgent();
   probe::ApplyUserAgentOverride(Probe(), &user_agent);
   DCHECK(!user_agent.IsNull());
   request.SetHTTPUserAgent(AtomicString(user_agent));
+  request.SetSharedDictionaryWriterEnabled(
+      RuntimeEnabledFeatures::CompressionDictionaryTransportEnabled(
+          GetExecutionContext()));
+
+  request.SetStorageAccessApiStatus(
+      GetExecutionContext()->GetStorageAccessApiStatus());
 
   WrappedResourceRequest webreq(request);
-  web_context_->WillSendRequest(webreq);
+  web_context_->FinalizeRequest(webreq);
   if (auto* worker_scope = DynamicTo<WorkerGlobalScope>(*global_scope_)) {
     virtual_time_pauser =
         worker_scope->GetScheduler()
@@ -212,8 +217,9 @@ void WorkerFetchContext::PrepareRequest(
 
 void WorkerFetchContext::AddAdditionalRequestHeaders(ResourceRequest& request) {
   // The remaining modifications are only necessary for HTTP and HTTPS.
-  if (!request.Url().IsEmpty() && !request.Url().ProtocolIsInHTTPFamily())
+  if (!request.Url().IsEmpty() && !request.Url().ProtocolIsInHttpFamily()) {
     return;
+  }
 
   // TODO(crbug.com/1315612): WARNING: This bypasses the permissions policy.
   // Unfortunately, workers lack a permissions policy and to derive proper hints
@@ -221,8 +227,33 @@ void WorkerFetchContext::AddAdditionalRequestHeaders(ResourceRequest& request) {
   // Save-Data was previously included in hints for workers, thus we cannot
   // remove it for the time being. If you're reading this, consider building
   // permissions policies for workers and/or deprecating this inclusion.
-  if (save_data_enabled_)
-    request.SetHttpHeaderField(http_names::kSaveData, "on");
+  bool save_data_enabled = save_data_enabled_;
+  probe::ApplyDataSaverOverride(Probe(), save_data_enabled);
+  if (save_data_enabled) {
+    request.SetHttpHeaderField(http_names::kSaveData, AtomicString("on"));
+  }
+}
+
+// TODO(crbug.com/40919714): After determine exactly how we support initiator
+// for resource timing on worker threads, consider merging this function with
+// FrameFetchContext::FillInitiatorInfo().
+void WorkerFetchContext::FillInitiatorInfo(FetchInitiatorInfo& initiator_info) {
+  CHECK(RuntimeEnabledFeatures::ResourceTimingInitiatorEnabled());
+  if (initiator_info.is_imported_module && !initiator_info.referrer.empty()) {
+    // TODO(crbug.com/40919714): Fill |initiator_url|.
+    // Initiator is a referrer of an imported js file.
+    return;
+  }
+
+  v8::Isolate* isolate = ResourceInitiatorHelper::GetIsolateIfRunningScript();
+  if (isolate) {
+    // It is the currently executing JavaScript that is fetching the resource.
+    // The initiator is the JavaScript that originally dispatched currently
+    // executing JavaScript.
+    initiator_info.initiator_url =
+        ResourceInitiatorHelper::GetScriptInitiatorUrl(*isolate);
+    return;
+  }
 }
 
 void WorkerFetchContext::AddResourceTiming(
@@ -231,21 +262,42 @@ void WorkerFetchContext::AddResourceTiming(
   resource_timing_notifier_->AddResourceTiming(std::move(info), initiator_type);
 }
 
-void WorkerFetchContext::PopulateResourceRequest(
+void WorkerFetchContext::ModifyRequestForMixedContentUpgrade(
+    ResourceRequest& request) {
+  MixedContentChecker::UpgradeInsecureRequest(
+      request, &GetResourceFetcherProperties().GetFetchClientSettingsObject(),
+      global_scope_, mojom::blink::RequestContextFrameType::kNone,
+      global_scope_->ContentSettingsClient(), nullptr);
+}
+
+void WorkerFetchContext::PopulateResourceRequestBeforeCacheAccess(
+    const ResourceLoaderOptions& options,
+    ResourceRequest& request) {
+  ModifyRequestForMixedContentUpgrade(request);
+  request.SetTopFrameOrigin(GetTopFrameOrigin());
+}
+
+void WorkerFetchContext::WillSendRequest(ResourceRequest& request) {
+  std::optional<WebURL> overriden_url =
+      web_context_->WillSendRequest(request.Url());
+  if (overriden_url.has_value()) {
+    request.SetUrl(*overriden_url);
+  }
+}
+
+void WorkerFetchContext::UpgradeResourceRequestForLoader(
     ResourceType type,
-    const absl::optional<float> resource_width,
+    const std::optional<float> resource_width,
     ResourceRequest& out_request,
     const ResourceLoaderOptions& options) {
-  if (!GetResourceFetcherProperties().IsDetached())
+  if (!GetResourceFetcherProperties().IsDetached()) {
     probe::SetDevToolsIds(Probe(), out_request, options.initiator_info);
-  MixedContentChecker::UpgradeInsecureRequest(
-      out_request,
-      &GetResourceFetcherProperties().GetFetchClientSettingsObject(),
-      global_scope_, mojom::RequestContextFrameType::kNone,
-      global_scope_->ContentSettingsClient());
+  }
   SetFirstPartyCookie(out_request);
-  if (!out_request.TopFrameOrigin())
-    out_request.SetTopFrameOrigin(GetTopFrameOrigin());
+}
+
+const FeatureContext* WorkerFetchContext::GetFeatureContext() const {
+  return GetExecutionContext();
 }
 
 std::unique_ptr<ResourceLoadInfoNotifierWrapper>
@@ -283,7 +335,7 @@ WorkerFetchContext::GetContentSecurityNotifier() {
 }
 
 ExecutionContext* WorkerFetchContext::GetExecutionContext() const {
-  return global_scope_;
+  return global_scope_.Get();
 }
 
 void WorkerFetchContext::Trace(Visitor* visitor) const {

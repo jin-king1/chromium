@@ -5,18 +5,25 @@
 #include "content/renderer/service_worker/service_worker_subresource_loader.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/debug/stack_trace.h"
 #include "base/strings/stringprintf.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
+#include "content/common/features.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/renderer/service_worker/controller_service_worker_connector.h"
@@ -29,7 +36,9 @@
 #include "services/network/public/cpp/wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_data_pipe_getter.h"
 #include "services/network/test/test_url_loader_client.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/service_worker/service_worker_router_rule.h"
 #include "third_party/blink/public/mojom/blob/blob.mojom.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_response.mojom.h"
 #include "third_party/blink/public/mojom/loader/fetch_client_settings_object.mojom.h"
@@ -48,7 +57,7 @@ namespace service_worker_subresource_loader_unittest {
 // A simple blob implementation for serving data stored in a vector.
 class FakeBlob final : public blink::mojom::Blob {
  public:
-  FakeBlob(absl::optional<std::vector<uint8_t>> side_data, std::string body)
+  FakeBlob(std::optional<std::vector<uint8_t>> side_data, std::string body)
       : side_data_(std::move(side_data)), body_(std::move(body)) {}
 
  private:
@@ -85,17 +94,20 @@ class FakeBlob final : public blink::mojom::Blob {
     NOTREACHED();
   }
   void ReadSideData(ReadSideDataCallback callback) override {
-    std::move(callback).Run(side_data_);
+    std::move(callback).Run(
+        side_data_.has_value()
+            ? std::make_optional(base::as_byte_span(*side_data_))
+            : std::nullopt);
   }
   void CaptureSnapshot(CaptureSnapshotCallback callback) override {
-    std::move(callback).Run(body_.size(), absl::nullopt);
+    std::move(callback).Run(body_.size(), std::nullopt);
   }
   void GetInternalUUID(GetInternalUUIDCallback callback) override {
     NOTREACHED();
   }
 
   mojo::ReceiverSet<blink::mojom::Blob> receivers_;
-  absl::optional<std::vector<uint8_t>> side_data_;
+  std::optional<std::vector<uint8_t>> side_data_;
   std::string body_;
 };
 
@@ -190,7 +202,7 @@ class FakeControllerServiceWorker
   }
 
   // Tells this controller to respond to fetch events with a blob response body.
-  void RespondWithBlob(absl::optional<std::vector<uint8_t>> metadata,
+  void RespondWithBlob(std::optional<std::vector<uint8_t>> metadata,
                        std::string body) {
     response_mode_ = ResponseMode::kBlob;
     blob_body_ = blink::mojom::SerializedBlob::New();
@@ -279,7 +291,7 @@ class FakeControllerServiceWorker
         response_callback->OnResponse(
             OkResponse(nullptr /* blob_body */, response_source_,
                        response_time_, cache_storage_cache_name_),
-            std::move(timing));
+            std::move(timing), /*errors=*/nullptr);
         std::move(callback).Run(
             blink::mojom::ServiceWorkerEventStatus::COMPLETED);
         break;
@@ -291,7 +303,7 @@ class FakeControllerServiceWorker
         response_callback->OnResponseStream(
             OkResponse(nullptr /* blob_body */, response_source_,
                        response_time_, cache_storage_cache_name_),
-            std::move(stream_handle_), std::move(timing));
+            std::move(stream_handle_), std::move(timing), /*errors=*/nullptr);
         std::move(callback).Run(
             blink::mojom::ServiceWorkerEventStatus::COMPLETED);
         break;
@@ -299,7 +311,7 @@ class FakeControllerServiceWorker
         response_callback->OnResponse(
             OkResponse(std::move(blob_body_), response_source_, response_time_,
                        cache_storage_cache_name_),
-            std::move(timing));
+            std::move(timing), /*errors=*/nullptr);
         std::move(callback).Run(
             blink::mojom::ServiceWorkerEventStatus::COMPLETED);
         break;
@@ -326,7 +338,7 @@ class FakeControllerServiceWorker
         blob->uuid = "dummy-blob-uuid";
         blob->size = size;
         mojo::MakeSelfOwnedReceiver(
-            std::make_unique<FakeBlob>(absl::nullopt, body),
+            std::make_unique<FakeBlob>(std::nullopt, body),
             blob->blob.InitWithNewPipeAndPassReceiver());
 
         // Respond with a 206 response.
@@ -336,26 +348,29 @@ class FakeControllerServiceWorker
         response->headers.emplace(
             "Content-Range", base::StringPrintf("bytes %zu-%zu/%zu", start, end,
                                                 blob_range_body_.size()));
-        response_callback->OnResponse(std::move(response), std::move(timing));
+        response_callback->OnResponse(std::move(response), std::move(timing),
+                                      /*errors=*/nullptr);
         std::move(callback).Run(
             blink::mojom::ServiceWorkerEventStatus::COMPLETED);
         break;
       }
 
       case ResponseMode::kFallbackResponse:
-        response_callback->OnFallback(/*request_body=*/absl::nullopt,
-                                      std::move(timing));
+        response_callback->OnFallback(/*request_body=*/std::nullopt,
+                                      std::move(timing), /*errors=*/nullptr);
         std::move(callback).Run(
             blink::mojom::ServiceWorkerEventStatus::COMPLETED);
         break;
       case ResponseMode::kErrorResponse:
-        response_callback->OnResponse(ErrorResponse(), std::move(timing));
+        response_callback->OnResponse(ErrorResponse(), std::move(timing),
+                                      /*errors=*/nullptr);
         std::move(callback).Run(
             blink::mojom::ServiceWorkerEventStatus::REJECTED);
         break;
       case ResponseMode::kRedirectResponse:
         response_callback->OnResponse(
-            RedirectResponse(redirect_location_header_), std::move(timing));
+            RedirectResponse(redirect_location_header_), std::move(timing),
+            /*errors=*/nullptr);
         std::move(callback).Run(
             blink::mojom::ServiceWorkerEventStatus::COMPLETED);
         break;
@@ -370,9 +385,8 @@ class FakeControllerServiceWorker
 
   void Clone(
       mojo::PendingReceiver<blink::mojom::ControllerServiceWorker> receiver,
-      const network::CrossOriginEmbedderPolicy&,
-      mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>)
-      override {
+      blink::mojom::CrossOriginEmbedderPolicyInfoPtr,
+      blink::mojom::DocumentIsolationPolicyInfoPtr) override {
     receivers_.Add(this, std::move(receiver));
   }
 
@@ -479,9 +493,7 @@ class FakeServiceWorkerContainerHost
     get_controller_service_worker_count_++;
     if (!fake_controller_)
       return;
-    fake_controller_->Clone(std::move(receiver),
-                            network::CrossOriginEmbedderPolicy(),
-                            mojo::NullRemote());
+    fake_controller_->Clone(std::move(receiver), nullptr, nullptr);
   }
   void CloneContainerHost(
       mojo::PendingReceiver<blink::mojom::ServiceWorkerContainerHost> receiver)
@@ -497,7 +509,7 @@ class FakeServiceWorkerContainerHost
 
  private:
   int get_controller_service_worker_count_ = 0;
-  FakeControllerServiceWorker* fake_controller_;
+  raw_ptr<FakeControllerServiceWorker> fake_controller_;
   mojo::ReceiverSet<blink::mojom::ServiceWorkerContainerHost> receivers_;
 };
 
@@ -557,8 +569,15 @@ class ServiceWorkerSubresourceLoaderTest : public ::testing::Test {
           remote_container_host.InitWithNewPipeAndPassReceiver());
       connector_ = base::MakeRefCounted<ControllerServiceWorkerConnector>(
           std::move(remote_container_host),
-          mojo::NullRemote() /*remote_controller*/, "" /*client_id*/,
-          blink::mojom::ServiceWorkerFetchHandlerBypassOption::kDefault);
+          mojo::NullRemote() /*remote_controller*/,
+          mojo::NullRemote() /*remote_cache_storage*/, "" /*client_id*/,
+          blink::mojom::ServiceWorkerFetchHandlerBypassOption::kDefault,
+          std::nullopt, network::CrossOriginEmbedderPolicy(),
+          mojo::NullRemote() /*cross_origin_embedder_policy_reporter*/,
+          network::DocumentIsolationPolicy(),
+          mojo::NullRemote() /*document_isolation_policy_reporter*/,
+          blink::EmbeddedWorkerStatus::kStopped,
+          mojo::NullReceiver() /*running_status_receiver*/);
     }
     mojo::Remote<network::mojom::URLLoaderFactory>
         service_worker_url_loader_factory;
@@ -973,9 +992,7 @@ TEST_F(ServiceWorkerSubresourceLoaderTest,
        DropController_RestartFetchEvent_RaceNetworkRequest) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndEnableFeatureWithParameters(
-      features::kServiceWorkerBypassFetchHandler,
-      {{"strategy", "opt-in"},
-       {"bypass_for", "all_with_race_network_request"}});
+      features::kServiceWorkerAutoPreload, {{"strategy", "opt-in"}});
 
   mojo::Remote<network::mojom::URLLoaderFactory> factory =
       CreateSubresourceLoaderFactory();
@@ -1034,11 +1051,99 @@ TEST_F(ServiceWorkerSubresourceLoaderTest,
                                       blink::ServiceWorkerStatusCode::kOk, 1);
 }
 
+TEST_F(ServiceWorkerSubresourceLoaderTest,
+       DropController_RestartFetchEvent_RaceNetworkRequest_FallbackStall) {
+  base::HistogramTester histogram_tester;
+
+  // Set up the router to race network and fetch event.
+  blink::ServiceWorkerRouterRules rules;
+  {
+    blink::ServiceWorkerRouterRule rule;
+    blink::ServiceWorkerRouterRequestCondition request_condition;
+    request_condition.method = "GET";
+    rule.condition = blink::ServiceWorkerRouterCondition::WithRequest(
+        request_condition);
+    blink::ServiceWorkerRouterSource source;
+    source.type = network::mojom::ServiceWorkerRouterSourceType::
+        kRaceNetworkAndFetchEvent;
+    source.race_network_and_fetch_event_source.emplace();
+    rule.sources.push_back(source);
+    rules.rules.push_back(rule);
+  }
+
+  mojo::PendingRemote<blink::mojom::ServiceWorkerContainerHost>
+      remote_container_host;
+  fake_container_host_.CloneContainerHost(
+      remote_container_host.InitWithNewPipeAndPassReceiver());
+  connector_ = base::MakeRefCounted<ControllerServiceWorkerConnector>(
+      std::move(remote_container_host),
+      mojo::NullRemote() /*remote_controller*/,
+      mojo::NullRemote() /*remote_cache_storage*/, "" /*client_id*/,
+      blink::mojom::ServiceWorkerFetchHandlerBypassOption::kDefault, rules,
+      network::CrossOriginEmbedderPolicy(),
+      mojo::NullRemote() /*cross_origin_embedder_policy_reporter*/,
+      network::DocumentIsolationPolicy(),
+      mojo::NullRemote() /*document_isolation_policy_reporter*/,
+      blink::EmbeddedWorkerStatus::kRunning,
+      mojo::NullReceiver() /*running_status_receiver*/);
+
+  // Initialize by calling CreateSubresourceLoaderFactory() once.
+  CreateSubresourceLoaderFactory();
+
+  network::TestURLLoaderFactory test_loader_factory;
+  mojo::Remote<network::mojom::URLLoaderFactory> factory;
+  mojo::PendingRemote<network::mojom::URLLoaderFactory> pending_test_factory;
+  test_loader_factory.Clone(
+      pending_test_factory.InitWithNewPipeAndPassReceiver());
+
+  ServiceWorkerSubresourceLoaderFactory::Create(
+      connector_,
+      base::MakeRefCounted<network::WrapperSharedURLLoaderFactory>(
+          std::move(pending_test_factory)),
+      factory.BindNewPipeAndPassReceiver(),
+      blink::scheduler::GetSequencedTaskRunnerForTesting());
+
+  fake_controller_.DontRespond();
+  network::ResourceRequest request =
+      CreateRequest(GURL("https://www.example.com/foo.png"));
+  mojo::Remote<network::mojom::URLLoader> loader;
+  std::unique_ptr<network::TestURLLoaderClient> client;
+
+  // Set an interceptor to wait for the race network request.
+  base::RunLoop race_network_loop;
+  test_loader_factory.SetInterceptor(
+      base::BindLambdaForTesting([&](const network::ResourceRequest& req) {
+        race_network_loop.Quit();
+      }));
+
+  // Start the request and drop the connection to the ControllerServiceWorker,
+  // which should cause the fetch event to be restarted.
+  StartRequest(factory, request, &loader, &client);
+  fake_controller_.RunUntilFetchEvent();
+  race_network_loop.Run();
+
+  fake_controller_.ClearReceivers();
+
+  // Respond with fallback on the restarted fetch event.
+  fake_controller_.RespondWithFallback();
+
+  // Wait for the fallback request to be dispatched to the network.
+  base::RunLoop fallback_loop;
+  test_loader_factory.SetInterceptor(
+      base::BindLambdaForTesting([&](const network::ResourceRequest& req) {
+        fallback_loop.Quit();
+      }));
+  fallback_loop.Run();
+
+  histogram_tester.ExpectUniqueSample(
+      "ServiceWorker.SubresourceLoader.FetchRequestRestarted", true, 1);
+}
+
 TEST_F(ServiceWorkerSubresourceLoaderTest, StreamResponse) {
   base::HistogramTester histogram_tester;
 
   // Construct the Stream to respond with.
-  const char kResponseBody[] = "Here is sample text for the Stream.";
+  const std::string_view kResponseBody = "Here is sample text for the Stream.";
   mojo::Remote<blink::mojom::ServiceWorkerStreamCallback> stream_callback;
   mojo::ScopedDataPipeProducerHandle producer_handle;
   mojo::ScopedDataPipeConsumerHandle consumer_handle;
@@ -1067,11 +1172,12 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, StreamResponse) {
   ExpectResponseInfo(*info, *expected_info);
 
   // Write the body stream.
-  uint32_t written_bytes = sizeof(kResponseBody) - 1;
-  MojoResult mojo_result = producer_handle->WriteData(
-      kResponseBody, &written_bytes, MOJO_WRITE_DATA_FLAG_NONE);
+  size_t bytes_written = 0;
+  MojoResult mojo_result =
+      producer_handle->WriteData(base::as_byte_span(kResponseBody),
+                                 MOJO_WRITE_DATA_FLAG_NONE, bytes_written);
   ASSERT_EQ(MOJO_RESULT_OK, mojo_result);
-  EXPECT_EQ(sizeof(kResponseBody) - 1, written_bytes);
+  EXPECT_EQ(kResponseBody.size(), bytes_written);
   stream_callback->OnCompleted();
   producer_handle.reset();
 
@@ -1107,7 +1213,7 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, StreamResponse_Abort) {
   base::HistogramTester histogram_tester;
 
   // Construct the Stream to respond with.
-  const char kResponseBody[] = "Here is sample text for the Stream.";
+  const std::string_view kResponseBody = "Here is sample text for the Stream.";
   mojo::Remote<blink::mojom::ServiceWorkerStreamCallback> stream_callback;
   mojo::ScopedDataPipeProducerHandle producer_handle;
   mojo::ScopedDataPipeConsumerHandle consumer_handle;
@@ -1131,11 +1237,12 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, StreamResponse_Abort) {
   ExpectResponseInfo(*info, *CreateResponseInfoFromServiceWorker());
 
   // Start writing the body stream, then abort before finishing.
-  uint32_t written_bytes = sizeof(kResponseBody) - 1;
-  MojoResult mojo_result = producer_handle->WriteData(
-      kResponseBody, &written_bytes, MOJO_WRITE_DATA_FLAG_NONE);
+  size_t bytes_written = 0;
+  MojoResult mojo_result =
+      producer_handle->WriteData(base::as_byte_span(kResponseBody),
+                                 MOJO_WRITE_DATA_FLAG_NONE, bytes_written);
   ASSERT_EQ(MOJO_RESULT_OK, mojo_result);
-  EXPECT_EQ(sizeof(kResponseBody) - 1, written_bytes);
+  EXPECT_EQ(kResponseBody.size(), bytes_written);
   stream_callback->OnAborted();
   producer_handle.reset();
 
@@ -1237,7 +1344,7 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, BlobResponseWithoutMetadata) {
 
   // Construct the Blob to respond with.
   const std::string kResponseBody = "/* Here is sample text for the Blob. */";
-  fake_controller_.RespondWithBlob(absl::nullopt, kResponseBody);
+  fake_controller_.RespondWithBlob(std::nullopt, kResponseBody);
 
   mojo::Remote<network::mojom::URLLoaderFactory> factory =
       CreateSubresourceLoaderFactory();
@@ -1417,7 +1524,8 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, RedirectResponse) {
 
   // Redirect once more.
   fake_controller_.RespondWithRedirect("https://other.example.com/baz.png");
-  loader->FollowRedirect({}, {}, {}, absl::nullopt);
+  loader->FollowRedirect(/*headers_update_params=*/{},
+                         /*new_url=*/std::nullopt);
   client->RunUntilRedirectReceived();
 
   EXPECT_EQ(net::OK, client->completion_status().error_code);
@@ -1431,7 +1539,7 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, RedirectResponse) {
   client->ClearHasReceivedRedirect();
 
   // Give the final response.
-  const char kResponseBody[] = "Here is sample text for the Stream.";
+  const std::string_view kResponseBody = "Here is sample text for the Stream.";
   mojo::Remote<blink::mojom::ServiceWorkerStreamCallback> stream_callback;
   mojo::ScopedDataPipeProducerHandle producer_handle;
   mojo::ScopedDataPipeConsumerHandle consumer_handle;
@@ -1439,7 +1547,8 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, RedirectResponse) {
             MOJO_RESULT_OK);
   fake_controller_.RespondWithStream(
       stream_callback.BindNewPipeAndPassReceiver(), std::move(consumer_handle));
-  loader->FollowRedirect({}, {}, {}, absl::nullopt);
+  loader->FollowRedirect(/*headers_update_params=*/{},
+                         /*new_url=*/std::nullopt);
   client->RunUntilResponseReceived();
 
   auto& info = client->response_head();
@@ -1447,11 +1556,12 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, RedirectResponse) {
   EXPECT_EQ(network::mojom::FetchResponseType::kDefault, info->response_type);
 
   // Write the body stream.
-  uint32_t written_bytes = sizeof(kResponseBody) - 1;
-  MojoResult mojo_result = producer_handle->WriteData(
-      kResponseBody, &written_bytes, MOJO_WRITE_DATA_FLAG_NONE);
+  size_t bytes_written = 0;
+  MojoResult mojo_result =
+      producer_handle->WriteData(base::as_byte_span(kResponseBody),
+                                 MOJO_WRITE_DATA_FLAG_NONE, bytes_written);
   ASSERT_EQ(MOJO_RESULT_OK, mojo_result);
-  EXPECT_EQ(sizeof(kResponseBody) - 1, written_bytes);
+  EXPECT_EQ(kResponseBody.size(), bytes_written);
   stream_callback->OnCompleted();
   producer_handle.reset();
 
@@ -1509,7 +1619,8 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, TooManyRedirects) {
     redirect_location = std::string("https://www.example.com/redirect_") +
                         base::NumberToString(count);
     fake_controller_.RespondWithRedirect(redirect_location);
-    loader->FollowRedirect({}, {}, {}, absl::nullopt);
+    loader->FollowRedirect(/*headers_update_params=*/{},
+                           /*new_url=*/std::nullopt);
   }
   client->RunUntilComplete();
 
@@ -1540,7 +1651,8 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, FollowNonexistentRedirect) {
 
   // Tell the loader to follow a non-existent redirect. It should complete
   // with network error.
-  loader->FollowRedirect({}, {}, {}, absl::nullopt);
+  loader->FollowRedirect(/*headers_update_params=*/{},
+                         /*new_url=*/std::nullopt);
   client->RunUntilComplete();
   EXPECT_EQ(net::ERR_INVALID_REDIRECT, client->completion_status().error_code);
 }
@@ -1548,7 +1660,7 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, FollowNonexistentRedirect) {
 TEST_F(ServiceWorkerSubresourceLoaderTest, FallbackWithRequestBody_String) {
   const std::string kData = "Hi, this is the request body (string)";
   auto request_body = base::MakeRefCounted<network::ResourceRequestBody>();
-  request_body->AppendBytes(kData.c_str(), kData.length());
+  request_body->AppendCopyOfBytes(base::as_byte_span(kData));
 
   RunFallbackWithRequestBodyTest(std::move(request_body), kData);
 }
@@ -1570,7 +1682,7 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, FallbackWithRequestBody_DataPipe) {
 TEST_F(ServiceWorkerSubresourceLoaderTest, RangeRequest_200Response) {
   // Construct the Blob to respond with.
   const std::string kResponseBody = "Here is sample text for the Blob.";
-  fake_controller_.RespondWithBlob(absl::nullopt, kResponseBody);
+  fake_controller_.RespondWithBlob(std::nullopt, kResponseBody);
 
   // Perform the request.
   std::unique_ptr<network::TestURLLoaderClient> client =
@@ -1601,9 +1713,8 @@ TEST_F(ServiceWorkerSubresourceLoaderTest, RangeRequest_206Response) {
   // Test the response.
   auto& info = client->response_head();
   EXPECT_EQ(206, info->headers->response_code());
-  std::string range;
-  ASSERT_TRUE(info->headers->GetNormalizedHeader("Content-Range", &range));
-  EXPECT_EQ("bytes 5-13/33", range);
+  EXPECT_EQ(info->headers->GetNormalizedHeader("Content-Range"),
+            "bytes 5-13/33");
   EXPECT_EQ(9, info->content_length);
   EXPECT_EQ("is sample", TakeResponseBody(client.get()));
 }
@@ -1625,9 +1736,8 @@ TEST_F(ServiceWorkerSubresourceLoaderTest,
   // Test the response.
   auto& info = client->response_head();
   EXPECT_EQ(206, info->headers->response_code());
-  std::string range;
-  ASSERT_TRUE(info->headers->GetNormalizedHeader("Content-Range", &range));
-  EXPECT_EQ("bytes 5-32/33", range);
+  EXPECT_EQ(info->headers->GetNormalizedHeader("Content-Range"),
+            "bytes 5-32/33");
   EXPECT_EQ(28, info->content_length);
   EXPECT_EQ("is sample text for the Blob.", TakeResponseBody(client.get()));
 }

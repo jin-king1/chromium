@@ -13,6 +13,7 @@
 
 #include <algorithm>
 
+#include "base/compiler_specific.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/router/discovery/discovery_network_list_wifi.h"
@@ -39,6 +40,14 @@ using sll = struct sockaddr_dl;
 #define SOCKET_ADDRESS_LEN(s) ((s)->sdl_alen)
 #define SOCKET_ADDRESS(s) (LLADDR(s))
 #endif
+
+base::span<const uint8_t> SocketAddressAsByteSpan(const sll* ll_addr) {
+  // SAFETY: The size of SOCKET_ADDRESS() can be reliably retrieved via
+  // SOCKET_ADDRESS_LEN().
+  return UNSAFE_BUFFERS(base::span<const uint8_t>(
+      reinterpret_cast<const unsigned char*>(SOCKET_ADDRESS(ll_addr)),
+      SOCKET_ADDRESS_LEN(ll_addr)));
+}
 
 void GetDiscoveryNetworkInfoListImpl(
     const struct ifaddrs* if_list,
@@ -83,9 +92,7 @@ void GetDiscoveryNetworkInfoListImpl(
     }
 
     network_info_list->push_back(
-        {name, base::HexEncode(reinterpret_cast<const unsigned char*>(
-                                   SOCKET_ADDRESS(ll_addr)),
-                               SOCKET_ADDRESS_LEN(ll_addr))});
+        {name, base::HexEncode(SocketAddressAsByteSpan(ll_addr))});
   }
 }
 

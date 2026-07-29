@@ -7,20 +7,26 @@
 #include <cmath>
 
 #include "base/auto_reset.h"
-#include "base/mac/scoped_nsobject.h"
 #include "base/strings/sys_string_conversions.h"
+#include "chrome/browser/actor/ui/actor_overlay_ui.h"
 #include "chrome/browser/devtools/devtools_window.h"
+#include "chrome/browser/glic/host/guest_util.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/profiles/profile.h"
 #import "chrome/browser/renderer_host/chrome_render_widget_host_view_mac_history_swiper.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/tabs/inactive_window_mouse_event_controller.h"
+#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/common/url_constants.h"
+#include "chrome/common/webui_url_utils.h"
 #include "components/prefs/pref_service.h"
 #include "components/spellcheck/browser/pref_names.h"
 #include "components/spellcheck/browser/spellcheck_platform.h"
 #include "components/spellcheck/common/spellcheck_panel.mojom.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
+#include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/preloading.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -45,7 +51,7 @@
   int32_t _widgetRoutingId;
 
   // Responsible for 2-finger swipes history navigation.
-  base::scoped_nsobject<HistorySwiper> _historySwiper;
+  HistorySwiper* __strong _historySwiper;
 
   // A boolean set to true while resigning first responder status, to avoid
   // infinite recursion in the case of reentrance.
@@ -56,16 +62,18 @@
     (content::RenderWidgetHost*)renderWidgetHost {
   self = [super init];
   if (self) {
-    _widgetProcessId = renderWidgetHost->GetProcess()->GetID();
+    _widgetProcessId = renderWidgetHost->GetProcess()->GetDeprecatedID();
     _widgetRoutingId = renderWidgetHost->GetRoutingID();
-    _historySwiper.reset([[HistorySwiper alloc] initWithDelegate:self]);
+    _historySwiper = [[HistorySwiper alloc] initWithDelegate:self];
+    // Clip bounds so history swiper navigation layer doesn't overflow the
+    // bounds when in Split View or with a Side Panel open.
+    [self viewThatWantsHistoryOverlay].clipsToBounds = YES;
   }
   return self;
 }
 
 - (void)dealloc {
   [_historySwiper setDelegate:nil];
-  [super dealloc];
 }
 
 - (content::WebContents*)webContents {
@@ -82,6 +90,16 @@
   }
 
   return content::WebContents::FromRenderViewHost(renderViewHost);
+}
+
+- (BOOL)shouldRefuseBecomingKeyView {
+  content::WebContents* webContents = self.webContents;
+  if (webContents && ShouldRefuseBecomingKeyViewForTopChromeWebUI(
+                         webContents->GetLastCommittedURL())) {
+    return YES;
+  }
+
+  return NO;
 }
 
 - (NSView*)nsView {
@@ -120,14 +138,6 @@
 }
 
 // NSWindow events.
-
-- (void)beginGestureWithEvent:(NSEvent*)event {
-  [_historySwiper beginGestureWithEvent:event];
-}
-
-- (void)endGestureWithEvent:(NSEvent*)event {
-  [_historySwiper endGestureWithEvent:event];
-}
 
 // This is a low level API which provides touches associated with an event.
 // It is used in conjunction with gestures to determine finger placement
@@ -244,11 +254,6 @@
   }
 
   return NO;
-}
-
-- (void)rendererHandledWheelEvent:(const blink::WebMouseWheelEvent&)event
-                         consumed:(BOOL)consumed {
-  [_historySwiper rendererHandledWheelEvent:event consumed:consumed];
 }
 
 - (void)rendererHandledGestureScrollEvent:(const blink::WebGestureEvent&)event
@@ -376,7 +381,7 @@
   DCHECK(browserWindow);
 
   // If the browser window is already key, there's nothing to do.
-  if (browserWindow.isKeyWindow) {
+  if (browserWindow.keyWindow) {
     return;
   }
 
@@ -409,6 +414,88 @@
   if (view.window.firstResponder == view) {
     [self makeAnyDialogKey];
   }
+}
+
+- (AcceptMouseEvents)acceptsMouseEventsOption {
+  content::WebContents* webContents = self.webContents;
+  if (!webContents) {
+    return AcceptMouseEvents::kWhenInActiveWindow;
+  }
+
+  // Allow mouse move events in inactive windows when inspecting.
+  if (content::DevToolsAgentHost::IsDebuggerAttached(webContents)) {
+    return AcceptMouseEvents::kWhenInActiveApp;
+  }
+
+  // If this web contents is in a tab, and the tab wants to accept mouse events
+  // while the window is inactive.
+  if (tabs::TabInterface* tab =
+          tabs::TabInterface::MaybeGetFromContents(webContents)) {
+    if (tabs::TabFeatures* features = tab->GetTabFeatures()) {
+      if (tabs::InactiveWindowMouseEventController* inactive_event_controller =
+              features->inactive_window_mouse_event_controller()) {
+        if (inactive_event_controller
+                ->ShouldAcceptMouseEventsWhileWindowInactive()) {
+          return AcceptMouseEvents::kWhenInActiveApp;
+        }
+      }
+    }
+  }
+
+  // For Top Chrome WebUIs, allows inactive windows to accept
+  // mouse events as long as the application is active. This
+  // mimics the behavior of views UI.
+  if (IsTopChromeWebUIURL(webContents->GetVisibleURL()) ||
+      IsTopChromeUntrustedWebUIURL(webContents->GetVisibleURL())) {
+    return AcceptMouseEvents::kWhenInActiveApp;
+  }
+
+  // WebContents managed by glic should be allowed to accept mouse events while
+  // inactive, aligning with the expected behavior of native chrome dialogs.
+  // TODO(crbug.com/399119513): Consider making this a single WebContents
+  // scoped setting, allowing this behavior to be configured by feature code.
+  if (glic::GetGlicGuestWebContents(webContents) != nullptr) {
+    return AcceptMouseEvents::kWhenInActiveApp;
+  }
+
+  // If the WebContents are from the ActorOverlayUI WebUIController, we should
+  // accept mouse events when any part of the application is active.
+  if (actor::ui::ActorOverlayUI::IsActorOverlayWebContents(webContents)) {
+    return AcceptMouseEvents::kWhenInActiveApp;
+  }
+
+  return AcceptMouseEvents::kWhenInActiveWindow;
+}
+
+- (AcceptTooltipEvents)acceptsTooltipEvents {
+  content::WebContents* webContents = self.webContents;
+  if (!webContents) {
+    return AcceptTooltipEvents::kWhenInKeyWindow;
+  }
+
+  // For Top Chrome WebUIs, allows non-key windows to accept
+  // tooltip events.
+  if (IsTopChromeWebUIURL(webContents->GetVisibleURL()) ||
+      IsTopChromeUntrustedWebUIURL(webContents->GetVisibleURL())) {
+    return AcceptTooltipEvents::kWhenInActiveApp;
+  }
+
+  return AcceptTooltipEvents::kWhenInKeyWindow;
+}
+
+- (BOOL)shouldBecomeFirstResponderOnRightClick {
+  content::WebContents* webContents = self.webContents;
+  if (!webContents) {
+    return NO;
+  }
+
+  // For Top Chrome WebUIs, allow right click to make the view first responder.
+  if (IsTopChromeWebUIURL(webContents->GetVisibleURL()) ||
+      IsTopChromeUntrustedWebUIURL(webContents->GetVisibleURL())) {
+    return YES;
+  }
+
+  return NO;
 }
 
 @end

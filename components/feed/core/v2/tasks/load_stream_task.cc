@@ -31,9 +31,9 @@
 #include "components/feed/core/v2/stream_model.h"
 #include "components/feed/core/v2/tasks/upload_actions_task.h"
 #include "components/feed/core/v2/types.h"
+#include "components/feed/core/v2/view_demotion.h"
 #include "components/feed/feed_feature_list.h"
 #include "net/base/net_errors.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace feed {
 namespace {
@@ -45,19 +45,13 @@ feedwire::FeedQuery::RequestReason GetRequestReason(
   switch (load_type) {
     case LoadType::kInitialLoad:
     case LoadType::kManualRefresh:
-      return stream_type.IsForYou() ? feedwire::FeedQuery::MANUAL_REFRESH
-                                    : feedwire::FeedQuery::INTERACTIVE_WEB_FEED;
+      return feedwire::FeedQuery::MANUAL_REFRESH;
     case LoadType::kBackgroundRefresh:
-      return stream_type.IsForYou()
-                 ? feedwire::FeedQuery::SCHEDULED_REFRESH
-                 // TODO(b/185848601): Switch back to PREFETCHED_WEB_FEED when
-                 // the server supports it.
-                 : feedwire::FeedQuery::INTERACTIVE_WEB_FEED;
+      return feedwire::FeedQuery::SCHEDULED_REFRESH;
     case LoadType::kFeedCloseBackgroundRefresh:
       return feedwire::FeedQuery::APP_CLOSE_REFRESH;
     case LoadType::kLoadMore:
       NOTREACHED();
-      return feedwire::FeedQuery::MANUAL_REFRESH;
   }
 }
 
@@ -74,7 +68,8 @@ Result& Result::operator=(Result&&) = default;
 LaunchResult LoadStreamTask::LaunchResultFromNetworkInfo(
     const NetworkResponseInfo& response_info,
     bool has_parsed_body) {
-  if (response_info.status_code == 200) {
+  int status_code = response_info.status_code;
+  if (status_code == 200) {
     if (has_parsed_body) {
       // Success.
       return {LoadStreamStatus::kNoStatus,
@@ -107,6 +102,13 @@ LaunchResult LoadStreamTask::LaunchResultFromNetworkInfo(
           LoadStreamStatus::kAccountTokenFetchTimedOut,
           feedwire::DiscoverLaunchResult::NO_CARDS_FAILED_TO_GET_AUTH_TOKEN};
   }
+  if (status_code == net::ERR_INTERNET_DISCONNECTED ||
+      status_code == net::ERR_NAME_NOT_RESOLVED ||
+      status_code == net::ERR_ADDRESS_UNREACHABLE ||
+      status_code == net::ERR_PROXY_CONNECTION_FAILED) {
+    return {LoadStreamStatus::kCannotLoadFromNetworkOffline,
+            feedwire::DiscoverLaunchResult::NO_CARDS_REQUEST_ERROR_NO_INTERNET};
+  }
   return {LoadStreamStatus::kNetworkFetchFailed,
           feedwire::DiscoverLaunchResult::NO_CARDS_RESPONSE_ERROR_NON_200};
 }
@@ -128,14 +130,6 @@ void LoadStreamTask::Run() {
   if (!CheckPreconditions())
     return;
 
-  if (options_.stream_type.IsWebFeed()) {
-    Suspend();
-    // Unretained is safe because `stream_` owns both this and
-    // `subscriptions()`.
-    stream_->subscriptions().IsWebFeedSubscriber(base::BindOnce(
-        &LoadStreamTask::CheckIfSubscriberComplete, base::Unretained(this)));
-    return;
-  }
 
   PassedPreconditions();
 }
@@ -172,33 +166,15 @@ bool LoadStreamTask::CheckPreconditions() {
   return true;
 }
 
-void LoadStreamTask::CheckIfSubscriberComplete(bool is_web_feed_subscriber) {
-  is_web_feed_subscriber_ = is_web_feed_subscriber;
-  if (!is_web_feed_subscriber &&
-      !base::FeatureList::IsEnabled(kWebFeedOnboarding)) {
-    Done({LoadStreamStatus::kNotAWebFeedSubscriber,
-          feedwire::DiscoverLaunchResult::NOT_A_WEB_FEED_SUBSCRIBER});
-    return;
-  }
-
-  Resume(
-      base::BindOnce(&LoadStreamTask::ResumeAtStart, base::Unretained(this)));
-}
-
-void LoadStreamTask::ResumeAtStart() {
-  // When the task is resumed, we need to ensure the preconditions are still
-  // met.
-  if (CheckPreconditions())
-    PassedPreconditions();
-}
 
 void LoadStreamTask::PassedPreconditions() {
   if (options_.load_type != LoadType::kBackgroundRefresh)
     GetLaunchReliabilityLogger().LogCacheReadStart();
 
   if (options_.load_type == LoadType::kManualRefresh) {
-    // Pass empty pending actions to force reading from the store.
-    UploadActions(std::vector<feedstore::StoredAction>());
+    std::vector<feedstore::StoredAction> empty_pending_actions;
+    LoadFromNetwork1(std::move(empty_pending_actions),
+                     /*need_to_read_pending_actions=*/true);
     return;
   }
 
@@ -211,7 +187,6 @@ void LoadStreamTask::PassedPreconditions() {
   load_from_store_task_ = std::make_unique<LoadStreamFromStoreTask>(
       load_from_store_type, &*stream_, options_.stream_type,
       &stream_->GetStore(), stream_->MissedLastRefresh(options_.stream_type),
-      is_web_feed_subscriber_,
       base::BindOnce(&LoadStreamTask::LoadFromStoreComplete, GetWeakPtr()));
   load_from_store_task_->Execute(base::DoNothing());
 }
@@ -246,19 +221,39 @@ void LoadStreamTask::LoadFromStoreComplete(
     stale_store_state_ = std::move(result.update_request);
   }
 
+  LoadFromNetwork1(std::move(result.pending_actions),
+                   /*need_to_read_pending_actions=*/false);
+}
+
+void LoadStreamTask::LoadFromNetwork1(
+    std::vector<feedstore::StoredAction> pending_actions_from_store,
+    bool need_to_read_pending_actions) {
   // Don't consume quota if refreshed by user.
   LaunchResult should_make_request = stream_->ShouldMakeFeedQueryRequest(
-      options_.stream_type, options_.load_type,
-      /*consume_quota=*/options_.load_type != LoadType::kManualRefresh);
-  if (should_make_request.load_stream_status != LoadStreamStatus::kNoStatus)
+      options_.stream_type, options_.load_type);
+  if (should_make_request.load_stream_status != LoadStreamStatus::kNoStatus) {
     return Done(should_make_request);
+  }
+
+  ReadDocViewDigestIfEnabled(
+      *stream_, base::BindOnce(&LoadStreamTask::LoadFromNetwork2, GetWeakPtr(),
+                               std::move(pending_actions_from_store),
+                               need_to_read_pending_actions));
+}
+
+void LoadStreamTask::LoadFromNetwork2(
+    std::vector<feedstore::StoredAction> pending_actions_from_store,
+    bool need_to_read_pending_actions,
+    DocViewDigest doc_view_digest) {
+  stream_->GetStore().RemoveDocViews(doc_view_digest.old_doc_views);
+  doc_view_counts_ = std::move(doc_view_digest.doc_view_counts);
 
   // If no pending action exists in the store, go directly to send query
   // request.
-  if (result.pending_actions.empty()) {
+  if (!need_to_read_pending_actions && pending_actions_from_store.empty()) {
     SendFeedQueryRequest();
   } else {
-    UploadActions(std::move(result.pending_actions));
+    UploadActions(std::move(pending_actions_from_store));
   }
 }
 
@@ -284,12 +279,6 @@ void LoadStreamTask::SendFeedQueryRequest() {
   if (options_.load_type != LoadType::kBackgroundRefresh) {
     if (options_.stream_type.IsForYou())
       network_request_id_ = GetLaunchReliabilityLogger().LogFeedRequestStart();
-    else if (options_.stream_type.IsWebFeed())
-      network_request_id_ =
-          GetLaunchReliabilityLogger().LogWebFeedRequestStart();
-    else if (options_.stream_type.IsSingleWebFeed())
-      network_request_id_ =
-          GetLaunchReliabilityLogger().LogSingleWebFeedRequestStart();
   }
   RequestMetadata request_metadata =
       stream_->GetRequestMetadata(options_.stream_type,
@@ -299,29 +288,14 @@ void LoadStreamTask::SendFeedQueryRequest() {
       options_.stream_type,
       GetRequestReason(options_.stream_type, options_.load_type),
       request_metadata, stream_->GetMetadata().consistency_token(),
-      options_.single_feed_entry_point);
+      doc_view_counts_);
 
   const AccountInfo account_info = stream_->GetAccountInfo();
-  stream_->GetMetricsReporter().NetworkRefreshRequestStarted(
-      options_.stream_type, request_metadata.content_order);
 
   FeedNetwork& network = stream_->GetNetwork();
   const bool force_feed_query = GetFeedConfig().use_feed_query_requests;
-  if (!force_feed_query && options_.stream_type.IsWebFeed()) {
-    // Special case: web feed that is not using Feed Query requests go to
-    // WebFeedListContentsDiscoverApi.
-    network.SendApiRequest<WebFeedListContentsDiscoverApi>(
-        std::move(request), account_info, std::move(request_metadata),
-        base::BindOnce(&LoadStreamTask::QueryApiRequestComplete, GetWeakPtr()));
-  } else if (!force_feed_query && options_.stream_type.IsSingleWebFeed()) {
-    // Special case: web feed that is not using Feed Query requests go to
-    // WebFeedListContentsDiscoverApi.
-    network.SendApiRequest<SingleWebFeedListContentsDiscoverApi>(
-        std::move(request), account_info, std::move(request_metadata),
-        base::BindOnce(&LoadStreamTask::QueryApiRequestComplete, GetWeakPtr()));
-  } else if (options_.stream_type.IsForYou() &&
-             base::FeatureList::IsEnabled(kDiscoFeedEndpoint) &&
-             !force_feed_query) {
+  if (options_.stream_type.IsForYou() &&
+      base::FeatureList::IsEnabled(kDiscoFeedEndpoint) && !force_feed_query) {
     // Special case: For You feed using the DiscoFeedEndpoint call
     // Query*FeedDiscoverApi.
     switch (options_.load_type) {
@@ -341,7 +315,6 @@ void LoadStreamTask::SendFeedQueryRequest() {
         break;
       case LoadType::kLoadMore:
         NOTREACHED();
-        break;
     }
   } else {
     // Other requests use GWS.
@@ -353,18 +326,19 @@ void LoadStreamTask::SendFeedQueryRequest() {
 
 void LoadStreamTask::QueryRequestComplete(
     FeedNetwork::QueryRequestResult result) {
-  ProcessNetworkResponse(std::move(result.response_body),
-                         std::move(result.response_info));
+  ProcessNetworkResponse<feedwire::Response>(std::move(result.response_body),
+                                             std::move(result.response_info));
 }
 
 void LoadStreamTask::QueryApiRequestComplete(
     FeedNetwork::ApiResult<feedwire::Response> result) {
-  ProcessNetworkResponse(std::move(result.response_body),
-                         std::move(result.response_info));
+  ProcessNetworkResponse<feedwire::Response>(std::move(result.response_body),
+                                             std::move(result.response_info));
 }
 
+template <typename Response>
 void LoadStreamTask::ProcessNetworkResponse(
-    std::unique_ptr<feedwire::Response> response_body,
+    std::unique_ptr<Response> response_body,
     NetworkResponseInfo response_info) {
   latencies_->StepComplete(LoadLatencyTimes::kQueryRequest);
 
@@ -395,9 +369,17 @@ void LoadStreamTask::ProcessNetworkResponse(
          feedwire::DiscoverLaunchResult::NO_CARDS_REQUEST_ERROR_OTHER});
   }
 
-  loaded_new_content_from_network_ = true;
   content_ids_ =
       feedstore::GetContentIds(response_data.model_update_request->stream_data);
+
+  // Bail out if no card is received.
+  if (content_ids_.IsEmpty()) {
+    return RequestFinished(
+        {LoadStreamStatus::kNoCardReceived,
+         feedwire::DiscoverLaunchResult::NO_CARDS_RESPONSE_ERROR_ZERO_CARDS});
+  }
+
+  loaded_new_content_from_network_ = true;
 
   stream_->GetStore().OverwriteStream(
       options_.stream_type,
@@ -425,6 +407,10 @@ void LoadStreamTask::ProcessNetworkResponse(
   if (response_data.content_lifetime) {
     feedstore::SetContentLifetime(updated_metadata, options_.stream_type,
                                   *response_data.content_lifetime);
+  }
+  if (response_data.feed_launch_cui_metadata) {
+    updated_metadata.set_feed_launch_cui_metadata(
+        *response_data.feed_launch_cui_metadata);
   }
   stream_->SetMetadata(std::move(updated_metadata));
   if (response_data.experiments)
@@ -477,7 +463,6 @@ void LoadStreamTask::Done(LaunchResult launch_result) {
   result.upload_actions_result = std::move(upload_actions_result_);
   result.experiments = experiments_;
   result.launch_result = launch_result.launch_result;
-  result.single_feed_entry_point = options_.single_feed_entry_point;
   std::move(done_callback_).Run(std::move(result));
   TaskComplete();
 }
@@ -497,9 +482,7 @@ std::ostream& operator<<(std::ostream& os,
   if (result.network_response_info)
     os << " network_response_info=" << *result.network_response_info;
   return os << " loaded_new_content_from_network="
-            << result.loaded_new_content_from_network
-            << " single_feed_entry_point=" << result.single_feed_entry_point
-            << "}";
+            << result.loaded_new_content_from_network << "}";
 }
 
 }  // namespace feed

@@ -5,13 +5,14 @@
 #ifndef IOS_WEB_PUBLIC_WEB_STATE_DELEGATE_H_
 #define IOS_WEB_PUBLIC_WEB_STATE_DELEGATE_H_
 
-#include <set>
-
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 
+#include <set>
+
 #include "base/functional/callback.h"
 #include "build/blink_buildflags.h"
+#import "ios/web/public/navigation/form_warning_type.h"
 #import "ios/web/public/permissions/permissions.h"
 #import "ios/web/public/web_state.h"
 
@@ -53,11 +54,33 @@ class WebStateDelegate {
   // method is not implemented then WebState will repost the form.
   virtual void ShowRepostFormWarningDialog(
       WebState* source,
+      FormWarningType warning_type,
       base::OnceCallback<void(bool)> callback);
+
+  // Called when a copy operation is initiated. The delegate must call
+  // `callback` with `true` to allow the copy or `false` to prevent it.
+  // By default, copy is allowed.
+  virtual void ShouldAllowCopy(WebState* source,
+                               base::OnceCallback<void(bool)> callback);
+
+  // Called when a paste operation is initiated. The delegate must call
+  // `callback` with `true` to allow the paste or `false` to prevent it.
+  // By default, paste is allowed.
+  virtual void ShouldAllowPaste(WebState* source,
+                                base::OnceCallback<void(bool)> callback);
+
+  // Called when a cut operation is initiated. The delegate must call
+  // `callback` with `true` to allow the cut or `false` to prevent it.
+  // By default, cut is allowed.
+  virtual void ShouldAllowCut(WebState* source,
+                              base::OnceCallback<void(bool)> callback);
+
+  // Called after the user or a script pasted content into the page.
+  virtual void DidFinishClipboardRead(WebState* source);
 
   // Returns a pointer to a service to manage dialogs. May return nullptr in
   // which case dialogs aren't shown.
-  // TODO(crbug.com/622084): Find better place for this method.
+  // TODO(crbug.com/40473860): Find better place for this method.
   virtual JavaScriptDialogPresenter* GetJavaScriptDialogPresenter(
       WebState* source);
 
@@ -70,18 +93,28 @@ class WebStateDelegate {
   virtual void HandlePermissionsDecisionRequest(
       WebState* source,
       NSArray<NSNumber*>* permissions,
-      WebStatePermissionDecisionHandler handler) API_AVAILABLE(ios(15.0));
+      WebStatePermissionDecisionHandler handler);
 
   // Called when a request receives an authentication challenge specified by
   // `protection_space`, and is unable to respond using cached credentials.
   // Clients must call `callback` even if they want to cancel authentication
   // (in which case `username` or `password` should be nil).
-  typedef base::OnceCallback<void(NSString* username, NSString* password)>
-      AuthCallback;
+  using HTTPAuthCallback =
+      base::OnceCallback<void(NSString* username, NSString* password)>;
   virtual void OnAuthRequired(WebState* source,
                               NSURLProtectionSpace* protection_space,
                               NSURLCredential* proposed_credential,
-                              AuthCallback callback) = 0;
+                              HTTPAuthCallback callback);
+
+  // Called when a request receives an authentication challenge specified by
+  // `protection_space`, and is unable to respond using cached credentials.
+  // Clients must call `callback` even if they want to cancel authentication
+  // (in which case `identity` should be nil).
+  using ClientCertAuthCallback =
+      base::OnceCallback<void(SecIdentityRef identity)>;
+  virtual void OnAuthRequired(WebState* source,
+                              NSURLProtectionSpace* protection_space,
+                              ClientCertAuthCallback callback);
 
   // Returns the UIView used to contain the WebView for sizing purposes. Can be
   // nil.
@@ -94,6 +127,15 @@ class WebStateDelegate {
       WebState* source,
       const ContextMenuParams& params,
       void (^completion_handler)(UIContextMenuConfiguration*));
+
+  // Returns a custom context menu configuration.
+  virtual UIContextMenuConfiguration* GetCustomContextMenuConfiguration();
+
+  // Called when the context menu configuration is loaded.
+  virtual void ContextMenuConfigurationLoaded(
+      UIContextMenuConfiguration* configuration,
+      UIContextMenuConfiguration* update) {}
+
   // Called when the context menu will commit with animator.
   virtual void ContextMenuWillCommitWithAnimator(
       WebState* source,
@@ -102,6 +144,10 @@ class WebStateDelegate {
   // UIResponder Form Input APIs, consult Apple's UIResponder documentation for
   // more info.
   virtual id<CRWResponderInputView> GetResponderInputView(WebState* source);
+
+  // Provides an opportunity to the delegate to react to the creation of the web
+  // view.
+  virtual void OnNewWebViewCreated(WebState* source);
 
  protected:
   virtual ~WebStateDelegate();

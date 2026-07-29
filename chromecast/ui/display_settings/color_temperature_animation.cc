@@ -8,8 +8,9 @@
 #include <limits>
 #include <vector>
 
+#include "base/logging.h"
 #include "base/time/time.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 
 #if defined(USE_AURA)
 #include "chromecast/browser/cast_display_configurator.h"
@@ -57,8 +58,8 @@ void ColorTemperatureAnimation::AnimateToNewValue(float new_target_temperature,
   start_temperature_ = current_temperature_;
   target_temperature_ = std::clamp(new_target_temperature, 1000.0f, 20000.0f);
 
-  if (ui::ScopedAnimationDurationScaleMode::duration_multiplier() ==
-      ui::ScopedAnimationDurationScaleMode::ZERO_DURATION) {
+  if (gfx::ScopedAnimationDurationScaleMode::duration_multiplier() ==
+      gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION) {
     // Animations are disabled. Apply the target temperature directly to the
     // compositor.
     current_temperature_ = target_temperature_;
@@ -110,10 +111,11 @@ void ColorTemperatureAnimation::ApplyValuesToDisplay() {
   if (display_configurator_) {
 #if defined(USE_AURA)
     DVLOG(1) << "Color temperature set to " << kelvin << " kelvin.";
-    // 3x3 color matrix, represented as a vector of length 9.
-    std::vector<float> color_matrix = {red_scale, 0, 0, 0,         green_scale,
-                                       0,         0, 0, blue_scale};
-    display_configurator_->SetColorMatrix(color_matrix);
+    display::ColorTemperatureAdjustment cta;
+    cta.srgb_matrix.vals[0][0] = red_scale;
+    cta.srgb_matrix.vals[1][1] = green_scale;
+    cta.srgb_matrix.vals[2][2] = blue_scale;
+    display_configurator_->SetColorTemperatureAdjustment(cta);
 #endif  // defined(USE_AURA)
   }
 }

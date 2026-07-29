@@ -4,59 +4,51 @@
 
 #import "ios/chrome/browser/shared/coordinator/scene/scene_delegate.h"
 
+#import "base/apple/foundation_util.h"
+#import "base/check.h"
 #import "base/files/file_path.h"
-#import "base/mac/foundation_util.h"
 #import "base/path_service.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/breadcrumbs/core/breadcrumb_persistent_storage_util.h"
 #import "components/previous_session_info/previous_session_info.h"
-#import "ios/chrome/app/chrome_overlay_window.h"
+#import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/main_application_delegate.h"
-#import "ios/chrome/browser/crash_report/main_thread_freeze_detector.h"
-#import "ios/chrome/browser/paths/paths.h"
-#import "ios/chrome/browser/ui/appearance/appearance_customization.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+#import "ios/chrome/app/profile/profile_state.h"
+#import "ios/chrome/app/task_orchestrator.h"
+#import "ios/chrome/app/task_request.h"
+#import "ios/chrome/browser/appearance/ui_bundled/appearance_customization.h"
+#import "ios/chrome/browser/shared/model/paths/paths.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/ui/chrome_overlay_window/chrome_overlay_window.h"
 
 namespace {
+
+NSString* const kOriginDetectedKey = @"OriginDetectedKey";
 
 // Set the breadcrumbs log in PreviousSessionInfo.
 void SyncBreadcrumbsLog() {
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    base::FilePath storage_dir;
-    bool result = base::PathService::Get(ios::DIR_USER_DATA, &storage_dir);
-    DCHECK(result);
-    const base::FilePath breadcrumbs_file_path =
-        breadcrumbs::GetBreadcrumbPersistentStorageFilePath(storage_dir);
+    const base::FilePath storage_dir =
+        base::PathService::CheckedGet(ios::DIR_USER_DATA);
+    NSURL* breadcrumbs_file_url = base::apple::FilePathToNSURL(
+        breadcrumbs::GetBreadcrumbPersistentStorageFilePath(storage_dir));
     dispatch_async(
         dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-          NSString* breadcrumbs = [NSString
-              stringWithContentsOfFile:base::SysUTF8ToNSString(
-                                           breadcrumbs_file_path.value())
-                              encoding:NSUTF8StringEncoding
-                                 error:NULL];
+          NSString* breadcrumbs =
+              [NSString stringWithContentsOfURL:breadcrumbs_file_url
+                                       encoding:NSUTF8StringEncoding
+                                          error:NULL];
           [[PreviousSessionInfo sharedInstance] setBreadcrumbsLog:breadcrumbs];
         });
   });
 }
 }  // namespace
-NSString* const kOriginDetectedKey = @"OriginDetectedKey";
 
 @implementation SceneDelegate
 
-- (SceneState*)sceneState {
-  if (!_sceneState) {
-    MainApplicationDelegate* appDelegate =
-        base::mac::ObjCCastStrict<MainApplicationDelegate>(
-            UIApplication.sharedApplication.delegate);
-    _sceneState = [[SceneState alloc] initWithAppState:appDelegate.appState];
-    _sceneController = [[SceneController alloc] initWithSceneState:_sceneState];
-    _sceneState.controller = _sceneController;
-  }
-  return _sceneState;
+- (void)dealloc {
+  CHECK(!_sceneState, base::NotFatalUntil::M152);
 }
 
 #pragma mark - UIWindowSceneDelegate
@@ -67,11 +59,8 @@ NSString* const kOriginDetectedKey = @"OriginDetectedKey";
 - (UIWindow*)window {
   if (!_window) {
     // With iOS15 pre-warming, this appears to be the first callback after the
-    // app is restored.  This is a no-op in non-prewarming.
-    [[MainThreadFreezeDetector sharedInstance] start];
-
-    // Sync the breadcrumbs log as early as possible, before any MetricKit crash
-    // reports may come in.
+    // app is restored. Sync the breadcrumbs log as early as possible, before
+    // any MetricKit crash reports may come in.
     SyncBreadcrumbsLog();
 
     // Sizing of the window is handled by UIKit.
@@ -89,20 +78,70 @@ NSString* const kOriginDetectedKey = @"OriginDetectedKey";
   return _window;
 }
 
-#pragma mark Connecting and Disconnecting the Scene
+#pragma mark - UISceneDelegate
 
 - (void)scene:(UIScene*)scene
     willConnectToSession:(UISceneSession*)session
                  options:(UISceneConnectionOptions*)connectionOptions {
-  self.sceneState.scene = base::mac::ObjCCastStrict<UIWindowScene>(scene);
-  self.sceneState.currentOrigin = [self originFromSession:session
-                                                  options:connectionOptions];
-  self.sceneState.activationLevel = SceneActivationLevelBackground;
-  self.sceneState.connectionOptions = connectionOptions;
-  if (connectionOptions.URLContexts || connectionOptions.shortcutItem) {
-    self.sceneState.startupHadExternalIntent = YES;
+  CHECK(_window);
+  CHECK(!_sceneState);
+  MainApplicationDelegate* appDelegate =
+      base::apple::ObjCCastStrict<MainApplicationDelegate>(
+          UIApplication.sharedApplication.delegate);
+  _sceneState = [[SceneState alloc] init];
+  _sceneController = [[SceneController alloc] initWithSceneState:_sceneState];
+  _sceneState.controller = _sceneController;
+
+  _sceneState.window = _window;
+  _sceneState.scene = base::apple::ObjCCastStrict<UIWindowScene>(scene);
+  _sceneState.currentOrigin = [self originFromSession:session
+                                              options:connectionOptions];
+  _sceneState.activationLevel = SceneActivationLevelBackground;
+  if (IsEnableNewStartupFlowEnabled()) {
+    if (connectionOptions.shortcutItem) {
+      [self addTaskRequestForShortcutItem:connectionOptions.shortcutItem
+                              isColdStart:YES
+                                  handler:nil];
+    }
+    if (connectionOptions.URLContexts.count != 0) {
+      for (UIOpenURLContext* URLContext in connectionOptions.URLContexts) {
+        [self addTaskRequestForURLContext:URLContext isColdStart:YES];
+      }
+    }
+    if (connectionOptions.userActivities.count != 0) {
+      for (NSUserActivity* userActivity in connectionOptions.userActivities) {
+        [self addTaskRequestForUserActivity:userActivity isColdStart:YES];
+      }
+    }
+  } else {
+    _sceneState.connectionOptions = connectionOptions;
   }
+
+  if (connectionOptions.shortcutItem != nil ||
+      connectionOptions.URLContexts.count != 0 ||
+      connectionOptions.userActivities.count != 0) {
+    _sceneState.startupHadExternalIntent = YES;
+  }
+
+  [appDelegate.appState sceneStateConnected:_sceneState];
 }
+
+- (void)sceneDidDisconnect:(UIScene*)scene {
+  CHECK(_sceneState);
+  MainApplicationDelegate* appDelegate =
+      base::apple::ObjCCastStrict<MainApplicationDelegate>(
+          UIApplication.sharedApplication.delegate);
+  [appDelegate.appState sceneStateDisconnected:_sceneState];
+
+  _window.rootViewController = nil;
+  _sceneState.activationLevel = SceneActivationLevelDisconnected;
+  _sceneState = nil;
+  // Setting the level to Disconnected had the side effect of tearing down the
+  // controller’s UI.
+  _sceneController = nil;
+}
+
+#pragma mark - private
 
 - (WindowActivityOrigin)originFromSession:(UISceneSession*)session
                                   options:(UISceneConnectionOptions*)options {
@@ -133,49 +172,103 @@ NSString* const kOriginDetectedKey = @"OriginDetectedKey";
   return origin;
 }
 
-- (void)sceneDidDisconnect:(UIScene*)scene {
-  self.sceneState.activationLevel = SceneActivationLevelUnattached;
-}
-
 #pragma mark Transitioning to the Foreground
 
 - (void)sceneWillEnterForeground:(UIScene*)scene {
-  self.sceneState.currentOrigin = WindowActivityRestoredOrigin;
-  self.sceneState.activationLevel = SceneActivationLevelForegroundInactive;
+  _sceneState.currentOrigin = WindowActivityRestoredOrigin;
+  _sceneState.activationLevel = SceneActivationLevelForegroundInactive;
 }
 
 - (void)sceneDidBecomeActive:(UIScene*)scene {
-  self.sceneState.currentOrigin = WindowActivityRestoredOrigin;
-  self.sceneState.activationLevel = SceneActivationLevelForegroundActive;
+  _sceneState.currentOrigin = WindowActivityRestoredOrigin;
+  _sceneState.activationLevel = SceneActivationLevelForegroundActive;
 }
 
 #pragma mark Transitioning to the Background
 
 - (void)sceneWillResignActive:(UIScene*)scene {
-  self.sceneState.activationLevel = SceneActivationLevelForegroundInactive;
+  _sceneState.activationLevel = SceneActivationLevelForegroundInactive;
 }
 
 - (void)sceneDidEnterBackground:(UIScene*)scene {
-  self.sceneState.activationLevel = SceneActivationLevelBackground;
+  _sceneState.activationLevel = SceneActivationLevelBackground;
 }
 
 - (void)scene:(UIScene*)scene
     openURLContexts:(NSSet<UIOpenURLContext*>*)URLContexts {
-  DCHECK(!self.sceneState.URLContextsToOpen);
-  self.sceneState.startupHadExternalIntent = YES;
-  self.sceneState.URLContextsToOpen = URLContexts;
+  DCHECK(!_sceneState.URLContextsToOpen);
+  _sceneState.startupHadExternalIntent = YES;
+  if (IsEnableNewStartupFlowEnabled()) {
+    for (UIOpenURLContext* URLContext in URLContexts) {
+      [self addTaskRequestForURLContext:URLContext isColdStart:NO];
+    }
+  } else {
+    _sceneState.URLContextsToOpen = URLContexts;
+  }
 }
 
 - (void)windowScene:(UIWindowScene*)windowScene
     performActionForShortcutItem:(UIApplicationShortcutItem*)shortcutItem
                completionHandler:(void (^)(BOOL succeeded))completionHandler {
-  [_sceneController performActionForShortcutItem:shortcutItem
-                               completionHandler:completionHandler];
+  _sceneState.startupHadExternalIntent = YES;
+  if (IsEnableNewStartupFlowEnabled()) {
+    [self addTaskRequestForShortcutItem:shortcutItem
+                            isColdStart:NO
+                                handler:completionHandler];
+  } else {
+    [_sceneController performActionForShortcutItem:shortcutItem
+                                 completionHandler:completionHandler];
+  }
 }
 
 - (void)scene:(UIScene*)scene
     continueUserActivity:(NSUserActivity*)userActivity {
-  self.sceneState.pendingUserActivity = userActivity;
+  _sceneState.startupHadExternalIntent = YES;
+  if (IsEnableNewStartupFlowEnabled()) {
+    [self addTaskRequestForUserActivity:userActivity isColdStart:NO];
+  } else {
+    _sceneState.pendingUserActivity = userActivity;
+  }
+}
+
+#pragma mark - Task Helpers
+
+- (void)addTaskRequestForShortcutItem:(UIApplicationShortcutItem*)shortcutItem
+                          isColdStart:(BOOL)isColdStart
+                              handler:(void (^)(BOOL))completionHandler {
+  TaskRequest* request = [TaskRequest taskForShortcutItem:shortcutItem
+                                               sceneState:_sceneState
+                                                  handler:completionHandler
+                                              isColdStart:isColdStart];
+  MainApplicationDelegate* appDelegate =
+      base::apple::ObjCCastStrict<MainApplicationDelegate>(
+          UIApplication.sharedApplication.delegate);
+
+  [appDelegate.appState.taskOrchestrator addTaskRequest:request];
+}
+
+- (void)addTaskRequestForURLContext:(UIOpenURLContext*)URLContext
+                        isColdStart:(BOOL)isColdStart {
+  TaskRequest* request = [TaskRequest taskForURLContext:URLContext
+                                             sceneState:_sceneState
+                                            isColdStart:isColdStart];
+  MainApplicationDelegate* appDelegate =
+      base::apple::ObjCCastStrict<MainApplicationDelegate>(
+          UIApplication.sharedApplication.delegate);
+
+  [appDelegate.appState.taskOrchestrator addTaskRequest:request];
+}
+
+- (void)addTaskRequestForUserActivity:(NSUserActivity*)userActivity
+                          isColdStart:(BOOL)isColdStart {
+  TaskRequest* request = [TaskRequest taskForUserActivity:userActivity
+                                               sceneState:_sceneState
+                                              isColdStart:isColdStart];
+  MainApplicationDelegate* appDelegate =
+      base::apple::ObjCCastStrict<MainApplicationDelegate>(
+          UIApplication.sharedApplication.delegate);
+
+  [appDelegate.appState.taskOrchestrator addTaskRequest:request];
 }
 
 @end

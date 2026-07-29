@@ -5,7 +5,6 @@
 #include "chrome/browser/browsing_data/browsing_data_lifetime_policy_handler.h"
 
 #include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
 #include "components/browsing_data/core/browsing_data_policies_utils.h"
 #include "components/policy/core/browser/policy_error_map.h"
 #include "components/policy/core/common/policy_logger.h"
@@ -24,7 +23,8 @@ BrowsingDataLifetimePolicyHandler::BrowsingDataLifetimePolicyHandler(
           schema,
           policy::SchemaOnErrorStrategy::SCHEMA_ALLOW_UNKNOWN,
           SimpleSchemaValidatingPolicyHandler::RECOMMENDED_PROHIBITED,
-          SimpleSchemaValidatingPolicyHandler::MANDATORY_ALLOWED) {}
+          SimpleSchemaValidatingPolicyHandler::MANDATORY_ALLOWED),
+      pref_path_(pref_path) {}
 
 BrowsingDataLifetimePolicyHandler::~BrowsingDataLifetimePolicyHandler() =
     default;
@@ -34,11 +34,18 @@ bool BrowsingDataLifetimePolicyHandler::CheckPolicySettings(
     policy::PolicyErrorMap* errors) {
   if (!policy::SimpleSchemaValidatingPolicyHandler::CheckPolicySettings(
           policies, errors)) {
+    // Reset the sync types set in case the policy fails to be set after being
+    // previously set.
+    forced_disabled_sync_types_.Clear();
     return false;
   }
 
-  if (!policies.Get(policy_name()))
+  if (!policies.Get(policy_name())) {
+    // Reset the sync types set in case the policy has been unset after being
+    // previously set.
+    forced_disabled_sync_types_.Clear();
     return true;
+  }
 
   // If sync is already disabled or sign in is disabled altogether, the policy
   // requirements are automatically met.
@@ -46,12 +53,6 @@ bool BrowsingDataLifetimePolicyHandler::CheckPolicySettings(
       policies.GetValue(policy::key::kSyncDisabled, base::Value::Type::BOOLEAN);
   if ((sync_disabled && sync_disabled->GetBool())) {
     return true;
-  }
-
-  if (!browsing_data::IsPolicyDependencyEnabled()) {
-    errors->AddError(policy_name(), IDS_POLICY_DEPENDENCY_ERROR,
-                     policy::key::kSyncDisabled, "true");
-    return false;
   }
 
 // BrowserSignin policy is not available on ChromeOS.
@@ -69,9 +70,25 @@ bool BrowsingDataLifetimePolicyHandler::CheckPolicySettings(
       (policy_name() == policy::key::kBrowsingDataLifetime)
           ? browsing_data::GetSyncTypesForBrowsingDataLifetime(
                 *browsing_data_policy)
-          : forced_disabled_sync_types_ =
-                browsing_data::GetSyncTypesForClearBrowsingData(
-                    *browsing_data_policy);
+          : browsing_data::GetSyncTypesForClearBrowsingData(
+                *browsing_data_policy);
+
+  if (!forced_disabled_sync_types_.empty()) {
+    errors->AddError(this->policy_name(),
+                     IDS_POLICY_BROWSING_DATA_DEPENDENCY_APPLIED_INFO,
+                     UserSelectableTypeSetToString(forced_disabled_sync_types_),
+                     {}, policy::PolicyMap::MessageType::kInfo);
+  }
+
+  unsupported_types_ =
+      browsing_data::GetBrowsingDataLifetimePlatformUnsupportedTypes(
+          *browsing_data_policy);
+  if (!unsupported_types_.empty()) {
+    errors->AddError(this->policy_name(),
+                     IDS_POLICY_BROWSING_DATA_PLATFORM_UNSUPPORTED,
+                     base::JoinString(unsupported_types_, ", "), {},
+                     policy::PolicyMap::MessageType::kWarning);
+  }
 
   return true;
 }
@@ -79,27 +96,32 @@ bool BrowsingDataLifetimePolicyHandler::CheckPolicySettings(
 void BrowsingDataLifetimePolicyHandler::ApplyPolicySettings(
     const policy::PolicyMap& policies,
     PrefValueMap* prefs) {
-  SimpleSchemaValidatingPolicyHandler::ApplyPolicySettings(policies, prefs);
-
-  if (browsing_data::IsPolicyDependencyEnabled()) {
-    std::string log_message;
-    browsing_data::DisableSyncTypes(forced_disabled_sync_types_, prefs,
-                                    policy_name(), log_message);
-    if (log_message != std::string()) {
-      LOG_POLICY(INFO, POLICY_PROCESSING) << log_message;
+  if (unsupported_types_.empty()) {
+    SimpleSchemaValidatingPolicyHandler::ApplyPolicySettings(policies, prefs);
+  } else {
+    // Make a copy of the policy value so as to remove unsupported types before
+    // adding into prefs. Using GetValueUnsafe, GetList, GetDict is ok here
+    // because this function is only called if the policy schema is valid.
+    base::Value filtered_policy_value =
+        policies.GetValueUnsafe(policy_name())->Clone();
+    for (auto& item : filtered_policy_value.GetList()) {
+      base::ListValue& data_types =
+          item.GetDict().Find("data_types")->GetList();
+      data_types.erase(
+          std::remove_if(data_types.begin(), data_types.end(),
+                         [this](const base::Value& type) {
+                           return unsupported_types_.contains(type.GetString());
+                         }),
+          data_types.end());
     }
-  }
-}
-
-void BrowsingDataLifetimePolicyHandler::PrepareForDisplaying(
-    policy::PolicyMap* policies) const {
-  policy::PolicyMap::Entry* entry = policies->GetMutable(policy_name());
-  if (!entry || forced_disabled_sync_types_.Size() == 0) {
-    return;
+    prefs->SetValue(pref_path_, std::move(filtered_policy_value));
   }
 
-  entry->AddMessage(policy::PolicyMap::MessageType::kInfo,
-                    IDS_POLICY_BROWSING_DATA_DEPENDENCY_APPLIED_INFO,
-                    {base::UTF8ToUTF16(UserSelectableTypeSetToString(
-                        forced_disabled_sync_types_))});
+  // `forced_disabled_sync_types_` will be empty if either SyncDisabled or
+  // BrowserSignin policy was set.
+  std::string log_message = browsing_data::DisableSyncTypes(
+      forced_disabled_sync_types_, prefs, policy_name());
+  if (!log_message.empty()) {
+    LOG_POLICY(INFO, POLICY_PROCESSING) << log_message;
+  }
 }

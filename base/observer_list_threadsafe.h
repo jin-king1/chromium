@@ -12,18 +12,17 @@
 #include "base/base_export.h"
 #include "base/check.h"
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/dcheck_is_on.h"
+#include "base/debug/stack_trace.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
+#include "base/strings/strcat.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
-#include "third_party/abseil-cpp/absl/base/attributes.h"
 
 ///////////////////////////////////////////////////////////////////////////////
 //
@@ -41,7 +40,16 @@
 //      callback.
 //    * If one sequence is notifying observers concurrently with an observer
 //      removing itself from the observer list, the notifications will be
-//      silently dropped.
+//      silently dropped. However if the observer is currently inside a
+//      notification callback, the callback will finish running.
+//
+//   By default, observers can be removed from any sequence. However this can be
+//   error-prone since an observer may be running a callback when it's removed,
+//   in which case it isn't safe to delete until the callback is finished.
+//   Consider using the RemoveObserverPolicy::kAddingSequenceOnly template
+//   parameter, which will CHECK that observers are only removed from the
+//   sequence where they were added (which is also the sequence that runs
+//   callbacks).
 //
 //   The drawback of the threadsafe observer list is that notifications are not
 //   as real-time as the non-threadsafe version of this class. Notifications
@@ -96,8 +104,19 @@ class BASE_EXPORT ObserverListThreadSafeBase
 
 }  // namespace internal
 
-template <class ObserverType>
+enum class RemoveObserverPolicy {
+  // Observers can be removed from any sequence.
+  kAnySequence,
+  // Observers can only be removed from the sequence that added them.
+  kAddingSequenceOnly,
+};
+
+template <class ObserverType,
+          RemoveObserverPolicy RemovePolicy =
+              RemoveObserverPolicy::kAnySequence>
 class ObserverListThreadSafe : public internal::ObserverListThreadSafeBase {
+  using Self = ObserverListThreadSafe<ObserverType, RemovePolicy>;
+
  public:
   enum class AddObserverResult {
     kBecameNonEmpty,
@@ -130,14 +149,19 @@ class ObserverListThreadSafe : public internal::ObserverListThreadSafeBase {
     bool was_empty = observers_.empty();
 
     // Add |observer| to the list of observers.
-    DCHECK(!Contains(observers_, observer));
+    DCHECK(!observers_.contains(observer));
     const scoped_refptr<SequencedTaskRunner> task_runner =
         SequencedTaskRunner::GetCurrentDefault();
     // Each observer gets a unique identifier. These unique identifiers are used
     // to avoid execution of pending posted-tasks over removed or released
     // observers.
     const size_t observer_id = ++observer_id_counter_;
+#if DCHECK_IS_ON()
+    ObserverTaskRunnerInfo task_info = {task_runner, base::debug::StackTrace(),
+                                        observer_id};
+#else
     ObserverTaskRunnerInfo task_info = {task_runner, observer_id};
+#endif
     observers_[observer] = std::move(task_info);
 
     // If this is called while a notification is being dispatched on this thread
@@ -153,16 +177,16 @@ class ObserverListThreadSafe : public internal::ObserverListThreadSafeBase {
             static_cast<const NotificationData*>(current_notification);
         task_runner->PostTask(
             current_notification->from_here,
-            BindOnce(&ObserverListThreadSafe<ObserverType>::NotifyWrapper, this,
-                     // While `observer` may be dangling, we pass it and
-                     // check it wasn't deallocated in NotifyWrapper() which can
-                     // check `observers_` to verify presence (the owner of the
-                     // observer is responsible for removing it from that list
-                     // before deallocation).
-                     UnsafeDangling(observer),
-                     NotificationData(this, observer_id,
-                                      current_notification->from_here,
-                                      notification_data->method)));
+            base::BindOnce(&Self::NotifyWrapper, this,
+                           // While `observer` may be dangling, we pass it and
+                           // check it wasn't deallocated in NotifyWrapper()
+                           // which can check `observers_` to verify presence
+                           // (the owner of the observer is responsible for
+                           // removing it from that list before deallocation).
+                           UnsafeDangling(observer),
+                           NotificationData(this, observer_id,
+                                            current_notification->from_here,
+                                            notification_data->method)));
       }
     }
 
@@ -177,6 +201,11 @@ class ObserverListThreadSafe : public internal::ObserverListThreadSafeBase {
   // observer won't stop it.
   RemoveObserverResult RemoveObserver(ObserverType* observer) {
     AutoLock auto_lock(lock_);
+    if constexpr (RemovePolicy == RemoveObserverPolicy::kAddingSequenceOnly) {
+      const auto it = observers_.find(observer);
+      CHECK(it == observers_.end() ||
+            it->second.task_runner->RunsTasksInCurrentSequence());
+    }
     observers_.erase(observer);
     return observers_.empty() ? RemoveObserverResult::kWasOrBecameEmpty
                               : RemoveObserverResult::kRemainsNonEmpty;
@@ -186,7 +215,10 @@ class ObserverListThreadSafe : public internal::ObserverListThreadSafeBase {
   void AssertEmpty() const {
 #if DCHECK_IS_ON()
     AutoLock auto_lock(lock_);
-    DCHECK(observers_.empty());
+    bool observers_is_empty = observers_.empty();
+    DUMP_WILL_BE_CHECK(observers_is_empty)
+        << "\n"
+        << GetObserversCreationStackStringLocked();
 #endif
   }
 
@@ -197,22 +229,22 @@ class ObserverListThreadSafe : public internal::ObserverListThreadSafeBase {
   template <typename Method, typename... Params>
   void Notify(const Location& from_here, Method m, Params&&... params) {
     RepeatingCallback<void(ObserverType*)> method =
-        BindRepeating(&Dispatcher<ObserverType, Method>::Run, m,
-                      std::forward<Params>(params)...);
+        base::BindRepeating(&Dispatcher<ObserverType, Method>::Run, m,
+                            std::forward<Params>(params)...);
 
     AutoLock lock(lock_);
     for (const auto& observer : observers_) {
       observer.second.task_runner->PostTask(
           from_here,
-          BindOnce(&ObserverListThreadSafe<ObserverType>::NotifyWrapper, this,
-                   // While `observer.first` may be dangling, we pass it and
-                   // check it wasn't deallocated in NotifyWrapper() which can
-                   // check `observers_` to verify presence (the owner of the
-                   // observer is responsible for removing it from that list
-                   // before deallocation).
-                   UnsafeDangling(observer.first),
-                   NotificationData(this, observer.second.observer_id,
-                                    from_here, method)));
+          base::BindOnce(&Self::NotifyWrapper, this,
+                         // While `observer.first` may be dangling, we pass it
+                         // and check it wasn't deallocated in NotifyWrapper()
+                         // which can check `observers_` to verify presence (the
+                         // owner of the observer is responsible for removing it
+                         // from that list before deallocation).
+                         UnsafeDangling(observer.first),
+                         NotificationData(this, observer.second.observer_id,
+                                          from_here, method)));
     }
   }
 
@@ -262,6 +294,18 @@ class ObserverListThreadSafe : public internal::ObserverListThreadSafeBase {
     notification.method.Run(observer);
   }
 
+  std::string GetObserversCreationStackStringLocked() const
+      EXCLUSIVE_LOCKS_REQUIRED(lock_) {
+    std::string result;
+#if DCHECK_IS_ON()
+    for (const auto& observer : observers_) {
+      StrAppend(&result,
+                {observer.second.add_observer_stack_.ToString(), "\n"});
+    }
+#endif
+    return result;
+  }
+
   const ObserverListPolicy policy_ = ObserverListPolicy::ALL;
 
   mutable Lock lock_;
@@ -270,6 +314,9 @@ class ObserverListThreadSafe : public internal::ObserverListThreadSafeBase {
 
   struct ObserverTaskRunnerInfo {
     scoped_refptr<SequencedTaskRunner> task_runner;
+#if DCHECK_IS_ON()
+    base::debug::StackTrace add_observer_stack_;
+#endif
     size_t observer_id = 0;
   };
 

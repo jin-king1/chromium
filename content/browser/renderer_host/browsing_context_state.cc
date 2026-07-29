@@ -10,12 +10,12 @@
 #include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/site_instance_impl.h"
 #include "content/common/content_navigation_policy.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
 #include "services/network/public/cpp/web_sandbox_flags.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom.h"
 
 namespace features {
 BASE_FEATURE(kNewBrowsingContextStateOnBrowsingContextGroupSwap,
-             "NewBrowsingContextStateOnBrowsingContextGroupSwap",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BrowsingContextStateImplementationType GetBrowsingContextMode() {
@@ -37,19 +37,18 @@ using perfetto::protos::pbzero::ChromeTrackEvent;
 BrowsingContextState::BrowsingContextState(
     blink::mojom::FrameReplicationStatePtr replication_state,
     RenderFrameHostImpl* parent,
-    absl::optional<BrowsingInstanceId> browsing_instance_id,
-    absl::optional<CoopRelatedGroupId> coop_related_group_id)
+    std::optional<BrowsingInstanceId> browsing_instance_id)
     : replication_state_(std::move(replication_state)),
       parent_(parent),
-      browsing_instance_id_(browsing_instance_id),
-      coop_related_group_id_(coop_related_group_id) {
-  TRACE_EVENT_BEGIN("navigation", "BrowsingContextState",
+      browsing_instance_id_(browsing_instance_id) {
+  TRACE_EVENT_BEGIN("navigation.debug", "BrowsingContextState",
                     perfetto::Track::FromPointer(this),
                     "browsing_context_state_when_created", this);
 }
 
 BrowsingContextState::~BrowsingContextState() {
-  TRACE_EVENT_END("navigation", perfetto::Track::FromPointer(this));
+  TRACE_EVENT_END("navigation.debug", perfetto::Track::FromPointer(this));
+  CHECK(proxy_hosts_.empty());
 }
 
 RenderFrameProxyHost* BrowsingContextState::GetRenderFrameProxyHost(
@@ -76,7 +75,7 @@ RenderFrameProxyHost* BrowsingContextState::GetRenderFrameProxyHostImpl(
     // CHECK to verify that the proxy is being accessed from the correct
     // BrowsingContextState. As both BrowsingContextState (in non-legacy mode)
     // and RenderFrameProxyHost (via SiteInstance) are tied to a given
-    // CoopRelatedGroup, the CoopRelatedGroupId of the BrowsingContextState
+    // BrowsingInstance, the browsing_instance_id of the BrowsingContextState
     // (in the non-legacy mode) and of the SiteInstanceGroup should match. If
     // they do not, the code calling this method has likely chosen the wrong
     // BrowsingContextState (e.g. one from the current RenderFrameHost rather
@@ -87,8 +86,8 @@ RenderFrameProxyHost* BrowsingContextState::GetRenderFrameProxyHostImpl(
     // Note: Outer delegates are an exception, and when we're expecting to
     // interact with one, we should pass in the proper `proxy_access_mode` to
     // not end up in this condition.
-    CHECK_EQ(coop_related_group_id_.value(),
-             site_instance_group->GetCoopRelatedGroupId());
+    CHECK_EQ(browsing_instance_id_.value(),
+             site_instance_group->browsing_instance_id());
   }
   auto it = proxy_hosts_.find(site_instance_group->GetId());
   if (it != proxy_hosts_.end()) {
@@ -105,8 +104,8 @@ void BrowsingContextState::DeleteRenderFrameProxyHost(
               kSwapForCrossBrowsingInstanceNavigations &&
       proxy_access_mode == ProxyAccessMode::kRegular) {
     // See comments in GetRenderFrameProxyHost for why this check is needed.
-    CHECK_EQ(coop_related_group_id_.value(),
-             site_instance_group->GetCoopRelatedGroupId());
+    CHECK_EQ(browsing_instance_id_.value(),
+             site_instance_group->browsing_instance_id());
   }
   TRACE_EVENT("navigation", "BrowsingContextState::DeleteRenderFrameProxyHost",
               ChromeTrackEvent::kBrowsingContextState, this,
@@ -116,7 +115,7 @@ void BrowsingContextState::DeleteRenderFrameProxyHost(
 }
 
 RenderFrameProxyHost* BrowsingContextState::CreateRenderFrameProxyHost(
-    SiteInstanceImpl* site_instance,
+    SiteInstanceGroup* site_instance_group,
     const scoped_refptr<RenderViewHostImpl>& rvh,
     FrameTreeNode* frame_tree_node,
     ProxyAccessMode proxy_access_mode,
@@ -124,15 +123,16 @@ RenderFrameProxyHost* BrowsingContextState::CreateRenderFrameProxyHost(
   TRACE_EVENT_BEGIN(
       "navigation", "BrowsingContextState::CreateRenderFrameProxyHost",
       ChromeTrackEvent::kBrowsingContextState, this,
-      ChromeTrackEvent::kSiteInstanceGroup, site_instance->group(),
+      ChromeTrackEvent::kSiteInstanceGroup, site_instance_group,
       ChromeTrackEvent::kRenderViewHost, rvh ? rvh.get() : nullptr,
       ChromeTrackEvent::kFrameTreeNodeInfo, frame_tree_node);
 
   if (features::GetBrowsingContextMode() ==
       features::BrowsingContextStateImplementationType::
           kLegacyOneToOneWithFrameTreeNode) {
-    DCHECK_EQ(this,
-              frame_tree_node->current_frame_host()->browsing_context_state());
+    CHECK_EQ(this,
+             frame_tree_node->current_frame_host()->browsing_context_state(),
+             base::NotFatalUntil::M152);
   }
 
   if (features::GetBrowsingContextMode() ==
@@ -140,17 +140,17 @@ RenderFrameProxyHost* BrowsingContextState::CreateRenderFrameProxyHost(
               kSwapForCrossBrowsingInstanceNavigations &&
       proxy_access_mode == ProxyAccessMode::kRegular) {
     // See comments in GetRenderFrameProxyHost for why this check is needed.
-    CHECK_EQ(coop_related_group_id_.value(),
-             site_instance->GetCoopRelatedGroupId());
+    CHECK_EQ(browsing_instance_id_.value(),
+             site_instance_group->browsing_instance_id());
   }
 
-  auto site_instance_group_id = site_instance->group()->GetId();
+  auto site_instance_group_id = site_instance_group->GetId();
   CHECK(proxy_hosts_.find(site_instance_group_id) == proxy_hosts_.end())
       << "A proxy already existed for this SiteInstanceGroup.";
   RenderFrameProxyHost* proxy_host = new RenderFrameProxyHost(
-      site_instance, std::move(rvh), frame_tree_node, frame_token);
+      site_instance_group, std::move(rvh), frame_tree_node, frame_token);
   proxy_hosts_[site_instance_group_id] = base::WrapUnique(proxy_host);
-  site_instance->group()->AddObserver(this);
+  site_instance_group->AddObserver(this);
 
   TRACE_EVENT_END("navigation", ChromeTrackEvent::kRenderFrameProxyHost,
                   proxy_host);
@@ -158,21 +158,14 @@ RenderFrameProxyHost* BrowsingContextState::CreateRenderFrameProxyHost(
 }
 
 RenderFrameProxyHost* BrowsingContextState::CreateOuterDelegateProxy(
-    SiteInstanceImpl* outer_contents_site_instance,
+    SiteInstanceGroup* outer_contents_site_instance_group,
     FrameTreeNode* frame_tree_node,
     const blink::RemoteFrameToken& frame_token) {
   // We only get here when Delegate for this manager is an inner delegate.
-  return CreateRenderFrameProxyHost(outer_contents_site_instance,
+  return CreateRenderFrameProxyHost(outer_contents_site_instance_group,
                                     /*rvh=*/nullptr, frame_tree_node,
                                     ProxyAccessMode::kAllowOuterDelegate,
                                     frame_token);
-}
-
-void BrowsingContextState::DeleteOuterDelegateProxy(
-    SiteInstanceGroup* outer_contents_site_instance_group) {
-  DeleteRenderFrameProxyHost(
-      outer_contents_site_instance_group,
-      BrowsingContextState::ProxyAccessMode::kAllowOuterDelegate);
 }
 
 size_t BrowsingContextState::GetProxyCount() {
@@ -181,7 +174,7 @@ size_t BrowsingContextState::GetProxyCount() {
 
 bool BrowsingContextState::UpdateFramePolicyHeaders(
     network::mojom::WebSandboxFlags sandbox_flags,
-    const blink::ParsedPermissionsPolicy& parsed_header) {
+    const network::ParsedPermissionsPolicy& parsed_header) {
   bool changed = false;
   if (replication_state_->permissions_policy_header != parsed_header) {
     replication_state_->permissions_policy_header = parsed_header;
@@ -197,15 +190,14 @@ bool BrowsingContextState::UpdateFramePolicyHeaders(
   }
   // Notify any proxies if the policies have been changed.
   if (changed) {
+    TRACE_EVENT("navigation",
+                "BrowsingContextState::UpdateFramePolicyHeaders broadcast");
     ExecuteRemoteFramesBroadcastMethod(
-        base::BindRepeating(
-            [](blink::mojom::FrameReplicationStatePtr& replication_state,
-               RenderFrameProxyHost* proxy) {
-              proxy->GetAssociatedRemoteFrame()->DidSetFramePolicyHeaders(
-                  replication_state->active_sandbox_flags,
-                  replication_state->permissions_policy_header);
-            },
-            std::ref(replication_state_)),
+        [this](RenderFrameProxyHost* proxy) {
+          proxy->GetAssociatedRemoteFrame()->DidSetFramePolicyHeaders(
+              replication_state_->active_sandbox_flags,
+              replication_state_->permissions_policy_header);
+        },
         /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
   }
   return changed;
@@ -216,7 +208,7 @@ bool BrowsingContextState::CommitFramePolicy(
   // Documents create iframes, iframes host new documents. Both are associated
   // with sandbox flags. They are required to be stricter or equal to their
   // owner when they change, as we go down.
-  // TODO(https://crbug.com/1262061). Enforce the invariant mentioned above,
+  // TODO(crbug.com/40202483). Enforce the invariant mentioned above,
   // once the interactions with fenced frame has been tested and clarified.
 
   bool did_change_flags = new_frame_policy.sandbox_flags !=
@@ -251,29 +243,31 @@ void BrowsingContextState::SetFrameName(const std::string& name,
                                         const std::string& unique_name) {
   if (name == replication_state_->name) {
     // |unique_name| shouldn't change unless |name| changes.
-    DCHECK_EQ(unique_name, replication_state_->unique_name);
+    CHECK_EQ(unique_name, replication_state_->unique_name,
+             base::NotFatalUntil::M152);
     return;
   }
 
   if (parent_) {
     // Non-main frames should have a non-empty unique name.
-    DCHECK(!unique_name.empty());
+    CHECK(!unique_name.empty(), base::NotFatalUntil::M152);
   } else {
     // Unique name of main frames should always stay empty.
-    DCHECK(unique_name.empty());
+    CHECK(unique_name.empty(), base::NotFatalUntil::M152);
   }
 
   // Note the unique name should only be able to change before the first real
   // load is committed, but that's not strongly enforced here.
-  ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating(
-          [](const std::string& name, const std::string& unique_name,
-             RenderFrameProxyHost* proxy) {
-            proxy->GetAssociatedRemoteFrame()->SetReplicatedName(name,
-                                                                 unique_name);
-          },
-          std::ref(name), std::ref(unique_name)),
-      /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  {
+    TRACE_EVENT("navigation", "BrowsingContextState::SetFrameName broadcast",
+                "name", name, "unique_name", unique_name);
+    ExecuteRemoteFramesBroadcastMethod(
+        [&name, &unique_name](RenderFrameProxyHost* proxy) {
+          proxy->GetAssociatedRemoteFrame()->SetReplicatedName(name,
+                                                               unique_name);
+        },
+        /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  }
   replication_state_->unique_name = unique_name;
   replication_state_->name = name;
 }
@@ -287,16 +281,18 @@ void BrowsingContextState::SetCurrentOrigin(
     return;
   }
 
-  ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating(
-          [](const url::Origin& origin,
-             bool is_potentially_trustworthy_unique_origin,
-             RenderFrameProxyHost* proxy) {
-            proxy->GetAssociatedRemoteFrame()->SetReplicatedOrigin(
-                origin, is_potentially_trustworthy_unique_origin);
-          },
-          std::ref(origin), std::ref(is_potentially_trustworthy_unique_origin)),
-      /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  {
+    TRACE_EVENT("navigation",
+                "BrowsingContextState::SetCurrentOrigin broadcast", "origin",
+                origin);
+    ExecuteRemoteFramesBroadcastMethod(
+        [&origin, is_potentially_trustworthy_unique_origin](
+            RenderFrameProxyHost* proxy) {
+          proxy->GetAssociatedRemoteFrame()->SetReplicatedOrigin(
+              origin, is_potentially_trustworthy_unique_origin);
+        },
+        /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  }
 
   replication_state_->origin = origin;
   replication_state_->has_potentially_trustworthy_unique_origin =
@@ -307,46 +303,53 @@ void BrowsingContextState::SetInsecureRequestPolicy(
     blink::mojom::InsecureRequestPolicy policy) {
   if (policy == replication_state_->insecure_request_policy)
     return;
-  ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating(
-          [](blink::mojom::InsecureRequestPolicy policy,
-             RenderFrameProxyHost* proxy) {
-            proxy->GetAssociatedRemoteFrame()->EnforceInsecureRequestPolicy(
-                policy);
-          },
-          policy),
-      /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  {
+    TRACE_EVENT("navigation",
+                "BrowsingContextState::SetInsecureRequestPolicy broadcast");
+    ExecuteRemoteFramesBroadcastMethod(
+        [policy](RenderFrameProxyHost* proxy) {
+          proxy->GetAssociatedRemoteFrame()->EnforceInsecureRequestPolicy(
+              policy);
+        },
+        /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  }
   replication_state_->insecure_request_policy = policy;
 }
 
 void BrowsingContextState::SetInsecureNavigationsSet(
     const std::vector<uint32_t>& insecure_navigations_set) {
-  DCHECK(std::is_sorted(insecure_navigations_set.begin(),
-                        insecure_navigations_set.end()));
+  CHECK(std::is_sorted(insecure_navigations_set.begin(),
+                       insecure_navigations_set.end()),
+        base::NotFatalUntil::M152);
   if (insecure_navigations_set == replication_state_->insecure_navigations_set)
     return;
-  ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating(
-          [](const std::vector<uint32_t>& insecure_navigations_set,
-             RenderFrameProxyHost* proxy) {
-            proxy->GetAssociatedRemoteFrame()->EnforceInsecureNavigationsSet(
-                insecure_navigations_set);
-          },
-          std::ref(insecure_navigations_set)),
-      /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  {
+    TRACE_EVENT("navigation",
+                "BrowsingContextState::SetInsecureNavigationsSet broadcast");
+    ExecuteRemoteFramesBroadcastMethod(
+        [&insecure_navigations_set](RenderFrameProxyHost* proxy) {
+          proxy->GetAssociatedRemoteFrame()->EnforceInsecureNavigationsSet(
+              insecure_navigations_set);
+        },
+        /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  }
   replication_state_->insecure_navigations_set = insecure_navigations_set;
 }
 
 void BrowsingContextState::OnSetHadStickyUserActivationBeforeNavigation(
     bool value) {
-  ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating(
-          [](bool value, RenderFrameProxyHost* proxy) {
-            proxy->GetAssociatedRemoteFrame()
-                ->SetHadStickyUserActivationBeforeNavigation(value);
-          },
-          value),
-      /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  {
+    TRACE_EVENT("navigation",
+                "BrowsingContextState::"
+                "OnSetHadStickyUserActivationBeforeNavigation broadcast",
+                "value", value);
+    ExecuteRemoteFramesBroadcastMethod(
+        [value](RenderFrameProxyHost* proxy) {
+          proxy->GetAssociatedRemoteFrame()
+              ->SetHadStickyUserActivationBeforeNavigation(value);
+        },
+        /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  }
   replication_state_->has_received_user_gesture_before_nav = value;
 }
 
@@ -355,28 +358,87 @@ void BrowsingContextState::SetIsAdFrame(bool is_ad_frame) {
     return;
 
   replication_state_->is_ad_frame = is_ad_frame;
-  ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating(
-          [](bool is_ad_frame, RenderFrameProxyHost* proxy) {
-            proxy->GetAssociatedRemoteFrame()->SetReplicatedIsAdFrame(
-                is_ad_frame);
-          },
-          is_ad_frame),
-      /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  {
+    TRACE_EVENT("navigation", "BrowsingContextState::SetIsAdFrame broadcast",
+                "is_ad_frame", is_ad_frame);
+    ExecuteRemoteFramesBroadcastMethod(
+        [is_ad_frame](RenderFrameProxyHost* proxy) {
+          proxy->GetAssociatedRemoteFrame()->SetReplicatedIsAdFrame(
+              is_ad_frame);
+        },
+        /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  }
+}
+
+bool BrowsingContextState::IsAdFrame() const {
+  return replication_state_->is_ad_frame;
+}
+
+void BrowsingContextState::SetIsSecureContextRoot(bool is_secure_context_root) {
+  if (is_secure_context_root == replication_state_->is_secure_context_root) {
+    return;
+  }
+
+  replication_state_->is_secure_context_root = is_secure_context_root;
+  {
+    TRACE_EVENT("navigation",
+                "BrowsingContextState::SetIsSecureContextRoot broadcast",
+                "is_secure_context_root", is_secure_context_root);
+    ExecuteRemoteFramesBroadcastMethod(
+        [is_secure_context_root](RenderFrameProxyHost* proxy) {
+          proxy->GetAssociatedRemoteFrame()->SetReplicatedIsSecureContextRoot(
+              is_secure_context_root);
+        },
+        /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  }
 }
 
 void BrowsingContextState::ActiveFrameCountIsZero(
     SiteInstanceGroup* site_instance_group) {
-  // |site_instance_group| no longer contains any active RenderFrameHosts, so we
-  // don't need to maintain a proxy there anymore.
+  CheckIfSiteInstanceGroupIsUnused(site_instance_group, kActiveFrameCount);
+}
+
+void BrowsingContextState::KeepAliveCountIsZero(
+    SiteInstanceGroup* site_instance_group) {
+  CheckIfSiteInstanceGroupIsUnused(site_instance_group, kKeepAliveCount);
+}
+
+void BrowsingContextState::CheckIfSiteInstanceGroupIsUnused(
+    SiteInstanceGroup* site_instance_group,
+    RefCountType ref_count_type) {
+  // Only delete the proxy if both counts are zero.
+  if (site_instance_group->keep_alive_count() > 0 ||
+      site_instance_group->active_frame_count() > 0) {
+    return;
+  }
+
+  // |site_instance_group| no longer contains any active RenderFrameHosts or
+  // NavigationStateKeepAlive objects, so we don't need to maintain a proxy
+  // there anymore.
   RenderFrameProxyHost* proxy = GetRenderFrameProxyHost(site_instance_group);
   CHECK(proxy);
 
-  TRACE_EVENT_INSTANT("navigation",
-                      "BrowsingContextState::ActiveFrameCountIsZero",
-                      ChromeTrackEvent::kBrowsingContextState, this,
-                      ChromeTrackEvent::kRenderFrameProxyHost, proxy);
+  if (kActiveFrameCount) {
+    TRACE_EVENT_INSTANT("navigation",
+                        "BrowsingContextState::ActiveFrameCountIsZero",
+                        ChromeTrackEvent::kBrowsingContextState, this,
+                        ChromeTrackEvent::kRenderFrameProxyHost, proxy);
+  } else if (kKeepAliveCount) {
+    TRACE_EVENT_INSTANT("navigation",
+                        "BrowsingContextState::KeepAliveCountIsZero",
+                        ChromeTrackEvent::kBrowsingContextState, this,
+                        ChromeTrackEvent::kRenderFrameProxyHost, proxy);
+  }
 
+  // Unregister the RVH from the FrameTree map before deleting the proxy.
+  // After proxy deletion, the RVH would have no proxy or main frame
+  // associated with it. Without this, the stale RVH remains discoverable
+  // in the FrameTree map and can be reused in an uninitialized state,
+  // leading to CHECK failures. This is consistent with the DisallowReuse()
+  // call in RenderFrameHostManager::CommitPending().
+  if (RenderViewHostImpl* rvh = proxy->GetRenderViewHost()) {
+    rvh->DisallowReuse();
+  }
   DeleteRenderFrameProxyHost(site_instance_group);
 }
 
@@ -393,33 +455,35 @@ void BrowsingContextState::SendFramePolicyUpdatesToProxies(
     const blink::FramePolicy& frame_policy) {
   // Notify all of the frame's proxies about updated policies, excluding
   // the parent process since it already knows the latest state.
+  TRACE_EVENT(
+      "navigation",
+      "BrowsingContextState::SendFramePolicyUpdatesToProxies broadcast");
   ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating(
-          [](SiteInstanceGroup* parent_group,
-             const blink::FramePolicy& frame_policy,
-             RenderFrameProxyHost* proxy) {
-            if (proxy->site_instance_group() == parent_group)
-              return;
-            proxy->GetAssociatedRemoteFrame()->DidUpdateFramePolicy(
-                frame_policy);
-          },
-          base::Unretained(parent_group), std::ref(frame_policy)),
+      [parent_group, &frame_policy](RenderFrameProxyHost* proxy) {
+        if (proxy->site_instance_group() == parent_group) {
+          return;
+        }
+        proxy->GetAssociatedRemoteFrame()->DidUpdateFramePolicy(frame_policy);
+      },
       /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
 }
 
 void BrowsingContextState::OnDidStartLoading() {
+  TRACE_EVENT("navigation",
+              "BrowsingContextState::OnDidStartLoading broadcast");
   ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating([](RenderFrameProxyHost* proxy) {
+      [](RenderFrameProxyHost* proxy) {
         proxy->GetAssociatedRemoteFrame()->DidStartLoading();
-      }),
+      },
       /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
 }
 
 void BrowsingContextState::OnDidStopLoading() {
+  TRACE_EVENT("navigation", "BrowsingContextState::OnDidStopLoading broadcast");
   ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating([](RenderFrameProxyHost* proxy) {
+      [](RenderFrameProxyHost* proxy) {
         proxy->GetAssociatedRemoteFrame()->DidStopLoading();
-      }),
+      },
       /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
 }
 
@@ -447,25 +511,29 @@ void BrowsingContextState::OnDidUpdateFrameOwnerProperties(
   //
   // TODO(alexmos): It would be sufficient to only send this update to proxies
   // in the current FrameTree.
-  ExecuteRemoteFramesBroadcastMethod(
-      base::BindRepeating(
-          [](SiteInstanceGroup* parent_group,
-             const blink::mojom::FrameOwnerProperties& properties,
-             RenderFrameProxyHost* proxy) {
-            if (proxy->site_instance_group() == parent_group)
-              return;
-            proxy->GetAssociatedRemoteFrame()->SetFrameOwnerProperties(
-                properties.Clone());
-          },
-          base::Unretained(parent_->GetSiteInstance()->group()),
-          std::ref(properties)),
-      /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  SiteInstanceGroup* parent_group = parent_->GetSiteInstance()->group();
+  {
+    TRACE_EVENT(
+        "navigation",
+        "BrowsingContextState::OnDidUpdateFrameOwnerProperties broadcast");
+    ExecuteRemoteFramesBroadcastMethod(
+        [parent_group, &properties](RenderFrameProxyHost* proxy) {
+          if (proxy->site_instance_group() == parent_group) {
+            return;
+          }
+          proxy->GetAssociatedRemoteFrame()->SetFrameOwnerProperties(
+              properties.Clone());
+        },
+        /*group_to_skip=*/nullptr, /*outer_delegate_proxy=*/nullptr);
+  }
 }
 
 void BrowsingContextState::ExecuteRemoteFramesBroadcastMethod(
-    base::RepeatingCallback<void(RenderFrameProxyHost*)> callback,
+    base::FunctionRef<void(RenderFrameProxyHost*)> callback,
     SiteInstanceGroup* group_to_skip,
     RenderFrameProxyHost* outer_delegate_proxy) {
+  TRACE_EVENT("navigation",
+              "BrowsingContextState::ExecuteRemoteFramesBroadcastMethod");
   for (const auto& pair : proxy_hosts_) {
     if (outer_delegate_proxy == pair.second.get())
       continue;
@@ -474,7 +542,7 @@ void BrowsingContextState::ExecuteRemoteFramesBroadcastMethod(
     }
     if (!pair.second->is_render_frame_proxy_live())
       continue;
-    callback.Run(pair.second.get());
+    callback(pair.second.get());
   }
 }
 
@@ -482,10 +550,6 @@ void BrowsingContextState::WriteIntoTrace(
     perfetto::TracedProto<TraceProto> proto) const {
   if (browsing_instance_id_.has_value()) {
     proto->set_browsing_instance_id(browsing_instance_id_.value().value());
-  }
-
-  if (coop_related_group_id_.has_value()) {
-    proto->set_coop_related_group_id(coop_related_group_id_.value().value());
   }
 
   perfetto::TracedDictionary dict = std::move(proto).AddDebugAnnotations();

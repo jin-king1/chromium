@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.share;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -18,6 +20,7 @@ import android.content.ComponentName;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.content.IntentSender.SendIntentException;
+import android.os.Build;
 
 import androidx.annotation.Nullable;
 import androidx.lifecycle.Lifecycle.State;
@@ -32,12 +35,12 @@ import org.robolectric.Shadows;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowActivity;
 import org.robolectric.shadows.ShadowActivity.IntentForResult;
-import org.robolectric.shadows.ShadowLooper;
 import org.robolectric.shadows.ShadowPendingIntent;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
-import org.chromium.chrome.browser.preferences.SharedPreferencesManager;
+import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.browser_ui.share.ShareParams.TargetChosenCallback;
 import org.chromium.ui.base.ActivityWindowAndroid;
@@ -67,10 +70,11 @@ public class ShareHelperMultiInstanceUnitTest {
 
     @After
     public void tearDown() {
+        RobolectricUtil.runAllBackgroundAndUi();
         mWindowBar.closeWindow();
         mWindowFoo.closeWindow();
-        SharedPreferencesManager.getInstance().removeKey(
-                ChromePreferenceKeys.SHARING_LAST_SHARED_COMPONENT_NAME);
+        ChromeSharedPreferences.getInstance()
+                .removeKey(ChromePreferenceKeys.SHARING_LAST_SHARED_COMPONENT_NAME);
     }
 
     @Test
@@ -78,7 +82,8 @@ public class ShareHelperMultiInstanceUnitTest {
         mWindowFoo.startShare().verifyCallbackNotCalled();
         mWindowBar.startShare().verifyCallbackNotCalled();
         mWindowFoo.completeShareWithComponent(COMPONENT_NAME_1).verifyCallbackState();
-        mWindowBar.verifyCallbackNotCalled()
+        mWindowBar
+                .verifyCallbackNotCalled()
                 .completeShareWithComponent(COMPONENT_NAME_2)
                 .verifyCallbackState();
         assertLastComponentRecorded(COMPONENT_NAME_2);
@@ -87,11 +92,13 @@ public class ShareHelperMultiInstanceUnitTest {
     @Test
     public void shareInTwoWindow_FinishInReverseOrder() throws SendIntentException {
         mWindowFoo.startShare();
-        mWindowBar.startShare()
+        mWindowBar
+                .startShare()
                 .verifyCallbackNotCalled()
                 .completeShareWithComponent(COMPONENT_NAME_2)
                 .verifyCallbackState();
-        mWindowFoo.verifyCallbackNotCalled()
+        mWindowFoo
+                .verifyCallbackNotCalled()
                 .completeShareWithComponent(COMPONENT_NAME_1)
                 .verifyCallbackState();
         assertLastComponentRecorded(COMPONENT_NAME_1);
@@ -129,8 +136,9 @@ public class ShareHelperMultiInstanceUnitTest {
     public void shareInTwoWindow_KillFirstWindowThenCompleteSecond() throws SendIntentException {
         mWindowFoo.startShare();
         mWindowBar.startShare();
-        mWindowFoo.closeWindow();
-        mWindowBar.verifyCallbackNotCalled()
+        mWindowFoo.closeWindow().verifyCallbackCanceled();
+        mWindowBar
+                .verifyCallbackNotCalled()
                 .completeShareWithComponent(COMPONENT_NAME_2)
                 .verifyCallbackState()
                 .closeWindow();
@@ -140,8 +148,9 @@ public class ShareHelperMultiInstanceUnitTest {
     @Test
     public void shareInTwoWindow_KillSecondWindowThenCompleteFirst() throws SendIntentException {
         mWindowFoo.startShare();
-        mWindowBar.startShare().closeWindow();
-        mWindowFoo.verifyCallbackNotCalled()
+        mWindowBar.startShare().closeWindow().verifyCallbackCanceled();
+        mWindowFoo
+                .verifyCallbackNotCalled()
                 .completeShareWithComponent(COMPONENT_NAME_1)
                 .verifyCallbackState()
                 .closeWindow();
@@ -149,7 +158,9 @@ public class ShareHelperMultiInstanceUnitTest {
     }
 
     private void assertLastComponentRecorded(ComponentName expected) {
-        assertEquals("Last saved component name is different.", expected,
+        assertEquals(
+                "Last saved component name is different.",
+                expected,
                 ShareHelper.getLastShareComponentName());
     }
 
@@ -173,33 +184,36 @@ public class ShareHelperMultiInstanceUnitTest {
         }
     }
 
-    /**
-     * Class that simulate the share journey.
-     */
+    /** Class that simulate the share journey. */
     private static class SingleWindowTestInstance {
         private final ActivityScenario<TestActivity> mActivityScenario;
         private final WindowAndroid mWindow;
         private final IntentRequestTracker mIntentRequestTracker;
         private final TestTargetChosenCallback mCallback = new TestTargetChosenCallback();
 
-        @Spy
-        private TestActivity mActivity;
-        @Nullable
-        private IntentForResult mShareIntent;
+        @Spy private TestActivity mActivity;
+        @Nullable private IntentForResult mShareIntent;
         private boolean mClosed;
 
         public SingleWindowTestInstance(int taskId) {
-            mActivityScenario = ActivityScenario.launch(TestActivity.class)
-                                        .onActivity(activity -> mActivity = spy(activity))
-                                        .moveToState(State.STARTED);
+            mActivityScenario =
+                    ActivityScenario.launch(TestActivity.class)
+                            .onActivity(activity -> mActivity = spy(activity))
+                            .moveToState(State.STARTED);
             doReturn(taskId).when(mActivity).getTaskId();
             mIntentRequestTracker = IntentRequestTracker.createFromActivity(mActivity);
-            mWindow = new ActivityWindowAndroid(mActivity, false, mIntentRequestTracker);
+            mWindow =
+                    new ActivityWindowAndroid(
+                            mActivity,
+                            /* listenToActivityState= */ false,
+                            mIntentRequestTracker,
+                            /* insetObserver= */ null,
+                            /* occlusionTrackingAllowed= */ true);
         }
 
         public SingleWindowTestInstance startShare() {
             ShareHelper.shareWithSystemShareSheetUi(getTextParams(), null, true);
-            ShadowLooper.idleMainLooper();
+            RobolectricUtil.runAllBackgroundAndUi();
 
             mShareIntent = Shadows.shadowOf(mActivity).peekNextStartedActivityForResult();
             assertNotNull("Share activity is not launched.", mShareIntent);
@@ -208,28 +222,36 @@ public class ShareHelperMultiInstanceUnitTest {
 
         public SingleWindowTestInstance completeShareWithComponent(ComponentName componentName)
                 throws SendIntentException {
-            assert mShareIntent != null;
+            assertThat(mShareIntent).isNotNull();
             Intent sendBackIntent =
                     new Intent().putExtra(Intent.EXTRA_CHOSEN_COMPONENT, componentName);
-            IntentSender sender = mShareIntent.intent.getParcelableExtra(
-                    Intent.EXTRA_CHOSEN_COMPONENT_INTENT_SENDER);
-            sender.sendIntent(mActivity.getApplicationContext(), Activity.RESULT_OK, sendBackIntent,
-                    null, null);
-            ShadowLooper.idleMainLooper();
+            String extraKey =
+                    Build.VERSION.SDK_INT >= 35
+                            ? Intent.EXTRA_CHOOSER_RESULT_INTENT_SENDER
+                            : Intent.EXTRA_CHOSEN_COMPONENT_INTENT_SENDER;
+            IntentSender sender = mShareIntent.intent.getParcelableExtra(extraKey);
+            sender.sendIntent(
+                    mActivity.getApplicationContext(),
+                    Activity.RESULT_OK,
+                    sendBackIntent,
+                    null,
+                    null);
+            RobolectricUtil.runAllBackgroundAndUi();
             return this;
         }
 
         public SingleWindowTestInstance cancelShare() throws SendIntentException {
-            assert mShareIntent != null;
+            assertThat(mShareIntent).isNotNull();
 
             mIntentRequestTracker.onActivityResult(
                     mShareIntent.requestCode, Activity.RESULT_CANCELED, null);
-            ShadowLooper.idleMainLooper();
+            RobolectricUtil.runAllBackgroundAndUi();
             return this;
         }
 
         public SingleWindowTestInstance verifyCallbackNotCalled() {
-            assertFalse("Callback should not be called.",
+            assertFalse(
+                    "Callback should not be called.",
                     mCallback.onTargetChosenCalled || mCallback.onCancelCalled);
             return this;
         }
@@ -240,13 +262,21 @@ public class ShareHelperMultiInstanceUnitTest {
             return this;
         }
 
-        public void closeWindow() {
-            if (mClosed) return;
+        public SingleWindowTestInstance verifyCallbackCanceled() {
+            assertTrue("Callback onCancel should be called.", mCallback.onCancelCalled);
+            verify(mActivity).unregisterReceiver(any());
+            return this;
+        }
+
+        public SingleWindowTestInstance closeWindow() {
+            if (mClosed) return this;
 
             mClosed = true;
             mWindow.destroy();
             mActivity.finish();
             mActivityScenario.close();
+
+            return this;
         }
 
         private ShareParams getTextParams() {

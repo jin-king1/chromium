@@ -6,55 +6,57 @@
 #define COMPONENTS_SUPERVISED_USER_CORE_COMMON_FEATURES_H_
 
 #include "base/feature_list.h"
+#include "base/metrics/field_trial_params.h"
+#include "build/android_buildflags.h"
+#include "build/build_config.h"
+#include "extensions/buildflags/buildflags.h"
 
 namespace supervised_user {
 
-BASE_DECLARE_FEATURE(kWebFilterInterstitialRefresh);
-
 BASE_DECLARE_FEATURE(kLocalWebApprovals);
-extern const char kLocalWebApprovalsPreferredButtonLocal[];
-extern const char kLocalWebApprovalsPreferredButtonRemote[];
 
-BASE_DECLARE_FEATURE(kAllowHistoryDeletionForChildAccounts);
-BASE_DECLARE_FEATURE(kSynchronousSignInChecking);
+// Whether supervised user can request local web approval from a blocked
+// subframe.
+BASE_DECLARE_FEATURE(kAllowSubframeLocalWebApprovals);
 
-// Flags related to supervision features on Desktop and iOS platforms.
-BASE_DECLARE_FEATURE(kEnableSupervisionOnDesktopAndIOS);
-BASE_DECLARE_FEATURE(kFilterWebsitesForSupervisedUsersOnDesktopAndIOS);
-BASE_DECLARE_FEATURE(kEnableExtensionsPermissionsForSupervisedUsersOnDesktop);
+#if BUILDFLAG(IS_IOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_WIN)
+extern const base::FeatureParam<int> kLocalWebApprovalBottomSheetLoadTimeoutMs;
+#endif  // BUILDFLAG(IS_IOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
+        // BUILDFLAG(IS_WIN)
 
-BASE_DECLARE_FEATURE(kLocalExtensionApprovalsV2);
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
+// Uses supervised user strings on the signout dialog.
+BASE_DECLARE_FEATURE(kEnableSupervisedUserVersionSignOutDialog);
+#endif
 
-BASE_DECLARE_FEATURE(kRetireStaticDenyList);
+// Whether the Pacp widget can process a url payload as part of the local
+// approval request.
+BASE_DECLARE_FEATURE(kLocalWebApprovalsWidgetSupportsUrlPayload);
 
-BASE_DECLARE_FEATURE(kEnableProtoApiForClassifyUrl);
+// SupervisedUserUrlFilteringService does not use the PrefService indirection
+// (specifically, the SupervisedUserPrefStore) to get the URL filtering
+// settings. When enabled, all url filtering settings are read directly from the
+// related supervision services.
+BASE_DECLARE_FEATURE(kSupervisedUserUseUrlFilteringService);
 
-BASE_DECLARE_FEATURE(kUpdateSupervisedUserFactoryCreation);
+// The SupervisedUserPrefStore will merge all of the non-web filtering device
+// parental controls settings with the Family Link settings and emit merged
+// values as prefs.
+BASE_DECLARE_FEATURE(
+    kSupervisedUserMergeDeviceParentalControlsAndFamilyLinkPrefs);
 
-// Returns whether refreshed version of the website filter interstitial is
-// enabled.
-bool IsWebFilterInterstitialRefreshEnabled();
+// When enabled, the supervised user log record will emit the device
+// log record separately. When disabled, the system assumes that the device log
+// record is mutually exclusive with the account/policy based log record.
+BASE_DECLARE_FEATURE(kSupervisedUserEmitLogRecordSeparately);
 
 // Returns whether local parent approvals on Family Link user's device are
 // enabled.
-// Local web approvals are only available when refreshed version of web
-// filter interstitial is enabled.
 bool IsLocalWebApprovalsEnabled();
 
-// Returns whether the local parent approval should be displayed as the
-// preferred option.
-// This should only be called if IsLocalWebApprovalsEnabled() returns true.
-bool IsLocalWebApprovalThePreferredButton();
-
-// Returns whether the ClassifyUrl call uses proto apis.
-bool IsProtoApiForClassifyUrlEnabled();
-
-// Returns whether the First Run Experience will rely on checking the sign-in
-// status synchronously - http://b/264382308.
-bool IsSynchronousSignInCheckingEnabled();
-
-// Returns whether the new local extension approval experience is enabled.
-bool IsLocalExtensionApprovalsV2Enabled();
+// Returns whether local parent approvals are enabled for subframe navigation.
+bool IsLocalWebApprovalsEnabledForSubframes();
 
 }  // namespace supervised_user
 

@@ -26,6 +26,8 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_DOM_SCRIPTED_ANIMATION_CONTROLLER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_DOM_SCRIPTED_ANIMATION_CONTROLLER_H_
 
+#include "base/functional/callback.h"
+#include "cc/metrics/begin_main_frame_metrics.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/frame_request_callback_collection.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_state_observer.h"
@@ -57,7 +59,7 @@ class CORE_EXPORT ScriptedAnimationController
   ~ScriptedAnimationController() override = default;
 
   void Trace(Visitor*) const override;
-  const char* NameInHeapSnapshot() const override {
+  const char* GetHumanReadableName() const override {
     return "ScriptedAnimationController";
   }
 
@@ -69,8 +71,8 @@ class CORE_EXPORT ScriptedAnimationController
 
   // Animation frame callbacks are used for requestAnimationFrame().
   typedef int CallbackId;
-  CallbackId RegisterFrameCallback(FrameCallback*);
-  void CancelFrameCallback(CallbackId);
+  CallbackId RegisterFrameCallback(FrameCallback*, FrameCallbackType type);
+  void CancelFrameCallback(CallbackId, FrameCallbackType type);
   // Returns true if any callback is currently registered.
   bool HasFrameCallback() const;
 
@@ -92,15 +94,15 @@ class CORE_EXPORT ScriptedAnimationController
   void ContextLifecycleStateChanged(mojom::FrameLifecycleState) final;
   void ContextDestroyed() final {}
 
-  void DispatchEventsAndCallbacksForPrinting();
+  void DispatchMediaQueryListEventsAndCallbacks();
 
   LocalDOMWindow* GetWindow() const;
-  void ScheduleAnimationIfNeeded();
+  void ScheduleAnimationIfNeeded(
+      cc::BeginMainFrameReason = cc::BeginMainFrameReason::kOther);
 
   void RunTasks();
-  typedef absl::optional<bool (*)(const Event*)> DispatchFilter;
-  void DispatchEvents(
-      const DispatchFilter& filter = DispatchFilter(absl::nullopt));
+  using DispatchFilter = base::RepeatingCallback<bool(Event*)>;
+  bool DispatchEvents(DispatchFilter filter = DispatchFilter{});
   void ExecuteFrameCallbacks();
   void ExecuteVideoFrameCallbacks();
   void CallMediaQueryListListeners();

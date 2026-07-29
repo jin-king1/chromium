@@ -6,12 +6,13 @@
 #define CHROMEOS_ASH_COMPONENTS_PHONEHUB_RECENT_APPS_INTERACTION_HANDLER_IMPL_H_
 
 #include <stdint.h>
+
 #include <memory>
 
-#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
+#include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "chromeos/ash/components/phonehub/multidevice_feature_access_manager.h"
 #include "chromeos/ash/components/phonehub/notification.h"
@@ -107,13 +108,19 @@ class RecentAppsInteractionHandlerImpl
   base::ObserverList<RecentAppClickObserver> observer_list_;
   std::vector<std::pair<Notification::AppMetadata, base::Time>>
       recent_app_metadata_list_;
-  raw_ptr<PrefService, ExperimentalAsh> pref_service_;
-  raw_ptr<multidevice_setup::MultiDeviceSetupClient, ExperimentalAsh>
-      multidevice_setup_client_;
-  raw_ptr<MultideviceFeatureAccessManager, ExperimentalAsh>
-      multidevice_feature_access_manager_;
-  raw_ptr<eche_app::EcheConnectionStatusHandler, ExperimentalAsh>
-      eche_connection_status_handler_ = nullptr;
+  raw_ptr<PrefService> pref_service_;
+  raw_ptr<multidevice_setup::MultiDeviceSetupClient> multidevice_setup_client_;
+  raw_ptr<MultideviceFeatureAccessManager> multidevice_feature_access_manager_;
+
+  base::ScopedObservation<multidevice_setup::MultiDeviceSetupClient,
+                          multidevice_setup::MultiDeviceSetupClient::Observer>
+      multidevice_setup_client_observation_{this};
+  base::ScopedObservation<MultideviceFeatureAccessManager,
+                          MultideviceFeatureAccessManager::Observer>
+      multidevice_feature_access_manager_observation_{this};
+  base::ScopedObservation<eche_app::EcheConnectionStatusHandler,
+                          eche_app::EcheConnectionStatusHandler::Observer>
+      eche_connection_status_handler_observation_{this};
 
   base::WeakPtrFactory<RecentAppsInteractionHandlerImpl> weak_ptr_factory_{
       this};

@@ -10,11 +10,12 @@ namespace network {
 
 bool ParseObserveBrowsingTopicsFromHeader(
     const net::HttpResponseHeaders& headers) {
-  std::string header_value;
-  headers.GetNormalizedHeader("Observe-Browsing-Topics", &header_value);
-  absl::optional<net::structured_headers::Item> item =
-      net::structured_headers::ParseBareItem(header_value);
-  return item && item->is_boolean() && item->GetBoolean();
+  std::string header_value =
+      headers.GetNormalizedHeader("Observe-Browsing-Topics")
+          .value_or(std::string());
+  std::optional<net::structured_headers::ParameterizedItem> item =
+      net::structured_headers::ParseItem(header_value);
+  return item && item->item.is_boolean() && item->item.GetBoolean();
 }
 
 }  // namespace network

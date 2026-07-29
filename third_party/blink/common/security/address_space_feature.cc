@@ -77,53 +77,53 @@ constexpr bool kSecureContext = true;
 constexpr struct FeatureEntry kFeatureMap[] = {
     {
         {AddressSpace::kLocal, kNonSecureContext, AddressSpace::kLoopback},
-        Feature::kAddressSpacePrivateNonSecureContextEmbeddedLocal,
-        Feature::kAddressSpacePrivateNonSecureContextNavigatedToLocal,
+        Feature::kAddressSpaceLocalNonSecureContextEmbeddedLoopbackV2,
+        Feature::kAddressSpaceLocalNonSecureContextNavigatedToLoopbackV2,
     },
     {
         {AddressSpace::kLocal, kSecureContext, AddressSpace::kLoopback},
-        Feature::kAddressSpacePrivateSecureContextEmbeddedLocal,
-        Feature::kAddressSpacePrivateSecureContextNavigatedToLocal,
+        Feature::kAddressSpaceLocalSecureContextEmbeddedLoopbackV2,
+        Feature::kAddressSpaceLocalSecureContextNavigatedToLoopbackV2,
     },
     {
         {AddressSpace::kPublic, kNonSecureContext, AddressSpace::kLoopback},
-        Feature::kAddressSpacePublicNonSecureContextEmbeddedLocal,
-        Feature::kAddressSpacePublicNonSecureContextNavigatedToLocal,
+        Feature::kAddressSpacePublicNonSecureContextEmbeddedLoopbackV2,
+        Feature::kAddressSpacePublicNonSecureContextNavigatedToLoopbackV2,
     },
     {
         {AddressSpace::kPublic, kSecureContext, AddressSpace::kLoopback},
-        Feature::kAddressSpacePublicSecureContextEmbeddedLocal,
-        Feature::kAddressSpacePublicSecureContextNavigatedToLocal,
+        Feature::kAddressSpacePublicSecureContextEmbeddedLoopbackV2,
+        Feature::kAddressSpacePublicSecureContextNavigatedToLoopbackV2,
     },
     {
         {AddressSpace::kPublic, kNonSecureContext, AddressSpace::kLocal},
-        Feature::kAddressSpacePublicNonSecureContextEmbeddedPrivate,
-        Feature::kAddressSpacePublicNonSecureContextNavigatedToPrivate,
+        Feature::kAddressSpacePublicNonSecureContextEmbeddedLocalV2,
+        Feature::kAddressSpacePublicNonSecureContextNavigatedToLocalV2,
     },
     {
         {AddressSpace::kPublic, kSecureContext, AddressSpace::kLocal},
-        Feature::kAddressSpacePublicSecureContextEmbeddedPrivate,
-        Feature::kAddressSpacePublicSecureContextNavigatedToPrivate,
+        Feature::kAddressSpacePublicSecureContextEmbeddedLocalV2,
+        Feature::kAddressSpacePublicSecureContextNavigatedToLocalV2,
     },
     {
         {AddressSpace::kUnknown, kNonSecureContext, AddressSpace::kLoopback},
-        Feature::kAddressSpaceUnknownNonSecureContextEmbeddedLocal,
-        Feature::kAddressSpaceUnknownNonSecureContextNavigatedToLocal,
+        Feature::kAddressSpaceUnknownNonSecureContextEmbeddedLoopbackV2,
+        Feature::kAddressSpaceUnknownNonSecureContextNavigatedToLoopbackV2,
     },
     {
         {AddressSpace::kUnknown, kSecureContext, AddressSpace::kLoopback},
-        Feature::kAddressSpaceUnknownSecureContextEmbeddedLocal,
-        Feature::kAddressSpaceUnknownSecureContextNavigatedToLocal,
+        Feature::kAddressSpaceUnknownSecureContextEmbeddedLoopbackV2,
+        Feature::kAddressSpaceUnknownSecureContextNavigatedToLoopbackV2,
     },
     {
         {AddressSpace::kUnknown, kNonSecureContext, AddressSpace::kLocal},
-        Feature::kAddressSpaceUnknownNonSecureContextEmbeddedPrivate,
-        Feature::kAddressSpaceUnknownNonSecureContextNavigatedToPrivate,
+        Feature::kAddressSpaceUnknownNonSecureContextEmbeddedLocalV2,
+        Feature::kAddressSpaceUnknownNonSecureContextNavigatedToLocalV2,
     },
     {
         {AddressSpace::kUnknown, kSecureContext, AddressSpace::kLocal},
-        Feature::kAddressSpaceUnknownSecureContextEmbeddedPrivate,
-        Feature::kAddressSpaceUnknownSecureContextNavigatedToPrivate,
+        Feature::kAddressSpaceUnknownSecureContextEmbeddedLocalV2,
+        Feature::kAddressSpaceUnknownSecureContextNavigatedToLocalV2,
     },
 };
 
@@ -140,7 +140,7 @@ const FeatureEntry* FindFeatureEntry(const FeatureKey& key) {
 
 }  // namespace
 
-absl::optional<Feature> AddressSpaceFeature(
+std::optional<Feature> AddressSpaceFeature(
     FetchType fetch_type,
     AddressSpace client_address_space,
     bool client_is_secure_context,
@@ -152,7 +152,7 @@ absl::optional<Feature> AddressSpaceFeature(
 
   const FeatureEntry* entry = FindFeatureEntry(key);
   if (!entry) {
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   switch (fetch_type) {

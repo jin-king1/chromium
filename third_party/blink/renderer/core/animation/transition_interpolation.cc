@@ -3,13 +3,21 @@
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/core/animation/transition_interpolation.h"
+
 #include <memory>
 
 #include "third_party/blink/renderer/core/animation/css/compositor_keyframe_value.h"
+#include "third_party/blink/renderer/core/animation/css_interpolation_environment.h"
+#include "third_party/blink/renderer/core/animation/typed_interpolation_value.h"
 
 namespace blink {
 
-void TransitionInterpolation::Interpolate(int iteration, double fraction) {
+// Note: iteration_composite is unused since transitions don't iterate.
+// This parameter exists to conform with the interface in Interpolation.
+void TransitionInterpolation::Interpolate(
+    int iteration,
+    double fraction,
+    EffectModel::IterationCompositeOperation iteration_composite) {
   if (!cached_fraction_ || *cached_fraction_ != fraction ||
       cached_iteration_ != iteration) {
     if (merge_) {
@@ -34,21 +42,21 @@ const InterpolableValue& TransitionInterpolation::CurrentInterpolableValue()
 const NonInterpolableValue*
 TransitionInterpolation::CurrentNonInterpolableValue() const {
   if (merge_) {
-    return merge_.non_interpolable_value.get();
+    return merge_.non_interpolable_value.Get();
   }
-  return cached_fraction_ < 0.5 ? start_.non_interpolable_value.get()
-                                : end_.non_interpolable_value.get();
+  return cached_fraction_ < 0.5 ? start_.non_interpolable_value.Get()
+                                : end_.non_interpolable_value.Get();
 }
 
 void TransitionInterpolation::Apply(
-    InterpolationEnvironment& environment) const {
-  type_.Apply(CurrentInterpolableValue(), CurrentNonInterpolableValue(),
-              environment);
+    CSSInterpolationEnvironment& environment) const {
+  environment.SetIsAttrTainted(is_attr_tainted_);
+  type_->Apply(CurrentInterpolableValue(), CurrentNonInterpolableValue(),
+               environment);
 }
 
-std::unique_ptr<TypedInterpolationValue>
-TransitionInterpolation::GetInterpolatedValue() const {
-  return std::make_unique<TypedInterpolationValue>(
+TypedInterpolationValue* TransitionInterpolation::GetInterpolatedValue() const {
+  return MakeGarbageCollected<TypedInterpolationValue>(
       type_, CurrentInterpolableValue().Clone(), CurrentNonInterpolableValue());
 }
 

@@ -9,12 +9,14 @@ from chrome_ent_test.infra.core import environment
 from chrome_ent_test.infra.core import test
 from infra import ChromeEnterpriseTestCase
 
+_ERR_BLOCKED_BY_ADMINISTRATOR = 'is blocked'
+
 
 @environment(file="../policy_test.asset.textpb")
 class UrlBlocklistTest(ChromeEnterpriseTestCase):
   """Test the URLBlocklist policy.
 
-  See https://cloud.google.com/docs/chrome-enterprise/policies/?policy=URLBlocklist"""
+  See https://chromeenterprise.google/policies/?policy=URLBlocklist"""
 
   @before_all
   def setup(self):
@@ -39,10 +41,10 @@ class UrlBlocklistTest(ChromeEnterpriseTestCase):
 
     # Verify that we can't visit any site.
     output = self.openPage('https://youtube.com/yt/about/', incognito=incognito)
-    self.assertIn("ERR_BLOCKED_BY_ADMINISTRATOR", output)
+    self.assertIn(_ERR_BLOCKED_BY_ADMINISTRATOR, output)
 
     output = self.openPage('https://google.com', incognito=incognito)
-    self.assertIn("ERR_BLOCKED_BY_ADMINISTRATOR", output)
+    self.assertIn(_ERR_BLOCKED_BY_ADMINISTRATOR, output)
 
   @test
   def test_BlocklistYouTubeCantVisit(self, incognito=False):
@@ -52,10 +54,10 @@ class UrlBlocklistTest(ChromeEnterpriseTestCase):
 
     # Verify that we can't visit YouTube, but can still visit other sites.
     output = self.openPage('https://youtube.com/yt/about/', incognito=incognito)
-    self.assertIn("ERR_BLOCKED_BY_ADMINISTRATOR", output)
+    self.assertIn(_ERR_BLOCKED_BY_ADMINISTRATOR, output)
 
     output = self.openPage('https://google.com', incognito=incognito)
-    self.assertNotIn("ERR_BLOCKED_BY_ADMINISTRATOR", output)
+    self.assertNotIn(_ERR_BLOCKED_BY_ADMINISTRATOR, output)
 
   @test
   def test_BlocklistAllCantVisitIncognito(self):

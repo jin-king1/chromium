@@ -6,12 +6,16 @@
 #define IOS_WEB_WEB_STATE_WEB_STATE_IMPL_REALIZED_WEB_STATE_H_
 
 #include <map>
+#include <string_view>
 
+#import "base/memory/raw_ptr.h"
+#import "ios/web/public/web_state_observer.h"
 #import "ios/web/web_state/web_state_impl.h"
 
-#import "ios/web/public/web_state_observer.h"
-
 namespace web {
+namespace proto {
+class WebStateStorage;
+}  // namespace proto
 
 class WebUIIOS;
 
@@ -32,22 +36,51 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
   // Creates a RealizedWebState with a non-null pointer to the owning
   // WebStateImpl.
   RealizedWebState(WebStateImpl* owner,
-                   NSString* stable_identifier,
-                   SessionID unique_identifier);
+                   base::Time creation_time,
+                   WebStateID unique_identifier);
 
   RealizedWebState(const RealizedWebState&) = delete;
   RealizedWebState& operator=(const RealizedWebState&) = delete;
 
   ~RealizedWebState() final;
 
-  // Initialize the RealizedWebState. The initialisation *must* be done after
-  // the object has been constructed because some of the object created during
-  // the initialisation will invoke methods on the owning WebState. To support
-  // this, the RealizedWebState object must have been constructed and assigned
-  // to WebState's `pimpl_` pointer.
-  void Init(const CreateParams& params,
-            CRWSessionStorage* session_storage,
-            FaviconStatus favicon_status);
+  // Note on initialisation:
+  //
+  // Some of the objects constructed internally during the initialisation
+  // access member on the WebState when they are constructed (e.g. to get
+  // the BrowserState, ...).
+  //
+  // This means that the initialisation must happen after the object has
+  // been fully constructed and after WebStateImpl's `pimpl_` pointer is
+  // updated to point to the instance.
+  //
+  // The initialisation is done by calling either Init() for a new object
+  // or InitWithStorage() for creating an object from serialised state.
+
+  // Initializes the instance with `browser_state`. The other parameters
+  // are described in `WebState::CreateParams`.
+  void Init(BrowserState* browser_state,
+            base::Time last_active_time,
+            bool created_with_opener);
+
+  // Initializes the RealizedWebState with `browser_state`, serialized data
+  // from `storage`. The `last_active_time`, `page_title` and `visible_url`
+  // comes from the metadata loaded when the WebState was created in the
+  // unrealized state, and `favicon_status` may have been changed before
+  // the realisation. The `session_fetcher` will be used by the navigation
+  // manager to restore the native session (can be unset if the operation,
+  // is not supported, e.g. in iOS WebView, or the callback may return nil
+  // if the operation fails).
+  void InitWithProto(BrowserState* browser_state,
+                     base::Time last_active_time,
+                     std::u16string page_title,
+                     GURL page_visible_url,
+                     FaviconStatus favicon_status,
+                     proto::WebStateStorage storage,
+                     NativeSessionFetcher session_fetcher);
+
+  // Serializes the object to `storage`.
+  void SerializeToProto(proto::WebStateStorage& storage) const;
 
   // Tears down the RealizedWebState. The tear down *must* be called before
   // the object is destroyed because the WebStateObserver may call methods on
@@ -92,8 +125,8 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
   void ClearWebUI();
   bool HasWebUI() const;
   void HandleWebUIMessage(const GURL& source_url,
-                          base::StringPiece message,
-                          const base::Value::List& args);
+                          std::string_view message,
+                          const base::ListValue& args);
   void SetContentsMimeType(const std::string& mime_type);
   void ShouldAllowRequest(
       NSURLRequest* request,
@@ -108,16 +141,17 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
   UserAgentType GetUserAgentForSessionRestoration() const;
   void SendChangeLoadProgress(double progress);
   void HandleContextMenu(const ContextMenuParams& params);
-  void ShowRepostFormWarningDialog(base::OnceCallback<void(bool)> callback);
-  void RunJavaScriptAlertDialog(const GURL& origin_url,
+  void ShowRepostFormWarningDialog(FormWarningType warning_type,
+                                   base::OnceCallback<void(bool)> callback);
+  void RunJavaScriptAlertDialog(const url::Origin& origin,
                                 NSString* message_text,
                                 base::OnceClosure callback);
   void RunJavaScriptConfirmDialog(
-      const GURL& origin_url,
+      const url::Origin& origin,
       NSString* message_text,
       base::OnceCallback<void(bool success)> callback);
   void RunJavaScriptPromptDialog(
-      const GURL& origin_url,
+      const url::Origin& origin,
       NSString* message_text,
       NSString* default_prompt_text,
       base::OnceCallback<void(NSString* user_input)> callback);
@@ -127,7 +161,9 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
                               bool initiated_by_user);
   void OnAuthRequired(NSURLProtectionSpace* protection_space,
                       NSURLCredential* proposed_credential,
-                      WebStateDelegate::AuthCallback callback);
+                      WebStateDelegate::HTTPAuthCallback callback);
+  void OnAuthRequired(NSURLProtectionSpace* protection_space,
+                      WebStateDelegate::ClientCertAuthCallback callback);
   void RetrieveExistingFrames();
 
   // WebState:
@@ -144,11 +180,11 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
   void WasHidden();
   void SetKeepRenderProcessAlive(bool keep_alive);
   BrowserState* GetBrowserState() const;
-  NSString* GetStableIdentifier() const;
-  SessionID GetUniqueIdentifier() const;
+  WebStateID GetUniqueIdentifier() const;
   void OpenURL(const WebState::OpenURLParams& params);
   void Stop();
-  CRWSessionStorage* BuildSessionStorage();
+  std::optional<std::string> GetUserAgentOverride() const;
+  void SetUserAgentOverride(std::optional<std::string> ua_override);
   void LoadData(NSData* data, NSString* mime_type, const GURL& url);
   void ExecuteUserJavaScript(NSString* javaScript);
   const std::string& GetContentsMimeType() const;
@@ -162,34 +198,32 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
   bool IsWebPageInFullscreenMode() const;
   const FaviconStatus& GetFaviconStatus() const;
   void SetFaviconStatus(const FaviconStatus& favicon_status);
+  bool IsCustomOpenPanelSupported() const;
+  void SetCustomOpenPanelSupported(bool supports);
   int GetNavigationItemCount() const;
   const GURL& GetVisibleURL() const;
   const GURL& GetLastCommittedURL() const;
-  GURL GetCurrentURL(URLVerificationTrustLevel* trust_level) const;
+  std::optional<GURL> GetLastCommittedURLIfTrusted() const;
   id<CRWWebViewProxy> GetWebViewProxy() const;
   void DidChangeVisibleSecurityState();
   WebState::InterfaceBinder* GetInterfaceBinderForMainFrame();
   bool HasOpener() const;
   void SetHasOpener(bool has_opener);
   bool CanTakeSnapshot() const;
-  void TakeSnapshot(const gfx::RectF& rect, SnapshotCallback callback);
+  void TakeSnapshot(const CGRect rect, SnapshotCallback callback);
   void CreateFullPagePdf(base::OnceCallback<void(NSData*)> callback);
   void CloseMediaPresentations();
   void CloseWebState();
   bool SetSessionStateData(NSData* data);
   NSData* SessionStateData() const;
-  PermissionState GetStateForPermission(Permission permission) const
-      API_AVAILABLE(ios(15.0));
-  void SetStateForPermission(PermissionState state, Permission permission)
-      API_AVAILABLE(ios(15.0));
-  NSDictionary<NSNumber*, NSNumber*>* GetStatesForAllPermissions() const
-      API_AVAILABLE(ios(15.0));
-  void OnStateChangedForPermission(Permission permission)
-      API_AVAILABLE(ios(15.0));
+  PermissionState GetStateForPermission(Permission permission) const;
+  void SetStateForPermission(PermissionState state, Permission permission);
+  NSDictionary<NSNumber*, NSNumber*>* GetStatesForAllPermissions() const;
+  void OnStateChangedForPermission(Permission permission);
   void RequestPermissionsWithDecisionHandler(
       NSArray<NSNumber*>* permissions,
-      PermissionDecisionHandler web_view_decision_handler)
-      API_AVAILABLE(ios(15.0));
+      const GURL& origin,
+      PermissionDecisionHandler web_view_decision_handler);
 
   // NavigationManagerDelegate:
   void ClearDialogs() final;
@@ -203,12 +237,19 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
   id<CRWWebViewNavigationProxy> GetWebViewNavigationProxy() const final;
   void GoToBackForwardListItem(WKBackForwardListItem* wk_item,
                                NavigationItem* item,
-                               NavigationInitiationType type,
-                               bool has_user_gesture) final;
-  void RemoveWebView() final;
-  NavigationItemImpl* GetPendingItem() final;
+                               BackForwardNavigationType navigation_type,
+                               NavigationInitiationType initiation_type,
+                               bool has_user_gesture) override;
+  void RemoveWebView() override;
+  NavigationItemImpl* GetPendingItem() override;
+  void UpdateSSLStatusForCurrentNavigationItem() override;
+  GURL GetCurrentURL() const override;
 
  private:
+  // Class storing metadata needed while the navigation history restoration
+  // is in progress. The instance is deleted when the restoration completes.
+  class PendingSession;
+
   // Creates a WebUIIOS object for `url` that is owned by the called. Returns
   // nullptr if `url` does not correspond to a WebUI page.
   std::unique_ptr<WebUIIOS> CreateWebUIIOS(const GURL& url);
@@ -232,14 +273,14 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
       base::OnceCallback<void(Args...)> callback);
 
   // Owner. Never null. Owns this object.
-  WebStateImpl* owner_ = nullptr;
+  const raw_ptr<WebStateImpl> owner_;
 
   // The InterfaceBinder exposed by WebStateImpl. Used to handle Mojo
   // interface requests from the main frame.
   InterfaceBinder interface_binder_;
 
   // Delegate, not owned by this object.
-  WebStateDelegate* delegate_ = nullptr;
+  raw_ptr<WebStateDelegate> delegate_ = nullptr;
 
   // Stores whether the web state is currently loading a page.
   bool is_loading_ = false;
@@ -261,8 +302,7 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
   // The current page MIME type.
   std::string mime_type_;
 
-  // Whether this WebState has an opener.  See
-  // WebState::CreateParams::created_with_opener_ for more details.
+  // Whether this WebState has an opener.
   bool created_with_opener_ = false;
 
   // The time that this WebState was last made active. The initial value is
@@ -270,11 +310,11 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
   base::Time last_active_time_ = base::Time::Now();
 
   // The WebState's creation time.
-  base::Time creation_time_ = base::Time::Now();
+  const base::Time creation_time_;
 
-  // The most recently restored session history that has not yet committed in
-  // the WKWebView. This is reset in OnNavigationItemCommitted().
-  CRWSessionStorage* restored_session_storage_ = nil;
+  // The data used for the in-progress navigation history restoration that has
+  // not yet committed in the WKWebView. Reset in OnNavigationItemCommitted().
+  std::unique_ptr<PendingSession> restored_session_;
 
   // Favicons URLs received in OnFaviconUrlUpdated.
   // WebStateObserver:FaviconUrlUpdated must be called for same-document
@@ -288,16 +328,14 @@ class WebStateImpl::RealizedWebState final : public NavigationManagerDelegate {
   // The User-Agent type.
   UserAgentType user_agent_type_ = UserAgentType::AUTOMATIC;
 
-  // The favicon status used while restoring the session from the storage.
-  // May be empty even during session restoration.
-  FaviconStatus favicon_status_;
+  // The potential User-Agent override string.
+  std::optional<std::string> user_agent_override_;
 
-  // The stable identifier. Set during `Init()` call. Never nil after this
-  // method has been called. Stable across application restarts.
-  __strong NSString* stable_identifier_ = nil;
+  // Whether the WebState supports a custom open panel.
+  bool supports_custom_open_panel_ = false;
 
   // The unique identifier. Stable across application restarts.
-  const SessionID unique_identifier_;
+  const WebStateID unique_identifier_;
 
   // The fake CRWWebViewNavigationProxy used for testing. Nil in production.
   __strong id<CRWWebViewNavigationProxy> web_view_for_testing_;

@@ -10,7 +10,6 @@
 #include <string>
 #include <utility>
 
-#include "base/atomicops.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/lazy_instance.h"
@@ -48,7 +47,6 @@ content::BrowserThread::ID MapWebToBrowserID(WebThread::ID identifier) {
     return content::BrowserThread::IO;
   }
   NOTREACHED();
-  return content::BrowserThread::UI;  // default?
 }
 
 WebThread::ID MapBrowserToWebID(content::BrowserThread::ID identifier) {
@@ -73,8 +71,8 @@ bool ContentThreadImpl::CurrentlyOn(ID identifier) {
 }
 
 // static
-std::string ContentThreadImpl::GetDCheckCurrentlyOnErrorMessage(ID expected) {
-  return content::BrowserThread::GetDCheckCurrentlyOnErrorMessage(
+std::string ContentThreadImpl::GetCurrentlyOnErrorMessage(ID expected) {
+  return content::BrowserThread::GetCurrentlyOnErrorMessage(
       MapWebToBrowserID(expected));
 }
 

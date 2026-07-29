@@ -4,57 +4,87 @@
 
 package org.chromium.chrome.browser.segmentation_platform;
 
-import org.chromium.base.supplier.Supplier;
+import org.chromium.base.Callback;
+import org.chromium.base.CallbackController;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.bookmarks.BookmarkModel;
-import org.chromium.chrome.browser.commerce.PriceTrackingUtils;
-import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.components.bookmarks.BookmarkId;
+import org.chromium.chrome.browser.toolbar.adaptive.AdaptiveToolbarButtonVariant;
+import org.chromium.components.commerce.core.CommerceFeatureUtils;
 import org.chromium.components.commerce.core.ShoppingService;
+import org.chromium.components.embedder_support.util.UrlUtilities;
+import org.chromium.url.GURL;
+
+import java.util.function.Supplier;
 
 /** Provides price tracking signal for showing contextual page action for a given tab. */
+@NullMarked
 public class PriceTrackingActionProvider implements ContextualPageActionController.ActionProvider {
     private final Supplier<ShoppingService> mShoppingServiceSupplier;
-    private final Supplier<BookmarkModel> mBookmarkModelSupplier;
-    private final Supplier<Profile> mProfileSupplier;
+    private final Supplier<@Nullable BookmarkModel> mBookmarkModelSupplier;
+
+    private @Nullable CallbackController mCallbackController;
 
     /** Constructor. */
-    public PriceTrackingActionProvider(Supplier<ShoppingService> shoppingServiceSupplier,
-            Supplier<BookmarkModel> bookmarkModelSupplier, Supplier<Profile> profileSupplier) {
+    public PriceTrackingActionProvider(
+            Supplier<ShoppingService> shoppingServiceSupplier,
+            Supplier<@Nullable BookmarkModel> bookmarkModelSupplier) {
         mShoppingServiceSupplier = shoppingServiceSupplier;
         mBookmarkModelSupplier = bookmarkModelSupplier;
-        mProfileSupplier = profileSupplier;
     }
 
     @Override
     public void getAction(Tab tab, SignalAccumulator signalAccumulator) {
-        final BookmarkModel bookmarkModel = mBookmarkModelSupplier.get();
-        bookmarkModel.finishLoadingBookmarkModel(() -> {
-            ShoppingService shoppingService = mShoppingServiceSupplier.get();
+        final GURL tabUrl = tab != null ? tab.getUrl() : null;
+        if (tabUrl == null || !UrlUtilities.isHttpOrHttps(tabUrl)) {
+            signalAccumulator.setSignal(AdaptiveToolbarButtonVariant.PRICE_TRACKING, false);
+            return;
+        }
 
-            // If the user isn't allowed to have the shopping list feature, don't do any more work.
-            if (!shoppingService.isShoppingListEligible()) {
-                signalAccumulator.setHasPriceTracking(false);
-                signalAccumulator.notifySignalAvailable();
-                return;
-            }
+        if (mCallbackController != null) {
+            mCallbackController.destroy();
+        }
+        mCallbackController = new CallbackController();
 
-            shoppingService.getProductInfoForUrl(tab.getUrl(), (url, info) -> {
-                BookmarkId bookmarkId = bookmarkModel.getUserBookmarkIdForTab(tab);
-                boolean canTrackPrice = info != null;
+        BookmarkModel bookmarkModel = mBookmarkModelSupplier.get();
+        assert bookmarkModel != null;
+        bookmarkModel.finishLoadingBookmarkModel(
+                mCallbackController.makeCancelable(() -> runAction(tabUrl, signalAccumulator)));
+    }
 
-                if (bookmarkId == null) {
-                    signalAccumulator.setHasPriceTracking(canTrackPrice);
-                    signalAccumulator.notifySignalAvailable();
-                } else {
-                    PriceTrackingUtils.isBookmarkPriceTracked(
-                            mProfileSupplier.get(), bookmarkId.getId(), (isTracked) -> {
-                                // If the product is already tracked, don't make the icon available.
-                                signalAccumulator.setHasPriceTracking(canTrackPrice && !isTracked);
-                                signalAccumulator.notifySignalAvailable();
-                            });
-                }
-            });
-        });
+    private void runAction(GURL tabUrl, SignalAccumulator signalAccumulator) {
+        ShoppingService shoppingService = mShoppingServiceSupplier.get();
+
+        // If the user isn't allowed to have the shopping list feature, don't do any more work.
+        if (!CommerceFeatureUtils.isShoppingListEligible(shoppingService)) {
+            signalAccumulator.setSignal(AdaptiveToolbarButtonVariant.PRICE_TRACKING, false);
+            return;
+        }
+
+        if (mCallbackController == null) {
+            // Should not happen as runAction is called from a callback wrapped by the controller,
+            // but check just in case.
+            return;
+        }
+
+        Callback<ShoppingService.@Nullable ProductInfo> cancelableCallback =
+                mCallbackController.makeCancelable(
+                        (info) -> {
+                            boolean canTrackPrice = info != null && info.productClusterId != null;
+                            signalAccumulator.setSignal(
+                                    AdaptiveToolbarButtonVariant.PRICE_TRACKING, canTrackPrice);
+                        });
+
+        shoppingService.getProductInfoForUrl(
+                tabUrl, (url, info) -> cancelableCallback.onResult(info));
+    }
+
+    @Override
+    public void destroy() {
+        if (mCallbackController != null) {
+            mCallbackController.destroy();
+            mCallbackController = null;
+        }
     }
 }

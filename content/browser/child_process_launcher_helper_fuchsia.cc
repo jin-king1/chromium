@@ -9,7 +9,7 @@
 #include "base/strings/stringprintf.h"
 #include "content/browser/child_process_launcher.h"
 #include "content/public/browser/child_process_launcher_utils.h"
-#include "content/public/common/sandboxed_process_launcher_delegate.h"
+#include "content/public/browser/sandboxed_process_launcher_delegate.h"
 #include "printing/buildflags/buildflags.h"
 #include "sandbox/policy/mojom/sandbox.mojom.h"
 
@@ -40,6 +40,8 @@ const char* ProcessNameFromSandboxType(sandbox::mojom::Sandbox sandbox_type) {
       return "audio";
     case sandbox::mojom::Sandbox::kCdm:
       return "cdm";
+    case sandbox::mojom::Sandbox::kOnDeviceModelExecution:
+      return "on-device-model-execution";
     case sandbox::mojom::Sandbox::kPrintCompositor:
       return "print-compositor";
     case sandbox::mojom::Sandbox::kSpeechRecognition:
@@ -53,11 +55,11 @@ const char* ProcessNameFromSandboxType(sandbox::mojom::Sandbox sandbox_type) {
 
 }  // namespace
 
-void ChildProcessLauncherHelper::SetProcessBackgroundedOnLauncherThread(
+void ChildProcessLauncherHelper::SetProcessPriorityOnLauncherThread(
     base::Process process,
-    bool is_background) {
+    base::Process::Priority priority) {
   DCHECK(CurrentlyOnProcessLauncherTaskRunner());
-  // TODO(https://crbug.com/926583): Fuchsia does not currently support this.
+  // TODO(crbug.com/40611633): Fuchsia does not currently support this.
 }
 
 ChildProcessTerminationInfo ChildProcessLauncherHelper::GetTerminationInfo(

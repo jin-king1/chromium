@@ -5,6 +5,11 @@
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_views_test.h"
 
 #include "build/build_config.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
+#include "content/public/test/test_utils.h"
+#include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/interaction/expect_call_in_scope.h"
 
 #if BUILDFLAG(IS_LINUX)
 #include "ui/linux/linux_ui.h"
@@ -18,20 +23,41 @@ OmniboxPopupViewViewsTest::ThemeChangeWaiter::~ThemeChangeWaiter() {
   content::RunAllPendingInMessageLoop();
 }
 
+void OmniboxPopupViewViewsTest::SetUpOnMainThread() {
+  if (base::FeatureList::IsEnabled(omnibox::internal::kWebUIOmniboxPopup)) {
+    GTEST_SKIP() << "Views popup code shouldn't run when kWebUIOmniboxPopup "
+                    "is enabled.";
+  }
+}
+
 views::Widget* OmniboxPopupViewViewsTest::CreatePopupForTestQuery() {
-  EXPECT_TRUE(edit_model()->result().empty());
-  EXPECT_FALSE(popup_view()->IsOpen());
+  const auto* autocomplete_controller = controller()->autocomplete_controller();
+  EXPECT_TRUE(autocomplete_controller->result().empty());
+  EXPECT_FALSE(controller()->IsPopupOpen());
   EXPECT_FALSE(GetPopupWidget());
 
-  edit_model()->SetUserText(u"foo");
-  AutocompleteInput input(
-      u"foo", metrics::OmniboxEventProto::BLANK,
-      ChromeAutocompleteSchemeClassifier(browser()->profile()));
-  input.set_omit_asynchronous_matches(true);
-  edit_model()->autocomplete_controller()->Start(input);
+  // Verify that the popup state manager callback is called when popup opens.
+  UNCALLED_MOCK_CALLBACK(
+      base::RepeatingCallback<void(OmniboxPopupState, OmniboxPopupState)>,
+      popup_callback);
+  const auto subscription =
+      controller()->popup_state_manager()->AddPopupStateChangedCallback(
+          popup_callback.Get());
 
-  EXPECT_FALSE(edit_model()->result().empty());
-  EXPECT_TRUE(popup_view()->IsOpen());
+  EXPECT_CALL_IN_SCOPE(
+      popup_callback,
+      Run(OmniboxPopupState::kNone, OmniboxPopupState::kClassic), {
+        edit_model()->SetUserText(u"foo");
+        AutocompleteInput input(
+            u"foo", metrics::OmniboxEventProto::BLANK,
+            ChromeAutocompleteSchemeClassifier(browser()->GetProfile()));
+        input.set_omit_asynchronous_matches(true);
+        controller()->StartAutocomplete(input);
+
+        EXPECT_FALSE(autocomplete_controller->result().empty());
+        EXPECT_TRUE(controller()->IsPopupOpen());
+      });
+
   views::Widget* popup = GetPopupWidget();
   EXPECT_TRUE(popup);
   return popup;
@@ -44,13 +70,13 @@ void OmniboxPopupViewViewsTest::UseDefaultTheme() {
   // However BrowserThemeProvider::GetColorProviderColor() currently does not
   // pass an aura::Window to LinuxUI::GetNativeTheme() - which means that the
   // NativeThemeGtk instance will always be returned.
-  // TODO(crbug.com/1304441): Remove this once GTK passthrough is fully
+  // TODO(crbug.com/40217733): Remove this once GTK passthrough is fully
   // supported.
   ui::LinuxUiGetter::set_instance(nullptr);
   ui::NativeTheme::GetInstanceForNativeUi()->NotifyOnNativeThemeUpdated();
 
   ThemeService* theme_service =
-      ThemeServiceFactory::GetForProfile(browser()->profile());
+      ThemeServiceFactory::GetForProfile(browser()->GetProfile());
   if (!theme_service->UsingDefaultTheme()) {
     ThemeChangeWaiter wait(theme_service);
     theme_service->UseDefaultTheme();

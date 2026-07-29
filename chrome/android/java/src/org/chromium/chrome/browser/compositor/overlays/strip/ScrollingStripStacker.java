@@ -4,37 +4,57 @@
 
 package org.chromium.chrome.browser.compositor.overlays.strip;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.ui.base.LocalizationUtils;
+
 /**
- * A stacker that tells the {@link StripLayoutHelper} how to layer the tabs for the
- * {@link StaticLayout} when the available window width is < 600dp. Tabs will be stacked side by
- * side and the entire strip will scroll. Tabs will never completely overlap each other.
+ * A stacker that tells the {@link StripLayoutHelper} how to layer the views for tab strip. Tabs
+ * will be stacked side by side and the entire strip will scroll. Tabs will never completely overlap
+ * each other.
  */
+@NullMarked
 public class ScrollingStripStacker extends StripStacker {
+
     @Override
-    public void setTabOffsets(int selectedIndex, StripLayoutTab[] indexOrderedTabs,
-            float tabStackWidth, int maxTabsToStack, float tabOverlapWidth, float stripLeftMargin,
-            float stripRightMargin, float stripWidth, boolean inReorderMode, boolean tabClosing,
-            boolean tabCreating, float cachedTabWidth) {
-        for (int i = 0; i < indexOrderedTabs.length; i++) {
-            StripLayoutTab tab = indexOrderedTabs[i];
-            // When a tab is closed, drawX and width update will be animated so skip this.
-            if (!tabClosing) {
-                tab.setDrawX(tab.getIdealX() + tab.getOffsetX());
-                // When a tab is being created, all tabs are animating to their desired width.
-                if (!tabCreating) tab.setWidth(cachedTabWidth);
-            }
-            tab.setDrawY(tab.getOffsetY());
-            tab.setVisiblePercentage(1.f);
-            tab.setContentOffsetX(0.f);
+    public void pushDrawPropertiesToViews(
+            StripLayoutView[] indexOrderedViews, float leftBound, float rightBound) {
+        for (int i = 0; i < indexOrderedViews.length; i++) {
+            StripLayoutView view = indexOrderedViews[i];
+
+            view.setDrawX(view.getIdealX() + view.getOffsetX());
+            view.setDrawY(view.getOffsetY());
+            // visibility is based drawX - call this after setting drawX / Y.
+            setVisible(view, leftBound, rightBound);
         }
     }
 
-    @Override
-    public void performOcclusionPass(
-            int selectedIndex, StripLayoutTab[] indexOrderedTabs, float stripWidth) {
-        for (int i = 0; i < indexOrderedTabs.length; i++) {
-            StripLayoutTab tab = indexOrderedTabs[i];
-            tab.setVisible((tab.getDrawX() + tab.getWidth()) >= 0 && tab.getDrawX() <= stripWidth);
+    private static void setVisible(StripLayoutView view, float leftBound, float rightBound) {
+        float drawXAccountingPadding = 0f;
+        float width = 0f;
+        if (view instanceof StripLayoutGroupTitle groupTitle) {
+            float paddedX = groupTitle.getPaddedX();
+            float paddedWidth = groupTitle.getPaddedWidth();
+            float bottomIndicatorWidth = groupTitle.getBottomIndicatorWidth();
+
+            drawXAccountingPadding = paddedX;
+            if (LocalizationUtils.isLayoutRtl() && bottomIndicatorWidth > 0) {
+                drawXAccountingPadding += paddedWidth - bottomIndicatorWidth;
+            }
+            width = Math.max(bottomIndicatorWidth, paddedWidth);
+        } else if (view instanceof StripLayoutTab) {
+            // Tabs do not have padding.
+            drawXAccountingPadding = view.getDrawX();
+            width = view.getWidth();
+            if (width < StripLayoutTab.MIN_WIDTH) {
+                // Hide the tab if its width is too small to properly display its favicon.
+                view.setVisible(false);
+                return;
+            }
+        } else {
+            assert false : "Method should be invoked only for tabs and groups";
         }
+        view.setVisible(
+                (drawXAccountingPadding + width) >= leftBound
+                        && drawXAccountingPadding <= rightBound);
     }
 }

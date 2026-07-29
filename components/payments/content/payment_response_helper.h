@@ -10,7 +10,9 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
-#include "components/autofill/core/browser/data_model/autofill_profile.h"
+#include "components/autofill/core/browser/country_type.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_i18n_api.h"
+#include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/payments/content/payment_app.h"
 #include "third_party/blink/public/mojom/payments/payment_request.mojom.h"
 
@@ -20,23 +22,24 @@ class PaymentRequestDelegate;
 class PaymentRequestSpec;
 
 // A helper class to facilitate the creation of the PaymentResponse.
-class PaymentResponseHelper
-    : public PaymentApp::Delegate,
-      public base::SupportsWeakPtr<PaymentResponseHelper> {
+class PaymentResponseHelper final : public PaymentApp::Delegate {
  public:
   class Delegate {
    public:
-    virtual ~Delegate() {}
+    virtual ~Delegate() = default;
 
     virtual void OnPaymentResponseReady(
         mojom::PaymentResponsePtr payment_response) = 0;
 
-    virtual void OnPaymentResponseError(const std::string& error_message) = 0;
+    virtual void OnPaymentResponseError(mojom::PaymentEventResponseType error,
+                                        const std::string& error_message) = 0;
+
+    virtual bool WasPaymentHandlerWindowInteractedWith() const = 0;
   };
 
   // The spec, selected_app and delegate cannot be null.
   PaymentResponseHelper(
-      const std::string& app_locale,
+      std::string app_locale,
       base::WeakPtr<PaymentRequestSpec> spec,
       base::WeakPtr<PaymentApp> selected_app,
       base::WeakPtr<PaymentRequestDelegate> payment_request_delegate,
@@ -53,7 +56,11 @@ class PaymentResponseHelper
   void OnInstrumentDetailsReady(const std::string& method_name,
                                 const std::string& stringified_details,
                                 const PayerData& payer_data) override;
-  void OnInstrumentDetailsError(const std::string& error_message) override;
+  void OnInstrumentDetailsError(mojom::PaymentEventResponseType error,
+                                const std::string& error_message) override;
+
+  // Called when user interaction is captured on the payment handler window.
+  void OnUserInteractionCaptured();
 
   mojom::PayerDetailPtr GeneratePayerDetail(
       const autofill::AutofillProfile* selected_contact_profile) const;
@@ -66,9 +73,14 @@ class PaymentResponseHelper
   void OnAddressNormalized(bool success,
                            const autofill::AutofillProfile& normalized_profile);
 
-  const raw_ref<const std::string> app_locale_;
+  // Returns true if user interaction was captured on the payment handler
+  // window.
+  bool WasPaymentHandlerWindowInteractedWith();
+
+  const std::string app_locale_;
   bool is_waiting_for_shipping_address_normalization_;
   bool is_waiting_for_instrument_details_;
+  bool is_waiting_for_user_gesture_ = false;
 
   base::WeakPtr<PaymentRequestSpec> spec_;
   base::WeakPtr<Delegate> delegate_;
@@ -80,7 +92,8 @@ class PaymentResponseHelper
 
   // A normalized copy of the shipping address, which will be included in the
   // PaymentResponse.
-  autofill::AutofillProfile shipping_address_;
+  autofill::AutofillProfile shipping_address_{
+      autofill::i18n_model_definition::kLegacyHierarchyCountryCode};
 
   // Instrument Details.
   std::string method_name_;

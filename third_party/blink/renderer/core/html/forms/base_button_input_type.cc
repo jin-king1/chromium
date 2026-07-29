@@ -37,7 +37,7 @@
 #include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/html_names.h"
-#include "third_party/blink/renderer/core/layout/ng/layout_ng_button.h"
+#include "third_party/blink/renderer/core/layout/layout_block_flow.h"
 
 namespace blink {
 
@@ -73,15 +73,19 @@ bool BaseButtonInputType::ShouldSaveAndRestoreFormControlState() const {
   return false;
 }
 
+bool BaseButtonInputType::IsAutoDirectionalityFormAssociated() const {
+  return true;
+}
+
 void BaseButtonInputType::AppendToFormData(FormData&) const {}
 
-ControlPart BaseButtonInputType::AutoAppearance() const {
-  return kPushButtonPart;
+AppearanceValue BaseButtonInputType::AutoAppearance() const {
+  return AppearanceValue::kPushButton;
 }
 
 LayoutObject* BaseButtonInputType::CreateLayoutObject(
     const ComputedStyle&) const {
-  return MakeGarbageCollected<LayoutNGButton>(&GetElement());
+  return MakeGarbageCollected<LayoutBlockFlow>(&GetElement());
 }
 
 InputType::ValueMode BaseButtonInputType::GetValueMode() const {
@@ -101,6 +105,12 @@ bool BaseButtonInputType::MatchesDefaultPseudoClass() {
   // canBeSuccessfulSubmitButton() first for early return.
   return CanBeSuccessfulSubmitButton() && GetElement().Form() &&
          GetElement().Form()->FindDefaultButton() == &GetElement();
+}
+
+bool BaseButtonInputType::SupportsBaseAppearance(
+    Element::BaseAppearanceValue value) const {
+  return RuntimeEnabledFeatures::AppearanceBaseEnabled() &&
+         value == Element::BaseAppearanceValue::kBase;
 }
 
 }  // namespace blink

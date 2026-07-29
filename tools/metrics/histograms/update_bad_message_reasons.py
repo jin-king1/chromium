@@ -13,7 +13,9 @@ from __future__ import print_function
 import os
 import sys
 
-from update_histogram_enum import UpdateHistogramEnum
+import setup_modules  # pylint: disable=unused-import
+
+from chromium_src.tools.metrics.histograms.update_histogram_enum import UpdateHistogramEnum
 
 if __name__ == '__main__':
   if len(sys.argv) > 1:
@@ -28,16 +30,8 @@ if __name__ == '__main__':
       'content/browser/bad_message.h': {
           'name': 'BadMessageReasonContent'
       },
-      'components/autofill/content/browser/bad_message.h': {
-          'name': 'BadMessageReasonAutofill',
-          'end_marker': '^kMaxValue .*',
-          'strip_k_prefix': True
-      },
       'components/guest_view/browser/bad_message.h': {
           'name': 'BadMessageReasonGuestView'
-      },
-      'components/nacl/browser/bad_message.h': {
-          'name': 'BadMessageReasonNaCl'
       },
       'components/password_manager/content/browser/bad_message.h': {
           'name': 'BadMessageReasonPasswordManager'
@@ -50,7 +44,8 @@ if __name__ == '__main__':
   for header_file, details in histograms.items():
     end_marker = details.get('end_marker', '^BAD_MESSAGE_MAX')
     strip_k_prefix = details.get('strip_k_prefix', False)
-    UpdateHistogramEnum(histogram_enum_name=details['name'],
+    UpdateHistogramEnum('tools/metrics/histograms/metadata/stability/enums.xml',
+                        histogram_enum_name=details['name'],
                         source_enum_path=header_file,
                         start_marker='^enum (class )?BadMessageReason {',
                         end_marker=end_marker,

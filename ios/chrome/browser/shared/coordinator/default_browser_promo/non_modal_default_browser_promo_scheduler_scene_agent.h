@@ -5,18 +5,11 @@
 #ifndef IOS_CHROME_BROWSER_SHARED_COORDINATOR_DEFAULT_BROWSER_PROMO_NON_MODAL_DEFAULT_BROWSER_PROMO_SCHEDULER_SCENE_AGENT_H_
 #define IOS_CHROME_BROWSER_SHARED_COORDINATOR_DEFAULT_BROWSER_PROMO_NON_MODAL_DEFAULT_BROWSER_PROMO_SCHEDULER_SCENE_AGENT_H_
 
-#import <UIKit/UIKit.h>
-
 #import "ios/chrome/browser/shared/coordinator/scene/observing_scene_state_agent.h"
-
-class Browser;
-@class CommandDispatcher;
 
 // A scene-agent scheduler that determines when to show the non-modal default
 // browser promo based on many sources of data.
 @interface NonModalDefaultBrowserPromoSchedulerSceneAgent : ObservingSceneAgent
-
-- (instancetype)init NS_DESIGNATED_INITIALIZER;
 
 // Handles the user pasting in the omnibox and schedules a promo if necessary.
 - (void)logUserPastedInOmnibox;

@@ -5,18 +5,19 @@
 #include "chrome/browser/ash/printing/usb_printer_notification.h"
 
 #include "ash/constants/notifier_catalogs.h"
-#include "ash/public/cpp/notification_utils.h"
+#include "ash/resources/vector_icons/vector_icons.h"
+#include "ash/strings/grit/ash_strings.h"
+#include "ash/webui/settings/public/constants/routes.mojom.h"
+#include "base/check_deref.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/notifications/notification_display_service.h"
+#include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/notifications/notification_handler.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/chrome_pages.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
-#include "chrome/browser/ui/webui/settings/chromeos/constants/routes.mojom.h"
-#include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
-#include "chromeos/constants/chromeos_features.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/gfx/image/image.h"
@@ -42,12 +43,8 @@ UsbPrinterNotification::UsbPrinterNotification(
       type_(type),
       profile_(profile) {
   message_center::RichNotificationData rich_notification_data;
-  rich_notification_data.vector_small_image = &kNotificationPrintingIcon;
-  if (chromeos::features::IsJellyEnabled()) {
-    rich_notification_data.accent_color_id = cros_tokens::kCrosSysPrimary;
-  } else {
-    rich_notification_data.accent_color = ash::kSystemNotificationColorNormal;
-  }
+  rich_notification_data.vector_small_image = &ash::kNotificationPrintingIcon;
+  rich_notification_data.accent_color_id = cros_tokens::kCrosSysPrimary;
   notification_ = std::make_unique<message_center::Notification>(
       message_center::NOTIFICATION_TYPE_SIMPLE, notification_id_,
       std::u16string(),  // title
@@ -71,7 +68,7 @@ UsbPrinterNotification::~UsbPrinterNotification() = default;
 
 void UsbPrinterNotification::CloseNotification() {
   NotificationDisplayService* display_service =
-      NotificationDisplayService::GetForProfile(profile_);
+      NotificationDisplayServiceFactory::GetForProfile(profile_);
   display_service->Close(NotificationHandler::Type::TRANSIENT,
                          notification_id_);
 }
@@ -80,9 +77,8 @@ void UsbPrinterNotification::Close(bool by_user) {
   visible_ = false;
 }
 
-void UsbPrinterNotification::Click(
-    const absl::optional<int>& button_index,
-    const absl::optional<std::u16string>& reply) {
+void UsbPrinterNotification::Click(const std::optional<int>& button_index,
+                                   const std::optional<std::u16string>& reply) {
   if (!button_index) {
     // Body of notification clicked.
     visible_ = false;
@@ -90,11 +86,11 @@ void UsbPrinterNotification::Click(
       // If we are in guest mode then we need to use the OffTheRecord profile to
       // open the Settings page. There is a check in Browser::Browser that only
       // OffTheRecord profiles can open browser windows in guest mode.
-      chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-          profile_->IsGuestSession()
-              ? profile_->GetPrimaryOTRProfile(/*create_if_needed=*/true)
-              : profile_.get(),
-          chromeos::settings::mojom::kPrintingDetailsSubpagePath);
+      auto* user = ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
+          profile_.get());
+      ash::SettingsAppManager::Get()->Open(
+          CHECK_DEREF(user),
+          {.sub_page = chromeos::settings::mojom::kPrintingDetailsSubpagePath});
     }
     return;
   }
@@ -104,7 +100,7 @@ void UsbPrinterNotification::Click(
 
 void UsbPrinterNotification::ShowNotification() {
   NotificationDisplayService* display_service =
-      NotificationDisplayService::GetForProfile(profile_);
+      NotificationDisplayServiceFactory::GetForProfile(profile_);
   display_service->Display(NotificationHandler::Type::TRANSIENT, *notification_,
                            /*metadata=*/nullptr);
   visible_ = true;

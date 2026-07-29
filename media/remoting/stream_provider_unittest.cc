@@ -4,7 +4,9 @@
 
 #include "media/remoting/stream_provider.h"
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/task_environment.h"
 #include "media/base/audio_decoder_config.h"
@@ -33,7 +35,7 @@ class StreamProviderTest : public testing::Test {
   StreamProviderTest()
       : audio_config_(TestAudioConfig::Normal()),
         video_config_(TestVideoConfig::Normal()),
-        audio_buffer_(new DecoderBuffer(kBufferSize)),
+        audio_buffer_(base::MakeRefCounted<DecoderBuffer>(kBufferSize)),
         video_buffer_(DecoderBuffer::CreateEOSBuffer()) {}
 
   void SetUp() override {
@@ -299,7 +301,7 @@ TEST_F(StreamProviderTest, ReadBuffer) {
       1, base::BindOnce(&StreamProviderTest::OnBufferReadFromDemuxerStream,
                         base::Unretained(this), DemuxerStream::Type::AUDIO));
   task_environment_.RunUntilIdle();
-  EXPECT_EQ(audio_buffer_->data_size(), received_audio_buffer_->data_size());
+  EXPECT_EQ(audio_buffer_->size(), received_audio_buffer_->size());
   EXPECT_EQ(audio_buffer_->end_of_stream(),
             received_audio_buffer_->end_of_stream());
   EXPECT_EQ(audio_buffer_->is_key_frame(),
@@ -328,6 +330,29 @@ TEST_F(StreamProviderTest, FlushUntil) {
 
   EXPECT_EQ(GetAudioCurrentFrameCount(), flush_audio_count);
   EXPECT_EQ(GetVideoCurrentFrameCount(), flush_video_count);
+}
+
+TEST_F(StreamProviderTest, DuplicateAcquireDemuxer) {
+  InitializeDemuxer();
+  SendRpcAcquireDemuxer();
+  task_environment_.RunUntilIdle();
+  EXPECT_TRUE(stream_provider_initialized_);
+
+  // Cache raw pointers.
+  std::vector<raw_ptr<DemuxerStream>> streams =
+      stream_provider_->GetAllStreams();
+  ASSERT_EQ(streams.size(), 2u);
+  DemuxerStream* cached_audio =
+      streams[0]->type() == DemuxerStream::AUDIO ? streams[0] : streams[1];
+
+  // Second acquisition.
+  SendRpcAcquireDemuxer();
+  task_environment_.RunUntilIdle();
+
+  // The first streams should still be valid and not destroyed.
+  // If they were destroyed, this call would trigger a UAF.
+  cached_audio->Read(1, base::DoNothing());
+  task_environment_.RunUntilIdle();
 }
 
 }  // namespace remoting

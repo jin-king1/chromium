@@ -2,14 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import "ios/chrome/browser/shared/ui/list_model/list_model.h"
-
 #import "ios/chrome/browser/shared/ui/list_model/list_item.h"
+#import "ios/chrome/browser/shared/ui/list_model/list_model.h"
 #import "testing/platform_test.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace {
 
@@ -195,6 +190,16 @@ TEST_F(ListModelCollapseTest, CollapsedSectionMode) {
   // SectionIdentifierBar
   EXPECT_EQ(2, [model numberOfItemsInSection:1]);
   EXPECT_FALSE([model sectionIsCollapsed:SectionIdentifierBar]);
+}
+
+// Tests that `@`-prefixed collapsed keys (e.g., `@count` or `@self`) round-trip
+// correctly without Key-Value Coding (KVC) dynamic selector dispatch.
+TEST_F(ListModelCollapseTest, CollapsedKeyWithAtPrefix) {
+  [model setSectionIdentifier:SectionIdentifierFoo collapsedKey:@"@count"];
+  [model setSection:SectionIdentifierFoo collapsed:YES];
+  EXPECT_TRUE([model sectionIsCollapsed:SectionIdentifierFoo]);
+  [model setSection:SectionIdentifierFoo collapsed:NO];
+  EXPECT_FALSE([model sectionIsCollapsed:SectionIdentifierFoo]);
 }
 
 }  // namespace

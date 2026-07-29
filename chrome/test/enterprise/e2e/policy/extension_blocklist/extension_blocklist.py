@@ -13,7 +13,7 @@ from infra import ChromeEnterpriseTestCase
 @environment(file="../policy_test.asset.textpb")
 class ExtensionInstallBlocklistTest(ChromeEnterpriseTestCase):
   """Test the ExtensionInstallBlocklist policy.
-    https://cloud.google.com/docs/chrome-enterprise/policies/?policy=ExtensionInstallBlocklist"""
+    https://chromeenterprise.google/policies/?policy=ExtensionInstallBlocklist"""
 
   @before_all
   def setup(self):
@@ -39,22 +39,22 @@ class ExtensionInstallBlocklistTest(ChromeEnterpriseTestCase):
     self.RunCommand(self.win_config['client'], 'gpupdate /force')
     logging.info('Disabled extension install for ' + extension)
 
-    test_url = 'https://chrome.google.com/webstore/detail/google-hangouts/nckgahadagoaajjgafhacjanaoiihapd'
+    test_url = 'https://chromewebstore.google.com/detail/google-translate/aapbdbdomjkkjkaonfhkkikfgjllcleb'
     output = self.installExtension(test_url)
     self.assertIn('blocked', output)
 
   @test
   def test_ExtensionBlocklist_hangout(self):
-    extension = 'nckgahadagoaajjgafhacjanaoiihapd'
+    extension = 'aapbdbdomjkkjkaonfhkkikfgjllcleb'
     self.SetPolicy(self.win_config['dc'], r'ExtensionInstallBlocklist\1',
                    extension, 'String')
     self.RunCommand(self.win_config['client'], 'gpupdate /force')
     logging.info('Disabled extension install for ' + extension)
 
-    test_url = 'https://chrome.google.com/webstore/detail/google-hangouts/nckgahadagoaajjgafhacjanaoiihapd'
+    test_url = 'https://chromewebstore.google.com/detail/google-translate/aapbdbdomjkkjkaonfhkkikfgjllcleb'
     output = self.installExtension(test_url)
     self.assertIn('blocked', output)
 
-    positive_test_url = 'https://chrome.google.com/webstore/detail/grammarly-for-chrome/kbfnbcaeplbcioakkpcpgfkobkghlhen'
+    positive_test_url = 'https://chromewebstore.google.com/detail/grammarly-ai-writing-and/kbfnbcaeplbcioakkpcpgfkobkghlhen'
     output = self.installExtension(positive_test_url)
-    self.assertIn('Not blocked', output)
+    self.assertIn('Ok', output)

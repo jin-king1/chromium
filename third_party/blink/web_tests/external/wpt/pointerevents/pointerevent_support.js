@@ -44,7 +44,8 @@ const ButtonsBitfield = {
 
 // Check for conformance to PointerEvent interface
 // https://w3c.github.io/pointerevents/#pointerevent-interface
-function check_PointerEvent(event, testNamePrefix) {
+function check_PointerEvent(event, testNamePrefix,
+    optionalAtributesOnly = false) {
   if (testNamePrefix === undefined)
     testNamePrefix = "";
 
@@ -52,16 +53,17 @@ function check_PointerEvent(event, testNamePrefix) {
   var pointerTestName = (testNamePrefix ? testNamePrefix + ' ' : '')
     + (expectedPointerType == null ? event.pointerType : expectedPointerType) + ' ' + event.type;
 
-  if (expectedPointerType != null) {
+  if (!optionalAtributesOnly) {
+    if (expectedPointerType != null) {
+      test(function () {
+        assert_equals(event.pointerType, expectedPointerType);
+      }, pointerTestName + ".pointerType is correct.");
+    }
+
     test(function () {
-      assert_equals(event.pointerType, expectedPointerType);
-    }, pointerTestName + ".pointerType is correct.");
+      assert_true(event instanceof event.target.ownerDocument.defaultView.PointerEvent);
+    }, pointerTestName + " event is a PointerEvent event");
   }
-
-  test(function () {
-    assert_true(event instanceof event.target.ownerDocument.defaultView.PointerEvent);
-  }, pointerTestName + " event is a PointerEvent event");
-
 
   // Check attributes for conformance to WebIDL (existence, type, being readable).
   var idl_type_check = {
@@ -74,59 +76,68 @@ function check_PointerEvent(event, testNamePrefix) {
 
   // Check values for inherited attributes.
   // https://w3c.github.io/pointerevents/#attributes-and-default-actions
-  test(function () {
-    assert_implements_optional("fromElement" in event);
-    assert_equals(event.fromElement, null);
-  }, pointerTestName + ".fromElement value is null");
-  test(function () {
-    assert_implements_optional("toElement" in event);
-    assert_equals(event.toElement, null);
-  }, pointerTestName + ".toElement value is null");
-  test(function () {
-    assert_equals(event.isTrusted, true);
-  }, pointerTestName + ".isTrusted value is true");
-  test(function () {
-    let expected = (event.type != 'pointerenter' && event.type != 'pointerleave');
-    assert_equals(event.composed, expected);
-  }, pointerTestName + ".composed value is valid");
-  test(function () {
-    let expected = (event.type != 'pointerenter' && event.type != 'pointerleave');
-    assert_equals(event.bubbles, expected);
-  }, pointerTestName + ".bubbles value is valid");
+  if (optionalAtributesOnly) {
+    test(function () {
+      assert_implements_optional("fromElement" in event);
+      assert_equals(event.fromElement, null);
+    }, pointerTestName + ".fromElement value is null");
+    test(function () {
+      assert_implements_optional("toElement" in event);
+      assert_equals(event.toElement, null);
+    }, pointerTestName + ".toElement value is null");
+  } else {
+    test(function () {
+      assert_equals(event.isTrusted, true);
+    }, pointerTestName + ".isTrusted value is true");
+    test(function () {
+      let expected = (event.type != 'pointerenter' && event.type != 'pointerleave');
+      assert_equals(event.composed, expected);
+    }, pointerTestName + ".composed value is valid");
+    test(function () {
+      let expected = (event.type != 'pointerenter' && event.type != 'pointerleave');
+      assert_equals(event.bubbles, expected);
+    }, pointerTestName + ".bubbles value is valid");
+    test(function () {
+      let cancelable_events = [
+        'pointerdown', 'pointermove', 'pointerup', 'pointerover', 'pointerout'
+      ];
+      assert_equals(event.cancelable, cancelable_events.includes(event.type));
+    }, pointerTestName + ".cancelable value is valid");
 
-  // Check the pressure value.
-  // https://w3c.github.io/pointerevents/#dom-pointerevent-pressure
-  test(function () {
-    assert_greater_than_equal(event.pressure, 0, "pressure is greater than or equal to 0");
-    assert_less_than_equal(event.pressure, 1, "pressure is less than or equal to 1");
+    // Check the pressure value.
+    // https://w3c.github.io/pointerevents/#dom-pointerevent-pressure
+    test(function () {
+      assert_greater_than_equal(event.pressure, 0, "pressure is greater than or equal to 0");
+      assert_less_than_equal(event.pressure, 1, "pressure is less than or equal to 1");
 
-    if (event.buttons === 0) {
-      assert_equals(event.pressure, 0, "pressure is 0 with no buttons pressed");
-    } else {
-      assert_greater_than(event.pressure, 0, "pressure is greater than 0 with a button pressed");
-      if (event.pointerType === "mouse") {
-        assert_equals(event.pressure, 0.5, "pressure is 0.5 for mouse with a button pressed");
+      if (event.buttons === 0) {
+        assert_equals(event.pressure, 0, "pressure is 0 with no buttons pressed");
+      } else {
+        assert_greater_than(event.pressure, 0, "pressure is greater than 0 with a button pressed");
+        if (event.pointerType === "mouse") {
+          assert_equals(event.pressure, 0.5, "pressure is 0.5 for mouse with a button pressed");
+        }
       }
+    }, pointerTestName + ".pressure value is valid");
+
+    // Check mouse-specific properties.
+    if (event.pointerType === "mouse") {
+      test(function () {
+        assert_equals(event.width, 1, "width of mouse should be 1");
+        assert_equals(event.height, 1, "height of mouse should be 1");
+        assert_equals(event.tiltX, 0, event.type + ".tiltX is 0 for mouse");
+        assert_equals(event.tiltY, 0, event.type + ".tiltY is 0 for mouse");
+        assert_true(event.isPrimary, event.type + ".isPrimary is true for mouse");
+      }, pointerTestName + " properties for pointerType = mouse");
     }
-  }, pointerTestName + ".pressure value is valid");
 
-  // Check mouse-specific properties.
-  if (event.pointerType === "mouse") {
-    test(function () {
-      assert_equals(event.width, 1, "width of mouse should be 1");
-      assert_equals(event.height, 1, "height of mouse should be 1");
-      assert_equals(event.tiltX, 0, event.type + ".tiltX is 0 for mouse");
-      assert_equals(event.tiltY, 0, event.type + ".tiltY is 0 for mouse");
-      assert_true(event.isPrimary, event.type + ".isPrimary is true for mouse");
-    }, pointerTestName + " properties for pointerType = mouse");
-  }
-
-  // Check "pointerup" specific properties.
-  if (event.type == "pointerup") {
-    test(function () {
-      assert_equals(event.width, 1, "width of pointerup should be 1");
-      assert_equals(event.height, 1, "height of pointerup should be 1");
-    }, pointerTestName + " properties for pointerup");
+    // Check "pointerup" specific properties.
+    if (event.type == "pointerup") {
+      test(function () {
+        assert_equals(event.width, 1, "width of pointerup should be 1");
+        assert_equals(event.height, 1, "height of pointerup should be 1");
+      }, pointerTestName + " properties for pointerup");
+    }
   }
 }
 
@@ -158,27 +169,6 @@ function updateDescriptionNextStep() {
 
 function updateDescriptionComplete() {
   document.getElementById('desc').innerHTML = "Test Description: Test complete";
-}
-
-function updateDescriptionSecondStepTouchActionElement(target, scrollReturnInterval) {
-  window.step_timeout(function() {
-  objectScroller(target, 'up', 0);}
-  , scrollReturnInterval);
-  document.getElementById('desc').innerHTML = "Test Description: Try to scroll element RIGHT moving your outside of the red border";
-}
-
-function updateDescriptionThirdStepTouchActionElement(target, scrollReturnInterval, callback = null) {
-  window.step_timeout(function() {
-    objectScroller(target, 'left', 0);
-    if (callback) {
-      callback();
-    }
-  }, scrollReturnInterval);
-  document.getElementById('desc').innerHTML = "Test Description: Try to scroll element DOWN then RIGHT starting your touch inside of the element. Then tap complete button";
-}
-
-function updateDescriptionFourthStepTouchActionElement(target, scrollReturnInterval) {
-  document.getElementById('desc').innerHTML = "Test Description: Try to scroll element RIGHT starting your touch inside of the element";
 }
 
 function objectScroller(target, direction, value) {
@@ -262,6 +252,18 @@ function checkPointerEventType(event) {
   assert_equals(event.pointerType, expectedPointerType, "pointerType should be the same as the requested device.");
 }
 
+function getInViewCenterPoint(rect) {
+  var left = Math.max(0, rect.left);
+  var right = Math.min(window.innerWidth, rect.right);
+  var top = Math.max(0, rect.top);
+  var bottom = Math.min(window.innerHeight, rect.bottom);
+
+  var x = 0.5 * (left + right);
+  var y = 0.5 * (top + bottom);
+
+  return [x, y];
+}
+
 function touchScrollInTarget(target, direction) {
   var x_delta = 0;
   var y_delta = 0;
@@ -280,16 +282,20 @@ function touchScrollInTarget(target, direction) {
   } else {
     throw("scroll direction '" + direction + "' is not expected, direction should be 'down', 'up', 'left' or 'right'");
   }
+  // Target's initial position relative to the viewport.
+  const rect = target.getBoundingClientRect();
+  const [startX, startY] = getInViewCenterPoint(rect);
+
   return new test_driver.Actions()
     .addPointer("touchPointer1", "touch")
-    .pointerMove(0, 0, {origin: target})
+    .pointerMove(startX, startY, {origin: 'viewport'})
     .pointerDown()
-    .pointerMove(x_delta, y_delta, {origin: target})
-    .pointerMove(2 * x_delta, 2 * y_delta, {origin: target})
-    .pointerMove(3 * x_delta, 3 * y_delta, {origin: target})
-    .pointerMove(4 * x_delta, 4 * y_delta, {origin: target})
-    .pointerMove(5 * x_delta, 5 * y_delta, {origin: target})
-    .pointerMove(6 * x_delta, 6 * y_delta, {origin: target})
+    .pointerMove(startX + x_delta, startY + y_delta, {origin: "viewport"})
+    .pointerMove(startX + 2 * x_delta, startY + 2 * y_delta, {origin: "viewport"})
+    .pointerMove(startX + 3 * x_delta, startY + 3 * y_delta, {origin: "viewport"})
+    .pointerMove(startX + 4 * x_delta, startY + 4 * y_delta, {origin: "viewport"})
+    .pointerMove(startX + 5 * x_delta, startY + 5 * y_delta, {origin: "viewport"})
+    .pointerMove(startX + 6 * x_delta, startY + 6 * y_delta, {origin: "viewport"})
     .pause(100)
     .pointerUp()
     .send();
@@ -395,6 +401,10 @@ function moveToDocument(pointerType) {
   var pointerId = pointerType + "Pointer1";
   return new test_driver.Actions()
     .addPointer(pointerId, pointerType)
+    // WebDriver initializes the pointer position (0, 0), therefore, we need
+    // to move different position first.  Otherwise, moving to (0, 0) may be
+    // ignored.
+    .pointerMove(1, 1)
     .pointerMove(0, 0)
     .send();
 }
@@ -475,33 +485,72 @@ function arePointerEventsBeforeCompatMouseEvents(events) {
 
 // Returns a |Promise| that gets resolved with the event object when |target|
 // receives an event of type |event_type|.
-function getEvent(event_type, target) {
+//
+// The optional |test| parameter adds event handler cleanup for the case |test|
+// terminates before the event is received.
+function getEvent(event_type, target, test) {
   return new Promise(resolve => {
-    target.addEventListener(event_type, e => resolve(e), { once: true });
+    const listener = e => resolve(e);
+    target.addEventListener(event_type, listener, { once: true });
+    if (test) {
+      test.add_cleanup(() =>
+          target.removeEventListener(event_type, listener, { once: true }));
+    }
+  });
+}
+
+// Returns a promise that resolves when a child frame posts a subframe-ready
+// message back to the parent and style rules have been applied. When the child
+// frame needs to execute script, such as setting up listeners, it is
+// insufficient to wait for the frame to be loaded, as the load event is
+// received once the child frame's document has been parsed, which is before
+// script execution or style update.
+function loadFrameAndExcecuteScript(frame, src) {
+  return new Promise(async resolve => {
+    const ready =  getMessageData('subframe-ready', frame.contentWindow);
+    frame.src = src;
+    await ready;
+    // Ensure that the child frame has been properly styled.
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
   });
 }
 
 // Returns a |Promise| that gets resolved with |event.data| when |window|
-// receives from |source| a "message" event whose |event.data.type| matches the string
-// |message_data_type|.
-function getMessageData(message_data_type, source) {
+// receives from |source| a "message" event whose |event.data.type| matches the
+// string |message_data_type|.
+//
+// The optional |test| parameter adds event handler cleanup for the case |test|
+// terminates before a matching event is received.
+function getMessageData(message_data_type, source, test) {
   return new Promise(resolve => {
-    function waitAndRemove(e) {
+    const listener = e => {
       if (e.source != source || !e.data || e.data.type != message_data_type)
         return;
-      window.removeEventListener("message", waitAndRemove);
+      window.removeEventListener("message", listener);
       resolve(e.data);
     }
-    window.addEventListener("message", waitAndRemove);
+
+    window.addEventListener("message", listener);
+    if (test) {
+      test.add_cleanup(() =>
+          window.removeEventListener("message", listener));
+    }
   });
 }
 
-function preventDefaultPointerdownOnce(target) {
-  return new Promise(
-    (resolve) => {
-      target.addEventListener("pointerdown", (event) => {
-        event.preventDefault();
-        resolve();
-      }, { once: true });
-    });
+// The optional |test| parameter adds event handler cleanup for the case |test|
+// terminates before the event is received.
+function preventDefaultPointerdownOnce(target, test) {
+  return new Promise((resolve) => {
+    const listener = e => {
+      e.preventDefault();
+      resolve();
+    }
+
+    target.addEventListener("pointerdown", listener, { once: true });
+    if (test) {
+      test.add_cleanup(() =>
+          target.removeEventListener("pointerdown", listener, { once: true }));
+    }
+  });
 }

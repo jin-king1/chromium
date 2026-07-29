@@ -4,16 +4,19 @@
 
 #include "chromeos/ash/components/trial_group/trial_group_checker.h"
 
+#include <optional>
+#include <string>
+
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/values.h"
 #include "net/base/load_flags.h"
+#include "net/http/http_response_headers.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace {
 
@@ -36,7 +39,7 @@ void TrialGroupChecker::SetServerUrl(GURL server_url) {
 }
 
 void TrialGroupChecker::OnRequestComplete(
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   const int net_error = loader_->NetError();
 
   int response_code = 0;
@@ -59,7 +62,7 @@ void TrialGroupChecker::OnRequestComplete(
     return;
   }
 
-  absl::optional<int> member_status =
+  std::optional<int> member_status =
       membership_info->GetDict().FindInt("membership_info");
   if (!member_status) {
     std::move(callback_).Run(false);
@@ -81,9 +84,9 @@ TrialGroupChecker::Status TrialGroupChecker::LookUpMembership(
 
   std::string upload_data;
   {
-    base::Value::Dict request;
+    base::DictValue request;
     request.Set("group", static_cast<int>(group_id_));
-    base::JSONWriter::Write(request, &upload_data);
+    upload_data = base::WriteJson(request).value_or("");
   }
 
   net::NetworkTrafficAnnotationTag traffic_annotation =

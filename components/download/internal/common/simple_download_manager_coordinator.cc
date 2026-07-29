@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "components/download/public/common/all_download_event_notifier.h"
 #include "components/download/public/common/download_item.h"
@@ -59,9 +60,8 @@ void SimpleDownloadManagerCoordinator::RemoveObserver(Observer* observer) {
 
 void SimpleDownloadManagerCoordinator::DownloadUrl(
     std::unique_ptr<DownloadUrlParameters> parameters) {
-  bool result = simple_download_manager_
-                    ? simple_download_manager_->CanDownload(parameters.get())
-                    : false;
+  bool result = simple_download_manager_ &&
+                simple_download_manager_->CanDownload(parameters.get());
   if (result) {
     simple_download_manager_->DownloadUrl(std::move(parameters));
     return;
@@ -72,7 +72,7 @@ void SimpleDownloadManagerCoordinator::DownloadUrl(
 }
 
 void SimpleDownloadManagerCoordinator::GetAllDownloads(
-    std::vector<DownloadItem*>* downloads) {
+    std::vector<raw_ptr<DownloadItem, VectorExperimental>>* downloads) {
   if (simple_download_manager_) {
     simple_download_manager_->GetAllDownloads(downloads);
     simple_download_manager_->GetUninitializedActiveDownloadsIfAny(downloads);

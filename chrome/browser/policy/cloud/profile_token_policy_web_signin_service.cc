@@ -7,12 +7,13 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/enterprise/signin/profile_token_web_signin_interceptor.h"
+#include "chrome/browser/policy/cloud/user_policy_signin_service_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_manager_observer.h"
-#include "chrome/browser/signin/profile_token_web_signin_interceptor.h"
 #include "components/account_id/account_id.h"
 #include "components/policy/core/common/cloud/profile_cloud_policy_manager.h"
 #include "components/policy/core/common/policy_logger.h"
@@ -55,11 +56,7 @@ ProfileTokenPolicyWebSigninService::ProfileTokenPolicyWebSigninService(
                                   policy_manager,
                                   /*identity_manager=*/nullptr,
                                   system_url_loader_factory),
-      profile_(profile) {
-  if (!CanApplyPolicies(/*check_for_refresh_token=*/false)) {
-    ShutdownCloudPolicyManager();
-  }
-}
+      profile_(profile) {}
 
 ProfileTokenPolicyWebSigninService::~ProfileTokenPolicyWebSigninService() =
     default;
@@ -118,12 +115,17 @@ void ProfileTokenPolicyWebSigninService::OnRegistrationComplete(
     return;
   }
 
+  // TODO(b/308475647): We need to get user_affiliation_ids from enrollment
+  // response. Note that token based profile enrollment currently doesn't return
+  // the field we need.
+
   policy_manager()->core()->client()->SetupRegistration(
       dm_token, client_id,
       /*user_affiliation_ids=*/std::vector<std::string>());
   DCHECK(policy_manager()->IsClientRegistered());
   FetchPolicyForSignedInUser(
       AccountId(), dm_token, client_id,
+      /*user_affiliation_ids=*/std::vector<std::string>(),
       profile_->GetDefaultStoragePartition()
           ->GetURLLoaderFactoryForBrowserProcess(),
       base::BindOnce(&ProfileTokenPolicyWebSigninService::OnPolicyFetchComplete,
@@ -149,9 +151,9 @@ void ProfileTokenPolicyWebSigninService::InitializeCloudPolicyManager(
   DCHECK(manager->core()->service());
 
   // Observe the client to detect errors fetching policy.
-  manager->core()->client()->AddObserver(this);
+  cloud_policy_client_observation_.Observe(manager->core()->client());
   // Observe the service to determine when it's initialized.
-  manager->core()->service()->AddObserver(this);
+  cloud_policy_service_observation_.Observe(manager->core()->service());
 }
 
 bool ProfileTokenPolicyWebSigninService::CanApplyPolicies(
@@ -165,6 +167,10 @@ bool ProfileTokenPolicyWebSigninService::CanApplyPolicies(
           ->GetProfileAttributesStorage()
           .GetProfileAttributesWithPath(profile_->GetPath());
   return entry && !entry->GetProfileManagementEnrollmentToken().empty();
+}
+
+std::string ProfileTokenPolicyWebSigninService::GetProfileId() {
+  return ::policy::GetProfileId(profile_);
 }
 
 // Initializes the ProfileTokenPolicyWebSigninService once its owning Profile
@@ -182,9 +188,11 @@ void ProfileTokenPolicyWebSigninService::InitializeOnProfileReady(
     return;
   }
 
-  InitializeForSignedInUser(AccountId(),
-                            profile->GetDefaultStoragePartition()
-                                ->GetURLLoaderFactoryForBrowserProcess());
+  if (CanApplyPolicies(/*check_for_refresh_token=*/false)) {
+    InitializeForSignedInUser(AccountId(),
+                              profile->GetDefaultStoragePartition()
+                                  ->GetURLLoaderFactoryForBrowserProcess());
+  }
 }
 
 }  // namespace policy

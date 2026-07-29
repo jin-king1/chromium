@@ -8,9 +8,9 @@ partial interface HTMLElement {
 };
 
 dictionary EditContextInit {
-    DOMString text;
-    unsigned long selectionStart;
-    unsigned long selectionEnd;
+    DOMString text = "";
+    unsigned long selectionStart = 0;
+    unsigned long selectionEnd = 0;
 };
 
 [Exposed=Window]
@@ -24,16 +24,11 @@ interface EditContext : EventTarget {
     undefined updateSelectionBounds(DOMRect selectionBounds);
     undefined updateCharacterBounds(unsigned long rangeStart, sequence<DOMRect> characterBounds);
 
-    sequence<Element> attachedElements();
+    sequence<HTMLElement> attachedElements();
 
     readonly attribute DOMString text;
     readonly attribute unsigned long selectionStart;
     readonly attribute unsigned long selectionEnd;
-    readonly attribute unsigned long compositionRangeStart;
-    readonly attribute unsigned long compositionRangeEnd;
-    readonly attribute boolean isComposing;
-    readonly attribute DOMRect controlBounds;
-    readonly attribute DOMRect selectionBounds;
     readonly attribute unsigned long characterBoundsRangeStart;
     sequence<DOMRect> characterBounds();
 
@@ -45,13 +40,11 @@ interface EditContext : EventTarget {
 };
 
 dictionary TextUpdateEventInit : EventInit {
-    unsigned long updateRangeStart;
-    unsigned long updateRangeEnd;
-    DOMString text;
-    unsigned long selectionStart;
-    unsigned long selectionEnd;
-    unsigned long compositionStart;
-    unsigned long compositionEnd;
+    unsigned long updateRangeStart = 0;
+    unsigned long updateRangeEnd = 0;
+    DOMString text = "";
+    unsigned long selectionStart = 0;
+    unsigned long selectionEnd = 0;
 };
 
 [Exposed=Window]
@@ -62,18 +55,16 @@ interface TextUpdateEvent : Event {
     readonly attribute DOMString text;
     readonly attribute unsigned long selectionStart;
     readonly attribute unsigned long selectionEnd;
-    readonly attribute unsigned long compositionStart;
-    readonly attribute unsigned long compositionEnd;
 };
 
+enum UnderlineStyle { "none", "solid", "dotted", "dashed", "wavy" };
+enum UnderlineThickness { "none", "thin", "thick" };
+
 dictionary TextFormatInit {
-    unsigned long rangeStart;
-    unsigned long rangeEnd;
-    DOMString textColor;
-    DOMString backgroundColor;
-    DOMString underlineStyle;
-    DOMString underlineThickness;
-    DOMString underlineColor;
+    unsigned long rangeStart = 0;
+    unsigned long rangeEnd = 0;
+    UnderlineStyle underlineStyle = "none";
+    UnderlineThickness underlineThickness = "none";
 };
 
 [Exposed=Window]
@@ -81,15 +72,12 @@ interface TextFormat {
     constructor(optional TextFormatInit options = {});
     readonly attribute unsigned long rangeStart;
     readonly attribute unsigned long rangeEnd;
-    readonly attribute DOMString textColor;
-    readonly attribute DOMString backgroundColor;
-    readonly attribute DOMString underlineStyle;
-    readonly attribute DOMString underlineThickness;
-    readonly attribute DOMString underlineColor;
+    readonly attribute UnderlineStyle underlineStyle;
+    readonly attribute UnderlineThickness underlineThickness;
 };
 
 dictionary TextFormatUpdateEventInit : EventInit {
-    sequence<TextFormat> textFormats;
+    sequence<TextFormat> textFormats = [];
 };
 
 [Exposed=Window]
@@ -99,8 +87,8 @@ interface TextFormatUpdateEvent : Event {
 };
 
 dictionary CharacterBoundsUpdateEventInit : EventInit {
-    unsigned long rangeStart;
-    unsigned long rangeEnd;
+    unsigned long rangeStart = 0;
+    unsigned long rangeEnd = 0;
 };
 
 [Exposed=Window]

@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
 #include "device/vr/public/cpp/vr_device_provider.h"
@@ -78,10 +79,6 @@ void VRDeviceBase::SetLuid(const CHROME_LUID& luid) {
 mojo::PendingRemote<mojom::XRRuntime> VRDeviceBase::BindXRRuntime() {
   DVLOG(2) << __func__;
   return runtime_receiver_.BindNewPipeAndPassRemote();
-}
-
-void LogViewerType(VrViewerType type) {
-  base::UmaHistogramSparse("VRViewerType", static_cast<int>(type));
 }
 
 void VRDeviceBase::SetSupportedFeatures(

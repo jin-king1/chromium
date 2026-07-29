@@ -13,8 +13,9 @@ import platform
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
-from typing import cast, Tuple
+from typing import cast, Tuple, List
 
 from auditor import *
 from error import *
@@ -25,6 +26,7 @@ TEST_DATA_DIR = SCRIPT_DIR.parent / "test_data"
 
 
 class AuditorTest(unittest.TestCase):
+
   def setUp(self):
     build_path = TEST_DATA_DIR / "out" / "Debug"
 
@@ -43,7 +45,8 @@ class AuditorTest(unittest.TestCase):
     self.auditor_ui = AuditorUI(build_path,
                                 path_filters,
                                 no_filtering=False,
-                                test_only=True)
+                                test_only=True,
+                                skip_stale_build_check=True)
     self.auditor = self.auditor_ui.auditor
     self.auditor.file_filter.git_file_for_testing = (TEST_DATA_DIR /
                                                      "git_list.txt")
@@ -69,7 +72,7 @@ class AuditorTest(unittest.TestCase):
     language = extractor.LANGUAGE_MAPPING[Path(lines[0]).suffix]
     type_name = extractor.AnnotationType(lines[2])
     extracted_annotation = extractor.Annotation(language=language,
-                                                file_path=lines[0],
+                                                file_path=Path(lines[0]),
                                                 line_number=int(lines[1]),
                                                 type_name=type_name,
                                                 unique_id=lines[3],
@@ -115,49 +118,82 @@ class AuditorTest(unittest.TestCase):
 
   def test_get_files_from_git(self):
     """Tests that FileFilter.get_files_from_git() returns correct files given
-    a mock git_list.txt file. It also inherently checks
-    FileFilter._is_supported_source_file()."""
-    filter = FileFilter([".cc", ".mm"])
+    a mock git_list.txt file."""
+    filter = FileFilter()
     filter.git_file_for_testing = TEST_DATA_DIR / "git_list.txt"
     filter.get_files_from_git()
 
-    relevant_files = [
+    all_files = [
+        "tools/traffic_annotation/scripts/test_data/git_list.txt",
+        "tools/traffic_annotation/scripts/test_data/irrelevant_file_name.txt",
+        "tools/traffic_annotation/scripts/test_data/objective_cpp.mm",
         "tools/traffic_annotation/scripts/test_data/"
-        "objective_cpp.mm", "tools/traffic_annotation/scripts/test_data/"
         "test_sample_annotations.cc",
         "tools/traffic_annotation/scripts/test_data/"
         "missing_new_field_sample_data/test_new_field_safelisted.cc",
         "tools/traffic_annotation/scripts/test_data/"
         "missing_new_field_sample_data/sample_new_field_not_safelisted.cc"
     ]
-    self.assertCountEqual([Path(f) for f in relevant_files], filter.git_files)
+    self.assertCountEqual([Path(f) for f in all_files], filter.git_files)
 
-  def test_get_source_files(self):
-    """Tests that FileFilter.get_source_files() gives the correct list of
+  def test_get_filtered_files(self):
+    """Tests that FileFilter.get_filtered_files() gives the correct list of
     files, given a mock git_list.txt file."""
-    filter = FileFilter([".cc", ".mm"])
+    filter = FileFilter()
     filter.git_file_for_testing = TEST_DATA_DIR / "git_list.txt"
     filter.get_files_from_git()
 
-    # Check if all files are returned with no ignore list and directory.
+    relevant_files = [
+        Path("tools/traffic_annotation/scripts/test_data/objective_cpp.mm"),
+        Path("tools/traffic_annotation/scripts/test_data/"
+             "test_sample_annotations.cc"),
+        Path("tools/traffic_annotation/scripts/test_data/"
+             "missing_new_field_sample_data/test_new_field_safelisted.cc"),
+        Path("tools/traffic_annotation/scripts/test_data/"
+             "missing_new_field_sample_data/sample_new_field_not_safelisted.cc")
+    ]
+
+    # Check if all relevant files are returned with no ignore list and prefix.
     ignore_list = {}
-    self.assertCountEqual(filter.git_files,
-                          filter.get_source_files(ignore_list, ""))
+    self.assertCountEqual(
+        relevant_files,
+        filter.get_filtered_files([".cc", ".mm"], ignore_list, ""))
 
     # Check if a file is ignored when added to the ignore list.
     ignore_list = {
-        ExceptionType.ALL: [re.compile(filter.git_files[0].as_posix())]
+        ExceptionType.ALL: [re.compile(relevant_files[0].as_posix())]
     }
     self.assertCountEqual(
-        set(filter.git_files) - set(filter.git_files[:1]),
-        filter.get_source_files(ignore_list, ""))
+        set(relevant_files) - set(relevant_files[:1]),
+        filter.get_filtered_files([".cc", ".mm"], ignore_list, ""))
 
     # Check if files are filtered based on given directory.
     ignore_list = {}
     self.assertCountEqual(
-        filter.git_files,
-        filter.get_source_files(ignore_list, "tools/traffic_annotation"))
-    self.assertEqual([], filter.get_source_files(ignore_list, "content"))
+        relevant_files,
+        filter.get_filtered_files([".cc", ".mm"], ignore_list,
+                                  "tools/traffic_annotation"))
+    self.assertEqual([],
+                     filter.get_filtered_files([".cc", ".mm"], ignore_list,
+                                               "content"))
+
+  def test_get_filtered_files_sequential(self):
+    """Tests that FileFilter.get_filtered_files() correctly respects different
+    accepted_suffixes when called sequentially."""
+    filter = FileFilter()
+    filter.git_file_for_testing = TEST_DATA_DIR / "git_list.txt"
+    filter.get_files_from_git()
+
+    cc_files = filter.get_filtered_files([".cc"], {}, "")
+    for f in cc_files:
+      self.assertEqual(".cc", f.suffix)
+    self.assertTrue(
+        any(f.name == "test_sample_annotations.cc" for f in cc_files))
+
+    mm_files = filter.get_filtered_files([".mm"], {}, "")
+    for f in mm_files:
+      self.assertEqual(".mm", f.suffix)
+    self.assertTrue(any(f.name == "objective_cpp.mm" for f in mm_files))
 
   def test_is_safelisted(self):
     """Tests if Auditor._is_safe_listed() works as expected. Inherently checks
@@ -623,9 +659,9 @@ class AuditorTest(unittest.TestCase):
   def test_load_from_archive(self):
     """Tests that Annotation.load_from_archive() works as expected."""
     archived = ArchivedAnnotation(type=Annotation.Type.PARTIAL,
-                                  id="foobar",
-                                  second_id="baz",
-                                  content_hash_code=32,
+                                  id=UniqueId("foobar"),
+                                  second_id=UniqueId("baz"),
+                                  content_hash_code=HashCode(32),
                                   os_list=["linux", "windows"],
                                   added_in_milestone=62,
                                   semantics_fields=[2, 3],
@@ -675,8 +711,8 @@ class AuditorTest(unittest.TestCase):
     grouping_erro_xml_path = \
       TEST_DATA_DIR / "test_required_field_error_grouping.xml"
     exporter = Exporter(get_current_platform())
-    self.assertRaises(ValueError,
-                      lambda: exporter.load_grouping_xml(grouping_erro_xml_path))
+    self.assertRaises(
+        ValueError, lambda: exporter.load_grouping_xml(grouping_erro_xml_path))
 
   def test_annotations_xml_differences(self):
     """Tests if annotations.xml changes are correctly reported."""
@@ -720,7 +756,7 @@ class AuditorTest(unittest.TestCase):
     """|self.sample_annotations| should include all those inside
     test_data/test_sample_annotations.cc"""
     expected = [
-        "ok_annotation", "syntax_error_annotation",
+        "ok_annotation", "ok_annotation_only_owner", "syntax_error_annotation",
         "incomplete_error_annotation", "invalid_assignment_annotation",
         "partially_populated_safe_listed", "missing_all_new_field_safe_listed",
         "ok_new_fields_safe_listed", "missing_new_fields_not_safe_listed",
@@ -810,7 +846,8 @@ class AuditorTest(unittest.TestCase):
     errors = self.auditor.run_all_checks([], True, Exporter.GROUPING_XML_PATH)
     self.assertTrue(errors)
     self.assertEqual(ErrorType.MISSING_NEW_FIELDS, errors[0].type)
-    self.assertTrue(errors[0].message.find('internal::contacts::email') >= 0)
+    self.assertTrue(errors[0].message.find(
+        'internal::contacts::email or internal::contacts::owners') >= 0)
 
   def test_user_data_unspecified(self) -> None:
     """Annotation user_data::type contains UNSPECIFIED value. Annotation Check
@@ -832,14 +869,8 @@ class AuditorTest(unittest.TestCase):
     auditor.parse_extractor_output(
         [self.sample_annotations["missing_all_new_field_safe_listed"]])
     self.assertTrue(auditor.extracted_annotations)
-    errors = auditor.run_all_checks([], True, Exporter.GROUPING_XML_PATH)
-    self.assertTrue(errors)
-    error_type = []
-    for error in errors:
-      self.assertTrue(error.type not in [
-          ErrorType.MISSING_NEW_FIELDS, ErrorType.INVALID_DATE_FORMAT,
-          ErrorType.INVALID_USER_DATA_TYPE, ErrorType.REMOVE_FROM_SAFE_LIST
-      ])
+    errors = auditor.run_all_checks([], False, Exporter.GROUPING_XML_PATH)
+    self.assertFalse(errors)
 
   def test_partially_populated_safe_listed_file(self) -> None:
     """Check annotation with last_reviewed but missing email fields,
@@ -892,9 +923,67 @@ class AuditorTest(unittest.TestCase):
     expected_contents = """Unique ID\tLast Update\tSender\tDescription\tTrigger\tData\tDestination\tCookies Allowed\tCookies Store\tSetting\tChrome Policy\tComments\tSource File
 supervised_user_refresh_token_fetcher\t\tSupervised Users\tFetches an OAuth2 refresh token scoped down to the Supervised User Sync scope and tied to the given Supervised User ID, identifying the Supervised User Profile to be created.\tCalled when creating a new Supervised User profile in Chromium to fetch OAuth credentials for using Sync with the new profile.\t"The request is authenticated with an OAuth2 access token identifying the Google account and contains the following information:
 * The Supervised User ID, a randomly generated 64-bit identifier for the profile.
-* The device name, to identify the refresh token in account management."\tGoogle\tNo\t\tUsers can disable this feature by toggling 'Let anyone add a person to Chrome' in Chromium settings, under People.\tSupervisedUserCreationEnabled: false, external_policy: ""\t\thttps://cs.chromium.org/chromium/src/?l=0
+* The device name, to identify the refresh token in account management."\tGoogle\tNo\t\tUsers can disable this feature by toggling 'Let anyone add a person to Chrome' in Chromium settings, under People.\tSupervisedUserCreationEnabled: false, external_policy: ""\t\thttps://cs.chromium.org/chromium/src/chrome/browser/supervised_user/legacy/supervised_user_refresh_token_fetcher.cc?l=166
 """
     self.assertEqual(expected_contents, tsv_contents)
+
+  def test_result_ok_only_owner(self) -> None:
+    """Annotation is complete with all new fields, and uses an owners file
+    instead of email for contact info. Check returns no errors related to
+    contact email or other new fields."""
+    self.auditor.parse_extractor_output(
+        [self.sample_annotations["ok_annotation_only_owner"]])
+    errors = self.auditor.run_all_checks([], False, Exporter.GROUPING_XML_PATH)
+
+    # Assert that correct annotation has been extracted and is OK (no errors).
+    self.assertTrue(self.auditor.extracted_annotations)
+    self.assertFalse(errors)
+
+  def test_run_all_checks_with_path_filter(self):
+    """Test run_all_checks with a path filter defined. This simulates how the
+    CQ auditor performs tests, since we only check updated files."""
+    path_filter = [
+        (TEST_DATA_DIR /
+         "test_sample_annotations.cc").relative_to(SRC_DIR).as_posix()
+    ]
+    errors = self.auditor.run_all_checks(path_filter, True,
+                                         Exporter.GROUPING_XML_PATH)
+    self.assertFalse(errors)
+
+  def test_get_gn_file_mtime_max(self):
+    with tempfile.TemporaryDirectory() as tmp_dir:
+      tmp_path = Path(tmp_dir)
+      # Mock SRC_DIR
+      with mock.patch("auditor.SRC_DIR", tmp_path):
+        self.auditor.file_filter.git_files = [
+            Path("BUILD.gn"), Path("foo.gni"),
+            Path("src.cc")
+        ]
+        (tmp_path / "BUILD.gn").write_text("")
+        # sleep briefly to ensure mtimes are different
+        time.sleep(0.01)
+        (tmp_path / "foo.gni").write_text("")
+        (tmp_path / "src.cc").write_text("")
+
+        mtime1 = os.path.getmtime(tmp_path / "BUILD.gn")
+        mtime2 = os.path.getmtime(tmp_path / "foo.gni")
+
+        self.assertEqual(max(mtime1, mtime2),
+                         self.auditor._get_gn_file_mtime_max())
+
+  def test_header_annotations_error(self):
+    """Check that header files are rejected during deserialization."""
+    annotation = extractor.Annotation(
+        language=extractor.CPP_LANGUAGE,
+        file_path=Path("chrome/browser/foobar.h"),
+        line_number=42,
+        type_name=extractor.AnnotationType.COMPLETE,
+        unique_id="test_header_id",
+        text='sender: "foobar"')
+    errors = Annotation().deserialize(annotation)
+    self.assertEqual(1, len(errors))
+    self.assertEqual(ErrorType.HEADER_ANNOTATION, errors[0].type)
+    self.assertTrue("not header files" in str(errors[0]))
 
 
 if __name__ == "__main__":

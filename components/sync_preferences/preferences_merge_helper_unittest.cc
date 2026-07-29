@@ -4,20 +4,36 @@
 
 #include "components/sync_preferences/preferences_merge_helper.h"
 
+#include <unordered_map>
+
 #include "base/json/json_reader.h"
+#include "components/sync_preferences/pref_model_associator_client.h"
+#include "components/sync_preferences/test_syncable_prefs_database.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace sync_preferences {
 namespace {
 
+const char kMergeableDictPref[] = "mergeable.dict.pref";
+const char kMergeableListPref[] = "mergeable.list.pref";
+
+const TestSyncablePrefsDatabase::PrefsMap kSyncablePrefsDatabase = {
+    {kMergeableListPref,
+     {/*syncable_pref_id=*/1, syncer::PREFERENCES, PrefSensitivity::kNone,
+      MergeBehavior::kMergeableListWithRewriteOnUpdate}},
+    {kMergeableDictPref,
+     {/*syncable_pref_id=*/2, syncer::PREFERENCES, PrefSensitivity::kNone,
+      MergeBehavior::kMergeableDict}},
+};
+
 TEST(PreferencesMergeHelperTest, MergeListValues) {
   auto local_value =
-      base::Value::List().Append("local_value").Append("common_value");
+      base::ListValue().Append("local_value").Append("common_value");
   auto server_value =
-      base::Value::List().Append("server_value").Append("common_value");
+      base::ListValue().Append("server_value").Append("common_value");
 
-  auto expected_value = base::Value::List()
+  auto expected_value = base::ListValue()
                             .Append("server_value")
                             .Append("common_value")
                             .Append("local_value");
@@ -25,14 +41,14 @@ TEST(PreferencesMergeHelperTest, MergeListValues) {
 }
 
 TEST(PreferencesMergeHelperTest, MergeDictionaryValues) {
-  auto local_value = base::Value::Dict()
+  auto local_value = base::DictValue()
                          .Set("local_key", "local_value")
                          .Set("common_key", "local_value");
-  auto server_value = base::Value::Dict()
+  auto server_value = base::DictValue()
                           .Set("server_key", "server_value")
                           .Set("common_key", "server_value");
 
-  auto expected_value = base::Value::Dict()
+  auto expected_value = base::DictValue()
                             .Set("server_key", "server_value")
                             .Set("common_key", "server_value")
                             .Set("local_key", "local_value");
@@ -42,11 +58,11 @@ TEST(PreferencesMergeHelperTest, MergeDictionaryValues) {
 
 TEST(PreferencesMergeHelperTest,
      UnmergeDictionaryValuesShouldAddNewValueToBothUpdates) {
-  base::Value::Dict local_value;
-  base::Value::Dict account_value;
+  base::DictValue local_value;
+  base::DictValue account_value;
 
-  base::Value::Dict new_value =
-      base::Value::Dict()
+  base::DictValue new_value =
+      base::DictValue()
           // "new_key" is not present in either, should get added to both.
           .Set("new_key", "new_value");
 
@@ -60,7 +76,7 @@ TEST(PreferencesMergeHelperTest,
 }
 
 TEST(PreferencesMergeHelperTest, UnmergeDictionaryValuesShouldRemoveValues) {
-  auto local_value = base::Value::Dict()
+  auto local_value = base::DictValue()
                          .Set("local_key1", "local_value")
                          // "local_key2" is not part of new value, should get
                          // removed.
@@ -68,7 +84,7 @@ TEST(PreferencesMergeHelperTest, UnmergeDictionaryValuesShouldRemoveValues) {
                          // "common_key" is not part of new value, should get
                          // removed.
                          .Set("common_key", "local_value");
-  auto account_value = base::Value::Dict()
+  auto account_value = base::DictValue()
                            .Set("server_key1", "server_value")
                            // "server_key2" is not part of new value, should get
                            // removed.
@@ -78,29 +94,29 @@ TEST(PreferencesMergeHelperTest, UnmergeDictionaryValuesShouldRemoveValues) {
                            .Set("common_key", "server_value");
 
   auto [updated_local_value, updated_account_value] =
-      helper::UnmergeDictionaryValues(base::Value::Dict()
+      helper::UnmergeDictionaryValues(base::DictValue()
                                           .Set("server_key1", "server_value")
                                           .Set("local_key1", "local_value"),
                                       local_value, account_value);
 
   // Entries not present in new value gets removed.
   EXPECT_EQ(updated_local_value,
-            base::Value::Dict().Set("local_key1", "local_value"));
+            base::DictValue().Set("local_key1", "local_value"));
   EXPECT_EQ(updated_account_value,
-            base::Value::Dict().Set("server_key1", "server_value"));
+            base::DictValue().Set("server_key1", "server_value"));
 }
 
 TEST(PreferencesMergeHelperTest,
      UnmergeDictionaryValuesShouldNotAddValuesWithNoUpdate) {
-  auto local_value = base::Value::Dict()
+  auto local_value = base::DictValue()
                          .Set("local_key", "local_value")
                          .Set("common_key", "local_value");
-  auto account_value = base::Value::Dict()
+  auto account_value = base::DictValue()
                            .Set("server_key", "server_value")
                            .Set("common_key", "server_value");
 
   auto [updated_local_value, updated_account_value] =
-      helper::UnmergeDictionaryValues(base::Value::Dict()
+      helper::UnmergeDictionaryValues(base::DictValue()
                                           // New value same as the merged value,
                                           // so no update.
                                           .Set("server_key", "server_value")
@@ -116,17 +132,17 @@ TEST(PreferencesMergeHelperTest,
 TEST(PreferencesMergeHelperTest,
      UnmergeDictionaryValuesShouldOnlyUpdateCommonKeyIfEffectiveValueChanges) {
   auto local_value =
-      base::Value::Dict()
+      base::DictValue()
           // Entries are overridden by the entries in the account value.
           .Set("common_key1", "local_value1")
           .Set("common_key2", "local_value2");
-  auto account_value = base::Value::Dict()
+  auto account_value = base::DictValue()
                            .Set("common_key1", "server_value1")
                            .Set("common_key2", "server_value2");
 
   auto [updated_local_value, updated_account_value] =
       helper::UnmergeDictionaryValues(
-          base::Value::Dict()
+          base::DictValue()
               // "common_key1" value same as merged value, hence no update.
               .Set("common_key1", "server_value1")
               // "common_key2" value is different from merged value.
@@ -134,12 +150,12 @@ TEST(PreferencesMergeHelperTest,
           local_value, account_value);
 
   EXPECT_EQ(updated_local_value,
-            base::Value::Dict()
+            base::DictValue()
                 // No change as the effective value (overridden by account
                 // value) is unchanged.
                 .Set("common_key1", "local_value1")
                 .Set("common_key2", "local_value2"));
-  EXPECT_EQ(updated_account_value, base::Value::Dict()
+  EXPECT_EQ(updated_account_value, base::DictValue()
                                        .Set("common_key1", "server_value1")
                                        // Value updated.
                                        .Set("common_key2", "local_value2"));
@@ -147,18 +163,18 @@ TEST(PreferencesMergeHelperTest,
 
 TEST(PreferencesMergeHelperTest,
      UnmergeDictionaryValuesShouldAddUpdatedValuesToBothUpdates) {
-  auto local_value = base::Value::Dict()
+  auto local_value = base::DictValue()
                          .Set("local_key1", "local_value")
                          .Set("local_key2", "local_value")
                          .Set("common_key", "local_value");
-  auto account_value = base::Value::Dict()
+  auto account_value = base::DictValue()
                            .Set("server_key1", "server_value")
                            .Set("server_key2", "server_value")
                            .Set("common_key", "server_value");
 
   auto [updated_local_value, updated_account_value] =
       helper::UnmergeDictionaryValues(
-          base::Value::Dict()
+          base::DictValue()
               // Updated, should get added to both.
               .Set("server_key1", "new_server_value")
               // Updated, should get added to both.
@@ -172,12 +188,12 @@ TEST(PreferencesMergeHelperTest,
           local_value, account_value);
 
   // Updated entries get added to both.
-  EXPECT_EQ(updated_local_value, base::Value::Dict()
+  EXPECT_EQ(updated_local_value, base::DictValue()
                                      .Set("local_key1", "new_local_value")
                                      .Set("local_key2", "local_value")
                                      .Set("common_key", "new_common_value")
                                      .Set("server_key1", "new_server_value"));
-  EXPECT_EQ(updated_account_value, base::Value::Dict()
+  EXPECT_EQ(updated_account_value, base::DictValue()
                                        .Set("server_key1", "new_server_value")
                                        .Set("server_key2", "server_value")
                                        .Set("common_key", "new_common_value")
@@ -193,8 +209,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> local_value =
-      base::JSONReader::Read(local_dict_json);
+  std::optional<base::Value> local_value = base::JSONReader::Read(
+      local_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(local_value.has_value() && local_value->is_dict());
 
   const char* account_dict_json = R"(
@@ -205,8 +221,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> account_value =
-      base::JSONReader::Read(account_dict_json);
+  std::optional<base::Value> account_value = base::JSONReader::Read(
+      account_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(account_value.has_value() && account_value->is_dict());
 
   // Changes:
@@ -222,7 +238,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> new_value = base::JSONReader::Read(new_dict_json);
+  std::optional<base::Value> new_value = base::JSONReader::Read(
+      new_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(new_value.has_value() && new_value->is_dict());
 
   // "local_key" is unchanged, "new_key" was added and "server_key1" was
@@ -237,8 +254,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> expected_local_value =
-      base::JSONReader::Read(expected_local_dict_json);
+  std::optional<base::Value> expected_local_value = base::JSONReader::Read(
+      expected_local_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected_local_value.has_value() &&
               expected_local_value->is_dict());
 
@@ -254,8 +271,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> expected_account_value =
-      base::JSONReader::Read(expected_account_dict_json);
+  std::optional<base::Value> expected_account_value = base::JSONReader::Read(
+      expected_account_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected_account_value.has_value() &&
               expected_account_value->is_dict());
 
@@ -280,8 +297,8 @@ TEST(
   }
 }
   )";
-  absl::optional<base::Value> local_value =
-      base::JSONReader::Read(local_dict_json);
+  std::optional<base::Value> local_value = base::JSONReader::Read(
+      local_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(local_value.has_value() && local_value->is_dict());
 
   const char* account_dict_json = R"(
@@ -294,8 +311,8 @@ TEST(
   }
 }
   )";
-  absl::optional<base::Value> account_value =
-      base::JSONReader::Read(account_dict_json);
+  std::optional<base::Value> account_value = base::JSONReader::Read(
+      account_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(account_value.has_value() && account_value->is_dict());
 
   // Unchanged, this is the same as the merged value. Hence, both the local
@@ -314,7 +331,8 @@ TEST(
   }
 }
   )";
-  absl::optional<base::Value> new_value = base::JSONReader::Read(new_dict_json);
+  std::optional<base::Value> new_value = base::JSONReader::Read(
+      new_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(new_value.has_value() && new_value->is_dict());
   // The new value is the same as the merged value.
   ASSERT_EQ(new_value->GetDict(),
@@ -338,8 +356,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> local_value =
-      base::JSONReader::Read(local_dict_json);
+  std::optional<base::Value> local_value = base::JSONReader::Read(
+      local_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(local_value.has_value() && local_value->is_dict());
 
   const char* account_dict_json = R"(
@@ -349,8 +367,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> account_value =
-      base::JSONReader::Read(account_dict_json);
+  std::optional<base::Value> account_value = base::JSONReader::Read(
+      account_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(account_value.has_value() && account_value->is_dict());
 
   // Values for "local_key1" and "server_key1" were updated. They should get
@@ -365,7 +383,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> new_value = base::JSONReader::Read(new_dict_json);
+  std::optional<base::Value> new_value = base::JSONReader::Read(
+      new_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(new_value.has_value() && new_value->is_dict());
 
   auto [new_local_value, new_account_value] = helper::UnmergeDictionaryValues(
@@ -385,8 +404,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> local_value =
-      base::JSONReader::Read(local_dict_json);
+  std::optional<base::Value> local_value = base::JSONReader::Read(
+      local_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(local_value.has_value() && local_value->is_dict());
 
   const char* account_dict_json = R"(
@@ -396,8 +415,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> account_value =
-      base::JSONReader::Read(account_dict_json);
+  std::optional<base::Value> account_value = base::JSONReader::Read(
+      account_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(account_value.has_value() && account_value->is_dict());
 
   // "local_key2" and "server_key2" are newly-added keys. They should get added
@@ -415,7 +434,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> new_value = base::JSONReader::Read(new_dict_json);
+  std::optional<base::Value> new_value = base::JSONReader::Read(
+      new_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(new_value.has_value() && new_value->is_dict());
 
   // "local_key2" and "server_key2" were added. Since, "server_key1" was
@@ -431,8 +451,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> expected_local_value =
-      base::JSONReader::Read(expected_local_dict_json);
+  std::optional<base::Value> expected_local_value = base::JSONReader::Read(
+      expected_local_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected_local_value.has_value() &&
               expected_local_value->is_dict());
 
@@ -449,8 +469,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> expected_account_value =
-      base::JSONReader::Read(expected_account_dict_json);
+  std::optional<base::Value> expected_account_value = base::JSONReader::Read(
+      expected_account_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected_account_value.has_value() &&
               expected_account_value->is_dict());
 
@@ -474,8 +494,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> local_value =
-      base::JSONReader::Read(local_dict_json);
+  std::optional<base::Value> local_value = base::JSONReader::Read(
+      local_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(local_value.has_value() && local_value->is_dict());
 
   const char* account_dict_json = R"(
@@ -488,8 +508,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> account_value =
-      base::JSONReader::Read(account_dict_json);
+  std::optional<base::Value> account_value = base::JSONReader::Read(
+      account_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(account_value.has_value() && account_value->is_dict());
 
   // "local_key1" and "server_key2" were removed.
@@ -503,7 +523,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> new_value = base::JSONReader::Read(new_dict_json);
+  std::optional<base::Value> new_value = base::JSONReader::Read(
+      new_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(new_value.has_value() && new_value->is_dict());
 
   // "local_key1" and "server_key2" were removed. So, "local_key1" got removed
@@ -515,8 +536,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> expected_local_value =
-      base::JSONReader::Read(expected_local_dict_json);
+  std::optional<base::Value> expected_local_value = base::JSONReader::Read(
+      expected_local_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected_local_value.has_value() &&
               expected_local_value->is_dict());
 
@@ -529,8 +550,8 @@ TEST(PreferencesMergeHelperTest,
   }
 }
   )";
-  absl::optional<base::Value> expected_account_value =
-      base::JSONReader::Read(expected_account_dict_json);
+  std::optional<base::Value> expected_account_value = base::JSONReader::Read(
+      expected_account_dict_json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(expected_account_value.has_value() &&
               expected_account_value->is_dict());
 
@@ -542,8 +563,118 @@ TEST(PreferencesMergeHelperTest,
   EXPECT_EQ(new_account_value, expected_account_value->GetDict());
 }
 
+class TestPrefModelAssociatorClient : public PrefModelAssociatorClient {
+ public:
+  TestPrefModelAssociatorClient()
+      : syncable_prefs_database_(kSyncablePrefsDatabase) {}
+
+  TestPrefModelAssociatorClient(const TestPrefModelAssociatorClient&) = delete;
+  TestPrefModelAssociatorClient& operator=(
+      const TestPrefModelAssociatorClient&) = delete;
+
+  // PrefModelAssociatorClient implementation.
+  base::Value MaybeMergePreferenceValues(
+      std::string_view pref_name,
+      const base::Value& local_value,
+      const base::Value& server_value) const override {
+    return base::Value();
+  }
+  const SyncablePrefsDatabase& GetSyncablePrefsDatabase() const override {
+    return syncable_prefs_database_;
+  }
+
+ private:
+  ~TestPrefModelAssociatorClient() override = default;
+
+  TestSyncablePrefsDatabase syncable_prefs_database_;
+};
+
+TEST(PreferencesMergeHelperTest,
+     ShouldHandleCorruptLocalValueForMergeableDictPref) {
+  auto client = base::MakeRefCounted<TestPrefModelAssociatorClient>();
+
+  base::Value corrupt_local_value("corrupt value");
+  base::Value account_value(
+      base::DictValue().Set("account_key", "account value"));
+
+  base::Value merged_value = helper::MergePreference(
+      client.get(), kMergeableDictPref, corrupt_local_value, account_value);
+  // Since local value is corrupt and account value is not, account value wins.
+  EXPECT_EQ(merged_value, account_value);
+}
+
+TEST(PreferencesMergeHelperTest,
+     ShouldHandleCorruptServerValueForMergeableDictPref) {
+  auto client = base::MakeRefCounted<TestPrefModelAssociatorClient>();
+
+  base::Value local_value(base::DictValue().Set("local_key", "local value"));
+  base::Value corrupt_account_value("corrupt value");
+
+  base::Value merged_value = helper::MergePreference(
+      client.get(), kMergeableDictPref, local_value, corrupt_account_value);
+  // Since account value is corrupt but local value is not, local value wins.
+  EXPECT_EQ(merged_value, local_value);
+}
+
+TEST(PreferencesMergeHelperTest,
+     ShouldHandleCorruptValuesForMergeableDictPref) {
+  auto client = base::MakeRefCounted<TestPrefModelAssociatorClient>();
+
+  base::Value corrupt_local_value("corrupt value");
+  base::Value corrupt_account_value(base::ListValue().Append("account value"));
+
+  base::Value merged_value =
+      helper::MergePreference(client.get(), kMergeableDictPref,
+                              corrupt_local_value, corrupt_account_value);
+  // Since both values are corrupt, local value wins to avoid updating pref at
+  // all.
+  EXPECT_EQ(merged_value, corrupt_local_value);
+}
+
+TEST(PreferencesMergeHelperTest,
+     ShouldHandleCorruptLocalValueForMergeableListPref) {
+  auto client = base::MakeRefCounted<TestPrefModelAssociatorClient>();
+
+  base::Value corrupt_local_value("corrupt value");
+  base::Value account_value(base::ListValue().Append("account value"));
+
+  base::Value merged_value = helper::MergePreference(
+      client.get(), kMergeableListPref, corrupt_local_value, account_value);
+  // Since local value is corrupt and account value is not, account value wins.
+  EXPECT_EQ(merged_value, account_value);
+}
+
+TEST(PreferencesMergeHelperTest,
+     ShouldHandleCorruptServerValueForMergeableListPref) {
+  auto client = base::MakeRefCounted<TestPrefModelAssociatorClient>();
+
+  base::Value local_value(base::ListValue().Append("local value"));
+  base::Value corrupt_account_value("corrupt value");
+
+  base::Value merged_value = helper::MergePreference(
+      client.get(), kMergeableListPref, local_value, corrupt_account_value);
+  // Since account value is corrupt but local value is not, local value wins.
+  EXPECT_EQ(merged_value, local_value);
+}
+
+TEST(PreferencesMergeHelperTest,
+     ShouldHandleCorruptValuesForMergeableListPref) {
+  auto client = base::MakeRefCounted<TestPrefModelAssociatorClient>();
+
+  base::Value corrupt_local_value("corrupt value");
+  base::Value corrupt_account_value(
+      base::DictValue().Set("account_key", "account value"));
+
+  base::Value merged_value =
+      helper::MergePreference(client.get(), kMergeableListPref,
+                              corrupt_local_value, corrupt_account_value);
+  // Since both values are corrupt, local value wins to avoid updating pref at
+  // all.
+  EXPECT_EQ(merged_value, corrupt_local_value);
+}
+
 // Tests for MergePreference() exists in pref_model_associator_unittest.cc.
-// TODO(crbug.com/1416479): Move those tests here.
+// TODO(crbug.com/40256874): Move those tests here.
 
 }  // namespace
 }  // namespace sync_preferences

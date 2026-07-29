@@ -29,37 +29,44 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_INDEXEDDB_IDB_FACTORY_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_INDEXEDDB_IDB_FACTORY_H_
 
+#include <list>
 #include <memory>
 
 #include "base/task/single_thread_task_runner.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "third_party/blink/public/mojom/feature_observer/feature_observer.mojom-blink.h"
 #include "third_party/blink/public/mojom/indexeddb/indexeddb.mojom-blink-forward.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/modules/indexeddb/idb_open_db_request.h"
 #include "third_party/blink/renderer/modules/modules_export.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
+#include "third_party/blink/renderer/platform/heap/weak_cell.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
-#include "third_party/blink/renderer/platform/wtf/gc_plugin.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
 
 class ExceptionState;
 class ScriptState;
-class WebIDBCallbacks;
+class IDBDatabaseInfo;
+class IDBFactoryClient;
+class SharedIDBDatabaseConnection;
 
-class MODULES_EXPORT IDBFactory final : public ScriptWrappable {
+// This implements the IDBFactory Web IDL interface, i.e. the `window.indexedDB`
+// object.
+class MODULES_EXPORT IDBFactory final
+    : public ScriptWrappable,
+      public ExecutionContextLifecycleObserver {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
-  explicit IDBFactory(ContextLifecycleNotifier* notifier);
+  explicit IDBFactory(ExecutionContext* context);
   ~IDBFactory() override;
 
-  void SetFactory(mojo::PendingRemote<mojom::blink::IDBFactory>,
-                  ExecutionContext*);
+  void SetRemoteConnector(
+      base::RepeatingCallback<
+          void(mojo::PendingReceiver<mojom::blink::IDBFactory>)> callback);
 
   // Implement the IDBFactory IDL
   IDBOpenDBRequest* open(ScriptState*, const String& name, ExceptionState&);
@@ -80,21 +87,43 @@ class MODULES_EXPORT IDBFactory final : public ScriptWrappable {
                                                       const String& name,
                                                       ExceptionState&);
 
-  ScriptPromise GetDatabaseInfo(ScriptState*, ExceptionState&);
+  ScriptPromise<IDLSequence<IDBDatabaseInfo>> GetDatabaseInfo(ScriptState*,
+                                                              ExceptionState&);
 
   // This method is exposed specifically for DevTools.
   void GetDatabaseInfoForDevTools(
-      ScriptState*,
       mojom::blink::IDBFactory::GetDatabaseInfoCallback callback);
 
-  void SetFactoryForTesting(HeapMojoRemote<mojom::blink::IDBFactory> factory);
+  // Registers a newly established connection in the cache to be shared by
+  // future open requests.
+  void RegisterSharedConnection(const String& name,
+                                SharedIDBDatabaseConnection* connection);
+
+  // Removes `request` from the pending primary requests map if it was the
+  // active primary request for its database. This is a no-op if `request` was
+  // a shared request (which is never in the map) or if it was a primary request
+  // that has already been overwritten by a newer request (e.g., with a
+  // different version).
+  void UnregisterPendingRequest(IDBOpenDBRequest* request);
+  void PromoteSharedRequest(
+      IDBOpenDBRequest* old_primary,
+      const HeapVector<Member<IDBOpenDBRequest>>& shared_requests);
+
+  // ExecutionContextLifecycleObserver
+  void ContextDestroyed() override;
 
   void Trace(Visitor*) const override;
 
  private:
-  // Lazy initialize the mojo pipe to the back end.
-  HeapMojoRemote<mojom::blink::IDBFactory>& GetFactory(
-      ExecutionContext* execution_context);
+  // Returns the cached shared connection for the database `name`, if any.
+  SharedIDBDatabaseConnection* GetSharedConnectionIfExists(const String& name);
+
+  ExecutionContext* GetValidContext(ScriptState* script_state);
+
+  // Initializes and returns the mojo pipe to the back end.
+  HeapMojoRemote<mojom::blink::IDBFactory>& GetRemote();
+
+  scoped_refptr<base::SingleThreadTaskRunner> GetTaskRunner();
 
   IDBOpenDBRequest* OpenInternal(ScriptState*,
                                  const String& name,
@@ -106,7 +135,6 @@ class MODULES_EXPORT IDBFactory final : public ScriptWrappable {
           callbacks_remote,
       mojo::PendingAssociatedReceiver<mojom::blink::IDBTransaction>
           transaction_receiver,
-      HeapMojoRemote<mojom::blink::IDBFactory>& factory,
       const String& name,
       int64_t version,
       int64_t transaction_id);
@@ -115,37 +143,53 @@ class MODULES_EXPORT IDBFactory final : public ScriptWrappable {
                                            const String& name,
                                            ExceptionState&,
                                            bool);
-  void DeleteDatabaseInternalImpl(
-      IDBOpenDBRequest* request,
-      HeapMojoRemote<mojom::blink::IDBFactory>& factory,
-      const String& name,
-      bool force_close);
+  void DeleteDatabaseInternalImpl(IDBOpenDBRequest* request,
+                                  const String& name,
+                                  bool force_close);
 
-  void GetDatabaseInfoImpl(ExecutionContext* context,
-                           ScriptPromiseResolver* resolver);
+  void GetDatabaseInfoImpl(
+      ScriptPromiseResolver<IDLSequence<IDBDatabaseInfo>>*);
   void DidGetDatabaseInfo(
-      ScriptPromiseResolver* resolver,
+      ScriptPromiseResolver<IDLSequence<IDBDatabaseInfo>>*,
       Vector<mojom::blink::IDBNameAndVersionPtr> names_and_versions,
       mojom::blink::IDBErrorPtr error);
 
   void GetDatabaseInfoForDevToolsHelper(
-      ExecutionContext* context,
       mojom::blink::IDBFactory::GetDatabaseInfoCallback callback);
 
-  void AllowIndexedDB(ExecutionContext* context,
-                      base::OnceCallback<void()> callback);
-  void DidAllowIndexedDB(base::OnceCallback<void()> callback,
-                         bool allow_access);
+  void AllowIndexedDB(base::OnceCallback<void()> callback);
+  void DidAllowIndexedDB(bool allow_access);
 
-  absl::optional<bool> allowed_;
+  mojo::PendingAssociatedRemote<mojom::blink::IDBFactoryClient>
+  CreatePendingRemote(std::unique_ptr<IDBFactoryClient> client);
 
-  mojo::PendingAssociatedRemote<mojom::blink::IDBCallbacks> GetCallbacksProxy(
-      std::unique_ptr<WebIDBCallbacks> callbacks);
-  mojo::PendingRemote<mojom::blink::ObservedFeature> GetObservedFeature();
+  // Removes the connection from the cache (e.g. on disconnect or forced close).
+  // Also called during upgrades or deletes to ensure future requests don't
+  // share the outdated connection.
+  void RemoveSharedConnection(const String& name);
 
-  HeapMojoRemote<mojom::blink::IDBFactory> factory_;
-  HeapMojoRemote<mojom::blink::FeatureObserver> feature_observer_;
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner_;
+  // Whether the context has permission to use IDB.
+  std::optional<bool> allowed_;
+  // Holds requests that were paused while `allowed_` is being fetched. These
+  // will all be invoked in order when `allowed_` is decided.
+  Vector<base::OnceClosure> callbacks_waiting_on_permission_decision_;
+
+  // When non-null, overrides the normal means of binding `remote_`. This exists
+  // because `this` self-heals its connection.
+  base::RepeatingCallback<void(mojo::PendingReceiver<mojom::blink::IDBFactory>)>
+      remote_connector_;
+
+  HeapMojoRemote<mojom::blink::IDBFactory> remote_;
+
+  HeapHashMap<String, Member<SharedIDBDatabaseConnection>> shared_connections_;
+
+  // Map of database name to the primary pending open request. The primary
+  // request is the one that actually requests a new connection from the
+  // browser. Subsequent requests for the same database version will attempt to
+  // piggyback on this primary request.
+  HeapHashMap<String, Member<IDBOpenDBRequest>> primary_pending_requests_;
+
+  WeakCellFactory<IDBFactory> weak_factory_{this};
 };
 
 }  // namespace blink

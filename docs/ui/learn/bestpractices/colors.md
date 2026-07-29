@@ -172,7 +172,7 @@ explicit CollapsibleListView(ui::TableModel* model) {
 void CollapsibleListView::OnThemeChanged() {
   views::View::OnThemeChanged();
   const auto* color_provider = GetColorProvider();
-  const SkColor icon_color = 
+  const SkColor icon_color =
       color_provider->GetColor(ui::kColorIcon);
   const SkColor disabled_icon_color =
       color_provider->GetColor(ui::kColorIconDisabled);
@@ -319,7 +319,7 @@ For new UI, **add new, specific color identifiers**. If a mock for a new
 `FooBarMenu` background, don't reuse `kFooBarMenuBackgroundColor` when
 implementing the new menu, as the name will no longer be accurate. Add a
 `kFrobberMenuBackgroundColor` identifier and use that instead. `ui/` code should
-add identifiers to the [`NATIVE_THEME_COLOR_IDS`](https://source.chromium.org/chromium/chromium/src/+/main:ui/native_theme/native_theme_color_id.h;l=10;drc=21c19ce054e99a4361dff61877a4197831b80e6b)
+add identifiers to the [`COLOR_IDS`](https://source.chromium.org/chromium/chromium/src/+/main:ui/color/color_id.h?q=symbol%3A%5CbCOLOR_IDS%5Cb%20case%3Ayes)
 macro; `chrome/` code should typically add to the
 [`NotOverwritableByUserThemeProperty`](https://source.chromium.org/chromium/chromium/src/+/main:chrome/browser/themes/theme_properties.h;l=91;drc=cfa76e5827628eb2104df0e0b55d5d89f4a93eaf)
 enum.
@@ -426,13 +426,13 @@ both light and dark mode, and custom themes as well.
 
 **Avoid**
 
-Old code in `common_theme.cc` defines a disabled button color absolutely:
+Old code defines a disabled button color absolutely:
 
 #####
 
 **Best practice**
 
-[Current version](https://source.chromium.org/chromium/chromium/src/+/main:ui/native_theme/common_theme.cc;l=264;drc=21c19ce054e99a4361dff61877a4197831b80e6b)
+[Newer version](https://source.chromium.org/chromium/chromium/src/+/main:ui/native_theme/common_theme.cc;l=264;drc=21c19ce054e99a4361dff61877a4197831b80e6b)
 makes it clear that the disabled color is related to the normal color:
 
 |||---|||
@@ -476,7 +476,7 @@ SkColor GetAuraColor(
           NativeTheme::kColorId_ButtonColor,
           color_scheme);
       return color_utils::BlendForMinContrast(
-          bg, bg, absl::nullopt, 1.2f).color;
+          bg, bg, std::nullopt, 1.2f).color;
     }
     ...
   }
@@ -640,7 +640,7 @@ class HistoryMenuBridge : public sessions::TabRestoreServiceObserver,
 
   // Adds an item for the group entry with a submenu containing its tabs.
   // Returns whether the item was successfully added.
-  bool AddGroupEntryToMenu(sessions::TabRestoreService::Group* group,
+  bool AddGroupEntryToMenu(sessions::tab_restore::Group* group,
                            NSMenu* menu,
                            NSInteger tag,
                            NSInteger index);
@@ -648,7 +648,7 @@ class HistoryMenuBridge : public sessions::TabRestoreServiceObserver,
 ...
 
 bool HistoryMenuBridge::AddGroupEntryToMenu(
-    sessions::TabRestoreService::Group* group,
+    sessions::tab_restore::Group* group,
     NSMenu* menu,
     NSInteger tag,
     NSInteger index) {
@@ -656,9 +656,7 @@ bool HistoryMenuBridge::AddGroupEntryToMenu(
 ...
 
   // Set the icon of the group to the group color circle.
-  AppController* controller =
-      base::mac::ObjCCastStrict<AppController>([NSApp delegate]);
-  const auto& theme = [controller lastActiveThemeProvider];
+  const auto& theme = [AppController.sharedController lastActiveThemeProvider];
   const int color_id =
       GetTabGroupContextMenuColorIdDeprecated(group->visual_data.color());
   gfx::ImageSkia group_icon = gfx::CreateVectorIcon(
@@ -691,13 +689,13 @@ const ui::ThemeProvider* GetThemeProvider(content::WebContents* web_contents);
 void NTPResourceCache::CreateNewTabIncognitoCSS(
     const content::WebContents::Getter& wc_getter) {
   auto* web_contents = wc_getter.Run();
-  const ui::NativeTheme* native_theme = webui::GetNativeTheme(web_contents);
+  const ui::NativeTheme* native_theme = webui::GetNativeThemeDeprecated(web_contents);
   DCHECK(native_theme);
 
   // Requesting the incognito CSS is only done from within incognito browser
   // windows. The ThemeProvider associated with the requesting WebContents will
   // wrap the relevant incognito bits.
-  const ui::ThemeProvider* tp = webui::GetThemeProvider(web_contents);
+  const ui::ThemeProvider* tp = webui::GetThemeProviderDeprecated(web_contents);
   DCHECK(tp);
 
   ...

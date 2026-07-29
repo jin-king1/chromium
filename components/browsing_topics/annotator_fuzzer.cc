@@ -2,21 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <string>
-
 #include <fuzzer/FuzzedDataProvider.h>
 
-#include "base/files/file_util.h"
+#include <string>
+
 #include "base/path_service.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "components/browsing_topics/annotator_impl.h"
+#include "components/optimization_guide/core/delivery/model_info.h"
+#include "components/optimization_guide/core/delivery/optimization_guide_model_provider.h"
+#include "components/optimization_guide/core/delivery/test_optimization_guide_model_provider.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
-#include "components/optimization_guide/core/optimization_guide_model_provider.h"
-#include "components/optimization_guide/core/test_model_info_builder.h"
-#include "components/optimization_guide/core/test_optimization_guide_model_provider.h"
 #include "components/optimization_guide/proto/models.pb.h"
 #include "components/optimization_guide/proto/page_topics_model_metadata.pb.h"
 
@@ -30,7 +29,8 @@ class ModelProvider
   // optimization_guide::TestOptimizationGuideModelProvider:
   void AddObserverForOptimizationTargetModel(
       optimization_guide::proto::OptimizationTarget optimization_target,
-      const absl::optional<optimization_guide::proto::Any>& model_metadata,
+      const std::optional<optimization_guide::proto::Any>& model_metadata,
+      scoped_refptr<base::SequencedTaskRunner> model_task_runner,
       optimization_guide::OptimizationTargetModelObserver* observer) override {
     optimization_guide::proto::Any any_metadata;
     any_metadata.set_type_url(
@@ -50,22 +50,21 @@ class ModelProvider
     page_topics_model_metadata.SerializeToString(any_metadata.mutable_value());
 
     base::FilePath source_root_dir;
-    base::PathService::Get(base::DIR_SOURCE_ROOT, &source_root_dir);
+    base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &source_root_dir);
     base::FilePath model_file_path =
         source_root_dir.AppendASCII("components")
             .AppendASCII("test")
             .AppendASCII("data")
             .AppendASCII("browsing_topics")
             .AppendASCII("golden_data_model.tflite");
-    std::unique_ptr<optimization_guide::ModelInfo> model_info =
-        optimization_guide::TestModelInfoBuilder()
-            .SetModelFilePath(model_file_path)
-            .SetModelMetadata(any_metadata)
-            .Build();
+    optimization_guide::ModelInfo model_info = {
+        .model_file_path = model_file_path,
+        .model_metadata = any_metadata,
+    };
 
     observer->OnModelUpdated(
         optimization_guide::proto::OPTIMIZATION_TARGET_PAGE_TOPICS_V2,
-        *model_info);
+        model_info);
   }
 };
 
@@ -76,7 +75,7 @@ class TestAnnotator : public browsing_topics::AnnotatorImpl {
   TestAnnotator(
       optimization_guide::OptimizationGuideModelProvider* model_provider,
       scoped_refptr<base::SequencedTaskRunner> background_task_runner,
-      const absl::optional<optimization_guide::proto::Any>& model_metadata)
+      const std::optional<optimization_guide::proto::Any>& model_metadata)
       : browsing_topics::AnnotatorImpl(model_provider,
                                        std::move(background_task_runner),
                                        model_metadata) {}
@@ -95,7 +94,7 @@ class AnnotatorFuzzerTest {
       : annotator_(std::make_unique<TestAnnotator>(
             &model_provider_,
             task_environment_.GetMainThreadTaskRunner(),
-            absl::nullopt)) {
+            std::nullopt)) {
     scoped_feature_list_.InitAndDisableFeature(
         optimization_guide::features::kPreventLongRunningPredictionModels);
   }

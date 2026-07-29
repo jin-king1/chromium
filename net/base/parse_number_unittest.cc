@@ -62,7 +62,7 @@ const struct {
 
 // These are invalid inputs that can not be parsed regardless of the format
 // used (they are neither valid negative or non-negative values).
-const char* kInvalidParseTests[] = {
+constexpr const char* kInvalidParseTests[] = {
     "",       "-",      "--",    "23-",  "134-34", "- ",   "    ",  "+42",
     " 123",   "123 ",   "123\n", "0xFF", "-0xFF",  "0x11", "-0x11", "x11",
     "-x11",   "F11",    "-F11",  "AF",   "-AF",    "0AF",  "0.0",   "13.",
@@ -72,7 +72,7 @@ const char* kInvalidParseTests[] = {
 // This wrapper calls func() and expects the result to match |expected_output|.
 template <typename OutputType, typename ParseFunc, typename ExpectationType>
 void ExpectParseIntSuccess(ParseFunc func,
-                           base::StringPiece input,
+                           std::string_view input,
                            ParseIntFormat format,
                            ExpectationType expected_output) {
   // Try parsing without specifying an error output - expecting success.
@@ -95,7 +95,7 @@ void ExpectParseIntSuccess(ParseFunc func,
 // This wrapper calls func() and expects the failure to match |expected_error|.
 template <typename OutputType, typename ParseFunc>
 void ExpectParseIntFailure(ParseFunc func,
-                           base::StringPiece input,
+                           std::string_view input,
                            ParseIntFormat format,
                            ParseIntError expected_error) {
   const OutputType kBogusOutput(23614);
@@ -192,7 +192,7 @@ void TestParseIntUsingFormat(ParseFunc func, ParseIntFormat format) {
 
   // Test parsing a string that contains a valid number followed by a NUL
   // character.
-  ExpectParseIntFailure<T>(func, base::StringPiece("123\0", 4), format,
+  ExpectParseIntFailure<T>(func, std::string_view("123\0", 4), format,
                            ParseIntError::FAILED_PARSE);
 }
 

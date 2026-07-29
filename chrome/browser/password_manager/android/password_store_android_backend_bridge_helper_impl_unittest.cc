@@ -9,10 +9,13 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/test/protobuf_matchers.h"
 #include "base/test/task_environment.h"
 #include "chrome/browser/password_manager/android/password_store_android_backend_bridge_helper.h"
 #include "chrome/browser/password_manager/android/password_store_android_backend_dispatcher_bridge.h"
 #include "chrome/browser/password_manager/android/password_store_android_backend_receiver_bridge.h"
+#include "components/password_manager/core/browser/password_store/password_form_converters.h"
+#include "components/sync/protocol/deletion_origin.pb.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -29,8 +32,6 @@ using testing::StrictMock;
 using testing::VariantWith;
 using testing::WithArg;
 using JobId = PasswordStoreAndroidBackendDispatcherBridge::JobId;
-using SyncingAccount =
-    PasswordStoreAndroidBackendDispatcherBridge::SyncingAccount;
 
 constexpr char kTestAccount[] = "test@gmail.com";
 const std::u16string kTestUsername(u"Todd Tester");
@@ -48,16 +49,11 @@ PasswordForm CreateTestLogin() {
   return form;
 }
 
-MATCHER_P(ExpectSyncingAccount, expectation, "") {
-  return absl::holds_alternative<SyncingAccount>(arg) &&
-         expectation == absl::get<SyncingAccount>(arg).value();
-}
-
 class MockBackendConsumer
     : public PasswordStoreAndroidBackendReceiverBridge::Consumer {
   MOCK_METHOD(void,
               OnCompleteWithLogins,
-              (JobId, std::vector<PasswordForm>),
+              (JobId, std::vector<StoredCredential>),
               (override));
   MOCK_METHOD(void, OnLoginsChanged, (JobId, PasswordChanges), (override));
   MOCK_METHOD(void, OnError, (JobId, AndroidBackendError), (override));
@@ -80,24 +76,37 @@ class MockPasswordStoreAndroidBackendDispatcherBridge
               Init,
               (base::android::ScopedJavaGlobalRef<jobject>),
               (override));
-  MOCK_METHOD(void, GetAllLogins, (JobId, Account), (override));
-  MOCK_METHOD(void, GetAutofillableLogins, (JobId, Account), (override));
+  MOCK_METHOD(void, GetAllLogins, (JobId, std::string), (override));
+  MOCK_METHOD(void,
+              GetAllLoginsWithBrandingInfo,
+              (JobId, std::string),
+              (override));
+  MOCK_METHOD(void, GetAutofillableLogins, (JobId, std::string), (override));
   MOCK_METHOD(void,
               GetLoginsForSignonRealm,
-              (JobId, const std::string&, Account),
+              (JobId, const std::string&, std::string),
+              (override));
+  MOCK_METHOD(void,
+              GetAffiliatedLoginsForSignonRealm,
+              (JobId, const std::string&, std::string),
               (override));
   MOCK_METHOD(void,
               AddLogin,
-              (JobId, const PasswordForm&, Account),
+              (JobId, const StoredCredential&, std::string),
               (override));
   MOCK_METHOD(void,
               UpdateLogin,
-              (JobId, const PasswordForm&, Account),
+              (JobId, const StoredCredential&, std::string),
               (override));
   MOCK_METHOD(void,
               RemoveLogin,
-              (JobId, const PasswordForm&, Account),
+              (JobId, const StoredCredential&, std::string),
               (override));
+  MOCK_METHOD(
+      void,
+      RemoveLogin,
+      (JobId, const StoredCredential&, std::string, sync_pb::DeletionOrigin),
+      (override));
 };
 
 }  // namespace
@@ -105,10 +114,10 @@ class MockPasswordStoreAndroidBackendDispatcherBridge
 class PasswordStoreAndroidBackendBridgeHelperImplTest : public testing::Test {
  protected:
   PasswordStoreAndroidBackendBridgeHelperImplTest()
-      : helper_(base::PassKey<
-                    class PasswordStoreAndroidBackendBridgeHelperImplTest>(),
-                CreateMockReceiverBridge(),
-                CreateMockDispatcherBridge()) {
+      : helper_(
+            base::PassKey<PasswordStoreAndroidBackendBridgeHelperImplTest>(),
+            CreateMockReceiverBridge(),
+            CreateMockDispatcherBridge()) {
     helper_.SetConsumer(consumer_weak_factory_.GetWeakPtr());
     RunUntilIdle();
   }
@@ -170,56 +179,59 @@ class PasswordStoreAndroidBackendBridgeHelperImplTest : public testing::Test {
 
 TEST_F(PasswordStoreAndroidBackendBridgeHelperImplTest,
        GetAllLoginsCallsBridge) {
-  JobId job_id = helper()->GetAllLogins(SyncingAccount(kTestAccount));
-  EXPECT_CALL(*dispatcher_bridge(),
-              GetAllLogins(job_id, ExpectSyncingAccount(kTestAccount)));
+  JobId job_id = helper()->GetAllLogins(kTestAccount);
+  EXPECT_CALL(*dispatcher_bridge(), GetAllLogins(job_id, kTestAccount));
   RunUntilIdle();
 }
 
 TEST_F(PasswordStoreAndroidBackendBridgeHelperImplTest,
        GetAutofillableLoginsCallsBridge) {
-  JobId job_id = helper()->GetAutofillableLogins(SyncingAccount(kTestAccount));
-  EXPECT_CALL(
-      *dispatcher_bridge(),
-      GetAutofillableLogins(job_id, ExpectSyncingAccount(kTestAccount)));
+  JobId job_id = helper()->GetAutofillableLogins(kTestAccount);
+  EXPECT_CALL(*dispatcher_bridge(),
+              GetAutofillableLogins(job_id, kTestAccount));
   RunUntilIdle();
 }
 
 TEST_F(PasswordStoreAndroidBackendBridgeHelperImplTest,
        GetLoginsForSignonRealmCallsBridge) {
-  JobId job_id =
-      helper()->GetLoginsForSignonRealm(kTestUrl, SyncingAccount(kTestAccount));
+  JobId job_id = helper()->GetLoginsForSignonRealm(kTestUrl, kTestAccount);
   EXPECT_CALL(*dispatcher_bridge(),
-              GetLoginsForSignonRealm(job_id, kTestUrl,
-                                      ExpectSyncingAccount(kTestAccount)));
+              GetLoginsForSignonRealm(job_id, kTestUrl, kTestAccount));
   RunUntilIdle();
 }
 
 TEST_F(PasswordStoreAndroidBackendBridgeHelperImplTest, AddLoginCallsBridge) {
   auto form = CreateTestLogin();
-  JobId job_id = helper()->AddLogin(form, SyncingAccount(kTestAccount));
-  EXPECT_CALL(*dispatcher_bridge(),
-              AddLogin(job_id, Eq(form), ExpectSyncingAccount(kTestAccount)));
+  JobId job_id = helper()->AddLogin(FromPasswordForm(form), kTestAccount);
+  EXPECT_CALL(*dispatcher_bridge(), AddLogin(job_id, _, kTestAccount));
   RunUntilIdle();
 }
 
 TEST_F(PasswordStoreAndroidBackendBridgeHelperImplTest,
        UpdateLoginCallsBridge) {
   auto form = CreateTestLogin();
-  JobId job_id = helper()->UpdateLogin(form, SyncingAccount(kTestAccount));
-  EXPECT_CALL(
-      *dispatcher_bridge(),
-      UpdateLogin(job_id, Eq(form), ExpectSyncingAccount(kTestAccount)));
+  JobId job_id = helper()->UpdateLogin(FromPasswordForm(form), kTestAccount);
+  EXPECT_CALL(*dispatcher_bridge(), UpdateLogin(job_id, _, kTestAccount));
   RunUntilIdle();
 }
 
 TEST_F(PasswordStoreAndroidBackendBridgeHelperImplTest,
        RemoveLoginCallsBridge) {
   auto form = CreateTestLogin();
-  JobId job_id = helper()->RemoveLogin(form, SyncingAccount(kTestAccount));
-  EXPECT_CALL(
-      *dispatcher_bridge(),
-      RemoveLogin(job_id, Eq(form), ExpectSyncingAccount(kTestAccount)));
+  JobId job_id = helper()->RemoveLogin(FromPasswordForm(form), kTestAccount);
+  EXPECT_CALL(*dispatcher_bridge(), RemoveLogin(job_id, _, kTestAccount));
+  RunUntilIdle();
+}
+
+TEST_F(PasswordStoreAndroidBackendBridgeHelperImplTest,
+       RemoveLoginWithDeletionOriginCallsBridge) {
+  auto form = CreateTestLogin();
+  sync_pb::DeletionOrigin deletion_origin;
+  JobId job_id = helper()->RemoveLogin(FromPasswordForm(form), kTestAccount,
+                                       deletion_origin);
+  EXPECT_CALL(*dispatcher_bridge(),
+              RemoveLogin(job_id, _, kTestAccount,
+                          base::test::EqualsProto(deletion_origin)));
   RunUntilIdle();
 }
 

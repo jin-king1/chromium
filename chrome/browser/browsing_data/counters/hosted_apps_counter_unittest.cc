@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -22,7 +23,6 @@
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace {
 
@@ -40,14 +40,14 @@ class HostedAppsCounterTest : public testing::Test {
 
   std::string AddExtension() {
     return AddItem(base::Uuid::GenerateRandomV4().AsLowercaseString(),
-                   /*app_manifest=*/absl::nullopt);
+                   /*app_manifest=*/std::nullopt);
   }
 
   std::string AddPackagedApp() {
     return AddItem(
         base::Uuid::GenerateRandomV4().AsLowercaseString(),
-        base::Value::Dict().Set(
-            "launch", base::Value::Dict().Set("local_path", "index.html")));
+        base::DictValue().Set(
+            "launch", base::DictValue().Set("local_path", "index.html")));
   }
 
   std::string AddHostedApp() {
@@ -57,16 +57,15 @@ class HostedAppsCounterTest : public testing::Test {
 
   std::string AddHostedAppWithName(const std::string& name) {
     return AddItem(
-        name,
-        base::Value::Dict()
-            .Set("urls", base::Value::List().Append("https://example.com"))
-            .Set("launch",
-                 base::Value::Dict().Set("web_url", "https://example.com")));
+        name, base::DictValue()
+                  .Set("urls", base::ListValue().Append("https://example.com"))
+                  .Set("launch", base::DictValue().Set("web_url",
+                                                       "https://example.com")));
   }
 
   std::string AddItem(const std::string& name,
-                      absl::optional<base::Value::Dict> app_manifest) {
-    auto manifest_builder = base::Value::Dict()
+                      std::optional<base::DictValue> app_manifest) {
+    auto manifest_builder = base::DictValue()
                                 .Set("manifest_version", 2)
                                 .Set("name", name)
                                 .Set("version", "1");
@@ -147,7 +146,6 @@ TEST_F(HostedAppsCounterTest, Count) {
   Profile* profile = GetProfile();
   HostedAppsCounter counter(profile);
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                base::BindRepeating(&HostedAppsCounterTest::Callback,
                                    base::Unretained(this)));
   counter.Restart();
@@ -175,7 +173,6 @@ TEST_F(HostedAppsCounterTest, OnlyHostedApps) {
   Profile* profile = GetProfile();
   HostedAppsCounter counter(profile);
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                base::BindRepeating(&HostedAppsCounterTest::Callback,
                                    base::Unretained(this)));
 
@@ -214,7 +211,6 @@ TEST_F(HostedAppsCounterTest, Examples) {
   Profile* profile = GetProfile();
   HostedAppsCounter counter(profile);
   counter.Init(profile->GetPrefs(),
-               browsing_data::ClearBrowsingDataTab::ADVANCED,
                base::BindRepeating(&HostedAppsCounterTest::Callback,
                                    base::Unretained(this)));
   counter.Restart();

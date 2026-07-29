@@ -7,13 +7,10 @@
  * selected for daily refresh is shared with other Google Photos accounts.
  */
 
-import '../../css/cros_button_style.css.js';
+import 'chrome://resources/ash/common/personalization/cros_button_style.css.js';
 
-import {CrDialogElement} from 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
-import {assert} from 'chrome://resources/js/assert_ts.js';
+import type {CrDialogElement} from 'chrome://resources/ash/common/cr_elements/cr_dialog/cr_dialog.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-
-import {isGooglePhotosSharedAlbumsEnabled} from '../load_time_booleans.js';
 
 import {getTemplate} from './google_photos_shared_album_dialog_element.html.js';
 
@@ -34,15 +31,15 @@ export class AcceptEvent extends CustomEvent<null> {
 
 declare global {
   interface HTMLElementTagNameMap {
-    'google-photos-shared-album-dialog': GooglePhotosSharedAlbumDialog;
+    'google-photos-shared-album-dialog': GooglePhotosSharedAlbumDialogElement;
   }
 }
 
-export interface GooglePhotosSharedAlbumDialog {
+export interface GooglePhotosSharedAlbumDialogElement {
   $: {dialog: CrDialogElement};
 }
 
-export class GooglePhotosSharedAlbumDialog extends PolymerElement {
+export class GooglePhotosSharedAlbumDialogElement extends PolymerElement {
   static get is() {
     return 'google-photos-shared-album-dialog';
   }
@@ -55,13 +52,6 @@ export class GooglePhotosSharedAlbumDialog extends PolymerElement {
     return {};
   }
 
-  override connectedCallback(): void {
-    assert(
-        isGooglePhotosSharedAlbumsEnabled(),
-        'google photos shared albums must be enabled');
-    super.connectedCallback();
-  }
-
   private onClickAccept_() {
     this.dispatchEvent(new AcceptEvent());
   }
@@ -72,4 +62,5 @@ export class GooglePhotosSharedAlbumDialog extends PolymerElement {
 }
 
 customElements.define(
-    GooglePhotosSharedAlbumDialog.is, GooglePhotosSharedAlbumDialog);
+    GooglePhotosSharedAlbumDialogElement.is,
+    GooglePhotosSharedAlbumDialogElement);

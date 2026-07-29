@@ -7,9 +7,14 @@
 #include <GLES2/gl2extchromium.h>
 #include <GLES3/gl3.h>
 
+#include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "build/build_config.h"
+#include "gpu/command_buffer/service/service_utils.h"
 #include "gpu/command_buffer/tests/gl_manager.h"
 #include "gpu/command_buffer/tests/gl_test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/gl/gl_implementation.h"
 
 namespace gpu {
 class ANGLEShaderPixelLocalStorageTest : public testing::Test {
@@ -18,6 +23,14 @@ class ANGLEShaderPixelLocalStorageTest : public testing::Test {
 
  protected:
   void SetUp() override {
+#if BUILDFLAG(IS_ANDROID)
+    auto* command_line = base::CommandLine::ForCurrentProcess();
+    if (gles2::UsePassthroughCommandDecoder(command_line)) {
+      // TODO(crbug.com/40278644): fix the test for passthrough.
+      GTEST_SKIP();
+    }
+#endif
+
     GLManager::Options options;
     options.context_type = CONTEXT_TYPE_OPENGLES3;
     gl_.Initialize(options);
@@ -40,13 +53,10 @@ static GLint gl_get_integer(GLenum pname) {
 TEST_F(ANGLEShaderPixelLocalStorageTest, GetIntegerv) {
   if (!gl_.IsInitialized() ||
       !GLTestHelper::HasExtension("GL_ANGLE_shader_pixel_local_storage")) {
-    return;
+    GTEST_SKIP();
   }
 
   EXPECT_GT(gl_get_integer(GL_MAX_PIXEL_LOCAL_STORAGE_PLANES_ANGLE), 4);
-  EXPECT_GT(gl_get_integer(
-                GL_MAX_COLOR_ATTACHMENTS_WITH_ACTIVE_PIXEL_LOCAL_STORAGE_ANGLE),
-            0);
   EXPECT_GT(
       gl_get_integer(
           GL_MAX_COMBINED_DRAW_BUFFERS_AND_PIXEL_LOCAL_STORAGE_PLANES_ANGLE),
@@ -59,6 +69,13 @@ TEST_F(ANGLEShaderPixelLocalStorageTest, GetIntegerv) {
     GLint value = -1;                                                        \
     glGetFramebufferPixelLocalStorageParameterivANGLE(plane, pname, &value); \
     EXPECT_EQ(value, GLint(expected));                                       \
+  }
+
+#define EXPECT_PLS_UINTEGER(plane, pname, expected)                           \
+  {                                                                           \
+    GLuint value = 0;                                                         \
+    glGetFramebufferPixelLocalStorageParameteruivANGLE(plane, pname, &value); \
+    EXPECT_EQ(value, GLuint(expected));                                       \
   }
 
 #define EXPECT_PLS_CLEAR_VALUE_FLOAT(plane, rgba)                     \
@@ -96,6 +113,7 @@ TEST_F(ANGLEShaderPixelLocalStorageTest, GetIntegerv) {
 // Verifies that glGetFramebufferPixelLocalStorageParameter{f,i}vANGLE is
 // marshalled properly over the command buffer. Thorough testing of these
 // commands is done in angle_end2end_tests.
+
 TEST_F(ANGLEShaderPixelLocalStorageTest,
        GetFramebufferPixelLocalStorageParameter) {
   if (!gl_.IsInitialized() ||
@@ -114,27 +132,28 @@ TEST_F(ANGLEShaderPixelLocalStorageTest,
 
   GLint maxPLSPlanes = gl_get_integer(GL_MAX_PIXEL_LOCAL_STORAGE_PLANES_ANGLE);
   for (GLint plane : {0, maxPLSPlanes - 1}) {
-    EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_FORMAT_ANGLE, GL_NONE);
+    EXPECT_PLS_UINTEGER(plane, GL_PIXEL_LOCAL_INTERNAL_FORMAT_ANGLE, GL_NONE);
     EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_TEXTURE_NAME_ANGLE, 0);
     EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_TEXTURE_LEVEL_ANGLE, 0);
     EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_TEXTURE_LAYER_ANGLE, 0);
 
-    glFramebufferTexturePixelLocalStorageANGLE(plane, tex, 1, 0);
-    EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_FORMAT_ANGLE, GL_RGBA8UI);
+    glFramebufferTexturePixelLocalStorageANGLE(plane, tex, 1, 0, 0);
+    EXPECT_PLS_UINTEGER(plane, GL_PIXEL_LOCAL_INTERNAL_FORMAT_ANGLE,
+                        GL_RGBA8UI);
     EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_TEXTURE_NAME_ANGLE, tex);
     EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_TEXTURE_LEVEL_ANGLE, 1);
     EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_TEXTURE_LAYER_ANGLE, 0);
 
     // Using texture name 0 deinitializes the entire plane.
-    glFramebufferTexturePixelLocalStorageANGLE(plane, 0, 1, 2);
-    EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_FORMAT_ANGLE, GL_NONE);
+    glFramebufferTexturePixelLocalStorageANGLE(plane, 0, 1, 2, 0);
+    EXPECT_PLS_UINTEGER(plane, GL_PIXEL_LOCAL_INTERNAL_FORMAT_ANGLE, GL_NONE);
     EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_TEXTURE_NAME_ANGLE, 0);
     EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_TEXTURE_LEVEL_ANGLE, 0);
     EXPECT_PLS_INTEGER(plane, GL_PIXEL_LOCAL_TEXTURE_LAYER_ANGLE, 0);
 
     EXPECT_PLS_CLEAR_VALUE_FLOAT(plane, ({0, 0, 0, 0}));
     EXPECT_PLS_CLEAR_VALUE_INT(plane, ({0, 0, 0, 0}));
-    EXPECT_PLS_CLEAR_VALUE_UNSIGNED_INT(plane, ({0, 0, 0, 0}));
+    UNSAFE_TODO(EXPECT_PLS_CLEAR_VALUE_UNSIGNED_INT(plane, ({0, 0, 0, 0})));
 
     glFramebufferPixelLocalClearValuefvANGLE(
         plane, std::array{0.f, -1.f, .5f, 999.f}.data());
@@ -146,7 +165,8 @@ TEST_F(ANGLEShaderPixelLocalStorageTest,
 
     EXPECT_PLS_CLEAR_VALUE_FLOAT(plane, ({0, -1, .5f, 999}));
     EXPECT_PLS_CLEAR_VALUE_INT(plane, ({0, -100, 99999, -99999}));
-    EXPECT_PLS_CLEAR_VALUE_UNSIGNED_INT(plane, ({0, 100, 99999, 9999999}));
+    UNSAFE_TODO(
+        EXPECT_PLS_CLEAR_VALUE_UNSIGNED_INT(plane, ({0, 100, 99999, 9999999})));
   }
 
   EXPECT_GL_ERROR(GL_NO_ERROR);
@@ -159,6 +179,13 @@ TEST_F(ANGLEShaderPixelLocalStorageTest, LoadStoreTokens) {
       !GLTestHelper::HasExtension("GL_ANGLE_shader_pixel_local_storage")) {
     return;
   }
+
+// Test skipped on Intel-based Macs when running Metal. crbug.com/326278125
+#if BUILDFLAG(IS_MAC) && defined(ARCH_CPU_X86_64)
+  if (gl::GetANGLEImplementation() == gl::ANGLEImplementation::kMetal) {
+    return;
+  }
+#endif
 
   GLuint texs[4];
   glGenTextures(4, texs);
@@ -174,10 +201,10 @@ TEST_F(ANGLEShaderPixelLocalStorageTest, LoadStoreTokens) {
 
   glDisable(GL_DITHER);
 
-  glFramebufferTexturePixelLocalStorageANGLE(0, texs[0], 0, 0);
-  glFramebufferTexturePixelLocalStorageANGLE(1, texs[1], 0, 0);
-  glFramebufferTexturePixelLocalStorageANGLE(2, texs[2], 0, 0);
-  glFramebufferTexturePixelLocalStorageANGLE(3, texs[3], 0, 0);
+  glFramebufferTexturePixelLocalStorageANGLE(0, texs[0], 0, 0, 0);
+  glFramebufferTexturePixelLocalStorageANGLE(1, texs[1], 0, 0, 0);
+  glFramebufferTexturePixelLocalStorageANGLE(2, texs[2], 0, 0, 0);
+  glFramebufferTexturePixelLocalStorageANGLE(3, texs[3], 0, 0, 0);
   glBeginPixelLocalStorageANGLE(
       4, std::array<GLenum, 4>{GL_LOAD_OP_CLEAR_ANGLE, GL_LOAD_OP_LOAD_ANGLE,
                                GL_LOAD_OP_ZERO_ANGLE, GL_DONT_CARE}
@@ -202,6 +229,13 @@ TEST_F(ANGLEShaderPixelLocalStorageTest, DrawAPI) {
     return;
   }
 
+// Test skipped on Intel-based Macs when running Metal. crbug.com/326278125
+#if BUILDFLAG(IS_MAC) && defined(ARCH_CPU_X86_64)
+  if (gl::GetANGLEImplementation() == gl::ANGLEImplementation::kMetal) {
+    return;
+  }
+#endif
+
   GLuint tex;
   glGenTextures(1, &tex);
   glBindTexture(GL_TEXTURE_2D, tex);
@@ -211,7 +245,7 @@ TEST_F(ANGLEShaderPixelLocalStorageTest, DrawAPI) {
   GLuint fbo;
   glGenFramebuffers(1, &fbo);
   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-  glFramebufferTexturePixelLocalStorageANGLE(0, tex, 0, 0);
+  glFramebufferTexturePixelLocalStorageANGLE(0, tex, 0, 0, 0);
   EXPECT_GL_ERROR(GL_NO_ERROR);
 
   glViewport(0, 0, 10, 10);
@@ -275,13 +309,15 @@ TEST_F(ANGLEShaderPixelLocalStorageTest, BlockEmulatedDefaultFramebuffer) {
     return;
   }
 
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
   GLuint tex;
   glGenTextures(1, &tex);
   glBindTexture(GL_TEXTURE_2D, tex);
   glTexStorage2DEXT(GL_TEXTURE_2D, 1, GL_RGBA8, 10, 10);
   EXPECT_GL_ERROR(GL_NO_ERROR);
 
-  glFramebufferTexturePixelLocalStorageANGLE(0, tex, 0, 0);
+  glFramebufferTexturePixelLocalStorageANGLE(0, tex, 0, 0, 0);
   EXPECT_GL_ERROR(GL_INVALID_OPERATION);
   EXPECT_GL_ERROR(GL_NO_ERROR);
 
@@ -319,9 +355,9 @@ TEST_F(ANGLEShaderPixelLocalStorageTest, BlockEmulatedDefaultFramebuffer) {
   EXPECT_GL_ERROR(GL_INVALID_OPERATION);
   EXPECT_GL_ERROR(GL_NO_ERROR);
 
-  GLint valuei = -1;
-  glGetFramebufferPixelLocalStorageParameterivANGLE(
-      0, GL_PIXEL_LOCAL_FORMAT_ANGLE, &valuei);
+  GLuint valueui = 0;
+  glGetFramebufferPixelLocalStorageParameteruivANGLE(
+      0, GL_PIXEL_LOCAL_INTERNAL_FORMAT_ANGLE, &valueui);
   EXPECT_GL_ERROR(GL_INVALID_OPERATION);
   EXPECT_GL_ERROR(GL_NO_ERROR);
 }

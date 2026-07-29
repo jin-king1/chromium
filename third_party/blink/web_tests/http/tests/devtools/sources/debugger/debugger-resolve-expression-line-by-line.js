@@ -2,9 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {TestRunner} from 'test_runner';
+import {SourcesTestRunner} from 'sources_test_runner';
+
+import * as SourceMapScopesModule from 'devtools/models/source_map_scopes/source_map_scopes.js';
+import * as SourcesModule from 'devtools/panels/sources/sources.js';
+import * as UIModule from 'devtools/ui/legacy/legacy.js';
+import * as Formatter from 'devtools/models/formatter/formatter.js';
+import * as StackTrace from 'devtools/models/stack_trace/stack_trace.js';
+import * as Main from 'devtools/entrypoints/main/main.js';
+
 (async function() {
   TestRunner.addResult(`Tests evaluation in webpack bundled scripts with 'line-by'line' source maps.\n`);
-  await TestRunner.loadLegacyModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
 
   // Bundle created using `npx webpack` with 'cheap-module-source-map'.
@@ -13,14 +22,18 @@
   await SourcesTestRunner.startDebuggerTestPromise();
   SourcesTestRunner.runTestFunctionAndWaitUntilPaused();
 
-  await TestRunner.addSnifferPromise(Sources.CallStackSidebarPane.prototype, 'updatedForTest');
+  await TestRunner.addSnifferPromise(SourcesModule.CallStackSidebarPane.CallStackSidebarPane.prototype, 'updatedForTest');
   SourcesTestRunner.waitForScriptSource('resolve-expressions-webpack-authored.js', async (uiSourceCode) => {
-    // "this.#prop" maps to the whole assignment so we should not resolve to anything in the source map.
-    let resolvedExpression = await Sources.SourceMapNamesResolver.resolveExpression(UI.context.flavor(SDK.DebuggerModel.CallFrame), 'this.#prop', uiSourceCode, 5, 17, 27);
+    const callFrame = UIModule.Context.Context.instance().flavor(StackTrace.StackTrace.DebuggableFrameFlavor).sdkFrame;
+    const debuggerWorkspaceBinding = Main.MainImpl.MainImpl.universeForTest.debuggerWorkspaceBinding;
+    const mappings = await SourceMapScopesModule.NamesResolver.allVariablesInCallFrame(callFrame, debuggerWorkspaceBinding);
+
+    // "this.#prop" maps to the whole assignment, but we should be able to handle that..
+    let resolvedExpression = await Formatter.FormatterWorkerPool.FormatterWorkerPool.instance().javaScriptSubstitute('this.#prop', mappings);
     TestRunner.addResult(`Resolved expression "this.#prop" to "${resolvedExpression}"`);
 
     // "a" should work as the "a++" is the only statement on the line.
-    resolvedExpression = await Sources.SourceMapNamesResolver.resolveExpression(UI.context.flavor(SDK.DebuggerModel.CallFrame), 'a', uiSourceCode, 6, 4, 5);
+    resolvedExpression = await Formatter.FormatterWorkerPool.FormatterWorkerPool.instance().javaScriptSubstitute('a', mappings);
     TestRunner.addResult(`Resolved expression "a" to "${resolvedExpression}"`);
 
     SourcesTestRunner.completeDebuggerTest();

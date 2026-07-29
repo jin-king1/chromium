@@ -13,12 +13,15 @@ namespace guest_os {
 class GuestOsFileWatcher;
 }
 
+class PrefService;
+
 namespace arc {
 
 // This class is responsible for mounting the sshfs version of Play files mount.
 class ArcMountProvider : public guest_os::GuestOsMountProvider {
  public:
-  ArcMountProvider(Profile* profile, int cid);
+  // `local_state` must be non-null and must outlive `this`.
+  ArcMountProvider(PrefService* local_state, Profile* profile, int cid);
 
   ArcMountProvider(const ArcMountProvider&) = delete;
   ArcMountProvider& operator=(const ArcMountProvider&) = delete;
@@ -41,7 +44,7 @@ class ArcMountProvider : public guest_os::GuestOsMountProvider {
   void Prepare(PrepareCallback callback) override;
 
  private:
-  const raw_ptr<Profile, ExperimentalAsh> profile_;
+  const raw_ptr<Profile> profile_;
   const int cid_;
 
   // Note: This should remain the last member so it'll be destroyed and

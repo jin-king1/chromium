@@ -4,7 +4,7 @@
 
 #include "components/cast_receiver/browser/streaming_receiver_session_client.h"
 
-#include "base/containers/contains.h"
+#include "base/memory/raw_ptr.h"
 #include "base/test/task_environment.h"
 #include "components/cast_receiver/browser/streaming_controller.h"
 #include "components/cast_streaming/browser/public/receiver_session.h"
@@ -61,7 +61,7 @@ class StreamingReceiverSessionClientTest : public testing::Test {
   StreamingReceiverSessionClientTest() {
     // NOTE: Required to ensure this test suite isn't affected by use of this
     // static function elsewhere in the codebase's tests.
-    cast_streaming::ClearNetworkContextGetter();
+    cast_streaming::SocketFactoryGetter::Clear();
 
     auto streaming_controller =
         std::make_unique<StrictMock<MockStreamingController>>();
@@ -88,7 +88,7 @@ class StreamingReceiverSessionClientTest : public testing::Test {
 
   StrictMock<MockStreamingReceiverSessionHandler> handler_;
   StrictMock<MockStreamingConfigManager> config_manager_;
-  StrictMock<MockStreamingController>* streaming_controller_;
+  raw_ptr<StrictMock<MockStreamingController>> streaming_controller_;
   std::unique_ptr<StreamingReceiverSessionClient> receiver_session_client_;
 };
 

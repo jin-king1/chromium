@@ -7,8 +7,11 @@
 #include <errno.h>
 #include <libevdev/libevdev.h>
 #include <linux/input.h>
+
 #include <utility>
 
+#include "base/compiler_specific.h"
+#include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
@@ -53,14 +56,12 @@ EventReaderLibevdevCros::EventReaderLibevdevCros(
   // This class assumes it does not deal with internal keyboards.
   CHECK(!has_keyboard_ || type() != INPUT_DEVICE_INTERNAL);
 
-  memset(&evdev_, 0, sizeof(evdev_));
   evdev_.log = OnLogMessage;
   evdev_.log_udata = this;
   evdev_.syn_report = OnSynReport;
   evdev_.syn_report_udata = this;
   evdev_.fd = fd.release();
 
-  memset(&evstate_, 0, sizeof(evstate_));
   evdev_.evstate = &evstate_;
   Event_Init(&evdev_);
 
@@ -144,6 +145,40 @@ void EventReaderLibevdevCros::ApplyDeviceSettings(
             touchpad_settings.haptic_click_sensitivity));
   }
   haptic_feedback_enabled_ = touchpad_settings.haptic_feedback_enabled;
+}
+
+void EventReaderLibevdevCros::ReceivedKeyboardInput(
+    uint64_t key,
+    double timestamp_in_seconds) {
+  if (!IsSuspectedKeyboardImposter() || !IsValidKeyboardKeyPress(key)) {
+    return;
+  }
+
+  SetSuspectedKeyboardImposter(false);
+  received_valid_input_callback_.Run(this, timestamp_in_seconds);
+}
+
+void EventReaderLibevdevCros::ReceivedMouseInput(int rel_value,
+                                                 double timestamp_in_seconds) {
+  if (!IsSuspectedMouseImposter() || rel_value == 0) {
+    return;
+  }
+
+  SetSuspectedMouseImposter(false);
+  received_valid_input_callback_.Run(this, timestamp_in_seconds);
+}
+
+void EventReaderLibevdevCros::SetReceivedValidInputCallback(
+    ReceivedValidInputCallback callback) {
+  delegate_->SetReceivedValidKeyboardInputCallback(base::BindRepeating(
+      &EventReaderLibevdevCros::ReceivedKeyboardInput, base::Unretained(this)));
+  delegate_->SetReceivedValidMouseInputCallback(base::BindRepeating(
+      &EventReaderLibevdevCros::ReceivedMouseInput, base::Unretained(this)));
+  received_valid_input_callback_ = std::move(callback);
+}
+
+void EventReaderLibevdevCros::SetBlockModifiers(bool block_modifiers) {
+  delegate_->SetBlockModifiers(block_modifiers);
 }
 
 bool EventReaderLibevdevCros::HasCapsLockLed() const {

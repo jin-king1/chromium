@@ -7,16 +7,19 @@
 
 #import <AVFoundation/AVFoundation.h>
 #include <CoreMedia/CoreMedia.h>
-#import <Foundation/Foundation.h>
 
 #include "media/capture/capture_export.h"
-#include "ui/gfx/geometry/size.h"
 
 namespace media {
 
 CAPTURE_EXPORT
 void LogFirstCapturedVideoFrame(const AVCaptureDeviceFormat* bestCaptureFormat,
                                 const CMSampleBufferRef buffer);
+CAPTURE_EXPORT void LogReactionEffectsGesturesState();
+
+// Logs the implementation details of the given device. See
+// https://crbug.com/461717105.
+CAPTURE_EXPORT void LogAVCaptureDeviceInfo(AVCaptureDevice* device);
 
 }  // namespace media
 

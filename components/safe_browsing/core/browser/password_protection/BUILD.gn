@@ -20,6 +20,7 @@ source_set("password_protection") {
     "//components/autofill/core/browser",
     "//components/history/core/browser",
     "//components/password_manager/core/browser",
+    "//components/safe_browsing/core/browser",
     "//components/safe_browsing/core/browser:referrer_chain_provider",
     "//components/safe_browsing/core/browser:safe_browsing_metrics_collector",
     "//components/safe_browsing/core/browser:token_fetcher",
@@ -69,7 +70,7 @@ source_set("password_protection_metrics_util") {
 
   deps = [
     "//base",
-    "//components/safe_browsing/core/common:common",
+    "//components/safe_browsing/core/common",
     "//components/safe_browsing/core/common/proto:csd_proto",
     "//net",
   ]
@@ -87,7 +88,7 @@ source_set("password_reuse_detection_manager_client") {
     "//components/autofill/core/browser",
     "//components/password_manager/core/browser",
     "//components/safe_browsing:buildflags",
-    "//url:url",
+    "//url",
   ]
 }
 
@@ -103,6 +104,6 @@ source_set("unit_tests") {
     "//testing/gmock",
     "//testing/gtest",
     "//third_party/abseil-cpp:absl",
-    "//url:url",
+    "//url",
   ]
 }

@@ -49,15 +49,16 @@ void WebrtcConnectionToHost::Connect(
 
   event_callback_ = event_callback;
 
-  SetState(CONNECTING, OK);
+  SetState(CONNECTING, ErrorCode::OK);
 }
 
 void WebrtcConnectionToHost::Disconnect(ErrorCode error) {
-  session_->Close(error);
+  session_->Close(error, /* error_details= */ {}, FROM_HERE);
 }
 
-const SessionConfig& WebrtcConnectionToHost::config() {
-  return session_->config();
+void WebrtcConnectionToHost::ApplyNetworkSettings(
+    const NetworkSettings& settings) {
+  transport_->ApplyNetworkSettings(settings);
 }
 
 ClipboardStub* WebrtcConnectionToHost::clipboard_forwarder() {
@@ -104,12 +105,12 @@ void WebrtcConnectionToHost::OnSessionStateChange(Session::State state) {
       break;
 
     case Session::AUTHENTICATED:
-      SetState(AUTHENTICATED, OK);
+      SetState(AUTHENTICATED, ErrorCode::OK);
       break;
 
     case Session::CLOSED:
       CloseChannels();
-      SetState(CLOSED, OK);
+      SetState(CLOSED, ErrorCode::OK);
       break;
 
     case Session::FAILED:
@@ -128,7 +129,10 @@ void WebrtcConnectionToHost::OnWebrtcTransportConnecting() {
 
 void WebrtcConnectionToHost::OnWebrtcTransportConnected() {}
 
-void WebrtcConnectionToHost::OnWebrtcTransportError(ErrorCode error) {
+void WebrtcConnectionToHost::OnWebrtcTransportError(
+    ErrorCode error,
+    std::string_view error_details,
+    const base::Location& error_location) {
   CloseChannels();
   SetState(FAILED, error);
 }
@@ -159,7 +163,7 @@ void WebrtcConnectionToHost::OnWebrtcTransportIncomingDataChannel(
 }
 
 void WebrtcConnectionToHost::OnWebrtcTransportMediaStreamAdded(
-    rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) {
+    webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream) {
   if (stream->GetVideoTracks().size() > 0) {
     GetOrCreateVideoAdapter(stream->id())->SetMediaStream(stream);
   } else if (stream->GetAudioTracks().size() > 0) {
@@ -171,7 +175,7 @@ void WebrtcConnectionToHost::OnWebrtcTransportMediaStreamAdded(
 }
 
 void WebrtcConnectionToHost::OnWebrtcTransportMediaStreamRemoved(
-    rtc::scoped_refptr<webrtc::MediaStreamInterface> stream) {
+    webrtc::scoped_refptr<webrtc::MediaStreamInterface> stream) {
   if (video_adapter_ && video_adapter_->label() == stream->id()) {
     video_adapter_.reset();
   }
@@ -189,7 +193,7 @@ void WebrtcConnectionToHost::OnChannelClosed(
     ChannelDispatcherBase* channel_dispatcher) {
   LOG(ERROR) << "Channel " << channel_dispatcher->channel_name()
              << " was closed unexpectedly.";
-  SetState(FAILED, INCOMPATIBLE_PROTOCOL);
+  SetState(FAILED, ErrorCode::CHANNEL_CONNECTION_ERROR);
 }
 
 ConnectionToHost::State WebrtcConnectionToHost::state() const {
@@ -207,7 +211,7 @@ void WebrtcConnectionToHost::NotifyIfChannelsReady() {
   // Start forwarding clipboard and input events.
   clipboard_forwarder_.set_clipboard_stub(control_dispatcher_.get());
   event_forwarder_.set_input_stub(event_dispatcher_.get());
-  SetState(CONNECTED, OK);
+  SetState(CONNECTED, ErrorCode::OK);
 }
 
 WebrtcVideoRendererAdapter* WebrtcConnectionToHost::GetOrCreateVideoAdapter(
@@ -232,7 +236,7 @@ void WebrtcConnectionToHost::CloseChannels() {
 
 void WebrtcConnectionToHost::SetState(State state, ErrorCode error) {
   // |error| should be specified only when |state| is set to FAILED.
-  DCHECK(state == FAILED || error == OK);
+  DCHECK(state == FAILED || error == ErrorCode::OK);
 
   if (state != state_) {
     state_ = state;

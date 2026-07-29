@@ -6,6 +6,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/values.h"
 #include "components/devtools/simple_devtools_protocol_client/simple_devtools_protocol_client.h"
@@ -33,19 +34,23 @@ using simple_devtools_protocol_client::SimpleDevToolsProtocolClient;
 namespace {
 
 // Generate some fake UserAgentMetadata for use when overriding with CDP.
-base::Value::Dict MakeFakeMetadata() {
-  base::Value::Dict brand_version;
+base::DictValue MakeFakeMetadata() {
+  base::DictValue brand_version;
   brand_version.Set("brand", "HeadlessChrome");
 
-  base::Value::List brands;
+  base::ListValue brands;
   brand_version.Set("version", "1");
   brands.Append(brand_version.Clone());
 
   brand_version.Set("version", "1.2.3");
-  base::Value::List full_version_list;
+  base::ListValue full_version_list;
   full_version_list.Append(std::move(brand_version));
 
-  base::Value::Dict metadata;
+  base::ListValue form_factors;
+  form_factors.Append("Mobile");
+  form_factors.Append("XR");
+
+  base::DictValue metadata;
   metadata.Set("brands", std::move(brands));
   metadata.Set("fullVersionList", std::move(full_version_list));
   metadata.Set("fullVersion", "1.2.3");
@@ -56,6 +61,7 @@ base::Value::Dict MakeFakeMetadata() {
   metadata.Set("mobile", true);
   metadata.Set("bitness", "512");
   metadata.Set("wow64", true);
+  metadata.Set("formFactors", std::move(form_factors));
 
   return metadata;
 }
@@ -66,19 +72,19 @@ namespace headless {
 
 class HeadlessBrowserNavigatorUADataTest : public HeadlessBrowserTest {
  public:
+
   void SetUpOnMainThread() override {
     HeadlessBrowserTest::SetUpOnMainThread();
 
-    EXPECT_TRUE(embedded_test_server()->Start());
+    ASSERT_TRUE(embedded_test_server()->Start());
 
-    HeadlessBrowserContext* browser_context =
-        browser()->CreateBrowserContextBuilder().Build();
+    HeadlessBrowserContext* browser_context = browser()->CreateBrowserContext();
+    ASSERT_TRUE(browser_context);
 
-    web_contents_ =
-        browser_context->CreateWebContentsBuilder()
-            .SetInitialURL(embedded_test_server()->GetURL("/hello.html"))
-            .Build();
-    EXPECT_TRUE(WaitForLoad(web_contents_));
+    web_contents_ = browser_context->CreateWebContents(
+        embedded_test_server()->GetURL("/hello.html"));
+    ASSERT_TRUE(web_contents_);
+    ASSERT_TRUE(WaitForLoad(web_contents_));
 
     devtools_client_.AttachToWebContents(
         HeadlessWebContentsImpl::From(web_contents_)->web_contents());
@@ -90,8 +96,8 @@ class HeadlessBrowserNavigatorUADataTest : public HeadlessBrowserTest {
   }
 
   // Get a UserAgentMetadata value as seen from navigator.userAgentData.
-  base::Value::Dict GetUAMetadataValue(std::string script) {
-    base::Value::Dict params = Param("expression", script);
+  base::DictValue GetUAMetadataValue(std::string script) {
+    base::DictValue params = Param("expression", script);
     // Always await a Promise. This does not hurt if the script returns a
     // non-Promise value.
     params.Set("awaitPromise", true);
@@ -100,19 +106,19 @@ class HeadlessBrowserNavigatorUADataTest : public HeadlessBrowserTest {
   }
 
   // Use the Chrome Devtools Protocol to override UserAgentMetadata.
-  void OverrideUserAgentMetadata(base::Value::Dict user_agent_metadata) {
-    base::Value::Dict params;
+  void OverrideUserAgentMetadata(base::DictValue user_agent_metadata) {
+    base::DictValue params;
     params.Set("userAgent", "overridden");
     params.Set("userAgentMetadata",
                base::Value(std::move(user_agent_metadata)));
-    base::Value::Dict result = SendCommandSync(
+    base::DictValue result = SendCommandSync(
         devtools_client_, "Network.setUserAgentOverride", std::move(params));
     std::string* err = result.FindStringByDottedPath("error.data");
     CHECK(!err) << "Error invoking Network.setUserAgentOverride: \n" << *err;
   }
 
  protected:
-  raw_ptr<HeadlessWebContents, DanglingUntriaged> web_contents_;
+  raw_ptr<HeadlessWebContents, AcrossTasksDanglingUntriaged> web_contents_;
   SimpleDevToolsProtocolClient devtools_client_;
 
   // Get the version of the HeadlessChrome brand from the brand list.
@@ -147,6 +153,9 @@ class HeadlessBrowserNavigatorUADataTest : public HeadlessBrowserTest {
   static constexpr char kWow64Script[] = R"(
           navigator.userAgentData.getHighEntropyValues(['wow64'])
               .then(r => r.wow64))";
+  static constexpr char kFormFactorScript[] = R"(
+          navigator.userAgentData.getHighEntropyValues(['formFactors'])
+              .then(r => r.formFactors.join(', ')))";
 };
 
 // UA Metadata is available via `navigator.userAgentData`.
@@ -174,6 +183,9 @@ IN_PROC_BROWSER_TEST_F(HeadlessBrowserNavigatorUADataTest, DefaultValues) {
               DictHasValue("result.result.value", expected.full_version));
   EXPECT_THAT(GetUAMetadataValue(kWow64Script),
               DictHasValue("result.result.value", expected.wow64));
+  EXPECT_THAT(GetUAMetadataValue(kFormFactorScript),
+              DictHasValue("result.result.value",
+                           base::JoinString(expected.form_factors, ", ")));
 }
 
 // UA Metadata is available via `navigator.userAgentData` when overridden via
@@ -201,6 +213,8 @@ IN_PROC_BROWSER_TEST_F(HeadlessBrowserNavigatorUADataTest, CDPOverride) {
               DictHasValue("result.result.value", "1.2.3"));
   EXPECT_THAT(GetUAMetadataValue(kWow64Script),
               DictHasValue("result.result.value", true));
+  EXPECT_THAT(GetUAMetadataValue(kFormFactorScript),
+              DictHasValue("result.result.value", "Mobile, XR"));
 }
 
 class HeadlessBrowserUAHeaderTest : public HeadlessBrowserTest {
@@ -208,22 +222,21 @@ class HeadlessBrowserUAHeaderTest : public HeadlessBrowserTest {
   void SetUpOnMainThread() override {
     HeadlessBrowserTest::SetUpOnMainThread();
 
-    EXPECT_TRUE(embedded_test_server()->InitializeAndListen());
+    ASSERT_TRUE(embedded_test_server()->InitializeAndListen());
     embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
         &HeadlessBrowserUAHeaderTest::HandleRequest, base::Unretained(this)));
     embedded_test_server()->StartAcceptingConnections();
 
-    HeadlessBrowserContext* browser_context =
-        browser()->CreateBrowserContextBuilder().Build();
+    HeadlessBrowserContext* browser_context = browser()->CreateBrowserContext();
+    ASSERT_TRUE(browser_context);
 
     // Capture the initial request.
     CaptureHeadersForPath("/hello.html");
 
-    web_contents_ =
-        browser_context->CreateWebContentsBuilder()
-            .SetInitialURL(embedded_test_server()->GetURL("/hello.html"))
-            .Build();
-    EXPECT_TRUE(WaitForLoad(web_contents_));
+    web_contents_ = browser_context->CreateWebContents(
+        embedded_test_server()->GetURL("/hello.html"));
+    ASSERT_TRUE(web_contents_);
+    ASSERT_TRUE(WaitForLoad(web_contents_));
 
     devtools_client_.AttachToWebContents(
         HeadlessWebContentsImpl::From(web_contents_)->web_contents());
@@ -235,9 +248,12 @@ class HeadlessBrowserUAHeaderTest : public HeadlessBrowserTest {
   }
 
   std::unique_ptr<HttpResponse> HandleRequest(const HttpRequest& request) {
-    auto path = request.GetURL().path();
-    if (path == capture_headers_for_path_) {
-      got_headers_ = request.headers;
+    auto path = request.GetURL().GetPath();
+    {
+      base::AutoLock lock(headers_lock_);
+      if (path == capture_headers_for_path_) {
+        got_headers_ = request.headers;
+      }
     }
 
     auto http_response = std::make_unique<BasicHttpResponse>();
@@ -266,12 +282,14 @@ class HeadlessBrowserUAHeaderTest : public HeadlessBrowserTest {
   }
 
   void CaptureHeadersForPath(const std::string path) {
+    base::AutoLock lock(headers_lock_);
     capture_headers_for_path_ = path;
   }
 
   bool IsRequestHeaderSet(
       const std::string header,
-      const absl::optional<std::string> value = absl::nullopt) {
+      const std::optional<std::string> value = std::nullopt) {
+    base::AutoLock lock(headers_lock_);
     if (!got_headers_.contains(header)) {
       return false;
     }
@@ -282,12 +300,12 @@ class HeadlessBrowserUAHeaderTest : public HeadlessBrowserTest {
   }
 
   // Use the Chrome Devtools Protocol to override UserAgentMetadata.
-  void OverrideUserAgentMetadata(base::Value::Dict user_agent_metadata) {
-    base::Value::Dict params;
+  void OverrideUserAgentMetadata(base::DictValue user_agent_metadata) {
+    base::DictValue params;
     params.Set("userAgent", "overridden");
     params.Set("userAgentMetadata",
                base::Value(std::move(user_agent_metadata)));
-    base::Value::Dict result = SendCommandSync(
+    base::DictValue result = SendCommandSync(
         devtools_client_, "Network.setUserAgentOverride", std::move(params));
     std::string* err = result.FindStringByDottedPath("error.data");
     CHECK(!err) << "Error invoking Network.setUserAgentOverride: \n" << *err;
@@ -296,18 +314,18 @@ class HeadlessBrowserUAHeaderTest : public HeadlessBrowserTest {
   // Use the Chrome Devtools Protocol to reload the page, ignoring cache, and
   // wait for the load to complete.
   void ReloadPage() {
-    base::Value::Dict params;
+    base::DictValue params;
     params.Set("ignoreCache", true);
-    base::Value::Dict result =
+    base::DictValue result =
         SendCommandSync(devtools_client_, "Page.reload", std::move(params));
     std::string* err = result.FindStringByDottedPath("error.data");
     CHECK(!err) << "Error invoking Page.reload: \n" << *err;
-    EXPECT_TRUE(WaitForLoad(web_contents_));
+    ASSERT_TRUE(WaitForLoad(web_contents_));
   }
 
   // Use the fetch API to make a subresource request.
-  base::Value::Dict FetchSubresource() {
-    base::Value::Dict params = Param("expression", "fetch('/sub')");
+  base::DictValue FetchSubresource() {
+    base::DictValue params = Param("expression", "fetch('/sub')");
     params.Set("awaitPromise", true);
     return SendCommandSync(devtools_client_, "Runtime.evaluate",
                            std::move(params));
@@ -393,12 +411,14 @@ class HeadlessBrowserUAHeaderTest : public HeadlessBrowserTest {
   }
 
  protected:
-  raw_ptr<HeadlessWebContents, DanglingUntriaged> web_contents_;
+  raw_ptr<HeadlessWebContents, AcrossTasksDanglingUntriaged> web_contents_;
   SimpleDevToolsProtocolClient devtools_client_;
+
+  base::Lock headers_lock_;
   // HandleRequest will capture headers with this path in `got_headers_`.
-  std::string capture_headers_for_path_;
+  std::string capture_headers_for_path_ GUARDED_BY(headers_lock_);
   // Captured headers from the last request to `capture_headers_for_path_`.
-  HttpRequest::HeaderMap got_headers_;
+  HttpRequest::HeaderMap got_headers_ GUARDED_BY(headers_lock_);
 };
 
 IN_PROC_BROWSER_TEST_F(HeadlessBrowserUAHeaderTest, OnInitialNavigation) {

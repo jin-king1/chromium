@@ -9,12 +9,11 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_features.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_manager_factory.h"
-#include "chrome/browser/ash/plugin_vm/plugin_vm_metrics_util.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_pref_names.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_test_helper.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_util.h"
@@ -23,6 +22,7 @@
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_controller.h"
 #include "chrome/browser/ui/ash/shelf/shelf_controller_helper.h"
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_controller.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/dbus/chunneld/chunneld_client.h"
 #include "chromeos/ash/components/dbus/cicerone/cicerone_client.h"
@@ -57,6 +57,7 @@ class PluginVmManagerImplTest : public testing::Test {
     ash::DebugDaemonClient::InitializeFake();
     ash::SeneschalClient::InitializeFake();
     ash::VmPluginDispatcherClient::InitializeFake();
+    browser_controller_.emplace();
     testing_profile_ = std::make_unique<TestingProfile>();
     test_helper_ = std::make_unique<PluginVmTestHelper>(testing_profile_.get());
     plugin_vm_manager_ = static_cast<PluginVmManagerImpl*>(
@@ -65,22 +66,17 @@ class PluginVmManagerImplTest : public testing::Test {
         testing_profile_.get());
     shelf_model_ = std::make_unique<ash::ShelfModel>();
     chrome_shelf_controller_ = std::make_unique<ChromeShelfController>(
-        testing_profile_.get(), shelf_model_.get(),
-        /*shelf_item_factory=*/nullptr);
+        testing_profile_.get(), shelf_model_.get());
     chrome_shelf_controller_->SetProfileForTest(testing_profile_.get());
     chrome_shelf_controller_->SetShelfControllerHelperForTest(
         std::make_unique<ShelfControllerHelper>(testing_profile_.get()));
     chrome_shelf_controller_->Init();
-    histogram_tester_ = std::make_unique<base::HistogramTester>();
+
     ash::DlcserviceClient::InitializeFake();
 
     // Make StartVm succeed by default, tests can override as needed.
     VmPluginDispatcherClient().set_start_vm_response(
         vm_tools::plugin_dispatcher::StartVmResponse());
-
-    // Borealis makes a call, unrelated to this test so just reset it.
-    DCHECK_EQ(ConciergeClient().get_vm_info_call_count(), 1);
-    ConciergeClient().reset_get_vm_info_call_count();
   }
 
   PluginVmManagerImplTest(const PluginVmManagerImplTest&) = delete;
@@ -88,12 +84,13 @@ class PluginVmManagerImplTest : public testing::Test {
 
   ~PluginVmManagerImplTest() override {
     ash::DlcserviceClient::Shutdown();
-    histogram_tester_.reset();
+
     chrome_shelf_controller_.reset();
     shelf_model_.reset();
     display_service_.reset();
     test_helper_.reset();
     testing_profile_.reset();
+    browser_controller_.reset();
     ash::VmPluginDispatcherClient::Shutdown();
     ash::SeneschalClient::Shutdown();
     ash::DebugDaemonClient::Shutdown();
@@ -152,13 +149,14 @@ class PluginVmManagerImplTest : public testing::Test {
   }
 
   content::BrowserTaskEnvironment task_environment_;
+
   std::unique_ptr<TestingProfile> testing_profile_;
   std::unique_ptr<PluginVmTestHelper> test_helper_;
   std::unique_ptr<NotificationDisplayServiceTester> display_service_;
-  raw_ptr<PluginVmManagerImpl, ExperimentalAsh> plugin_vm_manager_;
+  raw_ptr<PluginVmManagerImpl, DanglingUntriaged> plugin_vm_manager_;
+  std::optional<ash::BrowserControllerImpl> browser_controller_;
   std::unique_ptr<ash::ShelfModel> shelf_model_;
   std::unique_ptr<ChromeShelfController> chrome_shelf_controller_;
-  std::unique_ptr<base::HistogramTester> histogram_tester_;
 };
 
 TEST_F(PluginVmManagerImplTest, LaunchPluginVmRequiresPluginVmAllowed) {
@@ -173,9 +171,6 @@ TEST_F(PluginVmManagerImplTest, LaunchPluginVmRequiresPluginVmAllowed) {
   EXPECT_EQ(ConciergeClient().get_vm_info_call_count(), 0);
   EXPECT_FALSE(SeneschalClient().share_path_called());
   EXPECT_EQ(plugin_vm_manager_->seneschal_server_handle(), 0ul);
-
-  histogram_tester_->ExpectUniqueSample(kPluginVmLaunchResultHistogram,
-                                        PluginVmLaunchResult::kError, 1);
 }
 
 TEST_F(PluginVmManagerImplTest, LaunchPluginVmStartAndShow) {
@@ -195,9 +190,6 @@ TEST_F(PluginVmManagerImplTest, LaunchPluginVmStartAndShow) {
   EXPECT_FALSE(SeneschalClient().share_path_called());
   EXPECT_EQ(plugin_vm_manager_->seneschal_server_handle(), 0ul);
 
-  histogram_tester_->ExpectUniqueSample(kPluginVmLaunchResultHistogram,
-                                        PluginVmLaunchResult::kSuccess, 1);
-
   EXPECT_CALL(callback, Run(true));
   NotifyVmToolsStateChanged(
       vm_tools::plugin_dispatcher::VmToolsState::VM_TOOLS_STATE_INSTALLED);
@@ -215,9 +207,6 @@ TEST_F(PluginVmManagerImplTest, LaunchesOnceFromMultipleRequests) {
   plugin_vm_manager_->LaunchPluginVm(callback2.Get());
   plugin_vm_manager_->LaunchPluginVm(callback3.Get());
   task_environment_.RunUntilIdle();
-
-  histogram_tester_->ExpectUniqueSample(kPluginVmLaunchResultHistogram,
-                                        PluginVmLaunchResult::kSuccess, 1);
 
   EXPECT_CALL(callback1, Run(true));
   EXPECT_CALL(callback2, Run(true));
@@ -249,9 +238,6 @@ TEST_F(PluginVmManagerImplTest, LaunchPluginVmShowAndStop) {
   EXPECT_EQ(ConciergeClient().get_vm_info_call_count(), 0);
   EXPECT_FALSE(SeneschalClient().share_path_called());
   EXPECT_EQ(plugin_vm_manager_->seneschal_server_handle(), 0ul);
-
-  histogram_tester_->ExpectUniqueSample(kPluginVmLaunchResultHistogram,
-                                        PluginVmLaunchResult::kSuccess, 1);
 
   plugin_vm_manager_->StopPluginVm(kPluginVmName, /*force=*/true);
   task_environment_.RunUntilIdle();
@@ -397,9 +383,6 @@ TEST_F(PluginVmManagerImplTest, LaunchPluginVmInvalidLicense) {
   EXPECT_CALL(callback, Run(false));
   task_environment_.RunUntilIdle();
   EXPECT_FALSE(VmPluginDispatcherClient().show_vm_called());
-
-  histogram_tester_->ExpectUniqueSample(
-      kPluginVmLaunchResultHistogram, PluginVmLaunchResult::kInvalidLicense, 1);
 }
 
 TEST_F(PluginVmManagerImplTest, RelaunchPluginVm) {
@@ -417,9 +400,6 @@ TEST_F(PluginVmManagerImplTest, RelaunchPluginVm) {
   EXPECT_EQ(ConciergeClient().get_vm_info_call_count(), 0);
   EXPECT_FALSE(SeneschalClient().share_path_called());
   EXPECT_EQ(plugin_vm_manager_->seneschal_server_handle(), 0ul);
-
-  histogram_tester_->ExpectUniqueSample(kPluginVmLaunchResultHistogram,
-                                        PluginVmLaunchResult::kSuccess, 1);
 
   NotifyVmToolsStateChanged(
       vm_tools::plugin_dispatcher::VmToolsState::VM_TOOLS_STATE_INSTALLED);

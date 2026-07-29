@@ -6,36 +6,49 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "base/callback_list.h"
 #include "base/check.h"
-#include "base/containers/contains.h"
+#include "base/containers/map_util.h"
 #include "base/functional/callback.h"
-#include "base/functional/callback_forward.h"
+#include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
-#include "base/scoped_observation.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/user_education/common/help_bubble.h"
-#include "components/user_education/common/help_bubble_params.h"
+#include "base/types/pass_key.h"
+#include "components/user_education/common/help_bubble/help_bubble.h"
+#include "components/user_education/common/help_bubble/help_bubble_params.h"
 #include "components/user_education/webui/help_bubble_webui.h"
-#include "components/user_education/webui/tracked_element_webui.h"
-#include "content/public/browser/render_widget_host.h"
-#include "content/public/browser/render_widget_host_observer.h"
 #include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_controller.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/abseil-cpp/absl/strings/ascii.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
-#include "ui/webui/resources/cr_components/help_bubble/help_bubble.mojom-shared.h"
 #include "ui/webui/resources/cr_components/help_bubble/help_bubble.mojom.h"
+#include "ui/webui/resources/js/tracked_element/tracked_element.mojom.h"
+#include "ui/webui/tracked_element/tracked_element_handler.h"
+#include "ui/webui/tracked_element/tracked_element_web_ui.h"
 
 namespace user_education {
 
 namespace {
+
+tracked_element::mojom::TrackedElementIdentifierPtr MakeId(
+    ui::ElementIdentifier native_id,
+    const std::string& secondary_id) {
+  return tracked_element::mojom::TrackedElementIdentifier::New(
+      native_id.GetName(), secondary_id);
+}
 
 // Converts help bubble arrow to WebUI bubble position. This is not a complete
 // mapping as many HelpBubbleArrow options are not (yet) supported in WebUI.
@@ -80,9 +93,10 @@ std::string SnakeCaseFromCamelCase(std::string input) {
   std::string output;
   output.reserve(input.size());
   for (const char c : input) {
-    if (std::isupper(c) && !output.empty())
+    if (absl::ascii_isupper(static_cast<unsigned char>(c)) && !output.empty()) {
       output.push_back('_');
-    output.push_back(std::tolower(c));
+    }
+    output.push_back(absl::ascii_tolower(static_cast<unsigned char>(c)));
   }
   return output;
 }
@@ -93,12 +107,12 @@ std::string SnakeCaseFromCamelCase(std::string input) {
 //      snake_case to yield the original file name
 std::string GetFileNameFromIcon(const gfx::VectorIcon* icon) {
   std::string icon_name = icon->name;
-  constexpr char kPrefix[] = "k";
-  constexpr char kSuffix[] = "Icon";
+  constexpr std::string_view kPrefix = "k";
+  constexpr std::string_view kSuffix = "Icon";
   DCHECK(base::StartsWith(icon_name, kPrefix));
   DCHECK(base::EndsWith(icon_name, kSuffix));
-  icon_name.erase(0, strlen(kPrefix));
-  icon_name.erase(icon_name.length() - strlen(kSuffix));
+  icon_name.erase(0, kPrefix.length());
+  icon_name.erase(icon_name.length() - kSuffix.length());
   return SnakeCaseFromCamelCase(icon_name);
 }
 
@@ -106,21 +120,17 @@ std::string GetFileNameFromIcon(const gfx::VectorIcon* icon) {
 
 struct HelpBubbleHandlerBase::ElementData {
   ElementData() = default;
+  ElementData(ElementData&& other) noexcept = default;
+  ElementData& operator=(ElementData&& other) noexcept = default;
   ~ElementData() = default;
-  ElementData(ElementData&& other) = default;
-  ElementData& operator=(ElementData&& other) = default;
 
   bool has_webui_help_bubble() const { return static_cast<bool>(params); }
 
-  // This shows whether the element is visible within the WebContents aside from
-  // the WebContents itself being visible.
-  bool visible = false;
-  gfx::RectF last_known_bounds;
-
-  std::unique_ptr<TrackedElementWebUI> element;
   std::unique_ptr<HelpBubbleParams> params;
   raw_ptr<HelpBubbleWebUI> help_bubble = nullptr;
+  std::unique_ptr<ui::TrackedElementVisibilityLock> visibility_lock;
   base::CallbackListSubscription external_bubble_subscription;
+  base::CallbackListSubscription anchor_hidden_subscription;
 
   // This is set to true if we are closing the help bubble as the result of a
   // message from the WebUI, rather than a browser-side event. It is used as a
@@ -129,85 +139,126 @@ struct HelpBubbleHandlerBase::ElementData {
   bool closing = false;
 };
 
-void HelpBubbleHandlerBase::VisibilityProvider::SetLastKnownVisibility(
-    absl::optional<bool> visible) {
-  handler_->OnWebContentsVisibilityChanged(visible);
-}
-
 HelpBubbleHandlerBase::HelpBubbleHandlerBase(
     std::unique_ptr<ClientProvider> client_provider,
-    std::unique_ptr<VisibilityProvider> visibility_provider,
-    const std::vector<ui::ElementIdentifier>& identifiers,
-    ui::ElementContext context)
+    base::WeakPtr<ui::TrackedElementHandler> tracked_element_handler)
     : client_provider_(std::move(client_provider)),
-      visibility_provider_(std::move(visibility_provider)),
-      context_(context) {
-  visibility_provider_->set_handler(this);
-  DCHECK(context_);
-  for (auto identifier : identifiers) {
-    DCHECK(identifier);
-    const auto it = element_data_.emplace(identifier, ElementData());
-    DCHECK(it.second) << "Duplicate identifier not allowed: " << identifier;
-    it.first->second.element =
-        std::make_unique<TrackedElementWebUI>(this, identifier, context);
+      tracked_element_handler_(tracked_element_handler) {
+  DCHECK(client_provider_);
+  if (tracked_element_handler_) {
+    tracked_element_handler_->set_help_bubble_handler(
+        weak_ptr_factory_.GetWeakPtr());
+
+    for (const std::string& identifier_name :
+         tracked_element_handler_->GetIdentifiers()) {
+      const ui::ElementIdentifier identifier =
+          ui::ElementIdentifier::FromName(identifier_name.c_str());
+      DCHECK(identifier);
+      const auto it = element_data_.emplace(
+          identifier, std::map<std::string, ElementData>());
+      DCHECK(it.second) << "Duplicate identifier not allowed: " << identifier;
+    }
   }
 }
 
 HelpBubbleHandlerBase::~HelpBubbleHandlerBase() {
-  for (auto& [id, data] : element_data_) {
-    if (data.help_bubble)
-      data.help_bubble->Close();
+  for (auto& [_, entries] : element_data_) {
+    for (auto& [_, data] : entries) {
+      if (data.help_bubble) {
+        data.help_bubble->Close(HelpBubble::CloseReason::kBubbleDestroyed);
+      }
+    }
   }
+  if (tracked_element_handler_) {
+    tracked_element_handler_->set_help_bubble_handler(nullptr);
+  }
+}
+
+ui::ElementContext HelpBubbleHandlerBase::context() const {
+  return tracked_element_handler_ ? tracked_element_handler_->context()
+                                  : ui::ElementContext();
 }
 
 content::WebContents* HelpBubbleHandlerBase::GetWebContents() {
-  return GetController()->web_ui()->GetWebContents();
+  return tracked_element_handler_ ? tracked_element_handler_->web_contents()
+                                  : nullptr;
 }
 
-content::RenderWidgetHost* HelpBubbleHandlerBase::GetRenderWidgetHost() {
-  auto* const web_contents = GetWebContents();
-  if (!web_contents) {
-    return nullptr;
+bool HelpBubbleHandlerBase::IsHelpBubbleShowingForTesting(
+    ui::ElementIdentifier id) const {
+  const auto it = element_data_.find(id);
+  if (it != element_data_.end()) {
+    for (const auto& [_, entry] : it->second) {
+      if (entry.has_webui_help_bubble()) {
+        return true;
+      }
+    }
   }
-  auto* const render_widget_host_view = web_contents->GetRenderWidgetHostView();
-  if (!render_widget_host_view) {
-    return nullptr;
-  }
-  return render_widget_host_view->GetRenderWidgetHost();
+  return false;
 }
 
 help_bubble::mojom::HelpBubbleClient* HelpBubbleHandlerBase::GetClient() {
   return client_provider_->GetClient();
 }
 
-void HelpBubbleHandlerBase::ReportBadMessage(base::StringPiece error) {
+void HelpBubbleHandlerBase::ReportBadMessage(std::string_view error) {
   NOTREACHED() << error;
 }
 
 std::unique_ptr<HelpBubbleWebUI> HelpBubbleHandlerBase::CreateHelpBubble(
-    ui::ElementIdentifier identifier,
+    ui::TrackedElementWebUI* element,
     HelpBubbleParams params) {
+  const auto identifier = element->identifier();
+  const std::string& secondary_id = element->secondary_identifier();
   const auto it = element_data_.find(identifier);
   if (it == element_data_.end()) {
     NOTREACHED() << "Identifier " << identifier << " was never registered.";
-    return nullptr;
   }
 
-  auto& data = it->second;
+  // Lazily clean up any old help bubbles that are already closed.
+  std::erase_if(it->second, [](decltype(it->second)::const_reference pr) {
+    return !pr.second.help_bubble && !pr.second.closing;
+  });
+
+  // Get or create the value for the secondary ID.
+  auto& data = it->second[element->secondary_identifier()];
   if (data.has_webui_help_bubble()) {
-    NOTREACHED() << "A help bubble is already being shown for " << identifier;
+    LOG(WARNING) << "A help bubble is already being shown for " << identifier;
     auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
     if (data.help_bubble) {
-      data.help_bubble->Close();
-      if (!weak_ptr)
+      data.help_bubble->Close(HelpBubble::CloseReason::kProgrammaticallyClosed);
+      if (!weak_ptr) {
         return nullptr;
+      }
     }
   }
   data.params = std::make_unique<HelpBubbleParams>(std::move(params));
-  auto result = base::WrapUnique(new HelpBubbleWebUI(this, identifier));
+  if (tracked_element_handler_) {
+    data.visibility_lock = element->LockVisible();
+  }
+  data.anchor_hidden_subscription =
+      ui::ElementTracker::GetElementTracker()->AddElementHiddenCallback(
+          identifier, tracked_element_handler_->context(),
+          base::BindRepeating(
+              [](base::WeakPtr<HelpBubbleHandlerBase> handler,
+                 ui::ElementIdentifier id, std::string secondary_id,
+                 ui::TrackedElement* el) {
+                if (handler) {
+                  const auto* const data =
+                      handler->GetDataById(id, secondary_id);
+                  if (data && data->help_bubble) {
+                    data->help_bubble->Close(
+                        HelpBubble::CloseReason::kAnchorHidden);
+                  }
+                }
+              },
+              weak_ptr_factory_.GetWeakPtr(), identifier, secondary_id));
+  auto result =
+      base::WrapUnique(new HelpBubbleWebUI(this, identifier, secondary_id));
+  data.help_bubble = result.get();
 
   auto mojom_params = help_bubble::mojom::HelpBubbleParams::New();
-  mojom_params->native_identifier = identifier.GetName();
+  mojom_params->id = MakeId(identifier, secondary_id);
   mojom_params->body_text = base::UTF16ToUTF8(data.params->body_text);
   mojom_params->close_button_alt_text =
       base::UTF16ToUTF8(data.params->close_button_alt_text);
@@ -220,6 +271,7 @@ std::unique_ptr<HelpBubbleWebUI> HelpBubbleHandlerBase::CreateHelpBubble(
     mojom_params->body_icon_name = GetFileNameFromIcon(data.params->body_icon);
   mojom_params->body_icon_alt_text =
       base::UTF16ToUTF8(data.params->body_icon_alt_text);
+  mojom_params->focus_on_show_hint = data.params->focus_on_show_hint;
   mojom_params->position = HelpBubbleArrowToPosition(data.params->arrow);
   if (data.params->progress) {
     mojom_params->progress = help_bubble::mojom::Progress::New();
@@ -236,162 +288,42 @@ std::unique_ptr<HelpBubbleWebUI> HelpBubbleHandlerBase::CreateHelpBubble(
   }
 
   GetClient()->ShowHelpBubble(std::move(mojom_params));
-  it->second.help_bubble = result.get();
   return result;
 }
 
 void HelpBubbleHandlerBase::OnHelpBubbleClosing(
-    ui::ElementIdentifier anchor_id) {
+    ui::ElementIdentifier anchor_id,
+    const std::string& secondary_id) {
   const auto it = element_data_.find(anchor_id);
   if (it == element_data_.end()) {
     NOTREACHED() << "Identifier " << anchor_id << " was never registered.";
+  }
+  const auto it2 = it->second.find(secondary_id);
+  if (it2 == it->second.end()) {
     return;
   }
-  if (!it->second.closing)
-    GetClient()->HideHelpBubble(anchor_id.GetName());
-  it->second.help_bubble = nullptr;
-  it->second.params.reset();
-  // If this anchor element was only considered visible because it still had a
-  // help bubble, hide it.
-  if (it->second.element->visible() && !is_web_contents_visible()) {
-    it->second.element->SetVisible(false);
+  auto& data = it2->second;
+  if (!data.closing) {
+    GetClient()->HideHelpBubble(MakeId(anchor_id, secondary_id));
   }
-}
-
-void HelpBubbleHandlerBase::OnWebContentsVisibilityChanged(
-    absl::optional<bool> visibility) {
-  const bool old_visibility = is_web_contents_visible();
-  web_contents_visibility_ = visibility;
-  const bool new_visibility = is_web_contents_visible();
-  if (new_visibility == old_visibility) {
-    return;
-  }
-
-  // Callbacks during this call may cause almost anything to happen, so make
-  // sure that we bail if this object is destroyed.
-  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
-  for (auto& [id, data] : element_data_) {
-    if (new_visibility && data.visible) {
-      data.element->SetVisible(true, data.last_known_bounds);
-    } else if (!new_visibility && data.element->visible()) {
-      // An embedded help bubble prevents the element from being hidden.
-      // This usually only happens in WebUI that are hosted in browser tabs.
-      if (!data.has_webui_help_bubble()) {
-        data.element->SetVisible(false);
-      }
-    }
-    if (!weak_ptr) {
-      return;
-    }
-  }
-}
-
-void HelpBubbleHandlerBase::HelpBubbleAnchorVisibilityChanged(
-    const std::string& identifier_name,
-    bool visible,
-    const gfx::RectF& rect) {
-  ui::ElementIdentifier id;
-  ElementData* const data = GetDataByName(identifier_name, &id);
-  if (!data)
-    return;
-
-  // Only set the bounds if the anchor is visible in the WebContents.
-  if (visible) {
-    data->last_known_bounds = rect;
-
-    // Also maybe check for the WebContents visibility.
-    if (!web_contents_visibility_.has_value()) {
-      web_contents_visibility_ = visibility_provider_->CheckIsVisible();
-    }
-  }
-
-  // It's possible the element is visible in the WebContents but the WebContents
-  // itself isn't visible. Save this value in case the two currently do not
-  // agree with each other.
-  data->visible = visible;
-
-  // An anchor which is currently hosting a WebUI help bubble ignores its
-  // WebContents' visibility. Otherwise, a hidden WebContents hides its anchors.
-  if (!data->has_webui_help_bubble()) {
-    visible = visible && is_web_contents_visible();
-  }
-
-  // Note: any of the following calls could destroy *this* via a callback.
-  if (visible) {
-    data->element->SetVisible(true, rect);
-  } else if (data->element->visible() && !visible) {
-    // Is a help bubble currently showing?
-    if (data->has_webui_help_bubble()) {
-      // Currently, this is the only call that could trigger callbacks and which
-      // has additional code which executes after it. If that changes, the weak
-      // pointer can be moved closer to the top of this method.
-      auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
-      HelpBubbleClosed(
-          identifier_name,
-          help_bubble::mojom::HelpBubbleClosedReason::kPageChanged);
-      if (!weak_ptr)
-        return;
-    }
-    data->element->SetVisible(false);
-  }
-}
-
-void HelpBubbleHandlerBase::HelpBubbleAnchorActivated(
-    const std::string& identifier_name) {
-  ui::ElementIdentifier id;
-  ElementData* const data = GetDataByName(identifier_name, &id);
-  if (!data)
-    return;
-
-  if (!data->element->visible()) {
-    ReportBadMessage(
-        base::StringPrintf("HelpBubbleAnchorActivated message received for "
-                           "anchor element \"%s\" but element was not visible.",
-                           identifier_name.c_str()));
-    return;
-  }
-
-  data->element->Activate();
-}
-
-void HelpBubbleHandlerBase::HelpBubbleAnchorCustomEvent(
-    const std::string& identifier_name,
-    const std::string& event_name) {
-  ui::ElementIdentifier id;
-  ElementData* const data = GetDataByName(identifier_name, &id);
-  if (!data)
-    return;
-
-  if (!data->element->visible()) {
-    ReportBadMessage(
-        base::StringPrintf("HelpBubbleAnchorCustomEvent message received for "
-                           "anchor element \"%s\" but element was not visible.",
-                           identifier_name.c_str()));
-    return;
-  }
-
-  // Because names of events are lazily loaded the first time someone tries to
-  // listen for them, the name of a valid event may not be registered. So it's
-  // okay if this query comes up empty.
-  const ui::CustomElementEventType event_type =
-      ui::CustomElementEventType::FromName(event_name.c_str());
-  if (!event_type)
-    return;
-
-  data->element->CustomEvent(event_type);
+  data.help_bubble = nullptr;
+  data.params.reset();
+  data.visibility_lock.reset();
+  data.anchor_hidden_subscription = base::CallbackListSubscription();
 }
 
 void HelpBubbleHandlerBase::HelpBubbleButtonPressed(
-    const std::string& identifier_name,
+    tracked_element::mojom::TrackedElementIdentifierPtr id,
     uint8_t button_index) {
-  ElementData* const data = GetDataByName(identifier_name);
-  if (!data)
+  ElementData* const data = GetDataByName(id, "HelpBubbleButtonPressed");
+  if (!data) {
     return;
+  }
   if (!data->has_webui_help_bubble()) {
-    ReportBadMessage(
-        base::StringPrintf("HelpBubbleButtonPressed message received for "
-                           "anchor element \"%s\" but no help bubble was open.",
-                           identifier_name.c_str()));
+    ReportBadMessage(base::StringPrintf(
+        "HelpBubbleButtonPressed message received for "
+        "anchor element \"%s\" - \"%s\" but no help bubble was open.",
+        id->native_identifier.c_str(), id->secondary_identifier.c_str()));
     return;
   }
   if (button_index >= data->params->buttons.size()) {
@@ -414,26 +346,30 @@ void HelpBubbleHandlerBase::HelpBubbleButtonPressed(
   if (!weak_ptr)
     return;
 
-  if (data->help_bubble)
-    data->help_bubble->Close();
+  if (data->help_bubble) {
+    data->help_bubble->Close(HelpBubble::CloseReason::kProgrammaticallyClosed);
+  }
 
-  if (!weak_ptr)
+  if (!weak_ptr) {
     return;
+  }
 
   data->closing = false;
 }
 
 void HelpBubbleHandlerBase::HelpBubbleClosed(
-    const std::string& identifier_name,
+    tracked_element::mojom::TrackedElementIdentifierPtr id,
     help_bubble::mojom::HelpBubbleClosedReason reason) {
-  ElementData* const data = GetDataByName(identifier_name);
-  if (!data)
+  ElementData* const data = GetDataByName(id, "HelpBubbleClosed");
+  if (!data) {
     return;
+  }
   if (!data->has_webui_help_bubble()) {
     ReportBadMessage(base::StringPrintf(
-        "HelpBubbleClosed message received for identifier_name = \"%s\" but no "
+        "HelpBubbleClosed message received for identifier_name = \"%s\" - "
+        "\"%s\" but no "
         "help bubble was open.",
-        identifier_name.c_str()));
+        id->native_identifier.c_str(), id->secondary_identifier.c_str()));
     return;
   }
 
@@ -461,7 +397,7 @@ void HelpBubbleHandlerBase::HelpBubbleClosed(
 
   // This could also theoretically trigger callbacks.
   if (data->help_bubble) {
-    data->help_bubble->Close();
+    data->help_bubble->Close(HelpBubble::CloseReason::kProgrammaticallyClosed);
   }
 
   if (!weak_ptr)
@@ -471,62 +407,101 @@ void HelpBubbleHandlerBase::HelpBubbleClosed(
 }
 
 bool HelpBubbleHandlerBase::ToggleHelpBubbleFocusForAccessibility(
-    ui::ElementIdentifier anchor_id) {
-  if (base::Contains(element_data_, anchor_id)) {
-    GetClient()->ToggleFocusForAccessibility(anchor_id.GetName());
+    ui::ElementIdentifier anchor_id,
+    const std::string& secondary_id) {
+  if (element_data_.contains(anchor_id)) {
+    GetClient()->ToggleFocusForAccessibility(MakeId(anchor_id, secondary_id));
     return true;
   }
   return false;
 }
 
 gfx::Rect HelpBubbleHandlerBase::GetHelpBubbleBoundsInScreen(
-    ui::ElementIdentifier anchor_id) const {
+    ui::ElementIdentifier anchor_id,
+    const std::string& secondary_id) const {
   // TODO(dfried): implement.
   return gfx::Rect();
 }
 
 void HelpBubbleHandlerBase::OnFloatingHelpBubbleCreated(
-    ui::ElementIdentifier anchor_id,
+    ui::TrackedElementWebUI* element,
     HelpBubble* help_bubble) {
-  GetClient()->ExternalHelpBubbleUpdated(anchor_id.GetName(), true);
+  const auto anchor_id = element->identifier();
+  GetClient()->ExternalHelpBubbleUpdated(
+      MakeId(element->identifier(), element->secondary_identifier()), true);
   const auto it = element_data_.find(anchor_id);
   if (it == element_data_.end()) {
     return;
   }
-  DCHECK(!it->second.external_bubble_subscription);
-  it->second.external_bubble_subscription = help_bubble->AddOnCloseCallback(
+  auto& data = it->second[element->secondary_identifier()];
+  DCHECK(!data.external_bubble_subscription);
+  if (tracked_element_handler_) {
+    data.visibility_lock = element->LockVisible();
+  }
+  data.external_bubble_subscription = help_bubble->AddOnClosingCallback(
       base::BindOnce(&HelpBubbleHandlerBase::OnFloatingHelpBubbleClosed,
-                     weak_ptr_factory_.GetWeakPtr(), anchor_id));
+                     weak_ptr_factory_.GetWeakPtr(), anchor_id,
+                     element->secondary_identifier()));
 }
 
 void HelpBubbleHandlerBase::OnFloatingHelpBubbleClosed(
     ui::ElementIdentifier anchor_id,
-    HelpBubble* help_bubble) {
+    const std::string& secondary_id,
+    const HelpBubble* help_bubble,
+    HelpBubble::CloseReason) {
   const auto it = element_data_.find(anchor_id);
   if (it == element_data_.end()) {
     return;
   }
-  it->second.external_bubble_subscription = base::CallbackListSubscription();
-  GetClient()->ExternalHelpBubbleUpdated(anchor_id.GetName(), false);
+  auto* const data = base::FindOrNull(it->second, secondary_id);
+  if (data) {
+    data->external_bubble_subscription = base::CallbackListSubscription();
+    data->visibility_lock.reset();
+    GetClient()->ExternalHelpBubbleUpdated(MakeId(anchor_id, secondary_id),
+                                           false);
+  }
 }
 
 HelpBubbleHandlerBase::ElementData* HelpBubbleHandlerBase::GetDataByName(
-    const std::string& identifier_name,
+    const tracked_element::mojom::TrackedElementIdentifierPtr& id,
+    std::string_view error_prefix,
     ui::ElementIdentifier* found_identifier) {
-  for (auto& [id, data] : element_data_) {
-    if (id.GetName() == identifier_name) {
-      if (found_identifier)
-        *found_identifier = id;
-      return &data;
-    }
+  ui::ElementIdentifier element_id =
+      ui::ElementIdentifier::FromName(id->native_identifier.c_str());
+  if (!element_id) {
+    ReportBadMessage(base::StringPrintf("%s: Invalid identifier name \"%s\".",
+                                        error_prefix, id->native_identifier));
+    return nullptr;
   }
-  if (found_identifier)
-    *found_identifier = ui::ElementIdentifier();
-  ReportBadMessage(base::StringPrintf(
-      "HelpBubbleHandler IPC message received with unrecognized "
-      "identifier_name: \"%s\"",
-      identifier_name.c_str()));
-  return nullptr;
+  if (found_identifier) {
+    *found_identifier = element_id;
+  }
+
+  const auto it = element_data_.find(element_id);
+  if (it == element_data_.end()) {
+    ReportBadMessage(base::StringPrintf("%s: Identifier not registered \"%s\"",
+                                        error_prefix, id->native_identifier));
+    return nullptr;
+  }
+  return base::FindOrNull(it->second, id->secondary_identifier);
+}
+
+HelpBubbleHandlerBase::ElementData* HelpBubbleHandlerBase::GetDataById(
+    ui::ElementIdentifier id,
+    const std::string& secondary_id) {
+  return const_cast<ElementData*>(
+      const_cast<const HelpBubbleHandlerBase*>(this)->GetDataById(
+          id, secondary_id));
+}
+
+const HelpBubbleHandlerBase::ElementData* HelpBubbleHandlerBase::GetDataById(
+    ui::ElementIdentifier id,
+    const std::string& secondary_id) const {
+  const auto it = element_data_.find(id);
+  if (it == element_data_.end()) {
+    NOTREACHED() << "Identifier " << id << " was never registered.";
+  }
+  return base::FindOrNull(it->second, secondary_id);
 }
 
 class HelpBubbleHandler::ClientProvider
@@ -545,71 +520,19 @@ class HelpBubbleHandler::ClientProvider
   mojo::Remote<help_bubble::mojom::HelpBubbleClient> remote_client_;
 };
 
-// Implementation of the WebContents visibility tracker. Watches the
-// RenderWidgetHost for visibility changes and signals them to its
-// HelpBubbleHandler.
-class HelpBubbleHandler::VisibilityProvider
-    : public HelpBubbleHandlerBase::VisibilityProvider,
-      public content::RenderWidgetHostObserver {
- public:
-  VisibilityProvider() = default;
-  ~VisibilityProvider() override = default;
-
-  absl::optional<bool> CheckIsVisible() const override {
-    auto* const host = handler()->GetRenderWidgetHost();
-    if (!host) {
-      return absl::nullopt;
-    }
-    CHECK(!observation_.IsObserving());
-    observation_.Observe(host);
-
-    // Current visibility cannot be determined from the host directly, but can
-    // be read from its view.
-    auto* const view = host->GetView();
-    return view && view->IsShowing();
-  }
-
- private:
-  // content::RenderWidgetHostObserver:
-  void RenderWidgetHostVisibilityChanged(content::RenderWidgetHost* host,
-                                         bool became_visible) override {
-    SetLastKnownVisibility(became_visible);
-  }
-  void RenderWidgetHostDestroyed(content::RenderWidgetHost*) override {
-    observation_.Reset();
-    SetLastKnownVisibility(absl::nullopt);
-  }
-
-  // This observation is created lazily from CheckIsVisible(), so must be
-  // mutable.
-  mutable base::ScopedObservation<content::RenderWidgetHost,
-                                  content::RenderWidgetHostObserver>
-      observation_{this};
-};
-
 HelpBubbleHandler::HelpBubbleHandler(
     mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler>
         pending_handler,
     mojo::PendingRemote<help_bubble::mojom::HelpBubbleClient> pending_client,
-    content::WebUIController* controller,
-    const std::vector<ui::ElementIdentifier>& identifiers)
+    base::WeakPtr<ui::TrackedElementHandler> tracked_element_handler)
     : HelpBubbleHandlerBase(
           std::make_unique<ClientProvider>(std::move(pending_client)),
-          std::make_unique<VisibilityProvider>(),
-          identifiers,
-          ui::ElementContext(controller)),
-      receiver_(this, std::move(pending_handler)),
-      controller_(controller) {
-  DCHECK(controller);
-}
+          tracked_element_handler),
+      receiver_(this, std::move(pending_handler)) {}
 
 HelpBubbleHandler::~HelpBubbleHandler() = default;
 
-content::WebUIController* HelpBubbleHandler::GetController() {
-  return controller_;
-}
-
-void HelpBubbleHandler::ReportBadMessage(base::StringPiece error) {
+void HelpBubbleHandler::ReportBadMessage(std::string_view error) {
   receiver_.ReportBadMessage(std::move(error));
 }
 

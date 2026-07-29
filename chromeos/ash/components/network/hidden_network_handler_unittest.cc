@@ -4,14 +4,12 @@
 
 #include "chromeos/ash/components/network/hidden_network_handler.h"
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
 #include "base/command_line.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "chromeos/ash/components/dbus/shill/fake_shill_simulated_result.h"
@@ -61,7 +59,6 @@ class FakeNetworkConfigurationObserver : public NetworkConfigurationObserver {
 
   size_t total_removed_count() const { return total_removed_count_; }
   const std::string& service_path() { return service_path_; }
-  const std::string& guid() { return guid_; }
 
  private:
   size_t total_removed_count_ = 0;
@@ -74,7 +71,6 @@ class FakeNetworkConfigurationObserver : public NetworkConfigurationObserver {
 class HiddenNetworkHandlerTest : public ::testing::Test {
  public:
   void SetUp() override {
-    feature_list_.InitAndEnableFeature(features::kHiddenNetworkMigration);
     network_handler_test_helper_ = std::make_unique<NetworkHandlerTestHelper>();
     hidden_network_handler_ = NetworkHandler::Get()->hidden_network_handler();
     network_configuration_handler_ =
@@ -181,10 +177,6 @@ class HiddenNetworkHandlerTest : public ::testing::Test {
                                        failure_count);
   }
 
-  void ErrorCallback(const std::string& error_name) {
-    ADD_FAILURE() << "Unexpected error: " << error_name;
-  }
-
   base::test::TaskEnvironment* task_environment() { return &task_environment_; }
 
   ShillProfileClient::TestInterface* profile_test() {
@@ -197,9 +189,8 @@ class HiddenNetworkHandlerTest : public ::testing::Test {
  private:
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  base::test::ScopedFeatureList feature_list_;
-  raw_ptr<HiddenNetworkHandler, ExperimentalAsh> hidden_network_handler_;
-  raw_ptr<NetworkConfigurationHandler, ExperimentalAsh>
+  raw_ptr<HiddenNetworkHandler, DanglingUntriaged> hidden_network_handler_;
+  raw_ptr<NetworkConfigurationHandler, DanglingUntriaged>
       network_configuration_handler_;
   std::unique_ptr<NetworkHandlerTestHelper> network_handler_test_helper_;
   std::unique_ptr<FakeNetworkConfigurationObserver>

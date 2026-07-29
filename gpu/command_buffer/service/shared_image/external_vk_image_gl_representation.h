@@ -54,10 +54,11 @@ class ExternalVkImageGLRepresentationShared {
 
 class ExternalVkImageGLRepresentation : public GLTextureImageRepresentation {
  public:
-  ExternalVkImageGLRepresentation(SharedImageManager* manager,
-                                  SharedImageBacking* backing,
-                                  MemoryTypeTracker* tracker,
-                                  std::vector<gles2::Texture*> textures);
+  ExternalVkImageGLRepresentation(
+      SharedImageManager* manager,
+      SharedImageBacking* backing,
+      MemoryTypeTracker* tracker,
+      std::vector<raw_ptr<gles2::Texture, VectorExperimental>> textures);
 
   ExternalVkImageGLRepresentation(const ExternalVkImageGLRepresentation&) =
       delete;
@@ -67,12 +68,12 @@ class ExternalVkImageGLRepresentation : public GLTextureImageRepresentation {
   ~ExternalVkImageGLRepresentation() override;
 
   // GLTextureImageRepresentation implementation.
-  gles2::Texture* GetTexture(int plane_index) override;
+  gles2::Texture* GetTexture(size_t plane_index) override;
   bool BeginAccess(GLenum mode) override;
   void EndAccess() override;
 
  private:
-  std::vector<gles2::Texture*> textures_;
+  std::vector<raw_ptr<gles2::Texture, VectorExperimental>> textures_;
   ExternalVkImageGLRepresentationShared representation_shared_;
 };
 
@@ -94,7 +95,7 @@ class ExternalVkImageGLPassthroughRepresentation
 
   // GLTexturePassthroughImageRepresentation implementation.
   const scoped_refptr<gles2::TexturePassthrough>& GetTexturePassthrough(
-      int plane_index) override;
+      size_t plane_index) override;
   bool BeginAccess(GLenum mode) override;
   void EndAccess() override;
 

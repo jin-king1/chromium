@@ -25,39 +25,30 @@ class TestFrameSinkImpl::TestMojoCompositorFrameSink
     : public viz::mojom::CompositorFrameSink {
  public:
   TestMojoCompositorFrameSink() = default;
+  void SetParams(viz::mojom::CompositorFrameSinkParamsPtr params) override {}
   void SetNeedsBeginFrame(bool needs_begin_frame) override {}
-  void SetWantsAnimateOnlyBeginFrames() override {}
-  void SetWantsBeginFrameAcks() override {}
   void SubmitCompositorFrame(
       const viz::LocalSurfaceId& local_surface_id,
       viz::CompositorFrame frame,
-      absl::optional<::viz::HitTestRegionList> hit_test_region_list,
+      std::optional<::viz::HitTestRegionList> hit_test_region_list,
       uint64_t submit_time) override {
     did_submit_ = true;
     last_frame_ = std::move(frame);
     hit_test_region_list_ = std::move(hit_test_region_list);
   }
-  void SubmitCompositorFrameSync(
-      const viz::LocalSurfaceId& local_surface_id,
-      viz::CompositorFrame frame,
-      absl::optional<::viz::HitTestRegionList> hit_test_region_list,
-      uint64_t submit_time,
-      SubmitCompositorFrameSyncCallback callback) override {}
   void DidNotProduceFrame(const viz::BeginFrameAck& ack) override {
     did_not_produce_frame_ = true;
   }
-  void DidAllocateSharedBitmap(base::ReadOnlySharedMemoryRegion region,
-                               const gpu::Mailbox& id) override {}
-  void DidDeleteSharedBitmap(const gpu::Mailbox& id) override {}
-  void InitializeCompositorFrameSinkType(
-      viz::mojom::CompositorFrameSinkType type) override {}
-  void BindLayerContext(viz::mojom::PendingLayerContextPtr context) override {}
+  void BindLayerContext(viz::mojom::PendingLayerContextPtr context,
+                        viz::mojom::LayerContextSettingsPtr settings) override {
+  }
+  void NotifyNewLocalSurfaceIdExpectedWhilePaused() override {}
 #if BUILDFLAG(IS_ANDROID)
-  void SetThreadIds(const std::vector<int32_t>& thread_ids) override {}
+  void SetThreads(const std::vector<viz::Thread>& threads) override {}
 #endif
 
   viz::CompositorFrame TakeLastFrame() { return std::move(last_frame_); }
-  const absl::optional<::viz::HitTestRegionList>& hit_test_region_list() const {
+  const std::optional<::viz::HitTestRegionList>& hit_test_region_list() const {
     return hit_test_region_list_;
   }
 
@@ -75,7 +66,7 @@ class TestFrameSinkImpl::TestMojoCompositorFrameSink
 
  private:
   viz::CompositorFrame last_frame_;
-  absl::optional<::viz::HitTestRegionList> hit_test_region_list_;
+  std::optional<::viz::HitTestRegionList> hit_test_region_list_;
   bool did_submit_ = false;
   bool did_not_produce_frame_ = false;
 };
@@ -87,7 +78,7 @@ std::unique_ptr<TestFrameSinkImpl> TestFrameSinkImpl::Create() {
   mojo::PendingAssociatedReceiver<viz::mojom::CompositorFrameSink>
       sink_receiver = sink_remote.InitWithNewEndpointAndPassReceiver();
   mojo::PendingReceiver<viz::mojom::CompositorFrameSinkClient> client;
-  auto context_provider = viz::TestContextProvider::Create();
+  auto context_provider = viz::TestContextProvider::CreateRaster();
 
   return base::WrapUnique(new TestFrameSinkImpl(
       std::move(task_runner), std::move(sink_remote), std::move(client),
@@ -100,7 +91,7 @@ TestFrameSinkImpl::TestFrameSinkImpl(
         compositor_frame_sink_associated_remote,
     mojo::PendingReceiver<viz::mojom::CompositorFrameSinkClient>
         client_receiver,
-    scoped_refptr<viz::ContextProvider> context_provider,
+    scoped_refptr<viz::RasterContextProvider> context_provider,
     mojo::PendingAssociatedReceiver<viz::mojom::CompositorFrameSink>
         sink_receiver)
     : FrameSinkImpl(std::move(task_runner),
@@ -125,7 +116,7 @@ viz::CompositorFrame TestFrameSinkImpl::TakeLastFrame() {
   return mojo_sink_->TakeLastFrame();
 }
 
-const absl::optional<::viz::HitTestRegionList>&
+const std::optional<::viz::HitTestRegionList>&
 TestFrameSinkImpl::GetLastHitTestRegionList() const {
   return mojo_sink_->hit_test_region_list();
 }

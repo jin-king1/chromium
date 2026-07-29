@@ -5,8 +5,10 @@
 #include "services/network/test/mock_devtools_observer.h"
 
 #include "base/run_loop.h"
+#include "base/unguessable_token.h"
 #include "net/cookies/canonical_cookie.h"
 #include "services/network/public/mojom/client_security_state.mojom.h"
+#include "services/network/public/mojom/device_bound_sessions.mojom.h"
 #include "services/network/public/mojom/http_raw_headers.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -27,8 +29,12 @@ void MockDevToolsObserver::OnRawRequest(
     const net::CookieAccessResultList& cookies_with_access_result,
     std::vector<network::mojom::HttpRawHeaderPairPtr> headers,
     const base::TimeTicks timestamp,
+    std::vector<network::mojom::DeviceBoundSessionWithUsagePtr>
+        device_bound_session_usages,
     network::mojom::ClientSecurityStatePtr client_security_state,
-    network::mojom::OtherPartitionInfoPtr site_has_cookie_in_other_partition) {
+    network::mojom::OtherPartitionInfoPtr site_has_cookie_in_other_partition,
+    const std::optional<base::UnguessableToken>&
+        applied_network_conditions_id) {
   raw_request_cookies_.insert(raw_request_cookies_.end(),
                               cookies_with_access_result.begin(),
                               cookies_with_access_result.end());
@@ -42,14 +48,21 @@ void MockDevToolsObserver::OnRawRequest(
   }
 }
 
+void MockDevToolsObserver::OnEarlyHintsResponse(
+    const std::string& devtools_request_id,
+    std::vector<network::mojom::HttpRawHeaderPairPtr> headers) {
+  early_hints_headers_ = std::move(headers);
+  wait_for_early_hints_.Quit();
+}
+
 void MockDevToolsObserver::OnRawResponse(
     const std::string& devtools_request_id,
     const net::CookieAndLineAccessResultList& cookies_with_access_result,
     std::vector<network::mojom::HttpRawHeaderPairPtr> headers,
-    const absl::optional<std::string>& raw_response_headers,
+    const std::optional<std::string>& raw_response_headers,
     network::mojom::IPAddressSpace resource_address_space,
     int32_t http_status_code,
-    const absl::optional<net::CookiePartitionKey>& cookie_partition_key) {
+    const std::optional<net::CookiePartitionKey>& cookie_partition_key) {
   raw_response_cookies_.insert(raw_response_cookies_.end(),
                                cookies_with_access_result.begin(),
                                cookies_with_access_result.end());
@@ -70,7 +83,7 @@ void MockDevToolsObserver::OnRawResponse(
 }
 
 void MockDevToolsObserver::OnLocalNetworkRequest(
-    const absl::optional<std::string>& devtools_request_id,
+    const std::optional<std::string>& devtools_request_id,
     const GURL& url,
     bool is_warning,
     network::mojom::IPAddressSpace resource_address_space,
@@ -95,26 +108,21 @@ void MockDevToolsObserver::OnCorsPreflightResponse(
 
 void MockDevToolsObserver::OnCorsPreflightRequestCompleted(
     const base::UnguessableToken& devtool_request_id,
-    const network::URLLoaderCompletionStatus& status) {}
+    const network::URLLoaderCompletionStatus& status) {
+  preflight_status_ = status;
+}
 
 void MockDevToolsObserver::OnTrustTokenOperationDone(
     const std::string& devtool_request_id,
     network::mojom::TrustTokenOperationResultPtr result) {}
 
 void MockDevToolsObserver::OnCorsError(
-    const absl::optional<std::string>& devtools_request_id,
-    const absl::optional<::url::Origin>& initiator_origin,
+    const std::optional<std::string>& devtools_request_id,
+    const std::optional<::url::Origin>& initiator_origin,
     mojom::ClientSecurityStatePtr client_security_state,
     const GURL& url,
     const network::CorsErrorStatus& status,
     bool is_warning) {
-  // Ignoring kUnexpectedPrivateNetworkAccess because the request will be
-  // restarted with a preflight and we care more about the CORS error that comes
-  // thereafter.
-  if (status.cors_error == mojom::CorsError::kUnexpectedPrivateNetworkAccess) {
-    return;
-  }
-
   OnCorsErrorParams params;
   params.devtools_request_id = devtools_request_id;
   params.initiator_origin = initiator_origin;
@@ -161,8 +169,12 @@ void MockDevToolsObserver::WaitUntilCorsError() {
   wait_for_cors_error_.Run();
 }
 
+void MockDevToolsObserver::WaitUntilEarlyHints() {
+  wait_for_early_hints_.Run();
+}
+
 MockDevToolsObserver::OnLocalNetworkRequestParams::OnLocalNetworkRequestParams(
-    const absl::optional<std::string>& devtools_request_id,
+    const std::optional<std::string>& devtools_request_id,
     const GURL& url,
     bool is_warning,
     network::mojom::IPAddressSpace resource_address_space,

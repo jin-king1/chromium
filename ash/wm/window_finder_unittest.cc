@@ -24,7 +24,7 @@ using WindowFinderTest = AshTestBase;
 
 TEST_F(WindowFinderTest, RealTopmostCanBeNullptr) {
   std::unique_ptr<aura::Window> window1 =
-      CreateTestWindow(gfx::Rect(0, 0, 100, 100));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100});
   std::set<aura::Window*> ignore;
 
   EXPECT_EQ(window1.get(), GetTopmostWindowAtPoint(gfx::Point(10, 10), ignore));
@@ -37,7 +37,8 @@ TEST_F(WindowFinderTest, ToplevelCanBeNotDrawn) {
   window->Init(ui::LAYER_NOT_DRAWN);
   gfx::Rect bounds(0, 0, 100, 100);
   window->SetBounds(bounds);
-  auto* parent = GetDefaultParentForWindow(window.get(), bounds);
+  auto* parent = GetDefaultParentForWindow(
+      window.get(), Shell::GetPrimaryRootWindow(), bounds);
   parent->AddChild(window.get());
   window->Show();
 
@@ -49,9 +50,9 @@ TEST_F(WindowFinderTest, MultipleDisplays) {
   UpdateDisplay("300x200,400x300");
 
   std::unique_ptr<aura::Window> window1 =
-      CreateTestWindow(gfx::Rect(0, 0, 100, 100));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100});
   std::unique_ptr<aura::Window> window2 =
-      CreateTestWindow(gfx::Rect(300, 0, 100, 100));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {300, 0, 100, 100});
   ASSERT_NE(window1->GetRootWindow(), window2->GetRootWindow());
 
   std::set<aura::Window*> ignore;
@@ -63,9 +64,9 @@ TEST_F(WindowFinderTest, MultipleDisplays) {
 
 TEST_F(WindowFinderTest, WindowTargeterWithHitTestRects) {
   std::unique_ptr<aura::Window> window1 =
-      CreateTestWindow(gfx::Rect(0, 0, 100, 100));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100});
   std::unique_ptr<aura::Window> window2 =
-      CreateTestWindow(gfx::Rect(0, 0, 100, 100));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100});
 
   std::set<aura::Window*> ignore;
 
@@ -85,9 +86,9 @@ TEST_F(WindowFinderTest, WindowTargeterWithHitTestRects) {
 TEST_F(WindowFinderTest, TopmostWindowWithOverviewActive) {
   UpdateDisplay("500x400");
   std::unique_ptr<aura::Window> window1 =
-      CreateTestWindow(gfx::Rect(0, 0, 100, 100));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100});
   std::unique_ptr<aura::Window> window2 =
-      CreateTestWindow(gfx::Rect(0, 0, 100, 100));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100});
 
   OverviewController* overview_controller = Shell::Get()->overview_controller();
   EnterOverview();
@@ -150,19 +151,18 @@ class WindowDestroyingObserver : public aura::WindowObserver {
   // `window_being_observed_` is destroying.
   const gfx::Point screen_point_;
 
-  raw_ptr<aura::Window, ExperimentalAsh> window_being_observed_;
+  raw_ptr<aura::Window> window_being_observed_;
 
   // This is the window we find as the top-most window while
   // `window_being_observed_` is being destroyed.
-  raw_ptr<aura::Window, ExperimentalAsh> top_most_window_while_destroying_ =
-      nullptr;
+  raw_ptr<aura::Window> top_most_window_while_destroying_ = nullptr;
 };
 
 }  // namespace
 
 TEST_F(WindowFinderTest, WindowBeingDestroyedCannotBeReturned) {
   std::unique_ptr<aura::Window> window =
-      CreateTestWindow(gfx::Rect(0, 0, 100, 100));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {100, 100});
   auto* window_ptr = window.get();
   WindowDestroyingObserver observer{window->GetBoundsInScreen().CenterPoint(),
                                     window_ptr};

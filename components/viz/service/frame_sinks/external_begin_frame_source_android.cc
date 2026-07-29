@@ -5,16 +5,26 @@
 #include "components/viz/service/frame_sinks/external_begin_frame_source_android.h"
 
 #include <sys/types.h>
+
+#include <algorithm>
+#include <optional>
 #include <utility>
 
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #include "base/android/jni_android.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
-#include "components/viz/service/service_jni_headers/ExternalBeginFrameSourceAndroid_jni.h"
+#include "base/trace_event/typed_macros.h"
+#include "base/tracing/protos/chrome_track_event.pbzero.h"
+#include "components/viz/common/features.h"
+#include "perfetto/tracing/track_event.h"
 #include "ui/gfx/android/achoreographer_compat.h"
 #include "ui/gl/gl_features.h"
+
+// Must come after all headers that specialize FromJniType() / ToJniType().
+#include "components/viz/service/service_jni_headers/ExternalBeginFrameSourceAndroid_jni.h"
 
 namespace {
 
@@ -51,7 +61,7 @@ class ExternalBeginFrameSourceAndroid::AChoreographerImpl {
       void* data);
 
   void OnVSync(int64_t frame_time_nanos,
-               absl::optional<PossibleDeadlines> possible_deadlines,
+               std::optional<PossibleDeadlines> possible_deadlines,
                base::WeakPtr<AChoreographerImpl>* self);
   void SetVsyncPeriod(int64_t vsync_period_nanos);
   void RequestVsyncIfNeeded();
@@ -61,6 +71,7 @@ class ExternalBeginFrameSourceAndroid::AChoreographerImpl {
 
   base::TimeDelta vsync_period_;
   bool vsync_notification_enabled_ = false;
+
   // This is a heap-allocated WeakPtr to this object. The WeakPtr is either
   // * passed to `postFrameCallback` if there is one (and exactly one) callback
   //   pending. This is in case this is deleted before a pending callback
@@ -77,8 +88,8 @@ class ExternalBeginFrameSourceAndroid::AChoreographerImpl {
 std::unique_ptr<ExternalBeginFrameSourceAndroid::AChoreographerImpl>
 ExternalBeginFrameSourceAndroid::AChoreographerImpl::Create(
     ExternalBeginFrameSourceAndroid* client) {
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <
-      base::android::SDK_VERSION_R) {
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_R) {
     return nullptr;
   }
   if (!gfx::AChoreographerCompat::Get().supported)
@@ -129,34 +140,35 @@ void ExternalBeginFrameSourceAndroid::AChoreographerImpl::FrameCallback64(
     delete self;
     return;
   }
-  (*self)->OnVSync(frame_time_nanos, /*possible_deadlines=*/absl::nullopt,
-                   self);
+  (*self)->OnVSync(frame_time_nanos, /*possible_deadlines=*/std::nullopt, self);
 }
 
 // static
 void ExternalBeginFrameSourceAndroid::AChoreographerImpl::VsyncCallback(
     const AChoreographerFrameCallbackData* callback_data,
     void* data) {
-  TRACE_EVENT0("toplevel", "Extend_VSync");
   auto* self = static_cast<base::WeakPtr<AChoreographerImpl>*>(data);
   if (!(*self)) {
     delete self;
     return;
   }
+
+  TRACE_EVENT_BEGIN("toplevel,graphics.pipeline,viz", "Extend_VSync");
+
   DCHECK(gfx::AChoreographerCompat33::Get().supported);
   int64_t frame_time_nanos =
       gfx::AChoreographerCompat33::Get()
           .AChoreographerFrameCallbackData_getFrameTimeNanosFn(callback_data);
-  size_t preferred_index =
+  size_t os_preferred_index =
       gfx::AChoreographerCompat33::Get()
           .AChoreographerFrameCallbackData_getPreferredFrameTimelineIndexFn(
               callback_data);
   size_t size = gfx::AChoreographerCompat33::Get()
                     .AChoreographerFrameCallbackData_getFrameTimelinesLengthFn(
                         callback_data);
-  CHECK_LT(preferred_index, size);
+  CHECK_LT(os_preferred_index, size);
 
-  PossibleDeadlines possible_deadlines(preferred_index);
+  PossibleDeadlines possible_deadlines(os_preferred_index);
   for (size_t i = 0; i < size; ++i) {
     int64_t vsync_id =
         gfx::AChoreographerCompat33::Get()
@@ -175,7 +187,34 @@ void ExternalBeginFrameSourceAndroid::AChoreographerImpl::VsyncCallback(
         base::Nanoseconds(present_time - frame_time_nanos));
   }
 
-  (*self)->OnVSync(frame_time_nanos, std::move(possible_deadlines), self);
+  (*self)->OnVSync(frame_time_nanos, possible_deadlines, self);
+
+  // When `viz` is enabled all the possible deadlines are emitted as trace event
+  // arguments. In case `viz` is not enabled, we do not emit them to save some
+  // trace buffer space.
+  TRACE_EVENT_END("toplevel,graphics.pipeline,viz", [&](perfetto::EventContext
+                                                            ctx) {
+    auto* data = ctx.event<perfetto::protos::pbzero::ChromeTrackEvent>()
+                     ->set_android_choreographer_frame_callback_data();
+
+    bool viz_enabled = false;
+    TRACE_EVENT_CATEGORY_GROUP_ENABLED("viz", &viz_enabled);
+
+    auto frame_time_us = base::TimeTicks::FromJavaNanoTime(frame_time_nanos)
+                             .since_origin()
+                             .InMicroseconds();
+    data->set_frame_time_us(frame_time_us);
+
+    if (!viz_enabled) {
+      return;
+    }
+
+    for (const auto& deadline : possible_deadlines.deadlines) {
+      auto* timeline = data->add_frame_timeline();
+      deadline.SetTraceTimelineData(*timeline);
+    }
+    data->set_preferred_frame_timeline_index(os_preferred_index);
+  });
 }
 
 // static
@@ -184,20 +223,15 @@ void ExternalBeginFrameSourceAndroid::AChoreographerImpl::RefreshRateCallback(
     void* data) {
   static_cast<AChoreographerImpl*>(data)->SetVsyncPeriod(vsync_period_nanos);
 }
-
 void ExternalBeginFrameSourceAndroid::AChoreographerImpl::OnVSync(
     int64_t frame_time_nanos,
-    absl::optional<PossibleDeadlines> possible_deadlines,
+    std::optional<PossibleDeadlines> possible_deadlines,
     base::WeakPtr<AChoreographerImpl>* self) {
   DCHECK(!self_for_frame_callback_);
   DCHECK(self);
   self_for_frame_callback_.reset(self);
   if (vsync_notification_enabled_) {
-    // TODO(crbug.com/1308459): If `possible_deadlines` is present, should
-    // really pick a deadline from `possible_deadlines`. However some code
-    // still assume the deadline is a multiple of interval from frame time.
-    int64_t deadline = frame_time_nanos + vsync_period_.InNanoseconds();
-    client_->OnVSyncImpl(frame_time_nanos, deadline, vsync_period_,
+    client_->OnVSyncImpl(frame_time_nanos, vsync_period_,
                          std::move(possible_deadlines));
     RequestVsyncIfNeeded();
   }
@@ -206,6 +240,14 @@ void ExternalBeginFrameSourceAndroid::AChoreographerImpl::OnVSync(
 void ExternalBeginFrameSourceAndroid::AChoreographerImpl::SetVsyncPeriod(
     int64_t vsync_period_nanos) {
   vsync_period_ = base::Nanoseconds(vsync_period_nanos);
+  TRACE_EVENT_INSTANT(
+      "viz,input.scrolling",
+      "ExternalBeginFrameSourceAndroid::AChoreographerImpl::SetVsyncPeriod",
+      [&](perfetto::EventContext ctx) {
+        auto* event = ctx.event<perfetto::protos::pbzero::ChromeTrackEvent>();
+        auto* out = event->set_begin_frame_args();
+        out->set_interval_delta_us(vsync_period_.InMicroseconds());
+      });
 }
 
 void ExternalBeginFrameSourceAndroid::AChoreographerImpl::
@@ -238,7 +280,7 @@ ExternalBeginFrameSourceAndroid::ExternalBeginFrameSourceAndroid(
   }
   if (!achoreographer_) {
     j_object_ = Java_ExternalBeginFrameSourceAndroid_Constructor(
-        base::android::AttachCurrentThread(), reinterpret_cast<jlong>(this),
+        base::android::AttachCurrentThread(), reinterpret_cast<int64_t>(this),
         refresh_rate);
   }
 }
@@ -247,28 +289,28 @@ ExternalBeginFrameSourceAndroid::~ExternalBeginFrameSourceAndroid() {
   SetEnabled(false);
 }
 
-void ExternalBeginFrameSourceAndroid::OnVSync(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj,
-    jlong time_micros,
-    jlong period_micros) {
-  OnVSyncImpl(time_micros * 1000, (time_micros + period_micros) * 1000,
-              base::Microseconds(period_micros),
-              /*possible_deadlines=*/absl::nullopt);
+void ExternalBeginFrameSourceAndroid::OnVSync(JNIEnv* env,
+                                              int64_t time_micros,
+                                              int64_t period_micros) {
+  OnVSyncImpl(time_micros * 1000, base::Microseconds(period_micros),
+              /*possible_deadlines=*/std::nullopt);
 }
 
 void ExternalBeginFrameSourceAndroid::OnVSyncImpl(
     int64_t time_nanos,
-    int64_t deadline_nanos,
     base::TimeDelta vsync_period,
-    absl::optional<PossibleDeadlines> possible_deadlines) {
+    std::optional<PossibleDeadlines> possible_deadlines) {
   DCHECK_EQ(base::TimeTicks::GetClock(),
             base::TimeTicks::Clock::LINUX_CLOCK_MONOTONIC);
   base::TimeTicks frame_time = ToTimeTicks(time_nanos);
-  base::TimeTicks deadline = ToTimeTicks(deadline_nanos);
+  // TODO(crbug.com/40829076): If `possible_deadlines` is present, should
+  // really pick a deadline from `possible_deadlines`. However some code
+  // still assume the deadline is a multiple of interval from frame time.
+  base::TimeTicks deadline = frame_time + vsync_period;
 
   auto begin_frame_args = begin_frame_args_generator_.GenerateBeginFrameArgs(
-      source_id(), frame_time, deadline, vsync_period);
+      source_id(), frame_time, deadline, vsync_period,
+      GetMinimumFrameInterval());
   if (features::IsAndroidFrameDeadlineEnabled()) {
     begin_frame_args.possible_deadlines = std::move(possible_deadlines);
   }
@@ -280,13 +322,6 @@ void ExternalBeginFrameSourceAndroid::UpdateRefreshRate(float refresh_rate) {
     Java_ExternalBeginFrameSourceAndroid_updateRefreshRate(
         base::android::AttachCurrentThread(), j_object_, refresh_rate);
   }
-}
-
-void ExternalBeginFrameSourceAndroid::SetDynamicBeginFrameDeadlineOffsetSource(
-    DynamicBeginFrameDeadlineOffsetSource*
-        dynamic_begin_frame_deadline_offset_source) {
-  begin_frame_args_generator_.set_dynamic_begin_frame_deadline_offset_source(
-      dynamic_begin_frame_deadline_offset_source);
 }
 
 void ExternalBeginFrameSourceAndroid::OnNeedsBeginFrames(
@@ -305,3 +340,5 @@ void ExternalBeginFrameSourceAndroid::SetEnabled(bool enabled) {
 }
 
 }  // namespace viz
+
+DEFINE_JNI(ExternalBeginFrameSourceAndroid)

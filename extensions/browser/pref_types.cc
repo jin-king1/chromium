@@ -14,4 +14,9 @@ const PrefMap kCorruptedDisableCount = {"extensions.corrupted_disable_count",
 const PrefMap kUserPermissions = {"extensions.user_permissions",
                                   PrefType::kDictionary, PrefScope::kProfile};
 
+// Records the configuration of user scripts worlds.
+const PrefMap kUserScriptsWorldsConfiguration = {
+    "user_scripts_worlds.configuration", PrefType::kDictionary,
+    PrefScope::kExtensionSpecific};
+
 }  // namespace extensions

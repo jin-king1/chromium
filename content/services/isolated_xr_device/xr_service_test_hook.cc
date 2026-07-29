@@ -6,16 +6,17 @@
 
 #include "base/functional/bind.h"
 #include "base/process/process.h"
-#include "content/services/isolated_xr_device/xr_test_hook_wrapper.h"
+#include "components/webxr/xr_test_hook_wrapper.h"
 #include "device/vr/buildflags/buildflags.h"
 
 #if BUILDFLAG(ENABLE_OPENXR)
 #include "device/vr/openxr/openxr_api_wrapper.h"
-#endif  // BUIDLFLAG(ENABLE_OPENXR)
+#include "device/vr/test/test_hook.h"
+#endif  // BUILDFLAG(ENABLE_OPENXR)
 
 namespace {
 
-void UnsetTestHook(std::unique_ptr<device::XRTestHookWrapper> wrapper) {
+void UnsetTestHook(std::unique_ptr<webxr::XRTestHookWrapper> wrapper) {
   // Unset the testhook wrapper with the VR runtimes,
   // so any future calls to them don't use it.
 #if BUILDFLAG(ENABLE_OPENXR)
@@ -31,10 +32,14 @@ void XRServiceTestHook::SetTestHook(
     mojo::PendingRemote<device_test::mojom::XRTestHook> hook,
     device_test::mojom::XRServiceTestHook::SetTestHookCallback callback) {
   // Create a new wrapper (or use null)
-  std::unique_ptr<XRTestHookWrapper> wrapper =
-      hook ? std::make_unique<XRTestHookWrapper>(std::move(hook)) : nullptr;
+  std::unique_ptr<webxr::XRTestHookWrapper> wrapper =
+      hook ? std::make_unique<webxr::XRTestHookWrapper>(std::move(hook))
+           : nullptr;
 
 #if BUILDFLAG(ENABLE_OPENXR)
+  if (wrapper) {
+    device::ServiceTestHook::MaybeInitializeOpenXrMockTrampoline();
+  }
   OpenXrApiWrapper::SetTestHook(wrapper.get());
 #endif  // BUILDFLAG(ENABLE_OPENXR)
 
@@ -54,8 +59,12 @@ XRServiceTestHook::~XRServiceTestHook() {
   // to destroy it on that thread.
   if (wrapper_) {
     auto runner = wrapper_->GetBoundTaskRunner();
-    runner->PostTask(FROM_HERE,
-                     base::BindOnce(UnsetTestHook, std::move(wrapper_)));
+    if (runner) {
+      runner->PostTask(FROM_HERE,
+                       base::BindOnce(UnsetTestHook, std::move(wrapper_)));
+    } else {
+      UnsetTestHook(std::move(wrapper_));
+    }
   }
 }
 

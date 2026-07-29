@@ -8,6 +8,10 @@
 #include "base/memory/raw_ptr.h"
 #include "chrome/browser/ui/chrome_web_modal_dialog_manager_delegate.h"
 
+namespace content {
+class WebContents;
+}
+
 namespace ash {
 
 // Used to display sub-modals inside |InlineLoginHandlerDialog| modal
@@ -29,12 +33,12 @@ class InlineLoginHandlerModalDelegate
   ~InlineLoginHandlerModalDelegate() override;
 
   // web_modal::WebContentsModalDialogManagerDelegate overrides.
-  web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost()
-      override;
+  web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHost(
+      content::WebContents* web_contents) override;
 
  private:
   // Non-owning pointer.
-  raw_ptr<web_modal::WebContentsModalDialogHost, ExperimentalAsh> host_;
+  raw_ptr<web_modal::WebContentsModalDialogHost> host_;
 };
 
 }  // namespace ash

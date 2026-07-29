@@ -8,8 +8,9 @@ include_rules = [
   "-android_webview/lib",
 
   "+android_webview/browser_jni_headers",
-  "+components/about_ui",
+  "+components/webui/about",
   "+components/content_capture",
+  "+components/crash/android/java/src/org/chromium/components/crash/browser/ProcessExitReasonFromSystem.java",
   "+components/embedder_support/android/java",
   "+components/feature_engagement",
   "+components/heap_profiling",
@@ -18,8 +19,10 @@ include_rules = [
   "+components/js_injection",
   "+components/network_session_configurator/common",
   "+components/metrics",
-  "+components/power_scheduler",
+  "+components/origin_matcher",
+  "+components/payments/content/android/java/src/org/chromium/components/payments",
   "+components/prefs",
+  "+components/sampling_profiler",
   "+components/services/heap_profiling/public",
   "+components/url_formatter",
   "+components/version_info",
@@ -31,6 +34,9 @@ include_rules = [
   "+gpu",
   # Only this one header in media which doesn't depend on anything else.
   "+media/media_buildflags.h",
+  # TODO(crbug.com/498421592): Add support for kMojoUseEventFd in WebView and
+  # remove the override that needs this include.
+  "+mojo/core/embedder/features.h",
   "+mojo/public/cpp/bindings",
   "+net",
   "+services/network/public/cpp",
@@ -44,7 +50,4 @@ include_rules = [
   "+ui/android",
   "+ui/base",
   "+ui/gfx",
-
-  # Used for Vulkan interop path.
-  "+third_party/vulkan/include",
 ]

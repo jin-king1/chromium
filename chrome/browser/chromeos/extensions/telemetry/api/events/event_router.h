@@ -8,14 +8,30 @@
 #include <memory>
 #include <vector>
 
+#include "base/containers/fixed_flat_set.h"
 #include "base/containers/flat_map.h"
-#include "chrome/browser/chromeos/extensions/telemetry/api/events/event_observation_crosapi.h"
-#include "chromeos/crosapi/mojom/telemetry_event_service.mojom.h"
+#include "base/memory/raw_ptr.h"
+#include "chrome/browser/chromeos/extensions/telemetry/api/events/event_observation.h"
+#include "chrome/common/chromeos/extensions/api/events.h"
+#include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_events.mojom.h"
 #include "content/public/browser/browser_context.h"
 #include "extensions/common/extension_id.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 
 namespace chromeos {
+
+inline constexpr auto kCategoriesWithFocusRestriction =
+    base::MakeFixedFlatSet<chromeos::api::os_events::EventCategory>({
+        chromeos::api::os_events::EventCategory::kTouchpadButton,
+        chromeos::api::os_events::EventCategory::kTouchpadTouch,
+        chromeos::api::os_events::EventCategory::kTouchpadConnected,
+        chromeos::api::os_events::EventCategory::kStylusTouch,
+        chromeos::api::os_events::EventCategory::kStylusConnected,
+        chromeos::api::os_events::EventCategory::kTouchscreenTouch,
+        chromeos::api::os_events::EventCategory::kTouchscreenConnected,
+    });
+
+class EventObservation;
 
 class EventRouter {
  public:
@@ -30,9 +46,9 @@ class EventRouter {
   // `ExtensionId`. For one category there can always be a number of receivers.
   // The `ExtensionId` is needed to dispatch an actual event to a specific
   // extension.
-  mojo::PendingRemote<crosapi::mojom::TelemetryEventObserver>
+  mojo::PendingRemote<ash::cros_healthd::mojom::EventObserver>
   GetPendingRemoteForCategoryAndExtension(
-      crosapi::mojom::TelemetryEventCategoryEnum category,
+      chromeos::api::os_events::EventCategory category,
       extensions::ExtensionId extension_id);
 
   // Cuts the mojom pipe to all connected remotes for a certain extension.
@@ -42,21 +58,45 @@ class EventRouter {
   // category.
   void ResetReceiversOfExtensionByCategory(
       extensions::ExtensionId extension_id,
-      crosapi::mojom::TelemetryEventCategoryEnum category);
+      chromeos::api::os_events::EventCategory category);
 
-  // Checks whether an extension has an observation for a certain extension.
+  // Prevent the mojom pipe from sending focus-restricted events to all
+  // connected remotes for a certain extension.
+  void RestrictReceiversOfExtension(extensions::ExtensionId extension_id);
+
+  // Allow the mojom pipe from sending focus-restricted events to all
+  // connected remotes for a certain extension.
+  void UnrestrictReceiversOfExtension(extensions::ExtensionId extension_id);
+
+  // Checks whether an extension is observing any event.
+  bool IsExtensionObserving(extensions::ExtensionId extension_id);
+
+  // Checks whether an extension is observing a certain category of event.
   bool IsExtensionObservingForCategory(
       extensions::ExtensionId extension_id,
-      crosapi::mojom::TelemetryEventCategoryEnum category);
+      chromeos::api::os_events::EventCategory category);
+
+  // Checks whether an extension is blocked from focus-restricted events.
+  bool IsExtensionRestricted(extensions::ExtensionId extension_id);
+
+  // Checks whether an extension is allowed (i.e., not restricted) for a certain
+  // category of event.
+  bool IsExtensionAllowedForCategory(
+      extensions::ExtensionId extension_id,
+      chromeos::api::os_events::EventCategory category);
 
  private:
   // Observers grouped by category and extension.
   base::flat_map<extensions::ExtensionId,
-                 base::flat_map<crosapi::mojom::TelemetryEventCategoryEnum,
-                                std::unique_ptr<EventObservationCrosapi>>>
+                 base::flat_map<chromeos::api::os_events::EventCategory,
+                                std::unique_ptr<EventObservation>>>
       observers_;
 
-  const raw_ptr<content::BrowserContext> browser_context_;
+  // Extensions in the restricted state (i.e., blocked from focus-restricted
+  // events).
+  base::flat_set<extensions::ExtensionId> restricted_extensions_;
+
+  const raw_ptr<content::BrowserContext, DanglingUntriaged> browser_context_;
 };
 
 }  // namespace chromeos

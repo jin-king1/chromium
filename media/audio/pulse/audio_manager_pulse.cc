@@ -8,12 +8,14 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/environment.h"
 #include "base/logging.h"
 #include "base/nix/xdg_util.h"
-#include "build/chromeos_buildflags.h"
+#include "build/build_config.h"
 #include "media/audio/audio_device_description.h"
 #include "media/audio/pulse/pulse_input.h"
+#include "media/audio/pulse/pulse_loopback_manager.h"
 #include "media/audio/pulse/pulse_output.h"
 #include "media/audio/pulse/pulse_util.h"
 #include "media/base/audio_parameters.h"
@@ -71,8 +73,9 @@ bool AudioManagerPulse::HasAudioInputDevices() {
   return !devices.empty();
 }
 
-void AudioManagerPulse::GetAudioDeviceNames(
-    bool input, media::AudioDeviceNames* device_names) {
+bool AudioManagerPulse::GetAudioDeviceNames(
+    bool input,
+    media::AudioDeviceNames* device_names) {
   DCHECK(device_names->empty());
   DCHECK(input_mainloop_);
   DCHECK(input_context_);
@@ -86,21 +89,24 @@ void AudioManagerPulse::GetAudioDeviceNames(
     operation = pa_context_get_sink_info_list(
         input_context_, OutputDevicesInfoCallback, this);
   }
-  WaitForOperationCompletion(input_mainloop_, operation, input_context_);
+  bool success =
+      WaitForOperationCompletion(input_mainloop_, operation, input_context_);
 
   // Prepend the default device if the list is not empty.
   if (!device_names->empty())
     device_names->push_front(AudioDeviceName::CreateDefault());
+
+  return success;
 }
 
-void AudioManagerPulse::GetAudioInputDeviceNames(
+bool AudioManagerPulse::GetAudioInputDeviceNames(
     AudioDeviceNames* device_names) {
-  GetAudioDeviceNames(true, device_names);
+  return GetAudioDeviceNames(true, device_names);
 }
 
-void AudioManagerPulse::GetAudioOutputDeviceNames(
+bool AudioManagerPulse::GetAudioOutputDeviceNames(
     AudioDeviceNames* device_names) {
-  GetAudioDeviceNames(false, device_names);
+  return GetAudioDeviceNames(false, device_names);
 }
 
 AudioParameters AudioManagerPulse::GetInputStreamParameters(
@@ -133,7 +139,7 @@ AudioParameters AudioManagerPulse::GetInputStreamParameters(
                          buffer_size);
 }
 
-const char* AudioManagerPulse::GetName() {
+const std::string_view AudioManagerPulse::GetName() {
   return "PulseAudio";
 }
 
@@ -190,7 +196,7 @@ std::string AudioManagerPulse::GetDefaultOutputDeviceID() {
 
 std::string AudioManagerPulse::GetAssociatedOutputDeviceID(
     const std::string& input_device_id) {
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   return AudioManagerBase::GetAssociatedOutputDeviceID(input_device_id);
 #else
   DCHECK(AudioManager::Get()->GetTaskRunner()->BelongsToCurrentThread());
@@ -257,6 +263,26 @@ AudioInputStream* AudioManagerPulse::MakeInputStream(
     const AudioParameters& params,
     const std::string& device_id,
     LogCallback log_callback) {
+  if (AudioDeviceDescription::IsLoopbackDevice(device_id)) {
+    // We need a loopback manager if we are opening a loopback device.
+    if (!loopback_manager_) {
+      // Unretained is safe as `this` outlives `loopback_manager_` and all
+      // streams. See ~AudioManagerBase.
+      loopback_manager_ = PulseLoopbackManager::Create(
+          base::BindRepeating(&AudioManagerBase::ReleaseInputStream,
+                              base::Unretained(this)),
+          input_context_, input_mainloop_);
+    }
+    bool should_mute_system_audio =
+        (device_id == AudioDeviceDescription::kLoopbackWithMuteDeviceId);
+    if (loopback_manager_) {
+      return loopback_manager_->MakeLoopbackStream(
+          params, std::move(log_callback), should_mute_system_audio);
+    }
+
+    return nullptr;
+  }
+
   return new PulseAudioInputStream(this, device_id, params, input_mainloop_,
                                    input_context_, std::move(log_callback));
 }
@@ -292,16 +318,21 @@ void AudioManagerPulse::InputDevicesInfoCallback(pa_context* context,
 
   // If the device has ports, but none of them are available, skip it.
   if (info->n_ports > 0) {
-    uint32_t port = 0;
-    for (; port != info->n_ports; ++port) {
-      if (info->ports[port]->available != PA_PORT_AVAILABLE_NO)
-        break;
-    }
-    if (port == info->n_ports)
+    // SAFETY:
+    // https://freedesktop.org/software/pulseaudio/doxygen/structpa__source__info.html#a97efff6db2851bc811a31384981a1b0b
+    // The documentation says that `info->ports` represents an array of
+    // available ports. The number is stored in `info->n_ports`.
+    UNSAFE_BUFFERS(
+        base::span<pa_source_port_info*> ports(info->ports, info->n_ports));
+    bool no_ports_available = std::ranges::all_of(ports, [](auto* port) {
+      return port->available == PA_PORT_AVAILABLE_NO;
+    });
+    if (no_ports_available) {
       return;
+    }
   }
 
-  manager->devices_->push_back(AudioDeviceName(info->description, info->name));
+  manager->devices_->emplace_back(info->description, info->name);
 }
 
 void AudioManagerPulse::OutputDevicesInfoCallback(pa_context* context,

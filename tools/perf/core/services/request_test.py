@@ -4,11 +4,18 @@
 
 import json
 import pickle
+import sys
 import unittest
+from unittest import mock
 
-# TODO(crbug.com/996778): Figure out how to get httplib2 hermetically.
+from pathlib import Path
+
+# Add tools/perf to sys.path.
+FILE_PATH = Path(__file__).resolve()
+sys.path.append(str(FILE_PATH.parents[2]))
+
+# TODO(crbug.com/40641687): Figure out how to get httplib2 hermetically.
 import httplib2  # pylint: disable=import-error
-import mock
 
 from core.services import request
 
@@ -33,16 +40,16 @@ class TestRequest(unittest.TestCase):
         'http://example.com/', method='GET', body=None, headers=mock.ANY)
 
   def testRequest_acceptJson(self):
-    self.http.request.return_value = Response(200, '{"code": "ok!"}')
-    self.assertEqual(
-        request.Request('http://example.com/', accept='json'), {'code': 'ok!'})
+    self.http.request.return_value = Response(200, b'{"code": "ok!"}')
+    self.assertEqual(request.Request('http://example.com/', accept='json'),
+                     {'code': 'ok!'})
     self.http.request.assert_called_once_with(
         'http://example.com/', method='GET', body=None, headers=mock.ANY)
 
   def testRequest_acceptJsonWithSecurityPrefix(self):
-    self.http.request.return_value = Response(200, ')]}\'{"code": "ok!"}')
-    self.assertEqual(
-        request.Request('http://example.com/', accept='json'), {'code': 'ok!'})
+    self.http.request.return_value = Response(200, b')]}\'{"code": "ok!"}')
+    self.assertEqual(request.Request('http://example.com/', accept='json'),
+                     {'code': 'ok!'})
     self.http.request.assert_called_once_with(
         'http://example.com/', method='GET', body=None, headers=mock.ANY)
 
@@ -52,6 +59,17 @@ class TestRequest(unittest.TestCase):
         'http://example.com/', params={'q': 'foo'}, method='POST'), 'OK!')
     self.http.request.assert_called_once_with(
         'http://example.com/?q=foo', method='POST', body=None, headers=mock.ANY)
+
+  def testRequest_postWithParamsEscapesSpaces(self):
+    self.http.request.return_value = Response(200, 'OK!')
+    self.assertEqual(
+        request.Request('http://example.com/',
+                        params={'q': 'foo bar'},
+                        method='POST'), 'OK!')
+    self.http.request.assert_called_once_with('http://example.com/?q=foo+bar',
+                                              method='POST',
+                                              body=None,
+                                              headers=mock.ANY)
 
   def testRequest_postWithData(self):
     self.http.request.return_value = Response(200, 'OK!')
@@ -125,3 +143,7 @@ class TestRequestErrors(unittest.TestCase):
     content = u'Something went wrong. That\u2019s all we know.'.encode('utf-8')
     error = request.ServerError('/endpoint', *Response(500, content))
     self.assertIn('Something went wrong.', str(error))
+
+
+if __name__ == '__main__':
+  unittest.main()

@@ -38,7 +38,7 @@ class ConfirmBubbleTest : public DialogBrowserTest {
   void ShowUi(const std::string& name) override {
     constrained_window::CreateBrowserModalDialogViews(
         new ConfirmBubbleViews(std::make_unique<ConfirmBubbleTestModel>()),
-        browser()->window()->GetNativeWindow())
+        browser()->GetWindow()->GetNativeWindow())
         ->Show();
   }
 };
@@ -51,7 +51,7 @@ IN_PROC_BROWSER_TEST_F(ConfirmBubbleTest, RootViewAccessibleProperties) {
   auto* confirm_bubble_views =
       new ConfirmBubbleViews(std::make_unique<ConfirmBubbleTestModel>());
   constrained_window::CreateBrowserModalDialogViews(
-      confirm_bubble_views, browser()->window()->GetNativeWindow())
+      confirm_bubble_views, browser()->GetWindow()->GetNativeWindow())
       ->Show();
 
   auto* widget = confirm_bubble_views->GetWidget();
@@ -69,7 +69,9 @@ IN_PROC_BROWSER_TEST_F(ConfirmBubbleTest, RootViewAccessibleProperties) {
 
   // TODO(accessibility): The title is not yet being set as the accessible name
   // of `RootView`. As a result, `GetAccessibleName` will fail. The reason we
-  // can use `GetAccessibleDescription` successfully is because the description
-  // is set in `ConfirmBubbleViews::OnWidgetInitialized`.
-  EXPECT_EQ(root_view->GetAccessibleDescription(), kMessageText);
+  // can use `GetViewAccessibility().GetCachedDescription`
+  // successfully is because the description is set in
+  // `ConfirmBubbleViews::OnWidgetInitialized`.
+  EXPECT_EQ(root_view->GetViewAccessibility().GetCachedDescription(),
+            kMessageText);
 }

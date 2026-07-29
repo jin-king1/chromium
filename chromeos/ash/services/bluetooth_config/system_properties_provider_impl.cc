@@ -4,6 +4,8 @@
 
 #include "chromeos/ash/services/bluetooth_config/system_properties_provider_impl.h"
 
+#include "base/logging.h"
+#include "base/trace_event/trace_event.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
 
@@ -35,6 +37,7 @@ void SystemPropertiesProviderImpl::OnAdapterStateChanged() {
 }
 
 void SystemPropertiesProviderImpl::OnSessionStateChanged() {
+  TRACE_EVENT0("login", "SystemPropertiesProviderImpl::OnSessionStateChanged");
   NotifyPropertiesChanged();
 }
 
@@ -67,8 +70,8 @@ SystemPropertiesProviderImpl::ComputeModificationState() const {
   if (session_manager::SessionManager::Get()->IsScreenLocked())
     return mojom::BluetoothModificationState::kCannotModifyBluetooth;
 
-  return user_manager::UserManager::Get()->GetPrimaryUser() ==
-                 user_manager::UserManager::Get()->GetActiveUser()
+  return session_manager::SessionManager::Get()->GetActiveSession() ==
+                 session_manager::SessionManager::Get()->GetPrimarySession()
              ? mojom::BluetoothModificationState::kCanModifyBluetooth
              : mojom::BluetoothModificationState::kCannotModifyBluetooth;
 }

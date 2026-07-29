@@ -5,6 +5,8 @@
 #ifndef COMPONENTS_SESSIONS_CORE_TAB_RESTORE_SERVICE_HELPER_H_
 #define COMPONENTS_SESSIONS_CORE_TAB_RESTORE_SERVICE_HELPER_H_
 
+#include <map>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -17,7 +19,7 @@
 #include "components/sessions/core/session_types.h"
 #include "components/sessions/core/sessions_export.h"
 #include "components/sessions/core/tab_restore_service.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "components/sessions/core/tab_restore_types.h"
 
 namespace sessions {
 
@@ -34,11 +36,12 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
  public:
   typedef TabRestoreService::DeletionPredicate DeletionPredicate;
   typedef TabRestoreService::Entries Entries;
-  typedef TabRestoreService::Entry Entry;
-  typedef TabRestoreService::Tab Tab;
-  typedef TabRestoreService::TimeFactory TimeFactory;
-  typedef TabRestoreService::Window Window;
-  typedef TabRestoreService::Group Group;
+  typedef tab_restore::Entry Entry;
+  typedef tab_restore::Tab Tab;
+  typedef tab_restore::TimeFactory TimeFactory;
+  typedef tab_restore::Window Window;
+  typedef tab_restore::Group Group;
+  typedef tab_restore::Split Split;
 
   // Provides a way for the client to add behavior to the tab restore service
   // helper (e.g. implementing tabs persistence).
@@ -62,15 +65,8 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
     virtual ~Observer();
   };
 
-  enum {
   // Max number of entries we'll keep around.
-#if BUILDFLAG(IS_ANDROID)
-    // Android keeps at most 5 recent tabs.
-    kMaxEntries = 5,
-#else
-    kMaxEntries = 25,
-#endif
-  };
+  static const int kMaxEntries = 25;
 
   // Creates a new TabRestoreServiceHelper and provides an object that provides
   // the current time. The TabRestoreServiceHelper does not take ownership of
@@ -86,29 +82,47 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
 
   void SetHelperObserver(Observer* observer);
 
+  // Creates a mapping of local to saved ids for groups that have a
+  // saved_group_id. Take in a window's group storage type, and outputs a type
+  // usable for UpdateSavedGroupIDsForTabEntries.
+  static std::map<tab_groups::TabGroupId, base::Uuid>
+  CreateLocalSavedGroupIDMapping(
+      const std::map<tab_groups::TabGroupId, std::unique_ptr<Group>>& groups);
+
+  // Updates the saved group IDs for tabs based on the provided group mapping.
+  // Used by RestoreEntryByID.
+  static void UpdateSavedGroupIDsForTabEntries(
+      std::vector<std::unique_ptr<tab_restore::Tab>>& tabs,
+      const std::map<tab_groups::TabGroupId, base::Uuid>& group_mapping);
+
   // Helper methods used to implement TabRestoreService.
   void AddObserver(TabRestoreServiceObserver* observer);
   void RemoveObserver(TabRestoreServiceObserver* observer);
-  absl::optional<SessionID> CreateHistoricalTab(LiveTab* live_tab, int index);
+  std::optional<SessionID> CreateHistoricalTab(LiveTab* live_tab, int index);
   void BrowserClosing(LiveTabContext* context);
   void BrowserClosed(LiveTabContext* context);
   void CreateHistoricalGroup(LiveTabContext* context,
                              const tab_groups::TabGroupId& id);
+  void CreateHistoricalSplit(LiveTabContext* context,
+                             const split_tabs::SplitTabId& id);
   void GroupClosed(const tab_groups::TabGroupId& group);
   void GroupCloseStopped(const tab_groups::TabGroupId& group);
+  void SplitClosed(const split_tabs::SplitTabId& id);
+  void SplitCloseStopped(const split_tabs::SplitTabId& id);
   void ClearEntries();
   void DeleteNavigationEntries(const DeletionPredicate& predicate);
 
   const Entries& entries() const;
   std::vector<LiveTab*> RestoreMostRecentEntry(LiveTabContext* context);
-  void RemoveTabEntryById(SessionID id);
+  void RemoveEntryById(SessionID id);
+  void RemoveLeastRecentlyUsedEntries(int num_to_remove);
   std::vector<LiveTab*> RestoreEntryById(LiveTabContext* context,
                                          SessionID id,
                                          WindowOpenDisposition disposition);
   bool IsRestoring() const;
 
-  // Notifies observers the tabs have changed.
-  void NotifyTabsChanged();
+  // Notifies observers the entries have changed.
+  void NotifyEntriesChanged();
 
   // Notifies observers the service has loaded.
   void NotifyLoaded();
@@ -153,10 +167,56 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
   // will be respected instead. If a new LiveTabContext needs to be created for
   // this tab, If present, |live_tab| will be populated with the LiveTab of the
   // restored tab.
+  // |original_session_type| indicates the type of session entry the tab
+  // belongs to.
+  // |is_restoring_group_or_window| indicates if the tab is being restored
+  // alongside other tabs inside the same group or window.
   LiveTabContext* RestoreTab(const Tab& tab,
                              LiveTabContext* context,
                              WindowOpenDisposition disposition,
-                             LiveTab** live_tab);
+                             sessions::tab_restore::Type session_restore_type,
+                             LiveTab** live_tab,
+                             bool is_restoring_group_or_window);
+
+  // This is a helper function for RestoreEntryById(). Restores a single entry
+  // from the `window`. The entry to restore is denoted by `id` and can either
+  // be a single tab or an entire group.
+  LiveTabContext* RestoreTabOrGroupFromWindow(Window& window,
+                                              SessionID id,
+                                              LiveTabContext* context,
+                                              WindowOpenDisposition disposition,
+                                              std::vector<LiveTab*>* live_tabs);
+
+  // Helper function for RestoreEntryById(). Restores a single tab from the
+  // `split` and returns the remaining tab.
+  std::unique_ptr<Tab> RestoreOneTabFromSplit(
+      Split& split,
+      SessionID id,
+      LiveTabContext** context,
+      WindowOpenDisposition disposition,
+      sessions::tab_restore::Type session_restore_type,
+      std::vector<LiveTab*>& live_tabs);
+
+  // Helper function for RestoreEntryById(). Restores a single split view from
+  // the `group`. Returns true if a split was found and restored.
+  bool RestoreSplitFromGroup(Group& group,
+                             SessionID id,
+                             LiveTabContext** context,
+                             WindowOpenDisposition disposition,
+                             std::vector<LiveTab*>& live_tabs);
+
+  // Helper function for CreateHistoricalGroup. Returns a Group populated with
+  // metadata for the tab group `id`.
+  std::unique_ptr<Group> CreateHistoricalGroupImpl(
+      LiveTabContext* context,
+      const tab_groups::TabGroupId& id);
+
+  // Helper function for CreateHistoricalSplit. Returns a Split populated with
+  // metadata for the split view 'id'.
+  std::unique_ptr<tab_restore::Split> CreateHistoricalSplitImpl(
+      LiveTabContext* context,
+      const split_tabs::SplitTabId& id,
+      const std::vector<std::pair<int, LiveTab*>>& split_tabs);
 
   // Returns true if |tab| has at least one navigation and
   // |tab->current_navigation_index| is in bounds.
@@ -167,6 +227,9 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
 
   // Validates all the tabs in a group.
   static bool ValidateGroup(const Group& group);
+
+  // Validates the two tabs in a split.
+  static bool ValidateSplit(const Split& split);
 
   // Removes all navigation entries matching |predicate| from |tab|.
   // Returns true if |tab| should be deleted because it is empty.
@@ -181,6 +244,13 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
   // Returns true if |group| should be deleted because it is empty.
   static bool DeleteFromGroup(const DeletionPredicate& predicate, Group* group);
 
+  // Removes all navigation entries matching |predicate| from tabs in |split|.
+  // Returns true if both tabs in |split| are deleted. If only one tab is
+  // deleted, it is moved to |remaining_tab|.
+  static bool DeleteFromSplit(const DeletionPredicate& predicate,
+                              Split* split,
+                              std::unique_ptr<Tab>& remaining_tab);
+
   // Returns true if |tab| is one we care about restoring.
   bool IsTabInteresting(const Tab& tab);
 
@@ -191,6 +261,10 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
   // Checks whether |group| is interesting -- as long as it contains tabs,
   // it is.
   bool IsGroupInteresting(const Group& group);
+
+  // Checks whether |split| is interesting -- as long as it contains at least
+  // one interesting tab, it is.
+  bool IsSplitInteresting(const Split& split);
 
   // Validates and checks |entry| for interesting.
   bool FilterEntry(const Entry& entry);
@@ -214,17 +288,25 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
   // historical tab.
   bool restoring_;
 
-  base::ObserverList<TabRestoreServiceObserver>::Unchecked observer_list_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      TabRestoreServiceObserver,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked
+      observer_list_;
 
   // Set of contexts that we've received a BrowserClosing method for but no
   // corresponding BrowserClosed. We cache the set of contexts closing to
   // avoid creating historical tabs for them.
-  std::set<LiveTabContext*> closing_contexts_;
+  std::set<raw_ptr<LiveTabContext, SetExperimental>> closing_contexts_;
 
   // Set of groups that we've received a CreateHistoricalGroup method for but no
   // corresponding GroupClosed. We cache the set of groups closing to avoid
   // creating historical tabs for them.
   std::set<tab_groups::TabGroupId> closing_groups_;
+
+  // Maps SplitTabId to the specific SessionIDs participating in the closure.
+  std::map<split_tabs::SplitTabId, std::set<SessionID>> closing_split_tabs_;
 
   const raw_ptr<TimeFactory> time_factory_;
 };

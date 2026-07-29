@@ -21,7 +21,7 @@ class MockSmartCardContextFactory
   mojo::PendingRemote<device::mojom::SmartCardContextFactory> GetRemote();
 
   // `device::mojom::SmartCardContextFactory` overrides:
-  void CreateContext(CreateContextCallback) override;
+  MOCK_METHOD(void, CreateContext, (CreateContextCallback), (override));
 
   // `device::mojom::SmartCardContext` overrides:
   MOCK_METHOD(void, ListReaders, (ListReadersCallback callback), (override));
@@ -38,8 +38,26 @@ class MockSmartCardContextFactory
               (const std::string& reader,
                device::mojom::SmartCardShareMode share_mode,
                device::mojom::SmartCardProtocolsPtr preferred_protocols,
+               mojo::PendingRemote<device::mojom::SmartCardConnectionWatcher>
+                   connection_watcher,
                ConnectCallback callback),
               (override));
+
+  MOCK_METHOD(void, ContextDisconnected, ());
+
+  // Expect a Connect("Fake reader", kShared, kT1) call.
+  // A pending remote for the given `connection_receiver` will be passed to
+  // the call result on success.
+  void ExpectConnectFakeReaderSharedT1(
+      mojo::Receiver<device::mojom::SmartCardConnection>& connection_receiver);
+
+  // Expect a ListReaders() call. Will return `readers`.
+  void ExpectListReaders(std::vector<std::string> readers);
+  void ExpectListReadersError(device::mojom::SmartCardError error);
+
+  void ExpectCreateContextError(device::mojom::SmartCardError error);
+
+  void ClearContextReceivers();
 
  private:
   mojo::ReceiverSet<device::mojom::SmartCardContextFactory> receivers_;

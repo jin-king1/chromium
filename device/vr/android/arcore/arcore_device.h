@@ -6,7 +6,9 @@
 #define DEVICE_VR_ANDROID_ARCORE_ARCORE_DEVICE_H_
 
 #include <jni.h>
+
 #include <memory>
+#include <optional>
 #include <unordered_set>
 #include <utility>
 
@@ -16,13 +18,10 @@
 #include "base/task/single_thread_task_runner.h"
 #include "device/vr/android/arcore/arcore_gl.h"
 #include "device/vr/public/cpp/xr_frame_sink_client.h"
-#include "device/vr/vr_device.h"
 #include "device/vr/vr_device_base.h"
 #include "gpu/ipc/common/surface_handle.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/gfx/geometry/size_f.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace ui {
 class WindowAndroid;
@@ -84,7 +83,7 @@ class COMPONENT_EXPORT(VR_ARCORE) ArCoreDevice : public VRDeviceBase {
 
   // Called once the GL thread is started. At this point, it doesn't
   // have a valid GL context yet.
-  void OnGlThreadReady(int render_process_id,
+  void OnGlThreadReady(network::RendererProcessId render_process_id,
                        int render_frame_id,
                        bool use_overlay);
 
@@ -150,7 +149,7 @@ class COMPONENT_EXPORT(VR_ARCORE) ArCoreDevice : public VRDeviceBase {
     // empty, will be set only once the ArCoreGl has been initialized.
     std::unordered_set<device::mojom::XRSessionFeature> enabled_features_;
 
-    absl::optional<device::mojom::XRDepthConfig> depth_configuration_;
+    std::optional<device::mojom::XRDepthConfig> depth_configuration_;
 
     std::vector<device::mojom::XRTrackedImagePtr> tracked_images_;
 

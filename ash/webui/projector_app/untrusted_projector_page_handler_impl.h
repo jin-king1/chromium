@@ -8,6 +8,7 @@
 #include "ash/webui/projector_app/mojom/untrusted_projector.mojom.h"
 #include "ash/webui/projector_app/projector_app_client.h"
 #include "ash/webui/projector_app/projector_xhr_sender.h"
+#include "ash/webui/projector_app/public/mojom/projector_types.mojom-forward.h"
 #include "base/files/safe_base_name.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -17,6 +18,14 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "url/gurl.h"
+
+namespace network::mojom {
+class URLLoaderFactory;
+}  // namespace network::mojom
+
+namespace signin {
+class IdentityManager;
+}  // namespace signin
 
 namespace ash {
 
@@ -31,7 +40,9 @@ class UntrustedProjectorPageHandlerImpl
           receiver,
       mojo::PendingRemote<projector::mojom::UntrustedProjectorPage>
           projector_remote,
-      PrefService* pref_service);
+      PrefService* pref_service,
+      signin::IdentityManager* identity_manager,
+      network::mojom::URLLoaderFactory* url_loader_factory);
   UntrustedProjectorPageHandlerImpl(const UntrustedProjectorPageHandlerImpl&) =
       delete;
   UntrustedProjectorPageHandlerImpl& operator=(
@@ -64,30 +75,37 @@ class UntrustedProjectorPageHandlerImpl
   void SendXhr(
       const GURL& url,
       projector::mojom::RequestType method,
-      const absl::optional<std::string>& request_body,
+      const std::optional<std::string>& request_body,
       bool use_credentials,
       bool use_api_key,
-      const absl::optional<base::flat_map<std::string, std::string>>& headers,
-      const absl::optional<std::string>& account_email,
+      const std::optional<base::flat_map<std::string, std::string>>& headers,
+      const std::optional<std::string>& account_email,
       SendXhrCallback callback) override;
   void GetAccounts(GetAccountsCallback callback) override;
+  void GetVideo(const std::string& video_file_id,
+                const std::optional<std::string>& resource_key,
+                GetVideoCallback callback) override;
 
  protected:
+  void OnVideoLocated(GetVideoCallback callback,
+                      projector::mojom::GetVideoResultPtr result);
+
   base::WeakPtr<UntrustedProjectorPageHandlerImpl> GetWeakPtr();
 
   // Called when the XHR request is completed. Runs the callback with the
   // results.
   virtual void OnXhrRequestCompleted(
       SendXhrCallback callback,
-      const std::string& response_body,
-      projector::mojom::XhrResponseCode response_code);
+      projector::mojom::XhrResponsePtr xhr_response);
 
  private:
   mojo::Receiver<projector::mojom::UntrustedProjectorPageHandler> receiver_;
   mojo::Remote<projector::mojom::UntrustedProjectorPage> projector_remote_;
 
-  // Primary user pref service.
-  const raw_ptr<PrefService, ExperimentalAsh> pref_service_;
+  // The pref service for the profile that owns the WebUI.
+  const raw_ptr<PrefService> pref_service_;
+  // The identity manager for the profile that owns the WebUI.
+  const raw_ptr<signin::IdentityManager> identity_manager_;
   ProjectorXhrSender xhr_sender_;
 
   base::WeakPtrFactory<UntrustedProjectorPageHandlerImpl> weak_ptr_factory_{

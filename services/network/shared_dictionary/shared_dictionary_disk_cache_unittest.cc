@@ -39,7 +39,7 @@ class SharedDictionaryDiskCacheTest : public testing::Test {
     auto disk_cache = std::make_unique<SharedDictionaryDiskCache>();
     disk_cache->Initialize(directory_path_,
 #if BUILDFLAG(IS_ANDROID)
-                           /*app_status_listener=*/nullptr,
+                           disk_cache::ApplicationStatusListenerGetter(),
 #endif  // BUILDFLAG(IS_ANDROID)
                            /*file_operations_factory=*/nullptr);
     return disk_cache;
@@ -126,7 +126,10 @@ class SharedDictionaryDiskCacheTest : public testing::Test {
     ASSERT_TRUE(base::WriteFile(index_file_path, "corrupted"));
     file_permissions_restorer_ = std::make_unique<base::FilePermissionRestorer>(
         tmp_directory_.GetPath());
-    // Mark the parent directory unwritable, so that we can't restore the dist
+    // Mark the parent directory unwritable. When the disk cache is corrupted,
+    // the SimpleCache backend will try to recreate the cache directory. By
+    // making the parent directory unwritable, we can simulate the failure of
+    // this recreation process.
     ASSERT_TRUE(base::MakeFileUnwritable(tmp_directory_.GetPath()));
   }
 
@@ -201,6 +204,34 @@ TEST_F(SharedDictionaryDiskCacheTest, ClearAllWhileInitializing) {
   EXPECT_EQ(net::OK, ClearAll(disk_cache.get()));
 
   EXPECT_EQ(net::ERR_FAILED, OpenEntry(disk_cache.get(), kTestKey).net_error());
+}
+
+TEST_F(SharedDictionaryDiskCacheTest, CreateIterator) {
+  PrepareDiskCacheWithTestData();
+
+  std::unique_ptr<SharedDictionaryDiskCache> disk_cache = CreateDiskCache();
+  FlushCacheTasks();
+
+  std::unique_ptr<disk_cache::Backend::Iterator> iterator;
+  disk_cache->CreateIterator(base::BindLambdaForTesting(
+      [&](std::unique_ptr<disk_cache::Backend::Iterator> it) {
+        iterator = std::move(it);
+      }));
+  EXPECT_TRUE(iterator);
+}
+
+TEST_F(SharedDictionaryDiskCacheTest, CreateIteratorWhileInitializing) {
+  PrepareDiskCacheWithTestData();
+
+  std::unique_ptr<SharedDictionaryDiskCache> disk_cache = CreateDiskCache();
+  std::unique_ptr<disk_cache::Backend::Iterator> iterator;
+  disk_cache->CreateIterator(base::BindLambdaForTesting(
+      [&](std::unique_ptr<disk_cache::Backend::Iterator> it) {
+        iterator = std::move(it);
+      }));
+  EXPECT_FALSE(iterator);
+  FlushCacheTasks();
+  EXPECT_TRUE(iterator);
 }
 
 TEST_F(SharedDictionaryDiskCacheTest, CreateWriteOpenReadDeleteReopen) {
@@ -309,6 +340,38 @@ TEST_F(SharedDictionaryDiskCacheTest,
 
   std::unique_ptr<SharedDictionaryDiskCache> disk_cache = CreateDiskCache();
   EXPECT_EQ(net::ERR_FAILED, ClearAll(disk_cache.get()));
+}
+
+TEST_F(SharedDictionaryDiskCacheTest, CreateIteratorCorruptedFailure) {
+  CorruptDiskCache();
+
+  std::unique_ptr<SharedDictionaryDiskCache> disk_cache = CreateDiskCache();
+  FlushCacheTasks();
+
+  bool callback_called = false;
+  disk_cache->CreateIterator(base::BindLambdaForTesting(
+      [&](std::unique_ptr<disk_cache::Backend::Iterator> it) {
+        ASSERT_FALSE(it);
+        callback_called = true;
+      }));
+  EXPECT_TRUE(callback_called);
+}
+
+TEST_F(SharedDictionaryDiskCacheTest,
+       CreateIteratorCorruptedFailureWhileInitializing) {
+  CorruptDiskCache();
+
+  std::unique_ptr<SharedDictionaryDiskCache> disk_cache = CreateDiskCache();
+
+  bool callback_called = false;
+  disk_cache->CreateIterator(base::BindLambdaForTesting(
+      [&](std::unique_ptr<disk_cache::Backend::Iterator> it) {
+        ASSERT_FALSE(it);
+        callback_called = true;
+      }));
+  EXPECT_FALSE(callback_called);
+  FlushCacheTasks();
+  EXPECT_TRUE(callback_called);
 }
 
 TEST_F(SharedDictionaryDiskCacheTest, DeletedWhileRuningDidCreateBackend) {

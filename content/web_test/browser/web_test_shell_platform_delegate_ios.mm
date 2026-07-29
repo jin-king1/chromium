@@ -6,10 +6,6 @@
 
 #include "content/shell/browser/shell.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace content {
 
 struct WebTestShellPlatformDelegate::WebTestShellData {};
@@ -57,8 +53,10 @@ void WebTestShellPlatformDelegate::SetTitle(Shell* shell,
   ShellPlatformDelegate::SetTitle(shell, title);
 }
 
-void WebTestShellPlatformDelegate::MainFrameCreated(Shell* shell) {
-  ShellPlatformDelegate::MainFrameCreated(shell);
+void WebTestShellPlatformDelegate::MainFrameCreated(
+    Shell* shell,
+    RenderFrameHost* main_frame) {
+  ShellPlatformDelegate::MainFrameCreated(shell, main_frame);
 }
 
 bool WebTestShellPlatformDelegate::DestroyShell(Shell* shell) {

@@ -5,14 +5,14 @@
 #ifndef COMPONENTS_SEGMENTATION_PLATFORM_INTERNAL_DATABASE_CACHED_RESULT_WRITER_H_
 #define COMPONENTS_SEGMENTATION_PLATFORM_INTERNAL_DATABASE_CACHED_RESULT_WRITER_H_
 
-#include <string>
-
-#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/time/clock.h"
 #include "components/segmentation_platform/internal/database/client_result_prefs.h"
 #include "components/segmentation_platform/internal/platform_options.h"
-#include "components/segmentation_platform/public/result.h"
+#include "components/segmentation_platform/internal/proto/client_results.pb.h"
+#include "components/segmentation_platform/public/proto/prediction_result.pb.h"
+
 namespace segmentation_platform {
 struct Config;
 class ClientResultPrefs;
@@ -22,8 +22,7 @@ class ClientResultPrefs;
 // results for the  client after model execution inorder to update it in prefs.
 class CachedResultWriter {
  public:
-  CachedResultWriter(std::unique_ptr<ClientResultPrefs> prefs,
-                     base::Clock* clock);
+  CachedResultWriter(ClientResultPrefs* prefs, base::Clock* clock);
 
   ~CachedResultWriter();
 
@@ -32,25 +31,39 @@ class CachedResultWriter {
   CachedResultWriter& operator=(CachedResultWriter&) = delete;
 
   // Updates the prefs only if the previous result in the pref is expired or
-  // unavailable or `force_refresh_results` is set as true. In both the above
-  // cases, fetch result for model either from database or running the model.
-  void UpdatePrefsIfExpired(Config* config,
+  // unavailable or `force_refresh_results` is set as true. Returns true if
+  // prefs was updated.
+  bool UpdatePrefsIfExpired(const Config* config,
                             proto::ClientResult client_result,
                             const PlatformOptions& platform_options);
+
+  // Marks the result as used by client. Does not change the result. Should be
+  // called when the client code uses the result cached in prefs. Only saves the
+  // first time the result is used. This is valid till the result is deleted and
+  // new result is written.
+  void MarkResultAsUsed(const Config* config);
+
+  // Writes model execution results to prefs. This would overwrite the results
+  // stored in prefs without verifying the TTL of existing results. Can be used
+  // when the client is using the new `result` already and pref is stale even
+  // before TTL expiry.
+  void CacheModelExecution(const Config* config,
+                           const proto::PredictionResult& result);
 
  private:
   // Checks the following to determine whether to update pref with new result.
   // 1. Previous model results for client are either expired or unavailable.
   // 2. `force_refresh_results` option is set to true.
-  bool IsPrefUpdateRequiredForClient(Config* config,
+  bool IsPrefUpdateRequiredForClient(const Config* config,
+                                     const proto::ClientResult& client_result,
                                      const PlatformOptions& platform_options);
 
   // Updates the supplied `client_result` as new result for the client in prefs.
-  void UpdateNewClientResultToPrefs(Config* config,
-                                    const proto::ClientResult& client_result);
+  void UpdateNewClientResultToPrefs(const Config* config,
+                                    proto::ClientResult client_result);
 
   // Helper class to read/write results to the prefs.
-  std::unique_ptr<ClientResultPrefs> result_prefs_;
+  const raw_ptr<ClientResultPrefs> result_prefs_;
 
   // The time provider.
   const raw_ptr<base::Clock> clock_;

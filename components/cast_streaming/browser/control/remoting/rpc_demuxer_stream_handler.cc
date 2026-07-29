@@ -108,8 +108,8 @@ void RpcDemuxerStreamHandler::OnRpcEnableBitstreamConverterCallback(
 
 void RpcDemuxerStreamHandler::OnRpcInitializeCallback(
     RpcMessenger::Handle handle,
-    absl::optional<media::AudioDecoderConfig> audio_config,
-    absl::optional<media::VideoDecoderConfig> video_config) {
+    std::optional<media::AudioDecoderConfig> audio_config,
+    std::optional<media::VideoDecoderConfig> video_config) {
   if (audio_message_processor_ &&
       handle == audio_message_processor_->local_handle()) {
     audio_message_processor_->OnRpcInitializeCallback(std::move(audio_config),
@@ -125,8 +125,8 @@ void RpcDemuxerStreamHandler::OnRpcInitializeCallback(
 
 void RpcDemuxerStreamHandler::OnRpcReadUntilCallback(
     RpcMessenger::Handle handle,
-    absl::optional<media::AudioDecoderConfig> audio_config,
-    absl::optional<media::VideoDecoderConfig> video_config,
+    std::optional<media::AudioDecoderConfig> audio_config,
+    std::optional<media::VideoDecoderConfig> video_config,
     uint32_t total_frames_received) {
   if (audio_message_processor_ &&
       handle == audio_message_processor_->local_handle()) {
@@ -198,9 +198,14 @@ RpcDemuxerStreamHandler::MessageProcessor::MessageProcessor(
 
 RpcDemuxerStreamHandler::MessageProcessor::~MessageProcessor() = default;
 
+void RpcDemuxerStreamHandler::MessageProcessor::ProcessMessage(
+    std::unique_ptr<openscreen::cast::RpcMessage> message) {
+  process_message_cb_.Run(remote_handle(), std::move(message));
+}
+
 bool RpcDemuxerStreamHandler::MessageProcessor::OnRpcInitializeCallback(
-    absl::optional<media::AudioDecoderConfig> audio_config,
-    absl::optional<media::VideoDecoderConfig> video_config) {
+    std::optional<media::AudioDecoderConfig> audio_config,
+    std::optional<media::VideoDecoderConfig> video_config) {
   if (audio_config && type_ != Type::kAudio) {
     LOG(WARNING) << "Received an audio config for a video DemuxerStream";
     return false;
@@ -219,8 +224,8 @@ bool RpcDemuxerStreamHandler::MessageProcessor::OnRpcInitializeCallback(
 }
 
 bool RpcDemuxerStreamHandler::MessageProcessor::OnRpcReadUntilCallback(
-    absl::optional<media::AudioDecoderConfig> audio_config,
-    absl::optional<media::VideoDecoderConfig> video_config,
+    std::optional<media::AudioDecoderConfig> audio_config,
+    std::optional<media::VideoDecoderConfig> video_config,
     uint32_t total_frames_received) {
   call_timeout_timer_.Stop();
   failed_consecutive_read_until_requests_ = 0;
@@ -307,7 +312,8 @@ void RpcDemuxerStreamHandler::MessageProcessor::OnNoBuffersAvailable() {
 
   task_runner_->PostDelayedTask(
       FROM_HERE,
-      base::BindOnce(process_message_cb_, remote_handle(), std::move(message)),
+      base::BindOnce(&MessageProcessor::ProcessMessage,
+                     weak_factory_.GetWeakPtr(), std::move(message)),
       remaining_time);
   last_request_time_ = now + remaining_time;
 

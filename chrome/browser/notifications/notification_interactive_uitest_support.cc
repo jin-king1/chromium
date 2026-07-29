@@ -4,6 +4,8 @@
 
 #include "chrome/browser/notifications/notification_interactive_uitest_support.h"
 
+#include <vector>
+
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
@@ -61,8 +63,8 @@ class MessageCenterChangeObserver::Impl
 
   void OnNotificationClicked(
       const std::string& notification_id,
-      const absl::optional<int>& button_index,
-      const absl::optional<std::u16string>& reply) override {
+      const std::optional<int>& button_index,
+      const std::optional<std::u16string>& reply) override {
     OnMessageCenterChanged();
   }
 
@@ -95,12 +97,10 @@ const std::string& TestMessageCenterObserver::last_displayed_id() const {
 }
 
 NotificationsTest::NotificationsTest() {
-// Temporary change while the whole support class is changed to deal
-// with system notifications. crbug.com/714679
-#if BUILDFLAG(ENABLE_SYSTEM_NOTIFICATIONS)
+  // Temporary change while the whole support class is changed to deal
+  // with system notifications. crbug.com/40517059
   feature_list_.InitWithFeatures(
       {}, {features::kNativeNotifications, features::kSystemNotifications});
-#endif  // BUILDFLAG(ENABLE_SYSTEM_NOTIFICATIONS)
 }
 
 int NotificationsTest::GetNotificationCount() {
@@ -116,24 +116,24 @@ void NotificationsTest::CrashTab(Browser* browser, int index) {
 }
 
 void NotificationsTest::DenyOrigin(const GURL& origin) {
-  NotificationPermissionContext::UpdatePermission(browser()->profile(), origin,
-                                                  CONTENT_SETTING_BLOCK);
+  NotificationPermissionContext::UpdatePermission(
+      browser()->GetProfile(), origin, CONTENT_SETTING_BLOCK);
 }
 
 void NotificationsTest::AllowOrigin(const GURL& origin) {
-  NotificationPermissionContext::UpdatePermission(browser()->profile(), origin,
-                                                  CONTENT_SETTING_ALLOW);
+  NotificationPermissionContext::UpdatePermission(
+      browser()->GetProfile(), origin, CONTENT_SETTING_ALLOW);
 }
 
 void NotificationsTest::AllowAllOrigins() {
   // Reset all origins
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->ClearSettingsForOneType(ContentSettingsType::NOTIFICATIONS);
   SetDefaultContentSetting(CONTENT_SETTING_ALLOW);
 }
 
 void NotificationsTest::SetDefaultContentSetting(ContentSetting setting) {
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultContentSetting(ContentSettingsType::NOTIFICATIONS, setting);
 }
 
@@ -224,17 +224,14 @@ bool NotificationsTest::CancelNotification(const char* notification_id,
 
 void NotificationsTest::GetDisabledContentSettings(
     ContentSettingsForOneType* settings) {
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
-      ->GetSettingsForOneType(ContentSettingsType::NOTIFICATIONS, settings);
+  *settings =
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
+          ->GetSettingsForOneType(ContentSettingsType::NOTIFICATIONS);
 
-  for (auto it = settings->begin(); it != settings->end();) {
-    if (it->GetContentSetting() != CONTENT_SETTING_BLOCK ||
-        it->source.compare("preference") != 0) {
-      it = settings->erase(it);
-    } else {
-      ++it;
-    }
-  }
+  std::erase_if(*settings, [](const ContentSettingPatternSource& setting) {
+    return setting.GetContentSetting() != CONTENT_SETTING_BLOCK ||
+           setting.source != content_settings::ProviderType::kPrefProvider;
+  });
 }
 
 bool NotificationsTest::CheckOriginInSetting(
@@ -264,15 +261,7 @@ content::WebContents* NotificationsTest::GetActiveWebContents(
 
 NotificationsTestWithPermissionsEmbargo ::
     NotificationsTestWithPermissionsEmbargo() {
-#if BUILDFLAG(ENABLE_SYSTEM_NOTIFICATIONS)
   feature_list_.InitWithFeatures(
-      {permissions::features::kBlockPromptsIfDismissedOften,
-       permissions::features::kBlockPromptsIfIgnoredOften},
+      {},
       {features::kSystemNotifications});
-#else
-  feature_list_.InitWithFeatures(
-      {permissions::features::kBlockPromptsIfDismissedOften,
-       permissions::features::kBlockPromptsIfIgnoredOften},
-      {});
-#endif  //  BUILDFLAG(ENABLE_SYSTEM_NOTIFICATIONS)
 }

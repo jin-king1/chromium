@@ -5,12 +5,14 @@
 // clang-format off
 import 'chrome://settings/lazy_load.js';
 
-import {ContentSetting, ContentSettingProvider, ContentSettingsTypes, SettingsAntiAbusePageElement, SiteSettingsPrefsBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
+import type {SettingsAntiAbusePageElement} from 'chrome://settings/lazy_load.js';
+import {ContentSetting, DefaultSettingSource, ContentSettingsTypes, SiteSettingsBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
 import {assertEquals, assertNotEquals, assertTrue, assertFalse} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 
-import {TestSiteSettingsPrefsBrowserProxy} from './test_site_settings_prefs_browser_proxy.js';
-import {createContentSettingTypeToValuePair, createSiteSettingsPrefs, SiteSettingsPref} from './test_util.js';
+import {TestSiteSettingsBrowserProxy} from './test_site_settings_browser_proxy.js';
+import type {SiteSettingsPref} from './test_util.js';
+import {createContentSettingTypeToValuePair, createDefaultContentSetting, createSiteSettingsPrefs} from './test_util.js';
 // clang-format on
 
 /** @fileoverview Suite of tests for settings-anti-abuse-page. */
@@ -23,12 +25,12 @@ suite('SettingsAntiAbusePage', function() {
   /**
    * The mock proxy object to use during test.
    */
-  let browserProxy: TestSiteSettingsPrefsBrowserProxy;
+  let browserProxy: TestSiteSettingsBrowserProxy;
 
   // Initialize a settings-anti-abuse-page before each test.
   setup(function() {
-    browserProxy = new TestSiteSettingsPrefsBrowserProxy();
-    SiteSettingsPrefsBrowserProxyImpl.setInstance(browserProxy);
+    browserProxy = new TestSiteSettingsBrowserProxy();
+    SiteSettingsBrowserProxyImpl.setInstance(browserProxy);
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     testElement = document.createElement('settings-anti-abuse-page');
     document.body.appendChild(testElement);
@@ -43,7 +45,8 @@ suite('SettingsAntiAbusePage', function() {
     return createSiteSettingsPrefs(
         [
           createContentSettingTypeToValuePair(
-              ContentSettingsTypes.ANTI_ABUSE, {setting: contentSetting}),
+              ContentSettingsTypes.ANTI_ABUSE,
+              createDefaultContentSetting({setting: contentSetting})),
         ],
         []);
   }
@@ -53,7 +56,7 @@ suite('SettingsAntiAbusePage', function() {
    */
   async function testCategoryEnabled(
       element: SettingsAntiAbusePageElement,
-      proxy: TestSiteSettingsPrefsBrowserProxy, prefs: SiteSettingsPref,
+      proxy: TestSiteSettingsBrowserProxy, prefs: SiteSettingsPref,
       expectedEnabled: boolean) {
     proxy.reset();
     proxy.setPrefs(prefs);
@@ -106,10 +109,11 @@ suite('SettingsAntiAbusePage', function() {
 
   test('toggle is disabled when pref is enforced', async function() {
     const enforcedPrefs = createSiteSettingsPrefs(
-        [createContentSettingTypeToValuePair(ContentSettingsTypes.ANTI_ABUSE, {
-          setting: ContentSetting.BLOCK,
-          source: ContentSettingProvider.EXTENSION,
-        })],
+        [createContentSettingTypeToValuePair(
+            ContentSettingsTypes.ANTI_ABUSE, createDefaultContentSetting({
+              setting: ContentSetting.BLOCK,
+              source: DefaultSettingSource.EXTENSION,
+            }))],
         []);
     browserProxy.reset();
     browserProxy.setPrefs(enforcedPrefs);

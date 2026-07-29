@@ -6,8 +6,7 @@
 
 #include <memory>
 
-#include "base/memory/singleton.h"
-#include "build/chromeos_buildflags.h"
+#include "base/no_destructor.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/global_media_controls/media_notification_service.h"
 
@@ -16,17 +15,21 @@ MediaNotificationServiceFactory::MediaNotificationServiceFactory()
           "MediaNotificationService",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOwnInstance)
-              // TODO(crbug.com/1418376): Check if this service is needed in
+              // TODO(crbug.com/40257657): Check if this service is needed in
               // Guest mode.
               .WithGuest(ProfileSelection::kOwnInstance)
+              // TODO(crbug.com/41488885): Check if this service is needed for
+              // Ash Internals.
+              .WithAshInternals(ProfileSelection::kOwnInstance)
               .Build()) {}
 
-MediaNotificationServiceFactory::~MediaNotificationServiceFactory() {}
+MediaNotificationServiceFactory::~MediaNotificationServiceFactory() = default;
 
 // static
 MediaNotificationServiceFactory*
 MediaNotificationServiceFactory::GetInstance() {
-  return base::Singleton<MediaNotificationServiceFactory>::get();
+  static base::NoDestructor<MediaNotificationServiceFactory> instance;
+  return instance.get();
 }
 
 // static
@@ -36,12 +39,13 @@ MediaNotificationService* MediaNotificationServiceFactory::GetForProfile(
       GetInstance()->GetServiceForBrowserContext(profile, true));
 }
 
-KeyedService* MediaNotificationServiceFactory::BuildServiceInstanceFor(
+std::unique_ptr<KeyedService>
+MediaNotificationServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   bool show_from_all_profiles = false;
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   show_from_all_profiles = true;
 #endif
-  return new MediaNotificationService(Profile::FromBrowserContext(context),
-                                      show_from_all_profiles);
+  return std::make_unique<MediaNotificationService>(
+      Profile::FromBrowserContext(context), show_from_all_profiles);
 }

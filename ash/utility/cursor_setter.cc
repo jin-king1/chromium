@@ -26,7 +26,7 @@ CursorSetter::~CursorSetter() {
 
 void CursorSetter::UpdateCursor(aura::Window* root_window,
                                 const ui::Cursor& cursor,
-                                absl::optional<int> custom_type_id) {
+                                std::optional<int> custom_type_id) {
   if (original_cursor_locked_) {
     return;
   }
@@ -37,7 +37,7 @@ void CursorSetter::UpdateCursor(aura::Window* root_window,
 
   base::AutoReset<bool> auto_reset_in_cursor_update(&in_cursor_update_, true);
   const ui::mojom::CursorType new_cursor_type = cursor.type();
-  const float device_scale_factor = display::Screen::GetScreen()
+  const float device_scale_factor = display::Screen::Get()
                                         ->GetDisplayNearestWindow(root_window)
                                         .device_scale_factor();
   const chromeos::OrientationType orientation = GetCurrentScreenOrientation();
@@ -115,7 +115,7 @@ bool CursorSetter::DidCursorChange(
     ui::mojom::CursorType new_cursor_type,
     float device_scale_factor,
     chromeos::OrientationType orientation,
-    const absl::optional<int> custom_type_id) const {
+    const std::optional<int> custom_type_id) const {
   const ui::mojom::CursorType current_cursor_type =
       cursor_manager_->GetCursor().type();
 

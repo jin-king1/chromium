@@ -1,4 +1,4 @@
-(async function(testRunner) {
+(async function(/** @type {import('test_runner').TestRunner} */ testRunner) {
   const {dp, session} = await testRunner.startBlank(
       `Tests that tracking and untracking IndexedDB for storage key works\n`);
   await dp.Page.enable();
@@ -23,9 +23,8 @@
 
   const frameId = (await dp.Page.getResourceTree()).result.frameTree.frame.id;
   errorForLog = new Error();
-  const storageKey = (await dp.Storage.getStorageKeyForFrame({
-                       frameId: frameId
-                     })).result.storageKey;
+  const storageKey =
+      (await dp.Storage.getStorageKey({frameId: frameId})).result.storageKey;
   errorForLog = new Error();
   await dp.Storage.trackIndexedDBForStorageKey({storageKey});
   errorForLog = new Error();

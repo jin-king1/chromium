@@ -81,13 +81,12 @@ class FakeWebHistoryService : public WebHistoryService {
  private:
   class FakeRequest;
 
-  base::Time GetTimeForKeyInQuery(const GURL& url, const std::string& key);
-
   // WebHistoryService implementation.
-  Request* CreateRequest(const GURL& url,
-                         CompletionCallback callback,
-                         const net::PartialNetworkTrafficAnnotationTag&
-                             partial_traffic_annotation) override;
+  std::unique_ptr<Request> CreateRequest(
+      const GURL& url,
+      CompletionCallback callback,
+      const net::PartialNetworkTrafficAnnotationTag& partial_traffic_annotation)
+      override;
 
   // Parameters for the fake request.
   bool emulate_success_;

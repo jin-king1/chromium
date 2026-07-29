@@ -11,6 +11,8 @@
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
+using devtools::DockSide;
+
 class DevToolsSettingsTest : public testing::Test {
  protected:
   content::BrowserTaskEnvironment task_environment_;
@@ -28,7 +30,7 @@ TEST_F(DevToolsSettingsTest, BasicApiTest) {
   settings.Set("setting_a", "foo");
   settings.Set("setting_b", "bar");
 
-  base::Value::Dict prefs = settings.Get();
+  base::DictValue prefs = settings.Get();
   EXPECT_EQ(*prefs.FindString("setting_a"), "foo");
   EXPECT_EQ(*prefs.FindString("setting_b"), "bar");
 
@@ -54,7 +56,7 @@ TEST_F(DevToolsSettingsTest, CanMoveUnsyncedSettingToBeingSynced) {
   DevToolsSettings settings(&profile_);
   settings.Register("setting", {RegisterOptions::SyncMode::kDontSync});
 
-  base::Value::Dict prefs = settings.Get();
+  base::DictValue prefs = settings.Get();
   EXPECT_EQ(*prefs.FindString("setting"), "value");
 
   settings.Set("setting", "new_value");
@@ -77,7 +79,7 @@ TEST_F(DevToolsSettingsTest, CanMoveSyncedSettingToBeingUnsynced) {
   DevToolsSettings settings(&profile_);
   settings.Register("setting", {RegisterOptions::SyncMode::kSync});
 
-  base::Value::Dict prefs = settings.Get();
+  base::DictValue prefs = settings.Get();
   EXPECT_EQ(*prefs.FindString("setting"), "value");
 
   settings.Set("setting", "new_value");
@@ -112,7 +114,7 @@ TEST_F(DevToolsSettingsTest, MovingUnsycnedToSyncedDoesNotOverwrite) {
   DevToolsSettings settings(&profile_);
   settings.Register("setting", {RegisterOptions::SyncMode::kSync});
 
-  base::Value::Dict prefs = settings.Get();
+  base::DictValue prefs = settings.Get();
   EXPECT_EQ(*prefs.FindString("setting"), "overwritten synced value");
 }
 
@@ -159,6 +161,28 @@ TEST_F(DevToolsSettingsTest, Remove_ResetsUnderlyingTogglePreference) {
             DevToolsSettings::kSyncDevToolsPreferencesDefault);
 }
 
+TEST_F(DevToolsSettingsTest, Remove_WorksOnBothStorages) {
+  {
+    ScopedDictPrefUpdate synced_update(
+        profile_.GetPrefs(), prefs::kDevToolsSyncedPreferencesSyncDisabled);
+    synced_update->Set("unknown setting", "value");
+
+    DevToolsSettings settings(&profile_);
+    settings.Register("synced setting", {RegisterOptions::SyncMode::kSync});
+    ScopedDictPrefUpdate unsynced_update(profile_.GetPrefs(),
+                                         prefs::kDevToolsPreferences);
+    unsynced_update->Set("synced setting", "value");
+  }
+
+  DevToolsSettings settings(&profile_);
+  base::DictValue prefs = settings.Get();
+  EXPECT_EQ(prefs.size(), static_cast<size_t>(3));
+  settings.Remove("unknown setting");
+  settings.Remove("synced setting");
+  prefs = settings.Get();
+  EXPECT_EQ(prefs.size(), static_cast<size_t>(1));
+}
+
 TEST_F(DevToolsSettingsTest, Clear_ResetsUnderlyingTogglePreference) {
   DevToolsSettings settings(&profile_);
   settings.Register(DevToolsSettings::kSyncDevToolsPreferencesFrontendName,
@@ -185,7 +209,7 @@ TEST_F(DevToolsSettingsTest, EnableDisableSyncPreservesSettings) {
   // 3) Disable sync
   settings.Set(DevToolsSettings::kSyncDevToolsPreferencesFrontendName, "false");
 
-  base::Value::Dict prefs = settings.Get();
+  base::DictValue prefs = settings.Get();
   EXPECT_EQ(*prefs.FindString("setting_unsynced"), "unsynced value");
   EXPECT_EQ(*prefs.FindString("setting_synced"), "synced value");
 }
@@ -204,7 +228,7 @@ TEST_F(DevToolsSettingsTest, DisableEnableSyncPreservesSettings) {
   // 3) Enable sync
   settings.Set(DevToolsSettings::kSyncDevToolsPreferencesFrontendName, "true");
 
-  base::Value::Dict prefs = settings.Get();
+  base::DictValue prefs = settings.Get();
   EXPECT_EQ(*prefs.FindString("setting_unsynced"), "unsynced value");
   EXPECT_EQ(*prefs.FindString("setting_synced"), "synced value");
 }
@@ -233,5 +257,39 @@ TEST_F(DevToolsSettingsTest, GetPreference) {
       "true");
   EXPECT_EQ(settings.Get("setting_unsynced")->GetString(), "unsynced value");
   EXPECT_EQ(settings.Get("setting_synced")->GetString(), "synced value");
-  EXPECT_EQ(settings.Get("nonexistent"), absl::nullopt);
+  EXPECT_EQ(settings.Get("nonexistent"), std::nullopt);
+}
+
+TEST_F(DevToolsSettingsTest, GetDockSide) {
+  DevToolsSettings settings(&profile_);
+  settings.Register("currentDockState", {RegisterOptions::SyncMode::kDontSync});
+
+  // Default when unset is kRight.
+  EXPECT_EQ(settings.GetDockSide(), DockSide::kRight);
+
+  settings.Set("currentDockState", "\"right\"");
+  EXPECT_EQ(settings.GetDockSide(), DockSide::kRight);
+
+  settings.Set("currentDockState", "\"left\"");
+  EXPECT_EQ(settings.GetDockSide(), DockSide::kLeft);
+
+  settings.Set("currentDockState", "\"bottom\"");
+  EXPECT_EQ(settings.GetDockSide(), DockSide::kBottom);
+
+  settings.Set("currentDockState", "\"undocked\"");
+  EXPECT_EQ(settings.GetDockSide(), DockSide::kNone);
+}
+
+TEST_F(DevToolsSettingsTest, GetDockSideStaticAndSynced) {
+  // 1) Enable sync and store currentDockState in synced preferences
+  // dictionary.
+  profile_.GetPrefs()->SetBoolean(prefs::kDevToolsSyncPreferences, true);
+  {
+    ScopedDictPrefUpdate update(profile_.GetPrefs(),
+                                prefs::kDevToolsSyncedPreferencesSyncEnabled);
+    update->Set("currentDockState", "\"bottom\"");
+  }
+
+  // 2) Static call without calling Register() on a DevToolsSettings instance.
+  EXPECT_EQ(DevToolsSettings::GetDockSide(&profile_), DockSide::kBottom);
 }

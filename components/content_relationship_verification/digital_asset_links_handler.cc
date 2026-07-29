@@ -4,6 +4,8 @@
 
 #include "components/content_relationship_verification/digital_asset_links_handler.h"
 
+#include <optional>
+#include <string>
 #include <vector>
 
 #include "base/functional/bind.h"
@@ -29,6 +31,39 @@ namespace {
 // In some cases we get a network change while fetching the digital asset
 // links file. See https://crbug.com/987329.
 const int kNumNetworkRetries = 1;
+// Traffic annotation for requests made by the DigitalAssetLinksHandler
+constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
+    net::DefineNetworkTrafficAnnotation("digital_asset_links", R"(
+      semantics {
+        sender: "Digital Asset Links Handler"
+        description:
+          "Digital Asset Links APIs allows any caller to check pre declared "
+          "relationships between two assets which can be either web domains "
+          "or native applications. This requests checks for a specific "
+          "relationship declared by a web site with an Android application"
+        trigger:
+          "When the related application makes a claim to have the queried "
+          "relationship with the web domain"
+        data: "None"
+        destination: WEBSITE
+        internal {
+          contacts {
+            owners: "//components/content_relationship_verification/OWNERS"
+          }
+        }
+        user_data {
+          type: NONE
+        }
+        last_reviewed: "2024-09-03"
+      }
+      policy {
+        cookies_allowed: NO
+        setting: "Not user controlled. But the verification is a trusted API "
+                 "that doesn't use user data"
+        policy_exception_justification:
+          "Not implemented, considered not useful as no content is being "
+          "uploaded; this request merely downloads the resources on the web."
+      })");
 
 // Location on a website where the asset links file can be found, see
 // https://developers.google.com/digital-asset-links/v1/getting-started.
@@ -64,9 +99,9 @@ GURL GetUrlForAssetLinks(const url::Origin& origin) {
 //    }
 //  }]
 
-bool StatementHasMatchingRelationship(const base::Value::Dict& statement,
+bool StatementHasMatchingRelationship(const base::DictValue& statement,
                                       const std::string& target_relation) {
-  const base::Value::List* relations = statement.FindList("relation");
+  const base::ListValue* relations = statement.FindList("relation");
   if (!relations) {
     return false;
   }
@@ -81,10 +116,10 @@ bool StatementHasMatchingRelationship(const base::Value::Dict& statement,
 }
 
 bool StatementHasMatchingTargetValue(
-    const base::Value::Dict& statement,
+    const base::DictValue& statement,
     const std::string& target_key,
     const std::set<std::string>& target_value) {
-  const base::Value::Dict* target = statement.FindDict("target");
+  const base::DictValue* target = statement.FindDict("target");
   if (!target) {
     return false;
   }
@@ -95,9 +130,9 @@ bool StatementHasMatchingTargetValue(
 }
 
 bool StatementHasMatchingFingerprint(
-    const base::Value::Dict& statement,
+    const base::DictValue& statement,
     const std::vector<std::string>& target_fingerprints) {
-  const base::Value::List* fingerprints =
+  const base::ListValue* fingerprints =
       statement.FindListByDottedPath("target.sha256_cert_fingerprints");
 
   if (!fingerprints) {
@@ -153,22 +188,24 @@ DigitalAssetLinksHandler::DigitalAssetLinksHandler(
 DigitalAssetLinksHandler::~DigitalAssetLinksHandler() = default;
 
 void DigitalAssetLinksHandler::OnURLLoadComplete(
+    std::unique_ptr<network::SimpleURLLoader> url_loader,
     std::string relationship,
-    absl::optional<std::vector<std::string>> fingerprints,
+    std::optional<std::vector<std::string>> fingerprints,
     std::map<std::string, std::set<std::string>> target_values,
-    std::unique_ptr<std::string> response_body) {
+    RelationshipCheckResultCallback callback,
+    std::optional<std::string> response_body) {
   int response_code = -1;
-  if (url_loader_->ResponseInfo() && url_loader_->ResponseInfo()->headers) {
-    response_code = url_loader_->ResponseInfo()->headers->response_code();
+  if (url_loader->ResponseInfo() && url_loader->ResponseInfo()->headers) {
+    response_code = url_loader->ResponseInfo()->headers->response_code();
   }
 
   if (!response_body || response_code != net::HTTP_OK) {
-    int net_error = url_loader_->NetError();
+    int net_error = url_loader->NetError();
     if (net_error == net::ERR_INTERNET_DISCONNECTED ||
         net_error == net::ERR_NAME_NOT_RESOLVED) {
       AddMessageToConsole(web_contents_.get(),
                           "Digital Asset Links connection failed.");
-      std::move(callback_).Run(RelationshipCheckResult::kNoConnection);
+      std::move(callback).Run(RelationshipCheckResult::kNoConnection);
       return;
     }
 
@@ -177,37 +214,26 @@ void DigitalAssetLinksHandler::OnURLLoadComplete(
         base::StringPrintf(
             "Digital Asset Links endpoint responded with code %d.",
             response_code));
-    std::move(callback_).Run(RelationshipCheckResult::kFailure);
+    std::move(callback).Run(RelationshipCheckResult::kFailure);
     return;
   }
 
-  data_decoder::DataDecoder::ParseJsonIsolated(
-      *response_body,
-      base::BindOnce(&DigitalAssetLinksHandler::OnJSONParseResult,
-                     weak_ptr_factory_.GetWeakPtr(), std::move(relationship),
-                     std::move(fingerprints), std::move(target_values)));
-
-  url_loader_.reset(nullptr);
-}
-
-void DigitalAssetLinksHandler::OnJSONParseResult(
-    std::string relationship,
-    absl::optional<std::vector<std::string>> fingerprints,
-    std::map<std::string, std::set<std::string>> target_values,
-    data_decoder::DataDecoder::ValueOrError result) {
+  base::JSONReader::Result result =
+      base::JSONReader::ReadAndReturnValueWithError(*response_body,
+                                                    base::JSON_PARSE_RFC);
   if (!result.has_value()) {
     AddMessageToConsole(
         web_contents_.get(),
         "Digital Asset Links response parsing failed with message: " +
-            result.error());
-    std::move(callback_).Run(RelationshipCheckResult::kFailure);
+            result.error().message);
+    std::move(callback).Run(RelationshipCheckResult::kFailure);
     return;
   }
 
-  base::Value::List* statement_list = result->GetIfList();
+  const base::ListValue* statement_list = result->GetIfList();
   if (!statement_list) {
-    std::move(callback_).Run(RelationshipCheckResult::kFailure);
     AddMessageToConsole(web_contents_.get(), "Statement List is not a list.");
+    std::move(callback).Run(RelationshipCheckResult::kFailure);
     return;
   }
 
@@ -215,7 +241,7 @@ void DigitalAssetLinksHandler::OnJSONParseResult(
   std::vector<std::string> failures;
 
   for (const base::Value& statement : *statement_list) {
-    const base::Value::Dict* statement_dict = statement.GetIfDict();
+    const base::DictValue* statement_dict = statement.GetIfDict();
     if (!statement_dict) {
       failures.push_back("Statement is not a dictionary.");
       continue;
@@ -246,7 +272,7 @@ void DigitalAssetLinksHandler::OnJSONParseResult(
       continue;
     }
 
-    std::move(callback_).Run(RelationshipCheckResult::kSuccess);
+    std::move(callback).Run(RelationshipCheckResult::kSuccess);
     return;
   }
 
@@ -254,7 +280,7 @@ void DigitalAssetLinksHandler::OnJSONParseResult(
     AddMessageToConsole(web_contents_.get(), failure_reason);
   }
 
-  std::move(callback_).Run(RelationshipCheckResult::kFailure);
+  std::move(callback).Run(RelationshipCheckResult::kFailure);
 }
 
 bool DigitalAssetLinksHandler::CheckDigitalAssetLinkRelationshipForAndroidApp(
@@ -274,14 +300,14 @@ bool DigitalAssetLinksHandler::CheckDigitalAssetLinkRelationshipForWebApk(
     const std::string& manifest_url,
     RelationshipCheckResultCallback callback) {
   return CheckDigitalAssetLinkRelationship(
-      web_domain, "delegate_permission/common.query_webapk", absl::nullopt,
+      web_domain, "delegate_permission/common.query_webapk", std::nullopt,
       {{"namespace", {"web"}}, {"site", {manifest_url}}}, std::move(callback));
 }
 
 bool DigitalAssetLinksHandler::CheckDigitalAssetLinkRelationship(
     const url::Origin& web_domain,
     const std::string& relationship,
-    absl::optional<std::vector<std::string>> fingerprints,
+    std::optional<std::vector<std::string>> fingerprints,
     const std::map<std::string, std::set<std::string>>& target_values,
     RelationshipCheckResultCallback callback) {
   GURL request_url = GetUrlForAssetLinks(web_domain);
@@ -290,54 +316,27 @@ bool DigitalAssetLinksHandler::CheckDigitalAssetLinkRelationship(
     return false;
   }
 
-  // Resetting both the callback and SimpleURLLoader here to ensure
-  // that any previous requests will never get a
-  // OnURLLoadComplete. This effectively cancels any checks that was
-  // done over this handler.
-  callback_ = std::move(callback);
-
-  net::NetworkTrafficAnnotationTag traffic_annotation =
-      net::DefineNetworkTrafficAnnotation("digital_asset_links", R"(
-        semantics {
-          sender: "Digital Asset Links Handler"
-          description:
-            "Digital Asset Links APIs allows any caller to check pre declared"
-            "relationships between two assets which can be either web domains"
-            "or native applications. This requests checks for a specific "
-            "relationship declared by a web site with an Android application"
-          trigger:
-            "When the related application makes a claim to have the queried"
-            "relationship with the web domain"
-          data: "None"
-          destination: WEBSITE
-        }
-        policy {
-          cookies_allowed: YES
-          cookies_store: "user"
-          setting: "Not user controlled. But the verification is a trusted API"
-                   "that doesn't use user data"
-          policy_exception_justification:
-            "Not implemented, considered not useful as no content is being "
-            "uploaded; this request merely downloads the resources on the web."
-        })");
-
   auto request = std::make_unique<network::ResourceRequest>();
   request->url = request_url;
 
-  // Exclude credentials (specifically client certs) from the request.
+  // Exclude credentials (cookies and client certs) from the request.
   request->credentials_mode =
       network::mojom::CredentialsMode::kOmitBug_775438_Workaround;
 
-  url_loader_ =
-      network::SimpleURLLoader::Create(std::move(request), traffic_annotation);
-  url_loader_->SetRetryOptions(
+  std::unique_ptr<network::SimpleURLLoader> url_loader =
+      network::SimpleURLLoader::Create(std::move(request), kTrafficAnnotation);
+  url_loader->SetRetryOptions(
       kNumNetworkRetries,
       network::SimpleURLLoader::RetryMode::RETRY_ON_NETWORK_CHANGE);
-  url_loader_->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
+
+  // Grab a raw pointer before moving the unique_ptr into the bound callback.
+  network::SimpleURLLoader* raw_url_loader = url_loader.get();
+  raw_url_loader->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
       shared_url_loader_factory_.get(),
       base::BindOnce(&DigitalAssetLinksHandler::OnURLLoadComplete,
-                     weak_ptr_factory_.GetWeakPtr(), relationship,
-                     std::move(fingerprints), target_values));
+                     weak_ptr_factory_.GetWeakPtr(), std::move(url_loader),
+                     relationship, std::move(fingerprints), target_values,
+                     std::move(callback)));
 
   return true;
 }

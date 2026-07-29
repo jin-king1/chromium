@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SPELLCHECK_COLD_MODE_SPELL_CHECK_REQUESTER_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EDITING_SPELLCHECK_COLD_MODE_SPELL_CHECK_REQUESTER_H_
 
+#include "third_party/blink/renderer/core/dom/range.h"
 #include "third_party/blink/renderer/core/editing/forward.h"
 #include "third_party/blink/renderer/core/editing/position.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
@@ -51,6 +52,12 @@ class ColdModeSpellCheckRequester
     fully_checked_root_editables_.erase(&element);
   }
 
+  // Drops the cache of editables that have been fully spell-checked, so the
+  // next cold-mode pass re-visits every editable root from scratch. Use after
+  // a spellcheck custom dictionary change so newly misspelled words get marked
+  // even on editables that the user has not touched.
+  void InvalidateFullyCheckedRoots() { fully_checked_root_editables_.clear(); }
+
   void ElementRemoved(Element* element);
 
   void Trace(Visitor*) const;
@@ -58,7 +65,10 @@ class ColdModeSpellCheckRequester
  private:
   SpellCheckRequester& GetSpellCheckRequester() const;
 
-  const Element* CurrentFocusedEditable() const;
+  // This returns the selected editable if spellcheck is on for it and some
+  // other property (e.g., being disconnected) has not disqualified it.
+  // This may return nullptr despite some editable being selected in the page.
+  const Element* QualifyingEditable() const;
 
   enum class CheckingType { kNone, kLocal, kFull };
   CheckingType AccumulateTextDeltaAndComputeCheckingType(
@@ -93,6 +103,7 @@ class ColdModeSpellCheckRequester
   struct FullyCheckedEditableEntry {
     int previous_checked_length = 0;
     int accumulated_delta = 0;
+    uint64_t previous_checked_dom_tree_version = 0u;
   };
   HeapHashMap<WeakMember<const Element>, FullyCheckedEditableEntry>
       fully_checked_root_editables_;

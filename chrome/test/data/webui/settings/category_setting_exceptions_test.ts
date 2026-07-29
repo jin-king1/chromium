@@ -4,10 +4,11 @@
 
 // clang-format off
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {CategorySettingExceptionsElement, ContentSetting, ContentSettingProvider, ContentSettingsTypes, SiteSettingsPrefsBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
+import type {CategorySettingExceptionsElement} from 'chrome://settings/lazy_load.js';
+import {ContentSetting, DefaultSettingSource, ContentSettingsTypes, SiteSettingsBrowserProxyImpl} from'chrome://settings/lazy_load.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
-import {TestSiteSettingsPrefsBrowserProxy} from './test_site_settings_prefs_browser_proxy.js';
+import {TestSiteSettingsBrowserProxy} from './test_site_settings_browser_proxy.js';
 import {createContentSettingTypeToValuePair,createDefaultContentSetting,createSiteSettingsPrefs} from './test_util.js';
 // clang-format on
 
@@ -21,12 +22,12 @@ suite('CategorySettingExceptions', function() {
   /**
    * The mock proxy object to use during test.
    */
-  let browserProxy: TestSiteSettingsPrefsBrowserProxy;
+  let browserProxy: TestSiteSettingsBrowserProxy;
 
   // Initialize a category-setting-exceptions before each test.
   setup(function() {
-    browserProxy = new TestSiteSettingsPrefsBrowserProxy();
-    SiteSettingsPrefsBrowserProxyImpl.setInstance(browserProxy);
+    browserProxy = new TestSiteSettingsBrowserProxy();
+    SiteSettingsBrowserProxyImpl.setInstance(browserProxy);
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     testElement = document.createElement('category-setting-exceptions');
     document.body.appendChild(testElement);
@@ -34,6 +35,27 @@ suite('CategorySettingExceptions', function() {
 
   test('allow site list is hidden for FILE_SYSTEM_WRITE', function() {
     testElement.category = ContentSettingsTypes.FILE_SYSTEM_WRITE;
+
+    // Flush to be sure that the container is updated.
+    flush();
+
+    // Make sure that the Allow and Session Only site lists are hidden.
+    const siteListElements = testElement.querySelectorAll('site-list');
+    siteListElements.forEach(element => {
+      if (element.categorySubtype === ContentSetting.BLOCK) {
+        assertFalse(
+            element.hidden,
+            `site-list for ${element.categorySubtype} should not be hidden`);
+      } else {
+        assertTrue(
+            element.hidden,
+            `site-list for ${element.categorySubtype} should be hidden`);
+      }
+    });
+  });
+
+  test('allow site list is hidden for INLINE_CUE_MENU', function() {
+    testElement.category = ContentSettingsTypes.INLINE_CUE_MENU;
 
     // Flush to be sure that the container is updated.
     flush();
@@ -62,7 +84,7 @@ suite('CategorySettingExceptions', function() {
               createContentSettingTypeToValuePair(
                   ContentSettingsTypes.COOKIES, createDefaultContentSetting({
                     setting: ContentSetting.ALLOW,
-                    source: ContentSettingProvider.POLICY,
+                    source: DefaultSettingSource.POLICY,
                   })),
             ],
             []);

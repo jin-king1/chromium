@@ -4,93 +4,141 @@
 
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
 
-#include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
+#include "chrome/browser/bookmarks/bookmark_merged_surface_service_factory.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
+#include "chrome/browser/bookmarks/bookmark_test_helpers.h"
 #include "chrome/browser/browser_features.h"
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
+#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
+#include "chrome/browser/preloading/bookmarkbar_preload/bookmarkbar_preload_pipeline_manager.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
+#include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tab_ui_helper.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/bookmarks/bookmark_bar_view_observer.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view_test_helper.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/url_constants.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
+#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/navigation_handle_observer.h"
-#include "content/public/test/preloading_test_util.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
+#include "net/http/http_status_code.h"
+#include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
-#include "services/metrics/public/cpp/ukm_recorder.h"
 #include "services/network/public/cpp/features.h"
+#include "ui/accessibility/ax_action_data.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/events/test/test_event.h"
+#include "ui/views/animation/ink_drop.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/test/button_test_api.h"
 
-// Test suite covering the interaction between browser bookmarks and
-// `Sec-Fetch-*` headers that can't be covered by Web Platform Tests (yet).
-// See https://mikewest.github.io/sec-metadata/#directly-user-initiated and
-// https://github.com/web-platform-tests/wpt/issues/16019.
-class BookmarkBarNavigationTest : public InProcessBrowserTest {
+namespace {
+
+class BookmarkBarTestBase : public InProcessBrowserTest {
  public:
-  BookmarkBarNavigationTest()
-      : https_test_server_(net::EmbeddedTestServer::TYPE_HTTPS) {}
-
-  void SetUp() override {
-    InProcessBrowserTest::SetUp();
-  }
-
   void SetUpOnMainThread() override {
-    InProcessBrowserTest::SetUpOnMainThread();
-
-    // Setup HTTPS server serving files from standard test directory.
-    static constexpr base::FilePath::CharType kDocRoot[] =
-        FILE_PATH_LITERAL("chrome/test/data");
-    https_test_server_.AddDefaultHandlers(base::FilePath(kDocRoot));
-    https_test_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_OK);
-    ASSERT_TRUE(https_test_server_.Start());
-
-    // Setup the mock host resolver
-    host_resolver()->AddRule("*", "127.0.0.1");
-
-    browser()->profile()->GetPrefs()->SetBoolean(
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
         bookmarks::prefs::kShowBookmarkBar, true);
 
     test_helper_ = std::make_unique<BookmarkBarViewTestHelper>(bookmark_bar());
   }
 
+ protected:
   views::LabelButton* GetBookmarkButton(size_t index) {
     return test_helper_->GetBookmarkButton(index);
+  }
+
+  views::LabelButton* GetAppsPageShortCut() {
+    return test_helper_->apps_page_shortcut();
   }
 
   BrowserView* browser_view() {
     return BrowserView::GetBrowserViewForBrowser(browser());
   }
 
+  BookmarkBarView* bookmark_bar() { return browser_view()->bookmark_bar(); }
+
+  void CreateBookmarkButton(const GURL& url) {
+    // Populate bookmark bar with a single bookmark.
+    bookmarks::BookmarkModel* model =
+        BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
+    bookmarks::test::WaitForBookmarkModelToLoad(model);
+    model->DisableWritesToDiskForTest();
+    model->AddURL(model->bookmark_bar_node(), 0, u"Example", url);
+    RunScheduledLayouts();
+  }
+
+  void CreateBookmarkFolder() {
+    // Populate bookmark bar with a single folder.
+    bookmarks::BookmarkModel* model =
+        BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
+    bookmarks::test::WaitForBookmarkModelToLoad(model);
+    model->DisableWritesToDiskForTest();
+    model->AddFolder(model->bookmark_bar_node(), 0, u"Example");
+    RunScheduledLayouts();
+  }
+
+ private:
+  std::unique_ptr<BookmarkBarViewTestHelper> test_helper_;
+};
+
+// Test suite covering the interaction between browser bookmarks and
+// `Sec-Fetch-*` headers that can't be covered by Web Platform Tests (yet).
+// See https://mikewest.github.io/sec-metadata/#directly-user-initiated and
+// https://github.com/web-platform-tests/wpt/issues/16019.
+class BookmarkBarNavigationTestBase : public BookmarkBarTestBase,
+                                      public content::WebContentsObserver {
+ public:
+  BookmarkBarNavigationTestBase()
+      : https_test_server_(net::EmbeddedTestServer::TYPE_HTTPS) {}
+
+  void SetUpOnMainThread() override {
+    BookmarkBarTestBase::SetUpOnMainThread();
+
+    // Setup HTTPS server serving files from standard test directory.
+    static constexpr base::FilePath::CharType kDocRoot[] =
+        FILE_PATH_LITERAL("chrome/test/data");
+    https_test_server_.AddDefaultHandlers(base::FilePath(kDocRoot));
+    https_test_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_OK);
+
+    // Setup the mock host resolver
+    host_resolver()->AddRule("*", "127.0.0.1");
+
+    Observe(web_contents());
+  }
+
+  void StartServers() {
+    ASSERT_TRUE(http_test_server_.Start());
+    ASSERT_TRUE(https_test_server_.Start());
+  }
+
   content::WebContents* web_contents() {
     return browser()->tab_strip_model()->GetActiveWebContents();
   }
 
-  BookmarkBarView* bookmark_bar() { return browser_view()->bookmark_bar(); }
 
   std::string GetContent() {
     content::WebContents* web_contents =
@@ -102,13 +150,16 @@ class BookmarkBarNavigationTest : public InProcessBrowserTest {
   void CreateBookmarkForHeader(const std::string& header) {
     // Populate bookmark bar with a single bookmark to
     // `/echoheader?` + |header|.
+    WaitForBookmarkMergedSurfaceServiceToLoad(
+        BookmarkMergedSurfaceServiceFactory::GetForProfile(
+            browser()->GetProfile()));
     bookmarks::BookmarkModel* model =
-        BookmarkModelFactory::GetForBrowserContext(browser()->profile());
-    bookmarks::test::WaitForBookmarkModelToLoad(model);
-    model->ClearStore();
+        BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
+    model->DisableWritesToDiskForTest();
     std::string url = "/echoheader?";
     model->AddURL(model->bookmark_bar_node(), 0, u"Example",
                   https_test_server_.GetURL(url + header));
+    RunScheduledLayouts();
   }
 
   void NavigateToBookmark() {
@@ -123,16 +174,50 @@ class BookmarkBarNavigationTest : public InProcessBrowserTest {
 
     // All bookmark navigations should have a null initiator, as there's no
     // web origin from which the navigation is triggered.
-    ASSERT_EQ(absl::nullopt, observer.last_initiator_origin());
+    ASSERT_EQ(std::nullopt, observer.last_initiator_origin());
+  }
+
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    auto* navigation_userdata =
+        page_load_metrics::NavigationHandleUserData::GetForNavigationHandle(
+            *navigation_handle);
+    if (navigation_userdata) {
+      bookmark_navigation_list_.push_back(
+          navigation_userdata->navigation_type());
+    }
+  }
+
+  const std::vector<
+      page_load_metrics::NavigationHandleUserData::InitiatorLocation>&
+  bookmark_navigation_list() {
+    return bookmark_navigation_list_;
   }
 
   net::EmbeddedTestServer* https_test_server() { return &https_test_server_; }
+  net::EmbeddedTestServer* http_test_server() { return &http_test_server_; }
 
  private:
+  // TODO(https://crbug.com/423465927): Explore a better approach to make the
+  // existing tests run with the prewarm feature enabled.
+  test::ScopedPrewarmFeatureList prewarm_feature_list_{
+      test::ScopedPrewarmFeatureList::PrewarmState::kDisabled};
   net::EmbeddedTestServer https_test_server_;
-  std::unique_ptr<BookmarkBarViewTestHelper> test_helper_;
+  net::EmbeddedTestServer http_test_server_;
   base::test::ScopedFeatureList scoped_feature_list_;
+  std::vector<page_load_metrics::NavigationHandleUserData::InitiatorLocation>
+      bookmark_navigation_list_;
 };
+
+class BookmarkBarNavigationTest : public BookmarkBarNavigationTestBase {
+ public:
+  void SetUpOnMainThread() override {
+    BookmarkBarNavigationTestBase::SetUpOnMainThread();
+    StartServers();
+  }
+};
+
+}  // namespace
 
 IN_PROC_BROWSER_TEST_F(BookmarkBarNavigationTest, SecFetchFromEmptyTab) {
   // Navigate to an empty tab
@@ -168,7 +253,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBarNavigationTest, SecFetchFromEmptyTab) {
 }
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
-//  TODO(crbug.com/1006033): Test flaky on Mac and Windows.
+//  TODO(crbug.com/40648550): Test flaky on Mac and Windows.
 #define MAYBE_SecFetchSiteNoneFromNonEmptyTab \
   DISABLED_SecFetchSiteNoneFromNonEmptyTab
 #else
@@ -208,6 +293,8 @@ IN_PROC_BROWSER_TEST_F(BookmarkBarNavigationTest,
     EXPECT_EQ("?1", GetContent());
   }
 }
+
+namespace {
 
 // Class intercepts invocations of external protocol handlers.
 class FakeProtocolHandlerDelegate : public ExternalProtocolHandler::Delegate {
@@ -267,7 +354,7 @@ class FakeProtocolHandlerDelegate : public ExternalProtocolHandler::Delegate {
       content::WebContents* web_contents,
       ui::PageTransition page_transition,
       bool has_user_gesture,
-      const absl::optional<url::Origin>& initiating_origin,
+      const std::optional<url::Origin>& initiating_origin,
       const std::u16string& program_name) override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -289,24 +376,26 @@ class FakeProtocolHandlerDelegate : public ExternalProtocolHandler::Delegate {
   SEQUENCE_CHECKER(sequence_checker_);
 };
 
+}  // namespace
+
 // Checks that opening a bookmark to a URL handled by an external handler is not
 // blocked by anti-flood protection. Regression test for
-// https://crbug.com/1156651
+// https://crbug.com/40160453
 IN_PROC_BROWSER_TEST_F(BookmarkBarNavigationTest, ExternalHandlerAllowed) {
   const char external_protocol[] = "fake";
   const GURL external_url = GURL("fake://path");
 
   bookmarks::BookmarkModel* model =
-      BookmarkModelFactory::GetForBrowserContext(browser()->profile());
+      BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
   bookmarks::test::WaitForBookmarkModelToLoad(model);
-  model->ClearStore();
+  model->DisableWritesToDiskForTest();
   model->AddURL(model->bookmark_bar_node(), 0, u"Example", external_url);
-
+  RunScheduledLayouts();
   // First, get into a known (unblocked) state.
   ExternalProtocolHandler::PermitLaunchUrl();
   EXPECT_NE(ExternalProtocolHandler::BLOCK,
             ExternalProtocolHandler::GetBlockState(external_protocol, nullptr,
-                                                   browser()->profile()));
+                                                   browser()->GetProfile()));
 
   // Next, try to launch a bookmark pointed at the url of an external handler.
   {
@@ -318,7 +407,7 @@ IN_PROC_BROWSER_TEST_F(BookmarkBarNavigationTest, ExternalHandlerAllowed) {
     // Verify that the state has returned to block.
     EXPECT_EQ(ExternalProtocolHandler::BLOCK,
               ExternalProtocolHandler::GetBlockState(external_protocol, nullptr,
-                                                     browser()->profile()));
+                                                     browser()->GetProfile()));
   }
   // Finally, without first calling PermitLaunchUrl, try to launch the bookmark.
   {
@@ -330,9 +419,11 @@ IN_PROC_BROWSER_TEST_F(BookmarkBarNavigationTest, ExternalHandlerAllowed) {
     // Verify the launch state has changed back.
     EXPECT_EQ(ExternalProtocolHandler::BLOCK,
               ExternalProtocolHandler::GetBlockState(external_protocol, nullptr,
-                                                     browser()->profile()));
+                                                     browser()->GetProfile()));
   }
 }
+
+namespace {
 
 using UkmEntry = ukm::TestUkmRecorder::HumanReadableUkmEntry;
 using ukm::builders::Preloading_Attempt;
@@ -340,83 +431,142 @@ using ukm::builders::Preloading_Prediction;
 static const auto kMockElapsedTime =
     base::ScopedMockElapsedTimersForTest::kMockElapsedTime;
 
-class PrerenderBookmarkBarNavigationTestBase
-    : public BookmarkBarNavigationTest {
+class PreloadBookmarkBarNavigationTestBase
+    : public BookmarkBarNavigationTestBase {
  public:
+  PreloadBookmarkBarNavigationTestBase()
+      : prerender_helper_(base::BindRepeating(
+            &PreloadBookmarkBarNavigationTestBase::GetActiveWebContents,
+            base::Unretained(this))) {}
+
   content::WebContents* GetActiveWebContents() {
     return browser()->tab_strip_model()->GetActiveWebContents();
   }
 
   void SetUpOnMainThread() override {
-    BookmarkBarNavigationTest::SetUpOnMainThread();
+    BookmarkBarNavigationTestBase::SetUpOnMainThread();
     test_ukm_recorder_ = std::make_unique<ukm::TestAutoSetUkmRecorder>();
-    scoped_test_timer_ =
-        std::make_unique<base::ScopedMockElapsedTimersForTest>();
   }
 
   ukm::TestAutoSetUkmRecorder* test_ukm_recorder() {
     return test_ukm_recorder_.get();
   }
 
-  void CreateBookmarkButton() {
-    // Populate bookmark bar with a single bookmark.
-    bookmarks::BookmarkModel* model =
-        BookmarkModelFactory::GetForBrowserContext(browser()->profile());
-    bookmarks::test::WaitForBookmarkModelToLoad(model);
-    model->ClearStore();
-    GURL url = https_test_server()->GetURL("/empty.html?prerender");
-    model->AddURL(model->bookmark_bar_node(), 0, u"Example", url);
-  }
-
   // Currently OnMousePressed will trigger bookmark trigger prerendering,
   // this function simulates the mousePressed and mouseReleased to trigger
   // prerendering and its activation.
-  void NavigateToBookmarkByMousePressed() {
+  void TriggerPrerenderAndNavigateToBookmarkByMousePressed(
+      GURL& prerender_url,
+      bool expect_activation) {
     // Click on the 0th bookmark after setting up a navigation observer that
     // waits for a single navigation to complete successfully.
     content::test::PrerenderHostObserver prerender_observer(
-        *GetActiveWebContents(),
-        https_test_server()->GetURL("/empty.html?prerender"));
+        *GetActiveWebContents(), prerender_url);
     views::LabelButton* button = GetBookmarkButton(0);
 
     gfx::Point center(10, 10);
+    button->OnMousePressed(ui::MouseEvent(
+        ui::EventType::kMousePressed, center, center, ui::EventTimeForNow(),
+        ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+    if (expect_activation) {
+      content::test::PrerenderTestHelper::WaitForPrerenderLoadCompletion(
+          *GetActiveWebContents(), prerender_url);
+    }
+    button->OnMouseReleased(ui::MouseEvent(
+        ui::EventType::kMouseReleased, center, center, ui::EventTimeForNow(),
+        ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+
+    if (expect_activation) {
+      prerender_observer.WaitForActivation();
+    } else {
+      base::RunLoop().RunUntilIdle();
+    }
+  }
+
+  content::test::PrerenderTestHelper& prerender_helper() {
+    return prerender_helper_;
+  }
+
+  BookmarkBarPreloadPipelineManager* GetBookmarkBarPreloadPipelineManager() {
+    return browser()
+        ->tab_strip_model()
+        ->GetActiveTab()
+        ->GetTabFeatures()
+        ->bookmarkbar_preload_pipeline_manager();
+  }
+
+  void WaitForPrefetchCompleteOrFailed() {
+    base::RunLoop run_loop;
+    GetBookmarkBarPreloadPipelineManager()
+        ->SetOnPrefetchCompletedOrFailedCallbackForTesting(
+            base::IgnoreArgs<const network::URLLoaderCompletionStatus&,
+                             const std::optional<int>&>(
+                run_loop.QuitClosure()));
+    run_loop.Run();
+  }
+
+  void SimulatePrefetchFailureAndWaitForFailure(
+      net::test_server::ControllableHttpResponse& prefetch_response) {
+    base::RunLoop run_loop;
+    GetBookmarkBarPreloadPipelineManager()
+        ->SetOnPrefetchCompletedOrFailedCallbackForTesting(
+            base::IgnoreArgs<const network::URLLoaderCompletionStatus&,
+                             const std::optional<int>&>(
+                run_loop.QuitClosure()));
+    prefetch_response.WaitForRequest();
+    prefetch_response.Send(net::HTTP_INTERNAL_SERVER_ERROR);
+    prefetch_response.Done();
+    if (!run_loop.AnyQuitCalled()) {
+      run_loop.Run();
+    }
+  }
+
+  void TriggerPrefetchByMouseHoverOnBookmark(const GURL& prefetch_url) {
+    views::LabelButton* button = GetBookmarkButton(0);
+    gfx::Point center(10, 10);
     button->OnMouseEntered(ui::MouseEvent(
-        ui::ET_MOUSE_ENTERED, center, center, ui::EventTimeForNow(),
+        ui::EventType::kMouseEntered, center, center, ui::EventTimeForNow(),
         /*flags=*/ui::EF_NONE,
         /*changed_button_flags=*/ui::EF_NONE));
-    button->OnMousePressed(ui::MouseEvent(
-        ui::ET_MOUSE_PRESSED, center, center, ui::EventTimeForNow(),
-        ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
-    button->OnMouseReleased(ui::MouseEvent(
-        ui::ET_MOUSE_RELEASED, center, center, ui::EventTimeForNow(),
-        ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
-    prerender_observer.WaitForActivation();
+  }
+
+  void TriggerPrefetchAndThenPrerenderAndNavigateToBookmarkByMousePressed(
+      GURL& preload_url,
+      bool expect_activation) {
+    TriggerPrefetchByMouseHoverOnBookmark(preload_url);
+    WaitForPrefetchCompleteOrFailed();
+    TriggerPrerenderAndNavigateToBookmarkByMousePressed(preload_url,
+                                                        expect_activation);
   }
 
  private:
+  base::ScopedMockElapsedTimersForTest scoped_test_timer_;
+  content::test::PrerenderTestHelper prerender_helper_;
   std::unique_ptr<ukm::TestAutoSetUkmRecorder> test_ukm_recorder_;
-  std::unique_ptr<base::ScopedMockElapsedTimersForTest> scoped_test_timer_;
 };
 
 // Following definitions are equal to content::PrerenderFinalStatus.
 constexpr int kFinalStatusActivated = 0;
-constexpr int kFinalStatusTriggerDestroyed = 16;
+constexpr int kTriggerDestroyed = 16;
+constexpr int kPrerenderFailedDuringPrefetch = 86;
+
+// Following definitions are equal to content::PrefetchStatus.
+constexpr int kPrefetchFailedNon2XX = 12;
+constexpr int kPrefetchResponseUsed = 42;
+constexpr int kPrefetchFailedInvalidRedirect = 43;
 
 constexpr int kPreloadingTriggeringOutcomeSuccess = 5;
 
 class PrerenderBookmarkBarOnPressedNavigationTest
-    : public PrerenderBookmarkBarNavigationTestBase {
+    : public PreloadBookmarkBarNavigationTestBase {
  public:
   PrerenderBookmarkBarOnPressedNavigationTest() {
-    // Mousedown prerender trigger is disabled explicitly and onHover delay is
-    // set to 0ms for testing.
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        {
-            {features::kBookmarkTriggerForPrerender2,
-             {{"prerender_bookmarkbar_on_mouse_pressed_trigger", "true"},
-              {"prerender_bookmarkbar_on_mouse_hover_trigger", "false"}}},
-        },
-        /*disabled_features=*/{});
+    std::vector<base::test::FeatureRef> enabled_features;
+    std::vector<base::test::FeatureRef> disabled_features;
+
+    disabled_features.push_back(features::kBookmarkTriggerForPreconnect);
+    disabled_features.push_back(features::kBookmarkTriggerForPrefetch);
+    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
   }
 
   const content::test::PreloadingAttemptUkmEntryBuilder& ukm_entry_builder() {
@@ -424,10 +574,11 @@ class PrerenderBookmarkBarOnPressedNavigationTest
   }
 
   void SetUpOnMainThread() override {
-    PrerenderBookmarkBarNavigationTestBase::SetUpOnMainThread();
+    PreloadBookmarkBarNavigationTestBase::SetUpOnMainThread();
+    StartServers();
     ukm_entry_builder_ =
         std::make_unique<content::test::PreloadingAttemptUkmEntryBuilder>(
-            chrome_preloading_predictor::kPointerDownOnBookmarkBar);
+            chrome_preloading_predictor::kMouseHoverOrMouseDownOnBookmarkBar);
   }
 
  private:
@@ -435,68 +586,195 @@ class PrerenderBookmarkBarOnPressedNavigationTest
   std::unique_ptr<content::test::PreloadingAttemptUkmEntryBuilder>
       ukm_entry_builder_;
 };
+
+// TODO(crbug.com/40285326): This fails with the field trial testing config.
+class PrerenderBookmarkBarOnPressedNavigationTestNoTestingConfig
+    : public PrerenderBookmarkBarOnPressedNavigationTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    PrerenderBookmarkBarOnPressedNavigationTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch("disable-field-trial-config");
+  }
+};
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(
+    PrerenderBookmarkBarOnPressedNavigationTestNoTestingConfig,
+    PrerenderActivation) {
+  base::HistogramTester histogram_tester;
+  // Navigate to an non-empty tab
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_test_server()->GetURL("/empty.html")));
+  GURL prerender_url = https_test_server()->GetURL("/empty.html?prerender");
+
+  content::NavigationHandleObserver activation_observer(GetActiveWebContents(),
+                                                        prerender_url);
+
+  CreateBookmarkButton(prerender_url);
+  TriggerPrerenderAndNavigateToBookmarkByMousePressed(prerender_url, true);
+
+  EXPECT_EQ(GetActiveWebContents()->GetLastCommittedURL(), prerender_url);
+
+  {
+    ukm::SourceId ukm_source_id = activation_observer.next_page_ukm_source_id();
+    // Navigate away to flush the metrics and check.
+    ASSERT_TRUE(
+        ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+    auto ukm_entries = test_ukm_recorder()->GetEntries(
+        Preloading_Attempt::kEntryName,
+        content::test::kPreloadingAttemptUkmMetrics);
+    EXPECT_EQ(ukm_entries.size(), 1u);
+
+    std::vector<UkmEntry> expected_entries = {
+        ukm_entry_builder().BuildEntry(
+            ukm_source_id, content::PreloadingType::kPrerender,
+            content::PreloadingEligibility::kEligible,
+            content::PreloadingHoldbackStatus::kAllowed,
+            content::PreloadingTriggeringOutcome::kSuccess,
+            content::PreloadingFailureReason::kUnspecified,
+            /*accurate=*/true,
+            /*ready_time=*/kMockElapsedTime),
+    };
+    EXPECT_THAT(ukm_entries,
+                testing::UnorderedElementsAreArray(expected_entries))
+        << content::test::ActualVsExpectedUkmEntriesToString(ukm_entries,
+                                                             expected_entries);
+
+    auto entries =
+        test_ukm_recorder()->GetMergedEntriesByName("PrerenderPageLoad");
+    bool witness_bookmarkbar_ukm = false;
+    for (auto& kv : entries) {
+      const ukm::mojom::UkmEntry* entry = kv.second.get();
+      const ukm::UkmSource* source =
+          test_ukm_recorder()->GetSourceForSourceId(entry->source_id);
+      if (!source) {
+        continue;
+      }
+      EXPECT_TRUE(source->url().is_valid());
+      if (source->url() == prerender_url) {
+        test_ukm_recorder()->ExpectEntryMetric(
+            entry,
+            ukm::builders::PrerenderPageLoad::kNavigation_InitiatorLocationName,
+            static_cast<int>(
+                GetInitiatorLocation(ChromeInitiatorLocation::kBookmarkBar)));
+        witness_bookmarkbar_ukm = true;
+      }
+    }
+    EXPECT_TRUE(witness_bookmarkbar_ukm);
+  }
+
+  histogram_tester.ExpectUniqueSample(
+      "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
+      kFinalStatusActivated, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Preloading.Prerender.Attempt.MouseHoverOrMouseDownOnBookmarkBar."
+      "TriggeringOutcome",
+      kPreloadingTriggeringOutcomeSuccess, 1);
+  // Navigate away to flush the metrics and check.
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  ASSERT_EQ(bookmark_navigation_list().size(), 2u);
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_EQ(bookmark_navigation_list()[i],
+              GetInitiatorLocation(ChromeInitiatorLocation::kBookmarkBar));
+  }
+  histogram_tester.ExpectTotalCount(
+      "Bookmarks.BookmarkBar.PrerenderNavigationToActivation", 1);
+  histogram_tester.ExpectUniqueSample(
+      "Prerender.IsPrerenderingSRPUrl.Embedder_BookmarkBar", false, 1);
+}
 
 IN_PROC_BROWSER_TEST_F(PrerenderBookmarkBarOnPressedNavigationTest,
-                       PrerenderActivation) {
+                       PrerenderNonHttps) {
+  base::HistogramTester histogram_tester;
+  // Navigate to an non-empty tab
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), http_test_server()->GetURL("/empty.html")));
+  GURL prerender_url = http_test_server()->GetURL("/empty.html?prerender");
+  content::NavigationHandleObserver activation_observer(GetActiveWebContents(),
+                                                        prerender_url);
+
+  CreateBookmarkButton(prerender_url);
+  TriggerPrerenderAndNavigateToBookmarkByMousePressed(prerender_url, false);
+
+  {
+    ukm::SourceId ukm_source_id = activation_observer.next_page_ukm_source_id();
+    // Navigate to a different URL other than the prerender_url to flush the
+    // metrics.
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(
+        browser(), http_test_server()->GetURL("/empty.html")));
+    auto attempt_ukm_entries = test_ukm_recorder()->GetEntries(
+        Preloading_Attempt::kEntryName,
+        content::test::kPreloadingAttemptUkmMetrics);
+    EXPECT_EQ(attempt_ukm_entries.size(), 1u);
+
+    UkmEntry expected_entry = ukm_entry_builder().BuildEntry(
+        ukm_source_id, content::PreloadingType::kPrerender,
+        content::PreloadingEligibility::kHttpsOnly,
+        content::PreloadingHoldbackStatus::kUnspecified,
+        content::PreloadingTriggeringOutcome::kUnspecified,
+        content::PreloadingFailureReason::kUnspecified,
+        /*accurate=*/true);
+    EXPECT_EQ(attempt_ukm_entries[0], expected_entry)
+        << content::test::ActualVsExpectedUkmEntryToString(
+               attempt_ukm_entries[0], expected_entry);
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(PrerenderBookmarkBarOnPressedNavigationTest,
+                       SetIsNavigationInDomainCallback) {
   base::HistogramTester histogram_tester;
   // Navigate to an non-empty tab
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_test_server()->GetURL("/empty.html")));
+  GURL prerender_url = https_test_server()->GetURL("/empty.html?prerender");
 
-  content::NavigationHandleObserver activation_observer(
-      GetActiveWebContents(),
-      https_test_server()->GetURL("/empty.html?prerender"));
+  CreateBookmarkButton(prerender_url);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_test_server()->GetURL("/empty.html?foo")));
+  views::LabelButton* button = GetBookmarkButton(0);
 
-  CreateBookmarkButton();
-  NavigateToBookmarkByMousePressed();
+  // Mouse enters and exits the button immediately.
+  gfx::Point center(10, 10);
+  button->OnMouseEntered(ui::MouseEvent(ui::EventType::kMouseEntered, center,
+                                        center, ui::EventTimeForNow(),
+                                        /*flags=*/ui::EF_NONE,
+                                        /*changed_button_flags=*/ui::EF_NONE));
+  button->OnMouseExited(ui::MouseEvent(ui::EventType::kMouseExited, center,
+                                       center, ui::EventTimeForNow(),
+                                       /*flags=*/ui::EF_NONE,
+                                       /*changed_button_flags=*/ui::EF_NONE));
 
-  {
-    ukm::SourceId ukm_source_id = activation_observer.next_page_ukm_source_id();
-    auto ukm_entries = test_ukm_recorder()->GetEntries(
-        Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
-    EXPECT_EQ(ukm_entries.size(), 1u);
+  // Normal navigation is not in `kMouseHoverOrMouseDownOnBookmarkBar`
+  // predictor's domain.
+  histogram_tester.ExpectBucketCount(
+      "Preloading.Predictor.MouseHoverOrMouseDownOnBookmarkBar.Recall",
+      /*content::PredictorConfusionMatrix::kTruePositive*/ 0, 0);
+  histogram_tester.ExpectBucketCount(
+      "Preloading.Predictor.MouseHoverOrMouseDownOnBookmarkBar.Recall",
+      /*content::PredictorConfusionMatrix::kFalseNegative*/ 3, 0);
 
-    std::vector<UkmEntry> expected_entries = {
-        ukm_entry_builder().BuildEntry(
-            ukm_source_id, content::PreloadingType::kPrerender,
-            content::PreloadingEligibility::kEligible,
-            content::PreloadingHoldbackStatus::kAllowed,
-            content::PreloadingTriggeringOutcome::kSuccess,
-            content::PreloadingFailureReason::kUnspecified,
-            /*accurate=*/true,
-            /*ready_time=*/kMockElapsedTime),
-    };
-    EXPECT_THAT(ukm_entries,
-                testing::UnorderedElementsAreArray(expected_entries))
-        << content::test::ActualVsExpectedUkmEntriesToString(ukm_entries,
-                                                             expected_entries);
-  }
-
-  EXPECT_EQ(GetActiveWebContents()->GetLastCommittedURL(),
-            https_test_server()->GetURL("/empty.html?prerender"));
-  histogram_tester.ExpectUniqueSample(
-      "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
-      kFinalStatusActivated, 1);
-  histogram_tester.ExpectUniqueSample(
-      "Preloading.Prerender.Attempt.PointerDownOnBookmarkBar.TriggeringOutcome",
-      kPreloadingTriggeringOutcomeSuccess, 1);
+  // A `PAGE_TRANSITION_AUTO_BOOKMARK` navigation should be in the predictor's
+  // domain.
+  CreateBookmarkButton(prerender_url);
+  NavigateParams params(browser(),
+                        https_test_server()->GetURL("/empty.html?bar"),
+                        ui::PAGE_TRANSITION_AUTO_BOOKMARK);
+  ui_test_utils::NavigateToURL(&params);
+  histogram_tester.ExpectBucketCount(
+      "Preloading.Predictor.MouseHoverOrMouseDownOnBookmarkBar.Recall",
+      /*content::PredictorConfusionMatrix::kFalseNegative*/ 3, 1);
 }
 
-class PrerenderBookmarkBarOnHoverNavigationTest
-    : public PrerenderBookmarkBarNavigationTestBase {
+namespace {
+
+class PrerenderBookmarkBarDisabledNavigationTest
+    : public PreloadBookmarkBarNavigationTestBase {
  public:
-  PrerenderBookmarkBarOnHoverNavigationTest() {
-    // Mousedown prerender trigger is disabled explicitly and onHover delay is
-    // set to 0ms for testing.
-    scoped_feature_list_.InitWithFeaturesAndParameters(
-        {
-            {features::kBookmarkTriggerForPrerender2,
-             {{"prerender_start_delay_on_mouse_hover_ms", "0"},
-              {"prerender_bookmarkbar_on_mouse_pressed_trigger", "false"},
-              {"prerender_bookmarkbar_on_mouse_hover_trigger", "true"}}},
-        },
-        /*disabled_features=*/{});
+  PrerenderBookmarkBarDisabledNavigationTest() {
+    scoped_feature_list_.InitAndEnableFeature(
+        features::kBookmarkTriggerForPrerender2KillSwitch);
   }
 
   const content::test::PreloadingAttemptUkmEntryBuilder& ukm_entry_builder() {
@@ -504,34 +782,11 @@ class PrerenderBookmarkBarOnHoverNavigationTest
   }
 
   void SetUpOnMainThread() override {
-    PrerenderBookmarkBarNavigationTestBase::SetUpOnMainThread();
+    PreloadBookmarkBarNavigationTestBase::SetUpOnMainThread();
+    StartServers();
     ukm_entry_builder_ =
         std::make_unique<content::test::PreloadingAttemptUkmEntryBuilder>(
-            chrome_preloading_predictor::kMouseHoverOnBookmarkBar);
-  }
-
-  void TriggerPrerenderByMouseHoverOnBookmark() {
-    views::LabelButton* button = GetBookmarkButton(0);
-
-    gfx::Point center(10, 10);
-    button->OnMouseEntered(ui::MouseEvent(
-        ui::ET_MOUSE_ENTERED, center, center, ui::EventTimeForNow(),
-        /*flags=*/ui::EF_NONE,
-        /*changed_button_flags=*/ui::EF_NONE));
-
-    content::test::PrerenderTestHelper::WaitForPrerenderLoadCompletion(
-        *GetActiveWebContents(),
-        https_test_server()->GetURL("/empty.html?prerender"));
-  }
-
-  void StopPrerenderingByMouseExited() {
-    views::LabelButton* button = GetBookmarkButton(0);
-
-    gfx::Point center(10, 10);
-    button->OnMouseExited(ui::MouseEvent(ui::ET_MOUSE_EXITED, center, center,
-                                         ui::EventTimeForNow(),
-                                         /*flags=*/ui::EF_NONE,
-                                         /*changed_button_flags=*/ui::EF_NONE));
+            chrome_preloading_predictor::kMouseHoverOrMouseDownOnBookmarkBar);
   }
 
  private:
@@ -540,117 +795,401 @@ class PrerenderBookmarkBarOnHoverNavigationTest
       ukm_entry_builder_;
 };
 
-IN_PROC_BROWSER_TEST_F(PrerenderBookmarkBarOnHoverNavigationTest,
-                       PrerenderActivation) {
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(PrerenderBookmarkBarDisabledNavigationTest,
+                       NonPrerenderingBookmarkBarNavigation) {
   base::HistogramTester histogram_tester;
   // Navigate to an non-empty tab
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_test_server()->GetURL("/empty.html")));
+  GURL bookmarkbar_url =
+      http_test_server()->GetURL("/empty.html?bookmarkbar_url");
 
-  content::NavigationHandleObserver activation_observer(
-      GetActiveWebContents(),
-      https_test_server()->GetURL("/empty.html?prerender"));
+  CreateBookmarkButton(bookmarkbar_url);
+  NavigateToBookmark();
 
-  CreateBookmarkButton();
-  NavigateToBookmarkByMousePressed();
-
-  {
-    ukm::SourceId ukm_source_id = activation_observer.next_page_ukm_source_id();
-    auto ukm_entries = test_ukm_recorder()->GetEntries(
-        Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
-    EXPECT_EQ(ukm_entries.size(), 1u);
-
-    std::vector<UkmEntry> expected_entries = {
-        ukm_entry_builder().BuildEntry(
-            ukm_source_id, content::PreloadingType::kPrerender,
-            content::PreloadingEligibility::kEligible,
-            content::PreloadingHoldbackStatus::kAllowed,
-            content::PreloadingTriggeringOutcome::kSuccess,
-            content::PreloadingFailureReason::kUnspecified,
-            /*accurate=*/true,
-            /*ready_time=*/kMockElapsedTime),
-    };
-    EXPECT_THAT(ukm_entries,
-                testing::UnorderedElementsAreArray(expected_entries))
-        << content::test::ActualVsExpectedUkmEntriesToString(ukm_entries,
-                                                             expected_entries);
+  // Navigate away to flush the metrics and check.
+  ASSERT_TRUE(
+      ui_test_utils::NavigateToURL(browser(), GURL(url::kAboutBlankURL)));
+  ASSERT_EQ(bookmark_navigation_list().size(), 1u);
+  for (int i = 0; i < 1; ++i) {
+    EXPECT_EQ(bookmark_navigation_list()[i],
+              GetInitiatorLocation(ChromeInitiatorLocation::kBookmarkBar));
   }
-
-  EXPECT_EQ(GetActiveWebContents()->GetLastCommittedURL(),
-            https_test_server()->GetURL("/empty.html?prerender"));
-  histogram_tester.ExpectUniqueSample(
-      "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
-      kFinalStatusActivated, 1);
-  histogram_tester.ExpectUniqueSample(
-      "Preloading.Prerender.Attempt.MouseHoverOnBookmarkBar.TriggeringOutcome",
-      kPreloadingTriggeringOutcomeSuccess, 1);
+  histogram_tester.ExpectTotalCount(
+      "Bookmarks.BookmarkBar.PrerenderNavigationToActivation", 0);
 }
 
-// This test verifies prerender cancellation triggered by mouseExited, and
-// another prerender can trigger normally after that.
-IN_PROC_BROWSER_TEST_F(PrerenderBookmarkBarOnHoverNavigationTest,
-                       PrerenderMouseExitedCancellationAndPrerenderActivation) {
+namespace {
+
+// TODO(crbug.com/413259638): The parameters for the feature flag will be
+// removed once the prefetch for BookmarkBar is completely launched, and the
+// name of the tests will be renamed accordingly.
+class PreloadBookmarkBarPrefetchEnabledPrerenderEnabledNavigationTest
+    : public PreloadBookmarkBarNavigationTestBase {
+ public:
+  PreloadBookmarkBarPrefetchEnabledPrerenderEnabledNavigationTest() {
+    scoped_feature_list_.InitWithFeaturesAndParameters(
+        {{
+             features::kBookmarkTriggerForPreconnect,
+             {{"preconnect_start_delay_on_mouse_hover_ms", "0"}},
+         },
+         {features::kBookmarkTriggerForPrefetch,
+          {
+              {"prefetch_start_delay_on_mouse_hover_ms", "0"},
+          }}},
+        /*disabled_features=*/{});
+  }
+
+  void SetUpOnMainThread() override {
+    prerender_helper().RegisterServerRequestMonitor(https_test_server());
+    PreloadBookmarkBarNavigationTestBase::SetUpOnMainThread();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+}  // namespace
+
+// Test a scenario which prefetch on-hover trigger follows by prerender
+// on-press trigger.
+IN_PROC_BROWSER_TEST_F(
+    PreloadBookmarkBarPrefetchEnabledPrerenderEnabledNavigationTest,
+    PrefetchAndPrerender) {
+  StartServers();
+  base::HistogramTester histogram_tester;
+  // Navigate to an non-empty tab
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_test_server()->GetURL("/empty.html")));
+  GURL preload_url = https_test_server()->GetURL("/empty.html?preload");
+
+  CreateBookmarkButton(preload_url);
+  TriggerPrefetchAndThenPrerenderAndNavigateToBookmarkByMousePressed(
+      preload_url, true);
+
+  EXPECT_EQ(1, prerender_helper().GetRequestCount(preload_url));
+  histogram_tester.ExpectUniqueSample("Preloading.Prefetch.PrefetchStatus",
+                                      kPrefetchResponseUsed, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
+      kFinalStatusActivated, 1);
+}
+
+// Both Prefetch and Prerender don't support non https, and they should not
+// be processed.
+IN_PROC_BROWSER_TEST_F(
+    PreloadBookmarkBarPrefetchEnabledPrerenderEnabledNavigationTest,
+    PrefetchAndPrerenderNonHttps) {
+  StartServers();
+  base::HistogramTester histogram_tester;
+  // Navigate to an non-empty tab
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), http_test_server()->GetURL("/empty.html")));
+  GURL preload_url = http_test_server()->GetURL("/empty.html?prerender");
+  content::NavigationHandleObserver activation_observer(GetActiveWebContents(),
+                                                        preload_url);
+
+  CreateBookmarkButton(preload_url);
+  TriggerPrefetchAndThenPrerenderAndNavigateToBookmarkByMousePressed(
+      preload_url, false);
+
+  EXPECT_EQ(0, prerender_helper().GetRequestCount(preload_url));
+  histogram_tester.ExpectTotalCount(
+      "Prerender.Experimental.PrefetchAheadOfPrerenderFailed.PrefetchStatus."
+      "Embedder_BookmarkBar",
+      0);
+  histogram_tester.ExpectTotalCount(
+      "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
+      0);
+}
+
+// Receiving a failed HTTP response will cause prerender to fail with
+// kPrerenderFailedDuringPrefetch.
+IN_PROC_BROWSER_TEST_F(
+    PreloadBookmarkBarPrefetchEnabledPrerenderEnabledNavigationTest,
+    PrefetchFailureAndPrerenderFailure) {
+  net::test_server::ControllableHttpResponse prefetch_response(
+      https_test_server(), "/empty.html?prefetch");
+
+  StartServers();
+  base::HistogramTester histogram_tester;
+  // Navigate to an non-empty tab
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_test_server()->GetURL("/empty.html")));
+  GURL preload_url = https_test_server()->GetURL("/empty.html?prefetch");
+
+  content::NavigationHandleObserver activation_observer(GetActiveWebContents(),
+                                                        preload_url);
+  CreateBookmarkButton(preload_url);
+  TriggerPrefetchByMouseHoverOnBookmark(preload_url);
+  SimulatePrefetchFailureAndWaitForFailure(prefetch_response);
+  TriggerPrerenderAndNavigateToBookmarkByMousePressed(preload_url, false);
+
+  histogram_tester.ExpectUniqueSample(
+      "Prerender.Experimental.PrefetchAheadOfPrerenderFailed.PrefetchStatus."
+      "Embedder_BookmarkBar",
+      kPrefetchFailedNon2XX, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
+      kPrerenderFailedDuringPrefetch, 1);
+}
+
+// Test a scenario which prefetch fails when a search related url in the
+// redirect chain.
+// TODO(crbug.com/479511794): disabled due to flakiness.
+// TODO(crbug.com/517929772): disabled due to flakiness.
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+#define MAYBE_PrefetchingRedirectToSearchSite \
+  DISABLED_PrefetchingRedirectToSearchSite
+#else
+#define MAYBE_PrefetchingRedirectToSearchSite PrefetchingRedirectToSearchSite
+#endif
+IN_PROC_BROWSER_TEST_F(
+    PreloadBookmarkBarPrefetchEnabledPrerenderEnabledNavigationTest,
+    MAYBE_PrefetchingRedirectToSearchSite) {
+  StartServers();
   base::HistogramTester histogram_tester;
   // Navigate to an non-empty tab
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), https_test_server()->GetURL("/empty.html")));
 
-  content::NavigationHandleObserver activation_observer(
-      GetActiveWebContents(),
-      https_test_server()->GetURL("/empty.html?prerender"));
+  GURL preload_url = https_test_server()->GetURL(
+      "/server-redirect?https://www.google.co.jp/search?q=123");
+  CreateBookmarkButton(preload_url);
+  TriggerPrefetchByMouseHoverOnBookmark(preload_url);
+  TriggerPrerenderAndNavigateToBookmarkByMousePressed(preload_url, false);
 
-  CreateBookmarkButton();
-  // Check mouseExited will cancel the mouseHover prerendering.
-  TriggerPrerenderByMouseHoverOnBookmark();
-  StopPrerenderingByMouseExited();
-
-  EXPECT_EQ(GetActiveWebContents()->GetLastCommittedURL(),
-            https_test_server()->GetURL("/empty.html"));
+  histogram_tester.ExpectUniqueSample("Preloading.Prefetch.PrefetchStatus",
+                                      kPrefetchFailedInvalidRedirect, 1);
   histogram_tester.ExpectUniqueSample(
       "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
-      kFinalStatusTriggerDestroyed, 1);
+      kPrerenderFailedDuringPrefetch, 1);
+}
 
-  // Prerender can trigger and activate normally after previous cancellation.
-  NavigateToBookmarkByMousePressed();
+// Prefetch and prerender triggered, prerender cancelled, and then prerender
+// triggered.
+//
+// Scenario:
+//
+// - mouseenter to a bookmark button.
+// - mousedown
+//   - Prefetch A and prerender A' are triggered.
+//   - A' matched to A.
+// - mouseleave
+//   - Prerender is cancelled.
+// - mouseup outside the button.
+// - mouseenter
+// - mousedown
+//   - Prerender B' is triggered.
+//   - B' matched to A.
+// - mouseup
+//   - Navigate with B' activation.
+IN_PROC_BROWSER_TEST_F(
+    PreloadBookmarkBarPrefetchEnabledPrerenderEnabledNavigationTest,
+    PreloadsTriggered_PrerenderCancelled_PrerenderTriggered) {
+  StartServers();
+  base::HistogramTester histogram_tester;
 
-  {
-    ukm::SourceId ukm_source_id = activation_observer.next_page_ukm_source_id();
-    auto ukm_entries = test_ukm_recorder()->GetEntries(
-        Preloading_Attempt::kEntryName,
-        content::test::kPreloadingAttemptUkmMetrics);
-    EXPECT_EQ(ukm_entries.size(), 2u);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_test_server()->GetURL("/empty.html")));
 
-    std::vector<UkmEntry> expected_entries = {
-        ukm_entry_builder().BuildEntry(
-            ukm_source_id, content::PreloadingType::kPrerender,
-            content::PreloadingEligibility::kEligible,
-            content::PreloadingHoldbackStatus::kAllowed,
-            content::PreloadingTriggeringOutcome::kReady,
-            content::PreloadingFailureReason::kUnspecified,
-            /*accurate=*/true,
-            /*ready_time=*/kMockElapsedTime),
-        ukm_entry_builder().BuildEntry(
-            ukm_source_id, content::PreloadingType::kPrerender,
-            content::PreloadingEligibility::kEligible,
-            content::PreloadingHoldbackStatus::kAllowed,
-            content::PreloadingTriggeringOutcome::kSuccess,
-            content::PreloadingFailureReason::kUnspecified,
-            /*accurate=*/true,
-            /*ready_time=*/kMockElapsedTime),
-    };
-    EXPECT_THAT(ukm_entries,
-                testing::UnorderedElementsAreArray(expected_entries))
-        << content::test::ActualVsExpectedUkmEntriesToString(ukm_entries,
-                                                             expected_entries);
-  }
+  GURL preload_url = https_test_server()->GetURL("/empty.html?preload");
 
-  EXPECT_EQ(GetActiveWebContents()->GetLastCommittedURL(),
-            https_test_server()->GetURL("/empty.html?prerender"));
+  CreateBookmarkButton(preload_url);
+  views::LabelButton* button = GetBookmarkButton(0);
+
+  gfx::Point center(10, 10);
+
+  // Trigger prefetch and prerender.
+  button->OnMouseEntered(ui::MouseEvent(ui::EventType::kMouseEntered, center,
+                                        center, ui::EventTimeForNow(),
+                                        /*flags=*/ui::EF_NONE,
+                                        /*changed_button_flags=*/ui::EF_NONE));
+  button->OnMousePressed(ui::MouseEvent(
+      ui::EventType::kMousePressed, center, center, ui::EventTimeForNow(),
+      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+  content::test::PrerenderTestHelper::WaitForPrerenderLoadCompletion(
+      *GetActiveWebContents(), preload_url);
+  // Cancel prerender.
+  button->OnMouseExited(ui::MouseEvent(ui::EventType::kMouseExited, center,
+                                       center, ui::EventTimeForNow(),
+                                       /*flags=*/ui::EF_NONE,
+                                       /*changed_button_flags=*/ui::EF_NONE));
+  histogram_tester.ExpectUniqueSample(
+      "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
+      kTriggerDestroyed, 1);
+  // mouseup outside button
+
+  // Trigger prerender again.
+  button->OnMouseEntered(ui::MouseEvent(ui::EventType::kMouseEntered, center,
+                                        center, ui::EventTimeForNow(),
+                                        /*flags=*/ui::EF_NONE,
+                                        /*changed_button_flags=*/ui::EF_NONE));
+  content::test::PrerenderHostObserver prerender_observer(
+      *GetActiveWebContents(), preload_url);
+  button->OnMousePressed(ui::MouseEvent(
+      ui::EventType::kMousePressed, center, center, ui::EventTimeForNow(),
+      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+  // Navigate.
+  button->OnMouseReleased(ui::MouseEvent(
+      ui::EventType::kMouseReleased, center, center, ui::EventTimeForNow(),
+      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+  prerender_observer.WaitForActivation();
+
+  EXPECT_EQ(1, prerender_helper().GetRequestCount(preload_url));
+  histogram_tester.ExpectUniqueSample("Preloading.Prefetch.PrefetchStatus",
+                                      kPrefetchResponseUsed, 1);
+  histogram_tester.ExpectTotalCount(
+      "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
+      2);
+  histogram_tester.ExpectBucketCount(
+      "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
+      kTriggerDestroyed, 1);
   histogram_tester.ExpectBucketCount(
       "Prerender.Experimental.PrerenderHostFinalStatus.Embedder_BookmarkBar",
       kFinalStatusActivated, 1);
-  histogram_tester.ExpectBucketCount(
-      "Preloading.Prerender.Attempt.MouseHoverOnBookmarkBar.TriggeringOutcome",
-      kPreloadingTriggeringOutcomeSuccess, 1);
+}
+
+// Verifies that metrics are recorded when interacting with bookmark buttons.
+IN_PROC_BROWSER_TEST_F(
+    PreloadBookmarkBarPrefetchEnabledPrerenderEnabledNavigationTest,
+    MetricsRecording) {
+  StartServers();
+  base::HistogramTester histogram_tester;
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), https_test_server()->GetURL("/empty.html")));
+
+  GURL preload_url = https_test_server()->GetURL("/empty.html?preload");
+
+  CreateBookmarkButton(preload_url);
+  views::LabelButton* button = GetBookmarkButton(0);
+
+  gfx::Point center(10, 10);
+
+  EXPECT_EQ(0, browser()->GetProfile()->GetPrefs()->GetInt64(
+                   prefs::kBookmarkBarHoverCount));
+  EXPECT_EQ(0, browser()->GetProfile()->GetPrefs()->GetInt64(
+                   prefs::kBookmarkBarNavigationCount));
+
+  // Trigger on-hover recording.
+  button->OnMouseEntered(ui::MouseEvent(ui::EventType::kMouseEntered, center,
+                                        center, ui::EventTimeForNow(),
+                                        /*flags=*/ui::EF_NONE,
+                                        /*changed_button_flags=*/ui::EF_NONE));
+
+  EXPECT_EQ(1, browser()->GetProfile()->GetPrefs()->GetInt64(
+                   prefs::kBookmarkBarHoverCount));
+  EXPECT_EQ(0, browser()->GetProfile()->GetPrefs()->GetInt64(
+                   prefs::kBookmarkBarNavigationCount));
+
+  content::TestNavigationObserver observer(
+      browser()->tab_strip_model()->GetActiveWebContents(), 1);
+  ;
+  // Trigger navigation recording.
+  button->OnMousePressed(ui::MouseEvent(
+      ui::EventType::kMousePressed, center, center, ui::EventTimeForNow(),
+      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+  button->OnMouseReleased(ui::MouseEvent(
+      ui::EventType::kMouseReleased, center, center, ui::EventTimeForNow(),
+      ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON));
+  observer.Wait();
+
+  EXPECT_EQ(1, browser()->GetProfile()->GetPrefs()->GetInt64(
+                   prefs::kBookmarkBarNavigationCount));
+}
+
+namespace {
+
+class BookmarkBarTest : public BookmarkBarTestBase {
+ protected:
+  void TestContextMenuHighlight(views::View* view) {
+    ASSERT_TRUE(!!view);
+    ASSERT_EQ(views::InkDropState::HIDDEN,
+              views::InkDrop::Get(view)->GetInkDrop()->GetTargetInkDropState());
+
+    gfx::Point point;
+    views::View::ConvertPointToScreen(view, &point);
+
+    bookmark_bar()->ShowContextMenuForViewImpl(
+        view, point, ui::mojom::MenuSourceType::kMouse);
+    if (views::InkDrop::Get(view)->GetInkDrop()->GetTargetInkDropState() !=
+        views::InkDropState::ACTIVATED) {
+      EXPECT_TRUE(base::test::RunUntil([&]() {
+        return views::InkDrop::Get(view)
+                   ->GetInkDrop()
+                   ->GetTargetInkDropState() == views::InkDropState::ACTIVATED;
+      }));
+    }
+
+    bookmark_bar()->OnContextMenuClosed();
+#if BUILDFLAG(IS_MAC)
+    // On Mac, the ink drop ripple is destroyed after we call
+    // AnimateToState(InkDropState::DEACTIVATED), so GetTargetInkDropState()
+    // will return InkDropState::HIDDEN instead.
+    EXPECT_EQ(views::InkDropState::HIDDEN,
+              views::InkDrop::Get(view)->GetInkDrop()->GetTargetInkDropState());
+#else
+    EXPECT_EQ(views::InkDropState::DEACTIVATED,
+              views::InkDrop::Get(view)->GetInkDrop()->GetTargetInkDropState());
+#endif
+  }
+};
+
+}  // namespace
+
+#if BUILDFLAG(IS_WIN)
+//  TODO(crbug.com/491651711): This test is flaky.
+#define MAYBE_AllBookmarksButtonHighlight DISABLED_AllBookmarksButtonHighlight
+#else
+#define MAYBE_AllBookmarksButtonHighlight AllBookmarksButtonHighlight
+#endif
+IN_PROC_BROWSER_TEST_F(BookmarkBarTest, MAYBE_AllBookmarksButtonHighlight) {
+  TestContextMenuHighlight(bookmark_bar()->all_bookmarks_button());
+}
+
+IN_PROC_BROWSER_TEST_F(BookmarkBarTest, BookmarkButtonHighlight) {
+  CreateBookmarkButton(GURL("https://www.chromium.org/"));
+
+  TestContextMenuHighlight(GetBookmarkButton(0));
+}
+
+IN_PROC_BROWSER_TEST_F(BookmarkBarTest, BookmarkFolderButtonHighlight) {
+  CreateBookmarkFolder();
+
+  TestContextMenuHighlight(GetBookmarkButton(0));
+}
+
+#if BUILDFLAG(IS_WIN)
+//  TODO(crbug.com/491651711): This test is flaky.
+#define MAYBE_AppsPageShortcutHighlight DISABLED_AppsPageShortcutHighlight
+#else
+#define MAYBE_AppsPageShortcutHighlight AppsPageShortcutHighlight
+#endif
+IN_PROC_BROWSER_TEST_F(BookmarkBarTest, MAYBE_AppsPageShortcutHighlight) {
+  TestContextMenuHighlight(GetAppsPageShortCut());
+}
+
+namespace {
+
+ui::AXActionData CreateAXActionDataWithAction(ax::mojom::Action action) {
+  ui::AXActionData data;
+  data.action = action;
+  return data;
+}
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(BookmarkBarTest, BookmarkFolderAXExpand) {
+  CreateBookmarkFolder();
+  EXPECT_TRUE(GetBookmarkButton(0)->HandleAccessibleAction(
+      CreateAXActionDataWithAction(ax::mojom::Action::kExpand)));
+}
+
+IN_PROC_BROWSER_TEST_F(BookmarkBarTest, BookmarkFolderAXCollapse) {
+  CreateBookmarkFolder();
+  EXPECT_TRUE(GetBookmarkButton(0)->HandleAccessibleAction(
+      CreateAXActionDataWithAction(ax::mojom::Action::kCollapse)));
 }

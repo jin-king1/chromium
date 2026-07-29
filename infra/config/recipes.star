@@ -2,8 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-load("//lib/bootstrap.star", "POLYMORPHIC", "register_recipe_bootstrappability")
-load("//lib/recipe_experiments.star", "register_recipe_experiments")
+load("@chromium-luci//bootstrap.star", "POLYMORPHIC", "register_recipe_bootstrappability")
+load("@chromium-luci//recipe_experiments.star", "register_recipe_experiments")
 
 _RECIPE_NAME_PREFIX = "recipe:"
 
@@ -63,7 +63,6 @@ def _recipe_for_package(cipd_package):
             cipd_version = cipd_version,
             recipe = recipe,
             use_bbagent = True,
-            use_python3 = True,
         )
 
         register_recipe_bootstrappability(name, bootstrappable)
@@ -108,6 +107,9 @@ build_recipe(
 
 build_recipe(
     name = "recipe:binary_size_trybot",
+    # Can't be bootstrapped since it interferes with the recipe's custom
+    # bot_update sync'ing behavior.
+    bootstrappable = False,
 )
 
 build_recipe(
@@ -120,15 +122,27 @@ build_recipe(
 )
 
 build_recipe(
+    name = "recipe:compile_size_trybot",
+)
+
+build_recipe(
     name = "recipe:chrome_build/build_perf",
+    bootstrappable = True,
 )
 
 build_recipe(
     name = "recipe:chrome_build/build_perf_siso",
+    bootstrappable = True,
 )
 
 build_recipe(
     name = "recipe:chrome_build/build_perf_developer",
+    bootstrappable = True,
+)
+
+build_recipe(
+    name = "recipe:chrome_build/build_perf_without_rbe",
+    bootstrappable = True,
 )
 
 build_recipe(
@@ -141,12 +155,25 @@ build_recipe(
 )
 
 build_recipe(
+    name = "recipe:chromium/autotest_runner",
+)
+
+build_recipe(
     name = "recipe:chromium/builder_config_verifier",
 )
 
 build_recipe(
     name = "recipe:chromium/autosharder",
     bootstrappable = True,
+)
+
+build_recipe(
+    name = "recipe:chromium/autosharder_test",
+    bootstrappable = True,
+)
+
+build_recipe(
+    name = "recipe:chromium/generic_script_runner",
 )
 
 build_recipe(
@@ -165,6 +192,10 @@ build_recipe(
 )
 
 build_recipe(
+    name = "recipe:chromium/gn_args_verifier",
+)
+
+build_recipe(
     name = "recipe:chromium/targets_config_verifier",
 )
 
@@ -173,11 +204,34 @@ build_recipe(
 )
 
 build_recipe(
+    name = "recipe:chromium_rr/orchestrator",
+)
+
+build_recipe(
+    name = "recipe:chromium_rr/test_launcher",
+    bootstrappable = POLYMORPHIC,
+)
+
+build_recipe(
     name = "recipe:chromium_3pp",
 )
 
 build_recipe(
+    name = "recipe:chromium/eval_prompts",
+    bootstrappable = True,
+)
+
+build_recipe(
     name = "recipe:chromium/fuzz",
+    bootstrappable = True,
+)
+
+build_recipe(
+    name = "recipe:chromium/mega_cq_launcher",
+)
+
+build_recipe(
+    name = "recipe:chromium/universal_test_runner_test",
 )
 
 build_recipe(
@@ -186,6 +240,14 @@ build_recipe(
 
 build_recipe(
     name = "recipe:chromium_fuzz_coverage",
+)
+
+build_recipe(
+    name = "recipe:chrome_codeql_database_builder",
+)
+
+build_recipe(
+    name = "recipe:chrome_codeql_query_runner",
 )
 
 build_recipe(
@@ -202,11 +264,11 @@ build_recipe(
 )
 
 build_recipe(
-    name = "recipe:chromium_libfuzzer",
+    name = "recipe:chromium_rts/create_model",
 )
 
 build_recipe(
-    name = "recipe:chromium_rts/create_model",
+    name = "recipe:chromium_rts/rts_analyze",
 )
 
 build_recipe(
@@ -223,11 +285,7 @@ build_recipe(
 )
 
 build_recipe(
-    name = "recipe:cronet",
-)
-
-build_recipe(
-    name = "recipe:flakiness/generate_builder_test_data",
+    name = "recipe:chromium_toolchain/trusted_packaging",
 )
 
 build_recipe(
@@ -240,7 +298,8 @@ build_recipe(
 )
 
 build_recipe(
-    name = "recipe:perf/crossbench",
+    name = "recipe:gofindit/chromium/test_single_revision",
+    bootstrappable = POLYMORPHIC,
 )
 
 build_recipe(
@@ -249,10 +308,6 @@ build_recipe(
 
 build_recipe(
     name = "recipe:reclient_config_deploy_check/tester",
-)
-
-build_recipe(
-    name = "recipe:reclient_goma_comparison",
 )
 
 build_recipe(
@@ -269,11 +324,11 @@ build_recipe(
 )
 
 build_recipe(
-    name = "recipe:swarming/deterministic_build",
+    name = "recipe:security/metadata_validator",
 )
 
 build_recipe(
-    name = "recipe:swarming/staging",
+    name = "recipe:swarming/deterministic_build",
 )
 
 build_recipe(
@@ -293,9 +348,14 @@ build_recipe(
 )
 
 build_recipe(
-    name = "recipe:tricium_simple",
+    name = "recipe:webrtc/chromium_ios",
 )
 
-build_recipe(
-    name = "recipe:webrtc/chromium_ios",
+infra_recipe = _recipe_for_package(
+    "infra/recipe_bundles/chromium.googlesource.com/infra/infra",
+)
+
+infra_recipe(
+    name = "recipe:infra/crowbar",
+    recipe = "crowbar",
 )

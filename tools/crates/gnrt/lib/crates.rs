@@ -4,18 +4,22 @@
 
 //! Utilities to handle vendored third-party crates.
 
+use crate::config::{BuildConfig, CrateConfig};
+use crate::deps;
 use crate::manifest;
 
 use std::fmt::{self, Display};
 use std::fs;
 use std::hash::Hash;
-use std::io;
+use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use anyhow::{bail, Context, Result};
 use semver::Version;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Visibility {
     /// The crate can be used by any build targets.
     Public,
@@ -26,37 +30,69 @@ pub enum Visibility {
     TestOnlyAndThirdParty,
 }
 
-/// A normalized version as used in third_party/rust crate paths.
+/// Returns a default of `ThirdParty`, which is the most conservative option and
+/// generally what we want if one isn't explicitly computed.
+impl std::default::Default for Visibility {
+    fn default() -> Self {
+        Visibility::ThirdParty
+    }
+}
+
+/// An `Epoch` represents a set of crate versions where no API breaking changes
+/// are expected. For example, `png-0.17.15` doesn't make any API breaking
+/// changes on top of `png-0.17.14` and therefore both of those versions are
+/// considered to be in the same `Epoch`: `png-v0_17`. (Note that `png-0.17.15`
+/// adds new APIs and therefore downgrading to 0.17.14 *would* be a breaking
+/// change.)
 ///
-/// A crate version is identified by the major version, if it's >= 1, or the
-/// minor version, if the major version is 0. There is a many-to-one
-/// relationship between crate versions and epochs.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// An `Epoch` is used in paths like: `//third_party/rust/png/v0_18` and
+/// `//third_party/rust/chromium_crates_io/vendor/png-v0_18'.
+///
+/// The implementation below tries to ensure that `Epoch` matches the following
+/// wording from https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#default-requirements:
+/// "Versions are considered compatible if their left-most non-zero
+/// major/minor/patch component is the same.".
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(from = "EpochString", into = "EpochString")]
 pub enum Epoch {
-    /// Epoch with major version == 0. The field is the minor version. It is an
-    /// error to use 0: methods may panic in this case.
-    Minor(u64),
-    /// Epoch with major version >= 1. It is an error to use 0: methods may
-    /// panic in this case.
-    Major(u64),
+    /// Epoch when major version >= 1.
+    Major(NonZero<u64>),
+    /// Epoch when major version is 0. The field is the minor version.
+    Minor(NonZero<u64>),
+    /// Epoch when major and minor version are 0. The field is the patch
+    /// version.
+    Patch(u64),
 }
 
 impl Epoch {
     /// Get the semver version string for this Epoch. This will only have a
-    /// non-zero major component, or a zero major component and a non-zero minor
-    /// component. Note this differs from Epoch's `fmt::Display` impl.
+    /// non-zero major component, or a zero major component and a non-zero
+    /// minor component, or a zero major+minor components and a non-zero
+    /// patch component. Note this differs from Epoch's `fmt::Display` impl.
     pub fn to_version_string(&self) -> String {
         match *self {
-            // These should never return Err since formatting an integer is
-            // infallible.
-            Epoch::Minor(minor) => {
-                assert_ne!(minor, 0);
-                format!("0.{minor}")
-            }
-            Epoch::Major(major) => {
-                assert_ne!(major, 0);
-                format!("{major}")
-            }
+            Epoch::Major(major) => format!("{major}"),
+            Epoch::Minor(minor) => format!("0.{minor}"),
+            Epoch::Patch(patch) => format!("0.0.{patch}"),
+        }
+    }
+
+    /// A `semver::VersionReq` that matches any version of this epoch.
+    pub fn to_version_req(&self) -> semver::VersionReq {
+        let (major, minor, patch) = match self {
+            Self::Major(x) => (x.get(), None, None),
+            Self::Minor(x) => (0, Some(x.get()), None),
+            Self::Patch(x) => (0, Some(0), Some(*x)),
+        };
+        semver::VersionReq {
+            comparators: vec![semver::Comparator {
+                // "^1" is the same as "1" in Cargo.toml.
+                op: semver::Op::Caret,
+                major,
+                minor,
+                patch,
+                pre: semver::Prerelease::EMPTY,
+            }],
         }
     }
 
@@ -64,9 +100,14 @@ impl Epoch {
     /// parse versions from `cargo_metadata` and in Cargo.toml files using the
     /// `semver` library.
     pub fn from_version(version: &Version) -> Self {
-        match version.major {
-            0 => Self::Minor(version.minor.try_into().unwrap()),
-            x => Self::Major(x.try_into().unwrap()),
+        if let Ok(nonzero_major) = version.major.try_into() {
+            return Self::Major(nonzero_major);
+        }
+
+        if let Ok(nonzero_minor) = version.minor.try_into() {
+            Self::Minor(nonzero_minor)
+        } else {
+            Self::Patch(version.patch)
         }
     }
 
@@ -86,10 +127,14 @@ impl Epoch {
         let comp: &semver::Comparator = &req.comparators[0];
         // Caret is semver's name for the default strategy.
         assert_eq!(comp.op, semver::Op::Caret);
-        match (comp.major, comp.minor) {
-            (0, Some(0) | None) => panic!("invalid version req {req}"),
-            (0, Some(x)) => Epoch::Minor(x),
-            (x, _) => Epoch::Major(x),
+        match (comp.major.try_into(), comp.minor) {
+            (Ok(nonzero_major), _) => Epoch::Major(nonzero_major),
+            (Err(_zero_major), Some(minor)) => match (minor.try_into(), comp.patch) {
+                (Ok(nonzero_minor), _) => Epoch::Minor(nonzero_minor),
+                (Err(_zero_minor), Some(patch)) => Epoch::Patch(patch),
+                (Err(_zero_major), None) => panic!("invalid version req {req}"),
+            },
+            (Err(_zero_major), None) => panic!("invalid version req {req}"),
         }
     }
 }
@@ -100,14 +145,9 @@ impl Display for Epoch {
         match *self {
             // These should never return Err since formatting an integer is
             // infallible.
-            Epoch::Minor(minor) => {
-                assert_ne!(minor, 0);
-                f.write_fmt(format_args!("v0_{minor}")).unwrap()
-            }
-            Epoch::Major(major) => {
-                assert_ne!(major, 0);
-                f.write_fmt(format_args!("v{major}")).unwrap()
-            }
+            Epoch::Major(major) => f.write_fmt(format_args!("v{major}")).unwrap(),
+            Epoch::Minor(minor) => f.write_fmt(format_args!("v0_{minor}")).unwrap(),
+            Epoch::Patch(patch) => f.write_fmt(format_args!("v0_0_{patch}")).unwrap(),
         }
 
         Ok(())
@@ -120,40 +160,41 @@ impl FromStr for Epoch {
     /// A valid input string is of the form:
     /// * "v{i}", where i >= 1, or
     /// * "v0_{i}", where i >= 1
+    /// * "v0_0_{i}", where i >= 1
     ///
     /// Any other string is invalid. If the "v" is missing, there are extra
     /// underscore-separated components, or there are two numbers but both
     /// are 0 or greater than zero are all invalid strings.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Split off the "v" prefix.
-        let mut iter = s.split_inclusive('v');
-        if iter.next() != Some("v") {
+        let Some(s) = s.strip_prefix('v') else {
             return Err(EpochParseError::BadFormat);
+        };
+
+        // Split and parse the major, minor, and patch version numbers.
+        let parts = s
+            .split('_')
+            .map(|substr| substr.parse::<u64>().map_err(EpochParseError::InvalidInt))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Get the final epoch.
+        match parts.as_slice() {
+            &[major] => {
+                let Ok(nonzero_major) = major.try_into() else {
+                    return Err(EpochParseError::BadVersion);
+                };
+                Ok(Epoch::Major(nonzero_major))
+            }
+            &[0, minor] => {
+                let Ok(nonzero_minor) = minor.try_into() else {
+                    return Err(EpochParseError::BadVersion);
+                };
+                Ok(Epoch::Minor(nonzero_minor))
+            }
+            &[0, 0, patch] => Ok(Epoch::Patch(patch)),
+            &[_, _] | &[_, _, _] => Err(EpochParseError::BadVersion),
+            _ => Err(EpochParseError::BadFormat),
         }
-        let s = iter.next().ok_or(EpochParseError::BadFormat)?;
-        if iter.next() != None {
-            return Err(EpochParseError::BadFormat);
-        }
-
-        // Split the major and minor version numbers.
-        let mut parts = s.split('_');
-        let major: Option<u64> =
-            parts.next().map(|s| s.parse().map_err(EpochParseError::InvalidInt)).transpose()?;
-        let minor: Option<u64> =
-            parts.next().map(|s| s.parse().map_err(EpochParseError::InvalidInt)).transpose()?;
-
-        // Get the final epoch, checking that the (major, minor) pair is valid.
-        let result = match (major, minor) {
-            (Some(0), Some(0)) => Err(EpochParseError::BadVersion),
-            (Some(0), Some(minor)) => Ok(Epoch::Minor(minor)),
-            (Some(major), None) => Ok(Epoch::Major(major)),
-            (Some(_), Some(_)) => Err(EpochParseError::BadVersion),
-            (None, None) => Err(EpochParseError::BadFormat),
-            _ => unreachable!(),
-        }?;
-
-        // Ensure there's no remaining parts.
-        if parts.next() == None { Ok(result) } else { Err(EpochParseError::BadFormat) }
     }
 }
 
@@ -190,7 +231,11 @@ impl NormalizedName {
     /// Wrap a normalized name, checking that it is valid.
     pub fn new(normalized_name: &str) -> Option<NormalizedName> {
         let converted_name = Self::from_crate_name(normalized_name);
-        if converted_name.0 == normalized_name { Some(converted_name) } else { None }
+        if converted_name.0 == normalized_name {
+            Some(converted_name)
+        } else {
+            None
+        }
     }
 
     /// Normalize a crate name. `crate_name` is the name Cargo uses to refer to
@@ -219,192 +264,164 @@ impl fmt::Display for NormalizedName {
     }
 }
 
-/// Identifies a third-party crate vendored in the format described by
-/// third_party/rust/README.md
+/// Identifies a crate available in some vendored source. Each crate is uniquely
+/// identified by its Cargo.toml package name and version.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct ChromiumVendoredCrate {
-    /// The upstream name as specified in its Cargo.toml.
+pub struct VendoredCrate {
     pub name: String,
-    /// The crate's epoch, as defined by `Epoch`.
-    pub epoch: Epoch,
-}
-
-impl ChromiumVendoredCrate {
-    /// The normalized name we use in our vendoring structure.
-    pub fn normalized_name(&self) -> NormalizedName {
-        NormalizedName::from_crate_name(&self.name)
-    }
-
-    /// The location of this crate's directory, including its source subdir and
-    /// build files, relative to the third-party Rust crate directory. Crates
-    /// are laid out according to their name and epoch.
-    pub fn build_path(&self) -> PathBuf {
-        let mut path = PathBuf::new();
-        path.push(&self.normalized_name().0);
-        path.push(self.epoch.to_string());
-        path
-    }
-
-    /// The location of this crate's source relative to the third-party Rust
-    /// crate directory.
-    pub fn crate_path(&self) -> PathBuf {
-        let mut path = self.build_path();
-        path.push("crate");
-        path
-    }
-
-    /// Unique but arbitrary name for this (crate, epoch) pair. Suitable for use
-    /// in Cargo.toml [patch] sections.
-    pub fn patch_name(&self) -> String {
-        format!("{}_{}", self.name, self.epoch)
-    }
-}
-
-impl fmt::Display for ChromiumVendoredCrate {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("{} {}", self.name, self.epoch))
-    }
-}
-
-/// Traverse vendored third-party crates and collect the set of names and
-/// epochs. Each `ChromiumVendoredCrate` entry is paired with the package
-/// metadata from its manifest. The returned list is in unspecified order.
-pub fn collect_third_party_crates<P: AsRef<Path>>(
-    crates_path: P,
-) -> io::Result<Vec<(ChromiumVendoredCrate, manifest::CargoPackage)>> {
-    let mut crates = Vec::new();
-
-    for crate_dir in fs::read_dir(crates_path)? {
-        // Look at each crate directory.
-        let crate_dir: fs::DirEntry = crate_dir?;
-        if !crate_dir.file_type()?.is_dir() {
-            continue;
-        }
-
-        let crate_path = crate_dir.path();
-
-        // Ensure the path has a valid name: is UTF8, has our normalized format.
-        let normalized_name = path_as_str(crate_path.file_name().unwrap())?;
-        into_io_result(NormalizedName::new(normalized_name).ok_or_else(|| {
-            format!("unnormalized crate name in path {}", crate_path.to_string_lossy())
-        }))?;
-
-        for epoch_dir in fs::read_dir(crate_dir.path())? {
-            // Look at each epoch of the crate we have checked in.
-            let epoch_dir: fs::DirEntry = epoch_dir?;
-            if !crate_dir.file_type()?.is_dir() {
-                continue;
-            }
-
-            let epoch_path = epoch_dir.path();
-            let epoch_name = path_as_str(epoch_path.file_name().unwrap())?;
-            let epoch = match Epoch::from_str(epoch_name) {
-                Ok(epoch) => epoch,
-                // Skip if we can't parse the directory as a valid epoch.
-                Err(_) => continue,
-            };
-
-            // Try to read the Cargo.toml, since we need the package name. The
-            // directory name on disk is normalized but we need to refer to the
-            // package the way Cargo expects.
-            let manifest_path = epoch_path.join("crate/Cargo.toml");
-            let manifest_contents = match fs::read_to_string(&manifest_path) {
-                Ok(s) => s,
-                Err(e) => match e.kind() {
-                    // Skip this directory and log a message if a Cargo.toml
-                    // doesn't exist.
-                    io::ErrorKind::NotFound => {
-                        println!(
-                            "Warning: directory name parsed as valid epoch but \
-                            contained no Cargo.toml: {}",
-                            manifest_path.to_string_lossy()
-                        );
-                        continue;
-                    }
-                    _ => return Err(e),
-                },
-            };
-            let manifest: manifest::CargoManifest = toml::de::from_str(&manifest_contents).unwrap();
-            let package_name = manifest.package.name.clone();
-
-            crates.push((ChromiumVendoredCrate { name: package_name, epoch }, manifest.package));
-        }
-    }
-
-    Ok(crates)
-}
-
-/// Identifies a third-party crate vendored in `cargo vendor` format. This is
-/// used in the Rust source tree.
-#[derive(Clone, Debug, Eq)]
-pub struct StdVendoredCrate {
-    /// The upstream name as specified in its Cargo.toml.
-    pub name: String,
-    /// The crate's version.
     pub version: Version,
-    /// Whether this is the latest version in the vendored set. If this is
-    /// false, there is a version suffix in the path. Otherwise, it is just the
-    /// package name.
-    ///
-    /// This is not factored into comparisons or hashing.
-    pub is_latest: bool,
 }
 
-impl Hash for StdVendoredCrate {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-        self.version.hash(state);
-    }
-}
-
-impl PartialEq for StdVendoredCrate {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.version == other.version
-    }
-}
-
-impl Ord for StdVendoredCrate {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.name.cmp(&other.name).then(self.version.cmp(&other.version))
-    }
-}
-
-impl PartialOrd for StdVendoredCrate {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl StdVendoredCrate {
-    /// The crate's path relative to the `vendor/` dir, taking into account
-    /// whether it's the latest version (and so whether the name is abridged).
-    pub fn crate_path(&self) -> PathBuf {
-        PathBuf::from(if self.is_latest { self.abridged_dir_name() } else { self.full_dir_name() })
-    }
-
-    /// The subdirectory name including the full version.
-    fn full_dir_name(&self) -> String {
-        format!("{}-{}", self.name, self.version)
-    }
-
-    /// The subdirectory name without the version.
-    fn abridged_dir_name(&self) -> String {
-        self.name.clone()
-    }
-}
-
-impl fmt::Display for StdVendoredCrate {
+impl fmt::Display for VendoredCrate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.name, self.version)
     }
 }
 
+impl VendoredCrate {
+    pub fn normalized_name(&self) -> NormalizedName {
+        NormalizedName::from_crate_name(&self.name)
+    }
+}
+
+pub struct CrateFiles {
+    /// The list of all source files that are part of the crate and may be used
+    /// by rustc when building any part of the crate, as absolute paths. These
+    /// files are those found under the crate root.
+    pub sources: Vec<PathBuf>,
+    /// The list of all input files that are part of the crate and may be used
+    /// by rustc when building any part of the crate, as absolute paths. This
+    /// may contain .rs files as well that are part of other crates and which
+    /// may be include()'d or used through module paths.
+    pub inputs: Vec<PathBuf>,
+    /// The list of all native lib files that are part of the crate and may be
+    /// depended on through `#[link]` directives. These files are those found
+    /// under the crate root.
+    pub native_libs: Vec<PathBuf>,
+    /// Like `sources` but for the crate's build script.
+    pub build_script_sources: Vec<PathBuf>,
+    /// Like `inputs` but for the crate's build script.
+    pub build_script_inputs: Vec<PathBuf>,
+}
+
+impl CrateFiles {
+    fn new() -> Self {
+        Self {
+            sources: vec![],
+            inputs: vec![],
+            native_libs: vec![],
+            build_script_sources: vec![],
+            build_script_inputs: vec![],
+        }
+    }
+
+    /// Sorts the CrateFiles for a deterministic output.
+    fn sort_and_dedup(&mut self) {
+        fn doit(vec: &mut Vec<PathBuf>) {
+            vec.sort_unstable();
+            vec.dedup();
+        }
+        doit(&mut self.sources);
+        doit(&mut self.inputs);
+        doit(&mut self.native_libs);
+        doit(&mut self.build_script_sources);
+        doit(&mut self.build_script_inputs);
+    }
+}
+
+/// Get the subdir name containing `id` in a `cargo vendor` directory.
+pub fn std_crate_path(id: &VendoredCrate) -> PathBuf {
+    format!("{}-{}", id.name, id.version).into()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum IncludeCrateTargets {
+    LibOnly,
+    LibAndBin,
+}
+
+/// Collect the source and input files (i.e. `CrateFiles`) for each library that
+/// is part of the build.
+pub fn collect_crate_files(
+    p: &deps::Package,
+    config: &BuildConfig,
+    include_targets: IncludeCrateTargets,
+) -> Result<(VendoredCrate, CrateFiles)> {
+    let mut files = CrateFiles::new();
+
+    #[derive(Debug)]
+    struct RootDir {
+        path: PathBuf,
+        collect: CollectCrateFiles,
+    }
+
+    let add_extra_root_dirs = |root_dirs: &mut Vec<RootDir>, crate_root: &Path| {
+        root_dirs.push(RootDir {
+            path: crate_root.join("**/*.rs"),
+            collect: CollectCrateFiles::Internal,
+        });
+
+        let mut extend_root_dirs = |entry_getter: &dyn Fn(&CrateConfig) -> &Vec<PathBuf>,
+                                    collect_kind| {
+            root_dirs.extend(
+                config
+                    .get_combined_set(&p.package_name, &p.version, entry_getter)
+                    .into_iter()
+                    .map(|path| RootDir { path: crate_root.join(path), collect: collect_kind }),
+            );
+        };
+        extend_root_dirs(
+            &|cfg| &cfg.extra_input_roots,
+            CollectCrateFiles::ExternalSourcesAndInputs,
+        );
+        extend_root_dirs(
+            &|cfg| &cfg.extra_build_script_input_roots,
+            CollectCrateFiles::BuildScriptExternalSourcesAndInputs,
+        );
+        extend_root_dirs(&|cfg| &cfg.native_libs_roots, CollectCrateFiles::LibsOnly);
+    };
+
+    let mut root_dirs = Vec::new();
+    if let Some(lib_target) = p.lib_target.as_ref() {
+        let lib_root = lib_target.root.parent().expect("lib target has no directory in its path");
+        add_extra_root_dirs(&mut root_dirs, lib_root);
+    }
+    if include_targets == IncludeCrateTargets::LibAndBin {
+        for bin in &p.bin_targets {
+            let bin_root = bin.root.parent().expect("bin target has no directory in its path");
+            add_extra_root_dirs(&mut root_dirs, bin_root);
+        }
+    }
+
+    for root_dir in root_dirs {
+        use CollectCrateFiles::*;
+        let target_list = match root_dir.collect {
+            Internal => &mut files.sources,
+            ExternalSourcesAndInputs => &mut files.inputs,
+            BuildScriptExternalSourcesAndInputs => &mut files.build_script_inputs,
+            LibsOnly => &mut files.native_libs,
+        };
+        recurse_crate_files(&root_dir.path, &mut |filepath| {
+            target_list.push(filepath.to_owned());
+        })
+        .with_context(|| {
+            format!(
+                "Failed to process `{}` path.  This path came from {} for {p}",
+                root_dir.path.display(),
+                root_dir.collect.as_origin_msg(),
+            )
+        })?;
+    }
+    files.sort_and_dedup();
+
+    let crate_id = VendoredCrate { name: p.package_name.clone(), version: p.version.clone() };
+    Ok((crate_id, files))
+}
+
 /// Traverse vendored third-party crates in the Rust source package. Each
-/// `StdVendoredCrate` is paired with the package metadata from its manifest.
-/// The returned list is in unspecified order.
-pub fn collect_std_vendored_crates<P: AsRef<Path>>(
-    vendor_path: P,
-) -> io::Result<Vec<(StdVendoredCrate, manifest::CargoPackage)>> {
+/// `VendoredCrate` is paired with the package metadata from its manifest. The
+/// returned list is in unspecified order.
+pub fn collect_std_vendored_crates(vendor_path: &Path) -> Result<Vec<VendoredCrate>> {
     let mut crates = Vec::new();
 
     for vendored_crate in fs::read_dir(vendor_path)? {
@@ -413,62 +430,354 @@ pub fn collect_std_vendored_crates<P: AsRef<Path>>(
             continue;
         }
 
-        let crate_path = vendored_crate.path();
-        let manifest_path = crate_path.join("Cargo.toml");
-        let manifest: manifest::CargoManifest =
-            toml::de::from_str(&fs::read_to_string(&manifest_path)?).unwrap();
+        let crate_id = get_vendored_crate_id(&vendored_crate.path())?;
 
-        // Vendored crate directories are named as either "{package_name}" or
-        // "{package_name}-{version}". The latest version of the vendored
-        // package is named as the former, and older ones as the latter.
-        //
-        // We must determine which format is used. A simple way is to compute
-        // both names and compare it to the directory.
-        let dir_name = crate_path.file_name().unwrap().to_str().unwrap();
-
-        let mut crate_id = StdVendoredCrate {
-            name: manifest.package.name.clone(),
-            version: manifest.package.version.clone(),
-            // Placeholder value.
-            is_latest: false,
-        };
-
-        crate_id.is_latest = if crate_id.full_dir_name() == dir_name {
-            false
-        } else if crate_id.abridged_dir_name() == dir_name {
-            true
-        } else {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "directory name {dir_name} does not match package information for {crate_id:?}"
-                ),
-            ));
-        };
-
-        // Check that we correctly determined `is_latest` and our computed
-        // subdirectory name is correct.
-        assert_eq!(crate_path.file_name().unwrap(), std::ffi::OsStr::new(&crate_id.crate_path()));
-
-        crates.push((crate_id, manifest.package));
+        // Vendored crate directories can be named "{package_name}" or
+        // "{package_name}-{version}", but for now we only use the latter for
+        // std vendored deps. For simplicity, accept only that.
+        let dir_name = vendored_crate.file_name().to_string_lossy().into_owned();
+        let std_path = std_crate_path(&crate_id).to_str().unwrap().to_string();
+        let std_path_no_version = std_path
+            .rfind('-')
+            .map(|pos| std_path[..pos].to_string())
+            .unwrap_or(std_path.to_string());
+        if std_path != dir_name && std_path_no_version != dir_name {
+            bail!("directory name {dir_name} does not match package information for {crate_id:?}");
+        }
+        crates.push(crate_id);
     }
 
     Ok(crates)
 }
 
-/// Utility to read a path as a `&str` with an informative error message if it
-/// had invalid UTF8.
-fn path_as_str<T: AsRef<Path> + ?Sized>(path: &T) -> io::Result<&str> {
-    let path = path.as_ref();
-    into_io_result(
-        path.to_str().ok_or_else(|| format!("invalid utf8 in path {}", path.to_string_lossy())),
-    )
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum CollectCrateFiles {
+    /// Collect .rs files and store them as `sources` and other files as
+    /// `inputs`. These are part of the crate directly.
+    Internal,
+    /// Collect .rs files, .md files and other file types that may be
+    /// include!()'d into the crate, and store them as `inputs`. These are not
+    /// directly part of the crate.
+    ExternalSourcesAndInputs,
+    /// Like `ExternalSourcesAndInputs` but for build scripts.
+    BuildScriptExternalSourcesAndInputs,
+    /// Collect .lib files and store them as `native_libs`. These can be
+    /// depended on by the crate through `#[link]` directives.
+    LibsOnly,
 }
 
-/// Utility to convert a `Result<T, E>` into `io::Result<T>` for any compatible
-/// error type `E`.
-fn into_io_result<T, E: Into<Box<dyn std::error::Error + Send + Sync>>>(
-    result: Result<T, E>,
-) -> io::Result<T> {
-    result.map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+impl CollectCrateFiles {
+    fn as_origin_msg(&self) -> &'static str {
+        use CollectCrateFiles::*;
+        match self {
+            Internal => "crate metadata and sources",
+            ExternalSourcesAndInputs => "`extra_input_roots` entry in `gnrt_config.toml`",
+            BuildScriptExternalSourcesAndInputs => {
+                "`extra_build_script_input_roots` entry in `gnrt_config.toml`"
+            }
+            LibsOnly => "`native_libs_roots` entry in `gnrt_config.toml`",
+        }
+    }
+}
+
+/// Recursively visits all files under `path` and calls `f` on each one.
+///
+/// The `path` may be a single file or a directory.
+pub fn recurse_crate_files(path: &Path, f: &mut dyn FnMut(&Path)) -> Result<()> {
+    let glob = {
+        let path = if path.is_dir() { path.join("**/*") } else { path.to_owned() };
+        let Some(path) = path.to_str() else { bail!("Non-UTF8 path: {}", path.display()) };
+        glob::glob(path)?
+    };
+    for filepath in glob {
+        let filepath = filepath?;
+        if !filepath.is_file() {
+            continue;
+        }
+
+        // Working locally can produce files in tree that should not be considered, and
+        // which are not part of the git repository.
+        //
+        // * `.devcontainer/` may contain .md files such as a README.md that are never
+        //   part of the build.
+        // * `.vscode/` may contain .md files such as a README.md generated there.
+        // * `target/` may contain .rs files generated by build scripts when compiling
+        //   the crate with cargo or rust-analyzer.
+        //
+        // Ideally we should just include files that are listed in `git ls-files`.
+        const DIRS_TO_SKIP: [&str; 3] = [".devcontainer", ".vscode", "target"];
+        let should_skip = filepath
+            .components()
+            .filter_map(|component| {
+                use std::path::Component::*;
+                match component {
+                    Normal(component) => Some(component),
+                    Prefix(_) | RootDir | CurDir | ParentDir => None,
+                }
+            })
+            .any(|comp| DIRS_TO_SKIP.iter().any(|dir_to_skip| *dir_to_skip == comp));
+        if should_skip {
+            continue;
+        }
+
+        f(&filepath)
+    }
+
+    Ok(())
+}
+
+/// Get a crate's ID and parsed manifest from its path. Returns `Ok(None)` if
+/// there was no Cargo.toml, or `Err(_)` for other IO errors.
+fn get_vendored_crate_id(package_path: &Path) -> Result<VendoredCrate> {
+    let manifest = manifest::CargoManifest::from_path(&package_path.join("Cargo.toml"))?;
+    let crate_id = VendoredCrate {
+        name: manifest.package.name.as_str().into(),
+        version: manifest.package.version.clone(),
+    };
+    Ok(crate_id)
+}
+
+/// Proxy for [de]serializing epochs to/from strings. This uses the "1" or "0.1"
+/// format rather than the `Display` format for `Epoch`.
+#[derive(Debug, Deserialize, Serialize)]
+struct EpochString(String);
+
+impl From<Epoch> for EpochString {
+    fn from(epoch: Epoch) -> Self {
+        Self(epoch.to_version_string())
+    }
+}
+
+impl From<EpochString> for Epoch {
+    fn from(epoch: EpochString) -> Self {
+        Epoch::from_version_req_str(&epoch.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Epoch::*;
+    use super::*;
+
+    fn new_major(major: u64) -> Epoch {
+        Major(NonZero::new(major).unwrap())
+    }
+
+    fn new_minor(minor: u64) -> Epoch {
+        Minor(NonZero::new(minor).unwrap())
+    }
+
+    #[test]
+    fn epoch_from_str() {
+        use EpochParseError::*;
+        assert_eq!(Epoch::from_str("v1"), Ok(new_major(1)));
+        assert_eq!(Epoch::from_str("v2"), Ok(new_major(2)));
+        assert_eq!(Epoch::from_str("v0_3"), Ok(new_minor(3)));
+        assert_eq!(Epoch::from_str("0_1"), Err(BadFormat));
+        assert_eq!(Epoch::from_str("v1_9"), Err(BadVersion));
+        assert_eq!(Epoch::from_str("v0_0"), Err(BadVersion));
+        assert_eq!(Epoch::from_str("v0_1_2"), Err(BadVersion));
+        assert_eq!(Epoch::from_str("v0_0_0_0"), Err(BadFormat));
+        assert_eq!(Epoch::from_str("v0_0_0"), Ok(Patch(0)));
+        assert_eq!(Epoch::from_str("v0_0_1"), Ok(Patch(1)));
+        assert_eq!(Epoch::from_str("v0_0_2"), Ok(Patch(2)));
+        assert_eq!(Epoch::from_str("v1_0"), Err(BadVersion));
+        assert_eq!(Epoch::from_str("v0_1_0"), Err(BadVersion));
+        assert!(matches!(Epoch::from_str("v1_0foo"), Err(InvalidInt(_))));
+        assert!(matches!(Epoch::from_str("vx_1"), Err(InvalidInt(_))));
+    }
+
+    #[test]
+    fn epoch_to_string() {
+        assert_eq!(new_major(1).to_string(), "v1");
+        assert_eq!(new_major(2).to_string(), "v2");
+        assert_eq!(new_minor(3).to_string(), "v0_3");
+        assert_eq!(Patch(5).to_string(), "v0_0_5");
+    }
+
+    #[test]
+    fn epoch_from_version() {
+        use semver::Version;
+
+        assert_eq!(Epoch::from_version(&Version::new(0, 0, 0)), Patch(0));
+        assert_eq!(Epoch::from_version(&Version::new(0, 0, 1)), Patch(1));
+        assert_eq!(Epoch::from_version(&Version::new(0, 1, 2)), new_minor(1));
+        assert_eq!(Epoch::from_version(&Version::new(1, 2, 0)), new_major(1));
+    }
+
+    #[test]
+    fn epoch_from_version_req_string() {
+        assert_eq!(Epoch::from_version_req_str("0.0.0"), Patch(0));
+        assert_eq!(Epoch::from_version_req_str("0.0.1"), Patch(1));
+        assert_eq!(Epoch::from_version_req_str("0.1.0"), new_minor(1));
+        assert_eq!(Epoch::from_version_req_str("1.0.0"), new_major(1));
+        assert_eq!(Epoch::from_version_req_str("2.3.0"), new_major(2));
+    }
+
+    struct CollectCrateFilesTestCaseBuilder {
+        temp_dir: tempfile::TempDir,
+        package: deps::Package,
+        config: BuildConfig,
+    }
+
+    impl CollectCrateFilesTestCaseBuilder {
+        /// Creates new test case builder.  Initially the crate directory only
+        /// contains `src/lib.rs` and the test uses the default, empty
+        /// `gnrt_config.toml`.
+        fn new() -> Self {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let src_dir = temp_dir.path().join("src");
+            fs::create_dir(&src_dir).unwrap();
+            let lib_file = src_dir.join("lib.rs");
+            fs::write(&lib_file, "").unwrap();
+
+            let package = deps::Package {
+                package_name: "test_crate".to_string(),
+                version: semver::Version::new(1, 2, 3),
+                description: None,
+                authors: vec![],
+                edition: "2021".to_string(),
+                repository: None,
+                dependencies: vec![],
+                build_dependencies: vec![],
+                dependency_kinds: std::collections::HashMap::new(),
+                lib_target: Some(deps::LibTarget { root: lib_file, lib_type: deps::LibType::Rlib }),
+                bin_targets: vec![],
+                build_script: None,
+                group: crate::group::Group::Safe,
+                is_local: true,
+                is_toplevel_dep: false,
+            };
+
+            Self { temp_dir, package, config: BuildConfig::default() }
+        }
+
+        fn add_file(&self, path: &str) {
+            let full_path = self.temp_dir.path().join(path);
+            fs::write(full_path, "").unwrap();
+        }
+
+        fn add_dir(&self, path: &str) {
+            let full_path = self.temp_dir.path().join(path);
+            fs::create_dir_all(full_path).unwrap();
+        }
+
+        fn set_config(&mut self, gnrt_config: &str) {
+            self.config = toml::de::from_str(gnrt_config).unwrap();
+        }
+
+        fn build_and_run_test(self) -> (Vec<String>, Vec<String>) {
+            let (_crate_id, crate_files) =
+                collect_crate_files(&self.package, &self.config, IncludeCrateTargets::LibOnly)
+                    .unwrap();
+
+            let root = self.temp_dir.path().canonicalize().unwrap();
+            let make_relative = |path: &Path| -> String {
+                let canon_path = path.canonicalize().unwrap();
+                canon_path.strip_prefix(&root).unwrap().to_str().unwrap().to_string()
+            };
+
+            let sources = crate_files.sources.iter().map(|p| make_relative(p)).collect();
+            let inputs = crate_files.inputs.iter().map(|p| make_relative(p)).collect();
+
+            (sources, inputs)
+        }
+    }
+
+    #[test]
+    fn test_collect_crate_files_without_gnrt() {
+        let builder = CollectCrateFilesTestCaseBuilder::new();
+        builder.add_file("src/submodule.rs");
+        builder.add_file("src/submodule.md");
+        builder.add_file("src/submodule.dat");
+        builder.add_file("README.md");
+
+        let (sources, inputs) = builder.build_and_run_test();
+
+        assert_eq!(&sources, &["src/lib.rs", "src/submodule.rs"]);
+        assert!(inputs.is_empty());
+    }
+
+    #[test]
+    fn test_collect_crate_files_with_extra_inputs_specifying_md_file() {
+        let mut builder = CollectCrateFilesTestCaseBuilder::new();
+        builder.add_file("README.md");
+        builder.set_config(
+            r#"
+            [crate.test_crate]
+            extra_input_roots = ['../README.md']
+            "#,
+        );
+
+        let (sources, inputs) = builder.build_and_run_test();
+
+        assert_eq!(&sources, &["src/lib.rs"]);
+        assert_eq!(&inputs, &["README.md"]);
+    }
+
+    #[test]
+    fn test_collect_crate_files_with_extra_inputs_specifying_dir() {
+        let mut builder = CollectCrateFilesTestCaseBuilder::new();
+        builder.add_dir("dir");
+        builder.add_file("dir/a.md");
+        builder.add_file("dir/b.md");
+        builder.add_file("dir/l.lib"); // Should be skipped.
+        builder.add_file("dir/x.rs");
+        builder.set_config(
+            r#"
+            [crate.test_crate]
+            extra_input_roots = ['../dir']
+            "#,
+        );
+
+        let (sources, inputs) = builder.build_and_run_test();
+
+        assert_eq!(&sources, &["src/lib.rs"]);
+        assert_eq!(&inputs, &["dir/a.md", "dir/b.md", "dir/l.lib", "dir/x.rs"]);
+    }
+
+    #[test]
+    fn test_collect_crate_files_with_extra_inputs_specifying_simple_wildcard() {
+        let mut builder = CollectCrateFilesTestCaseBuilder::new();
+        builder.add_dir("dir");
+        builder.add_file("dir/a.md");
+        builder.add_file("dir/b.md");
+        builder.add_file("dir/x.txt");
+        builder.set_config(
+            r#"
+            [crate.test_crate]
+            extra_input_roots = ['../dir/*.md']
+            "#,
+        );
+
+        let (sources, inputs) = builder.build_and_run_test();
+
+        assert_eq!(&sources, &["src/lib.rs"]);
+        assert_eq!(&inputs, &["dir/a.md", "dir/b.md"]);
+    }
+
+    #[test]
+    fn test_collect_crate_files_with_extra_inputs_specifying_deep_wildcard() {
+        let mut builder = CollectCrateFilesTestCaseBuilder::new();
+        builder.add_dir("dir");
+        builder.add_dir("dir/foo");
+        builder.add_dir("dir/bar");
+        builder.add_file("dir/dir.md");
+        builder.add_file("dir/dir.txt");
+        builder.add_file("dir/foo/foo.md");
+        builder.add_file("dir/foo/foo.txt");
+        builder.add_file("dir/bar/bar.md");
+        builder.add_file("dir/bar/bar.txt");
+        builder.set_config(
+            r#"
+            [crate.test_crate]
+            extra_input_roots = ['../dir/**/*.md']
+            "#,
+        );
+
+        let (sources, inputs) = builder.build_and_run_test();
+
+        assert_eq!(&sources, &["src/lib.rs"]);
+        assert_eq!(&inputs, &["dir/bar/bar.md", "dir/dir.md", "dir/foo/foo.md"]);
+    }
 }

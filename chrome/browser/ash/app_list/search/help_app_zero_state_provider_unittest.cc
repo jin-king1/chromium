@@ -7,17 +7,14 @@
 #include <memory>
 #include <string>
 
-#include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
-#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
-#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ash/app_list/app_list_notifier_impl.h"
 #include "chrome/browser/ash/app_list/app_list_test_util.h"
 #include "chrome/browser/ash/app_list/search/chrome_search_result.h"
 #include "chrome/browser/ash/app_list/search/test/test_search_controller.h"
 #include "chrome/browser/ash/app_list/test/test_app_list_controller.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/prefs/pref_service.h"
@@ -43,11 +40,7 @@ void ExpectReleaseNotesChip(ChromeSearchResult* result,
 
 class HelpAppZeroStateProviderTest : public AppListTestBase {
  public:
-  HelpAppZeroStateProviderTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{ash::features::kReleaseNotesSuggestionChip},
-        /*disabled_features=*/{});
-  }
+  HelpAppZeroStateProviderTest() = default;
   ~HelpAppZeroStateProviderTest() override = default;
 
   void SetUp() override {
@@ -59,15 +52,23 @@ class HelpAppZeroStateProviderTest : public AppListTestBase {
     auto provider = std::make_unique<HelpAppZeroStateProvider>(
         profile(), app_list_notifier_.get());
     provider_ = provider.get();
-    search_controller_.AddProvider(std::move(provider));
+    search_controller_ = std::make_unique<TestSearchController>();
+    search_controller_->AddProvider(std::move(provider));
+  }
+
+  void TearDown() override {
+    provider_ = nullptr;
+    search_controller_.reset();
+    app_list_notifier_.reset();
+    AppListTestBase::TearDown();
   }
 
   void StartZeroStateSearch() {
-    search_controller_.StartZeroState(base::DoNothing(), base::TimeDelta());
+    search_controller_->StartZeroState(base::DoNothing(), base::TimeDelta());
   }
 
   const app_list::Results& GetLatestResults() {
-    return search_controller_.last_results();
+    return search_controller_->last_results();
   }
 
   ::test::TestAppListController* app_list_controller() {
@@ -79,18 +80,15 @@ class HelpAppZeroStateProviderTest : public AppListTestBase {
  private:
   ::test::TestAppListController app_list_controller_;
   std::unique_ptr<ash::AppListNotifier> app_list_notifier_;
-  TestSearchController search_controller_;
-  raw_ptr<HelpAppZeroStateProvider, ExperimentalAsh> provider_ = nullptr;
-  base::test::ScopedFeatureList scoped_feature_list_;
+  raw_ptr<HelpAppZeroStateProvider> provider_ = nullptr;
+  std::unique_ptr<TestSearchController> search_controller_;
 };
 
 // Test for empty query.
 TEST_F(HelpAppZeroStateProviderTest,
        HasNoResultsForEmptyQueryIfTimesLeftToShowIsZero) {
   profile()->GetPrefs()->SetInteger(
-      prefs::kDiscoverTabSuggestionChipTimesLeftToShow, 0);
-  profile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 0);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 0);
 
   StartZeroStateSearch();
 
@@ -98,23 +96,9 @@ TEST_F(HelpAppZeroStateProviderTest,
 }
 
 TEST_F(HelpAppZeroStateProviderTest,
-       ReturnsDiscoverTabChipForEmptyQueryIfTimesLeftIsPositive) {
-  profile()->GetPrefs()->SetInteger(
-      prefs::kDiscoverTabSuggestionChipTimesLeftToShow, 1);
-  profile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 0);
-
-  StartZeroStateSearch();
-
-  ASSERT_EQ(0u, GetLatestResults().size());
-}
-
-TEST_F(HelpAppZeroStateProviderTest,
        ReturnsReleaseNotesChipForEmptyQueryIfTimesLeftIsPositive) {
   profile()->GetPrefs()->SetInteger(
-      prefs::kDiscoverTabSuggestionChipTimesLeftToShow, 0);
-  profile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 1);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 1);
 
   StartZeroStateSearch();
 
@@ -122,37 +106,12 @@ TEST_F(HelpAppZeroStateProviderTest,
   ChromeSearchResult* result = GetLatestResults().at(0).get();
   ExpectReleaseNotesChip(result, IDS_HELP_APP_WHATS_NEW_CONTINUE_TASK_TITLE,
                          ash::SearchResultDisplayType::kContinue);
-}
-
-TEST_F(HelpAppZeroStateProviderTest, PrioritizesDiscoverTabChipForEmptyQuery) {
-  profile()->GetPrefs()->SetInteger(
-      prefs::kDiscoverTabSuggestionChipTimesLeftToShow, 1);
-  profile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 1);
-
-  StartZeroStateSearch();
-
-  ASSERT_EQ(1u, GetLatestResults().size());
-
-  ChromeSearchResult* result = GetLatestResults().at(0).get();
-  ExpectReleaseNotesChip(result, IDS_HELP_APP_WHATS_NEW_CONTINUE_TASK_TITLE,
-                         ash::SearchResultDisplayType::kContinue);
-}
-
-TEST_F(HelpAppZeroStateProviderTest,
-       DecrementsTimesLeftToShowDiscoverTabChipUponShowing) {
-  profile()->GetPrefs()->SetInteger(
-      prefs::kDiscoverTabSuggestionChipTimesLeftToShow, 3);
-
-  StartZeroStateSearch();
-
-  EXPECT_EQ(0u, GetLatestResults().size());
 }
 
 TEST_F(HelpAppZeroStateProviderTest,
        DecrementsTimesLeftToShowReleaseNotesChipUponShowing) {
   profile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
 
   StartZeroStateSearch();
 
@@ -164,12 +123,12 @@ TEST_F(HelpAppZeroStateProviderTest,
 
   app_list_controller()->ShowAppList(ash::AppListShowSource::kSearchKey);
   EXPECT_EQ(3, profile()->GetPrefs()->GetInteger(
-                   prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
+                   ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
 
   app_list_notifier()->NotifyResultsUpdated(
       ash::SearchResultDisplayType::kContinue,
       {ash::AppListNotifier::Result(kReleaseNotesResultId,
-                                    ash::HELP_APP_UPDATES)});
+                                    ash::HELP_APP_UPDATES, std::nullopt)});
   EXPECT_FALSE(app_list_notifier()->FireImpressionTimerForTesting(
       ash::AppListNotifier::Location::kContinue));
 
@@ -177,29 +136,19 @@ TEST_F(HelpAppZeroStateProviderTest,
       ash::AppListNotifier::Location::kContinue, true);
 
   EXPECT_EQ(3, profile()->GetPrefs()->GetInteger(
-                   prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
+                   ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
 
   ASSERT_TRUE(app_list_notifier()->FireImpressionTimerForTesting(
       ash::SearchResultDisplayType::kContinue));
 
   EXPECT_EQ(2, profile()->GetPrefs()->GetInteger(
-                   prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
-}
-
-TEST_F(HelpAppZeroStateProviderTest,
-       ClickingDiscoverTabChipStopsItFromShowing) {
-  profile()->GetPrefs()->SetInteger(
-      prefs::kDiscoverTabSuggestionChipTimesLeftToShow, 3);
-
-  StartZeroStateSearch();
-
-  EXPECT_EQ(0u, GetLatestResults().size());
+                   ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
 }
 
 TEST_F(HelpAppZeroStateProviderTest,
        ClickingReleaseNotesChipStopsItFromShowing) {
   profile()->GetPrefs()->SetInteger(
-      prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
+      ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow, 3);
 
   StartZeroStateSearch();
 
@@ -207,7 +156,7 @@ TEST_F(HelpAppZeroStateProviderTest,
   result->Open(/*event_flags=*/0);
 
   EXPECT_EQ(0, profile()->GetPrefs()->GetInteger(
-                   prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
+                   ash::prefs::kReleaseNotesSuggestionChipTimesLeftToShow));
 }
 
 }  // namespace app_list::test

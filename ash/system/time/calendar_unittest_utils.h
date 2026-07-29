@@ -11,7 +11,12 @@
 #include <string>
 
 #include "ash/calendar/calendar_client.h"
+#include "ash/system/time/calendar_list_model.h"
+#include "ash/system/time/calendar_model.h"
 #include "ash/system/time/calendar_utils.h"
+#include "base/functional/callback.h"
+#include "base/run_loop.h"
+#include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "google_apis/calendar/calendar_api_response_types.h"
 
@@ -179,37 +184,37 @@ const char* kAllTimeZones[] = {"Pacific/Midway",
 // These are from "third_party/fontconfig/include/fc-lang/fclang.h" data.
 // Locales "und-zmth" and "und-zsye" are omitted since they cannot be set.
 const char* kLocales[] = {
-    "aa",     "ab",     "af",     "ak",    "am",    "an",    "ar",    "as",
-    "ast",    "av",     "ay",     "az-az", "az-ir", "ba",    "be",    "ber-dz",
-    "ber-ma", "bg",     "bh",     "bho",   "bi",    "bin",   "bm",    "bn",
-    "bo",     "br",     "brx",    "bs",    "bua",   "byn",   "ca",    "ce",
-    "ch",     "chm",    "chr",    "co",    "crh",   "cs",    "csb",   "cu",
-    "cv",     "cy",     "da",     "de",    "doi",   "dv",    "dz",    "ee",
-    "el",     "en",     "eo",     "es",    "et",    "eu",    "fa",    "fat",
-    "ff",     "fi",     "fil",    "fj",    "fo",    "fr",    "fur",   "fy",
-    "ga",     "gd",     "gez",    "gl",    "gn",    "gu",    "gv",    "ha",
-    "haw",    "he",     "hi",     "hne",   "ho",    "hr",    "hsb",   "ht",
-    "hu",     "hy",     "hz",     "ia",    "id",    "ie",    "ig",    "ii",
-    "ik",     "io",     "is",     "it",    "iu",    "ja",    "jv",    "ka",
-    "kaa",    "kab",    "ki",     "kj",    "kk",    "kl",    "km",    "kn",
-    "ko",     "kok",    "kr",     "ks",    "ku-am", "ku-iq", "ku-ir", "ku-tr",
-    "kum",    "kv",     "kw",     "kwm",   "ky",    "la",    "lah",   "lb",
-    "lez",    "lg",     "li",     "ln",    "lo",    "lt",    "lv",    "mai",
-    "mg",     "mh",     "mi",     "mk",    "ml",    "mn-cn", "mn-mn", "mni",
-    "mo",     "mr",     "ms",     "mt",    "my",    "na",    "nb",    "nds",
-    "ne",     "ng",     "nl",     "nn",    "no",    "nqo",   "nr",    "nso",
-    "nv",     "ny",     "oc",     "om",    "or",    "os",    "ota",   "pa",
-    "pa-pk",  "pap-an", "pap-aw", "pl",    "ps-af", "ps-pk", "pt",    "qu",
-    "quz",    "rm",     "rn",     "ro",    "ru",    "rw",    "sa",    "sah",
-    "sat",    "sc",     "sco",    "sd",    "se",    "sel",   "sg",    "sh",
-    "shs",    "si",     "sid",    "sk",    "sl",    "sm",    "sma",   "smj",
-    "smn",    "sms",    "sn",     "so",    "sq",    "sr",    "ss",    "st",
-    "su",     "sv",     "sw",     "syr",   "ta",    "te",    "tg",    "th",
-    "ti-er",  "ti-et",  "tig",    "tk",    "tl",    "tn",    "to",    "tr",
-    "ts",     "tt",     "tw",     "ty",    "tyv",   "ug",    "uk",    "ur",
-    "uz",     "ve",     "vi",     "vo",    "vot",   "wa",    "wal",   "wen",
-    "wo",     "xh",     "yap",    "yi",    "yo",    "za",    "zh-cn", "zh-hk",
-    "zh-mo",  "zh-sg",  "zh-tw",  "zu"};
+    "aa",     "ab",  "af",    "ak",    "am",    "an",    "ar",    "as",
+    "ast",    "av",  "ay",    "az-az", "az-ir", "ba",    "be",    "ber-dz",
+    "ber-ma", "bg",  "bh",    "bho",   "bi",    "bin",   "bm",    "bn",
+    "bo",     "br",  "brx",   "bs",    "bua",   "byn",   "ca",    "ce",
+    "ch",     "chm", "chr",   "co",    "crh",   "cs",    "csb",   "cu",
+    "cv",     "cy",  "da",    "de",    "doi",   "dv",    "dz",    "ee",
+    "el",     "en",  "eo",    "es",    "et",    "eu",    "fa",    "fat",
+    "ff",     "fi",  "fil",   "fj",    "fo",    "fr",    "fur",   "fy",
+    "ga",     "gd",  "gez",   "gl",    "gn",    "gu",    "gv",    "ha",
+    "haw",    "he",  "hi",    "hne",   "ho",    "hr",    "ht",    "hu",
+    "hy",     "hz",  "ia",    "id",    "ie",    "ig",    "ii",    "ik",
+    "io",     "is",  "it",    "iu",    "ja",    "jv",    "ka",    "kaa",
+    "kab",    "ki",  "kj",    "kk",    "kl",    "km",    "kn",    "ko",
+    "kok",    "kr",  "ks",    "ku-am", "ku-iq", "ku-ir", "ku-tr", "kum",
+    "kv",     "kw",  "kwm",   "ky",    "la",    "lah",   "lb",    "lez",
+    "lg",     "li",  "ln",    "lo",    "lt",    "lv",    "mai",   "mg",
+    "mh",     "mi",  "mk",    "ml",    "mn-cn", "mn-mn", "mni",   "mo",
+    "mr",     "ms",  "mt",    "my",    "na",    "nb",    "nds",   "ne",
+    "ng",     "nl",  "nn",    "no",    "nr",    "nso",   "nv",    "ny",
+    "oc",     "om",  "or",    "os",    "ota",   "pa",    "pa-pk", "pap-an",
+    "pap-aw", "pl",  "ps-af", "ps-pk", "pt",    "qu",    "quz",   "rm",
+    "rn",     "ro",  "ru",    "rw",    "sa",    "sah",   "sat",   "sc",
+    "sco",    "sd",  "se",    "sel",   "sg",    "sh",    "shs",   "si",
+    "sid",    "sk",  "sl",    "sm",    "sma",   "smj",   "smn",   "sms",
+    "sn",     "so",  "sq",    "sr",    "ss",    "st",    "su",    "sv",
+    "sw",     "syr", "ta",    "te",    "tg",    "th",    "ti-er", "ti-et",
+    "tig",    "tk",  "tl",    "tn",    "to",    "tr",    "ts",    "tt",
+    "tw",     "ty",  "tyv",   "ug",    "uk",    "ur",    "uz",    "ve",
+    "vi",     "vo",  "vot",   "wa",    "wal",   "wen",   "wo",    "xh",
+    "yap",    "yi",  "yo",    "za",    "zh-cn", "zh-hk", "zh-mo", "zh-sg",
+    "zh-tw",  "zu"};
 
 std::set<std::string> kLocalesWithUniqueNumerals{"bn", "fa", "mr", "pa-pk"};
 
@@ -233,7 +238,55 @@ class ScopedLibcTimeZone {
   static constexpr char kTimeZoneEnvVarName[] = "TZ";
 
   bool success_ = true;
-  absl::optional<std::string> old_timezone_;
+  std::optional<std::string> old_timezone_;
+};
+
+class CalendarListFetchWaiter : public CalendarListModel::Observer {
+ public:
+  explicit CalendarListFetchWaiter(CalendarListModel* calendar_list_model);
+  CalendarListFetchWaiter(const CalendarListFetchWaiter&) = delete;
+  CalendarListFetchWaiter& operator=(const CalendarListFetchWaiter&) = delete;
+  ~CalendarListFetchWaiter() override;
+
+  void Wait();
+
+ private:
+  // CalendarListModel::Observer:
+  void OnCalendarListFetchComplete() override;
+
+  bool complete_ = false;
+  base::RunLoop run_loop_;
+  base::ScopedObservation<CalendarListModel, CalendarListModel::Observer>
+      scoped_observation_{this};
+};
+
+class CalendarEventsFetchWaiter : public CalendarModel::Observer {
+ public:
+  CalendarEventsFetchWaiter(CalendarModel* calendar_model,
+                            base::Time start_of_month);
+  CalendarEventsFetchWaiter(CalendarModel* calendar_model,
+                            base::RepeatingCallback<bool()> complete_predicate);
+  CalendarEventsFetchWaiter(const CalendarEventsFetchWaiter&) = delete;
+  CalendarEventsFetchWaiter& operator=(const CalendarEventsFetchWaiter&) =
+      delete;
+  ~CalendarEventsFetchWaiter() override;
+
+  void Wait();
+
+ private:
+  // CalendarModel::Observer:
+  void OnEventsFetched(const CalendarModel::FetchingStatus status,
+                       const base::Time start_time) override;
+
+  bool IsComplete();
+
+  bool match_successful_month_ = false;
+  base::Time start_of_month_;
+  base::RepeatingCallback<bool()> complete_predicate_;
+  bool complete_ = false;
+  base::RunLoop run_loop_;
+  base::ScopedObservation<CalendarModel, CalendarModel::Observer>
+      scoped_observation_{this};
 };
 
 // A duration to let the animation finish and pass the cool down duration in
@@ -244,6 +297,18 @@ constexpr base::TimeDelta kAnimationSettleDownDuration = base::Seconds(3);
 // an animation, the view should be in the middle of the animation.
 constexpr base::TimeDelta kAnimationStartBufferDuration =
     base::Milliseconds(90);
+
+// Creates a `google_apis::calendar::SingleCalendar` for testing only.
+std::unique_ptr<google_apis::calendar::SingleCalendar> CreateCalendar(
+    const std::string& id,
+    const std::string& summary,
+    const std::string& color_id,
+    bool selected,
+    bool primary);
+
+std::unique_ptr<google_apis::calendar::CalendarList> CreateMockCalendarList(
+    std::list<std::unique_ptr<google_apis::calendar::SingleCalendar>>
+        calendars);
 
 // Creates a `google_apis::calendar::CalendarEvent` for testing, that converts
 // start/end time strings to `google_apis::calendar::DateTime`.
@@ -279,7 +344,7 @@ std::unique_ptr<google_apis::calendar::EventList> CreateMockEventList(
     std::list<std::unique_ptr<google_apis::calendar::CalendarEvent>> events);
 
 // Checks if the two exploded are in the same month.
-bool IsTheSameMonth(const base::Time& date_a, const base::Time& date_b);
+bool IsTheSameMonth(const base::Time date_a, const base::Time date_b);
 
 // Returns the `base:Time` from the given string.
 base::Time GetTimeFromString(const char* start_time);
@@ -297,11 +362,28 @@ class CalendarClientTestImpl : public CalendarClient {
       delete;
   ~CalendarClientTestImpl() override;
 
+  void set_is_disabled_by_admin(bool is_disabled_by_admin) {
+    is_disabled_by_admin_ = is_disabled_by_admin;
+  }
+
   // CalendarClient:
+  bool IsDisabledByAdmin() const override;
+  base::OnceClosure GetCalendarList(
+      google_apis::calendar::CalendarListCallback callback) override;
   base::OnceClosure GetEventList(
       google_apis::calendar::CalendarEventListCallback callback,
-      const base::Time& start_time,
-      const base::Time& end_time) override;
+      const base::Time start_time,
+      const base::Time end_time) override;
+  base::OnceClosure GetEventList(
+      google_apis::calendar::CalendarEventListCallback callback,
+      const base::Time start_time,
+      const base::Time end_time,
+      const std::string& calendar_id,
+      const std::string& calendar_color_id) override;
+
+  // Sets `calendars` as the fetched calendar list.
+  void SetCalendarList(
+      std::unique_ptr<google_apis::calendar::CalendarList> calendars);
 
   // Sets `events` as the fetched event list.
   void SetEventList(std::unique_ptr<google_apis::calendar::EventList> events);
@@ -310,15 +392,21 @@ class CalendarClientTestImpl : public CalendarClient {
   // `google_apis::HTTP_SUCCESS` by default.
   void SetError(google_apis::ApiErrorCode error) { error_ = error; }
 
+  // Sets `delay` as the response delay. By default, the response delay is
+  // `kAnimationSettleDownDuration` plus 2 seconds.
+  void SetResponseDelay(const base::TimeDelta delay) { task_delay_ = delay; }
+
   // Force the task to take longer than the default timeout, causing an internal
   // error to be propagated.
   void ForceTimeout() {
-    task_delay_ = calendar_utils::kEventFetchTimeout + base::Seconds(1);
+    task_delay_ = calendar_utils::kCalendarDataFetchTimeout + base::Seconds(1);
   }
 
  private:
+  bool is_disabled_by_admin_ = false;
   google_apis::ApiErrorCode error_ = google_apis::HTTP_SUCCESS;
-  std::unique_ptr<google_apis::calendar::EventList> events_ = nullptr;
+  std::unique_ptr<google_apis::calendar::CalendarList> calendars_;
+  std::unique_ptr<google_apis::calendar::EventList> events_;
   base::TimeDelta task_delay_ = kAnimationSettleDownDuration + base::Seconds(2);
 };
 

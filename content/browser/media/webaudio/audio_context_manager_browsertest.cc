@@ -5,6 +5,7 @@
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "content/public/test/mock_web_contents_observer.h"
@@ -78,9 +79,11 @@ class AudioContextManagerTest : public content::ContentBrowserTest {
   }
 };
 
-// Flaky on Linux: https://crbug.com/1047163
-// Flaky on Mac: https://crbug.com/1399440
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
+// Flaky on Linux: crbug.com/941219
+// Flaky on Mac: crbug.com/941219
+// Flaky on Fuchsia: crbug.com/941219
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
+    BUILDFLAG(IS_FUCHSIA)
 #define MAYBE_AudioContextPlaybackRecorded DISABLED_AudioContextPlaybackRecorded
 #else
 #define MAYBE_AudioContextPlaybackRecorded AudioContextPlaybackRecorded
@@ -92,11 +95,12 @@ IN_PROC_BROWSER_TEST_F(AudioContextManagerTest,
   PlayPause();
 }
 
-// Flaky on Linux: https://crbug.com/941219
-// Flaky on Android: https://crbug.com/1379357
-// Flaky on Mac: https://crbug.com/1399440
+// Flaky on Linux: crbug.com/941219
+// Flaky on Android: crbug.com/941219
+// Flaky on Mac: crbug.com/941219
+// Flaky on Fuchsia: crbug.com/941219
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID) || \
-    BUILDFLAG(IS_MAC)
+    BUILDFLAG(IS_MAC) || BUILDFLAG(IS_FUCHSIA)
 #define MAYBE_AudioContextPlaybackTimeUkm DISABLED_AudioContextPlaybackTimeUkm
 #else
 #define MAYBE_AudioContextPlaybackTimeUkm AudioContextPlaybackTimeUkm
@@ -122,7 +126,7 @@ IN_PROC_BROWSER_TEST_F(AudioContextManagerTest,
     auto ukm_entries = test_ukm_recorder.GetEntriesByName(Entry::kEntryName);
 
     ASSERT_EQ(1u, ukm_entries.size());
-    auto* entry = ukm_entries[0];
+    auto* entry = ukm_entries[0].get();
 
     // The test doesn't check the URL because not the full Ukm stack is
     // running in //content.

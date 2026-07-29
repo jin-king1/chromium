@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "base/containers/flat_set.h"
-#include "base/containers/lru_cache.h"
+#include "base/containers/hashing_lru_cache.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -18,6 +18,7 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "components/history/core/browser/history_service_observer.h"
+#include "components/history/core/browser/history_types.h"
 
 class TemplateURLService;
 
@@ -26,7 +27,7 @@ class HistoryService;
 }  // namespace history
 
 namespace optimization_guide {
-class NewOptimizationGuideDecider;
+class OptimizationGuideDecider;
 }  // namespace optimization_guide
 
 namespace site_engagement {
@@ -51,7 +52,7 @@ struct InProgressCluster {
   // set once if a search visit is part of this in-progress cluster.
   std::u16string search_terms;
   // The corresponding cluster ID in the persisted database.
-  int64_t persisted_cluster_id = 0;
+  history::ClusterId persisted_cluster_id = history::ClusterId(0);
   // The vector of visits that have not been persisted yet. Note that each entry
   // only contains the minimum required to persist a cluster visit.
   std::vector<history::ClusterVisit> unpersisted_visits;
@@ -89,17 +90,15 @@ class ContextClustererHistoryServiceObserver
   ContextClustererHistoryServiceObserver(
       history::HistoryService* history_service,
       TemplateURLService* template_url_service,
-      optimization_guide::NewOptimizationGuideDecider*
-          optimization_guide_decider,
+      optimization_guide::OptimizationGuideDecider* optimization_guide_decider,
       site_engagement::SiteEngagementScoreProvider* engagement_score_provider);
   ~ContextClustererHistoryServiceObserver() override;
 
   // history::HistoryServiceObserver:
   void OnURLVisited(history::HistoryService* history_service,
-                    const history::URLRow& url_row,
-                    const history::VisitRow& visit_row) override;
-  void OnURLsDeleted(history::HistoryService* history_service,
-                     const history::DeletionInfo& deletion_info) override;
+                    const history::VisitedURLInfo& visited_url_info) override;
+  void OnHistoryDeletions(history::HistoryService* history_service,
+                          const history::DeletionInfo& deletion_info) override;
 
  private:
   friend class ContextClustererHistoryServiceObserverTest;
@@ -108,13 +107,13 @@ class ContextClustererHistoryServiceObserver
   void CleanUpClusters();
 
   // Finalizes the cluster with index, `cluster_id`.
-  void FinalizeCluster(int64_t cluster_id);
+  void FinalizeCluster(history::ClusterId cluster_id);
 
   // Callback invoked when the History Service returns the cluster ID
   // (`persisted_cluster_id`) to use for `cluster_id`.
   void OnPersistedClusterIdReceived(base::TimeTicks start_time,
-                                    int64_t cluster_id,
-                                    int64_t persisted_cluster_id);
+                                    history::ClusterId cluster_id,
+                                    history::ClusterId persisted_cluster_id);
 
   // Creates a cluster visit from `normalized_url` and `visit_row`.
   history::ClusterVisit CreateClusterVisit(const std::string& normalized_url,
@@ -124,9 +123,6 @@ class ContextClustererHistoryServiceObserver
   // Gets the site engagement score for `normalized_url`.
   float GetEngagementScore(const GURL& normalized_url);
 
-  // Gets the URL for display for `normalized_url`.
-  std::u16string GetURLForDisplay(const GURL& normalized_url);
-
   // Overrides `clock_` for testing.
   void OverrideClockForTesting(const base::Clock* clock);
 
@@ -134,14 +130,14 @@ class ContextClustererHistoryServiceObserver
   int64_t num_clusters_created() const { return cluster_id_counter_; }
 
   // Mapping from cluster ID to the contents of the in-progress cluster.
-  std::map<int64_t, InProgressCluster> in_progress_clusters_;
+  std::map<history::ClusterId, InProgressCluster> in_progress_clusters_;
 
   // Mapping from visit ID to the in-progress cluster ID it belongs to.
-  std::map<history::VisitID, int64_t> visit_id_to_cluster_map_;
+  std::map<history::VisitID, history::ClusterId> visit_id_to_cluster_map_;
 
   // Mapping from normalized URL spec to the in-progress cluster ID it belongs
   // to.
-  std::map<std::string, int64_t> visit_url_to_cluster_map_;
+  std::map<std::string, history::ClusterId> visit_url_to_cluster_map_;
 
   // A running counter that is used to index the in-progress clusters.
   int64_t cluster_id_counter_ = 0;
@@ -158,7 +154,7 @@ class ContextClustererHistoryServiceObserver
 
   // Used to determine whether to include a visit in any cluster. Can be null,
   // but is guaranteed to outlive `this`.
-  raw_ptr<optimization_guide::NewOptimizationGuideDecider>
+  raw_ptr<optimization_guide::OptimizationGuideDecider>
       optimization_guide_decider_;
 
   // URL host to score mapping.
@@ -169,9 +165,6 @@ class ContextClustererHistoryServiceObserver
   // Should only be null for tests.
   raw_ptr<site_engagement::SiteEngagementScoreProvider>
       engagement_score_provider_;
-
-  // URL to URL for display mapping.
-  base::HashingLRUCache<std::string, std::u16string> url_for_display_cache_;
 
   // Used to schedule the clean up of clusters.
   raw_ptr<const base::Clock> clock_;

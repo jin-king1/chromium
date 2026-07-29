@@ -5,10 +5,9 @@
 // clang-format off
 import 'chrome://settings/lazy_load.js';
 
-import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {FileSystemGrant, FileSystemSiteEntryItemElement} from 'chrome://settings/lazy_load.js';
-import {CrSettingsPrefs} from 'chrome://settings/settings.js';
+import type {FileSystemGrant, FileSystemSiteEntryItemElement} from 'chrome://settings/lazy_load.js';
+import {CrSettingsPrefs, loadTimeData} from 'chrome://settings/settings.js';
 import {assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise} from 'chrome://webui-test/test_util.js';
 
@@ -17,17 +16,14 @@ import {eventToPromise} from 'chrome://webui-test/test_util.js';
 suite(
     'FileSystemSettings_EnablePersistentPermissions_SiteEntryItem', function() {
       let testElement: FileSystemSiteEntryItemElement;
-      const origin: string = 'https://a.com/';
       const directoryFilePath: string = 'a/';
       const TEST_FILE_SYSTEM_DIRECTORY_GRANT: FileSystemGrant = {
-        origin: origin,
         filePath: directoryFilePath,
         displayName: directoryFilePath,
         isDirectory: true,
       };
       const filePath: string = 'a/b';
       const TEST_FILE_SYSTEM_FILE_GRANT: FileSystemGrant = {
-        origin: origin,
         filePath: filePath,
         displayName: filePath,
         isDirectory: false,
@@ -37,7 +33,7 @@ suite(
         CrSettingsPrefs.setInitialized();
 
         loadTimeData.overrideValues({
-          showPersistentPermissions: true,
+          enablePersistentPermissions: true,
         });
       });
 
@@ -55,7 +51,7 @@ suite(
         const directoryGrantDisplayName =
             testElement.shadowRoot!.querySelector('.display-name');
         assertTrue(!!directoryGrantDisplayName);
-        const icon = testElement.shadowRoot!.querySelector('cr-icon-button');
+        const icon = testElement.shadowRoot!.querySelector('#fileTypeIcon');
         assertTrue(!!icon);
         assertTrue(icon.classList.contains('icon-folder-open'));
       });
@@ -66,7 +62,7 @@ suite(
         const fileGrantDisplayName =
             testElement.shadowRoot!.querySelector('.display-name');
         assertTrue(!!fileGrantDisplayName);
-        const icon = testElement.shadowRoot!.querySelector('cr-icon-button');
+        const icon = testElement.shadowRoot!.querySelector('#fileTypeIcon');
         assertTrue(!!icon);
         assertTrue(icon.classList.contains('icon-file'));
       });
@@ -79,8 +75,7 @@ suite(
             const whenFired = eventToPromise('revoke-grant', testElement);
             testElement.$.removeGrant.click();
             const permissionRemovedEvent = await whenFired;
-            const {origin, filePath} = permissionRemovedEvent.detail;
-            assertEquals(TEST_FILE_SYSTEM_FILE_GRANT.origin, origin);
+            const {filePath} = permissionRemovedEvent.detail;
             assertEquals(TEST_FILE_SYSTEM_FILE_GRANT.filePath, filePath);
           });
     });

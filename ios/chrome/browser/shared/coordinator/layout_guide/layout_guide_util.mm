@@ -4,19 +4,17 @@
 
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
 
+#import "base/check.h"
 #import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_scene_agent.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
-#import "ios/chrome/browser/shared/coordinator/scene/scene_state_browser_agent.h"
-#import "ios/chrome/browser/shared/model/browser_state/chrome_browser_state.h"
+#import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace {
 
 LayoutGuideCenter* SharedInstance() {
+  NOTREACHED(base::NotFatalUntil::M155);
   static LayoutGuideCenter* globalLayoutGuideCenter;
   static dispatch_once_t onceToken;
   dispatch_once(&onceToken, ^{
@@ -28,28 +26,31 @@ LayoutGuideCenter* SharedInstance() {
 }  // namespace
 
 LayoutGuideCenter* LayoutGuideCenterForBrowser(Browser* browser) {
+  CHECK(browser, base::NotFatalUntil::M155)
+      << "Use the new Scene scoped center.";
   if (!browser) {
     // If there is no browser, return a global layout guide center.
     return SharedInstance();
   }
 
-  SceneStateBrowserAgent* sceneStateBrowserAgent =
-      SceneStateBrowserAgent::FromBrowser(browser);
-  if (!sceneStateBrowserAgent) {
-    return SharedInstance();
-  }
-
-  SceneState* sceneState = sceneStateBrowserAgent->GetSceneState();
+  SceneState* sceneState = browser->GetSceneState();
   LayoutGuideSceneAgent* layoutGuideSceneAgent =
       [LayoutGuideSceneAgent agentFromScene:sceneState];
+  CHECK(layoutGuideSceneAgent, base::NotFatalUntil::M155);
   if (!layoutGuideSceneAgent) {
     return SharedInstance();
   }
 
-  ChromeBrowserState* browserState = browser->GetBrowserState();
-  if (browserState && browserState->IsOffTheRecord()) {
+  ProfileIOS* profile = browser->GetProfile();
+  if (profile && profile->IsOffTheRecord()) {
     return layoutGuideSceneAgent.incognitoLayoutGuideCenter;
   } else {
-    return layoutGuideSceneAgent.layoutGuideCenter;
+    return layoutGuideSceneAgent.regularLayoutGuideCenter;
   }
+}
+
+LayoutGuideCenter* LayoutGuideCenterForScene(SceneState* sceneState) {
+  LayoutGuideSceneAgent* layoutGuideSceneAgent =
+      [LayoutGuideSceneAgent agentFromScene:sceneState];
+  return layoutGuideSceneAgent.sceneLayoutGuideCenter;
 }

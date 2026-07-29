@@ -6,13 +6,13 @@
 #define CHROME_TEST_PAYMENTS_PAYMENT_REQUEST_TEST_CONTROLLER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 namespace sync_preferences {
@@ -48,6 +48,7 @@ class PaymentRequestTestObserver {
   virtual void OnConnectionTerminated() {}
   virtual void OnAbortCalled() {}
   virtual void OnCompleteCalled() {}
+  virtual void OnInternalError() {}
   virtual void OnUIDisplayed() {}
 
  protected:
@@ -116,7 +117,7 @@ class PaymentRequestTestController {
 
   // Whether the browser payment sheet is displaying a section for selecting a
   // shipping address.
-  absl::optional<bool> is_shipping_section_visible() const {
+  std::optional<bool> is_shipping_section_visible() const {
     return is_shipping_section_visible_;
   }
   void set_shipping_section_visible(bool is_shipping_section_visible) {
@@ -125,7 +126,7 @@ class PaymentRequestTestController {
 
   // Whether the browser payment sheet is displaying a section for selecting
   // contact info.
-  absl::optional<bool> is_contact_section_visible() const {
+  std::optional<bool> is_contact_section_visible() const {
     return is_contact_section_visible_;
   }
   void set_contact_section_visible(bool is_contact_section_visible) {
@@ -144,6 +145,7 @@ class PaymentRequestTestController {
   void OnConnectionTerminated();
   void OnAbortCalled();
   void OnCompleteCalled();
+  void OnInternalError();
   void OnUIDisplayed();
 
   raw_ptr<PaymentRequestTestObserver> observer_ = nullptr;
@@ -156,8 +158,8 @@ class PaymentRequestTestController {
   std::string twa_payment_app_method_name_;
   std::string twa_payment_app_response_;
   std::vector<AppDescription> app_descriptions_;
-  absl::optional<bool> is_shipping_section_visible_;
-  absl::optional<bool> is_contact_section_visible_;
+  std::optional<bool> is_shipping_section_visible_;
+  std::optional<bool> is_contact_section_visible_;
 
 #if !BUILDFLAG(IS_ANDROID)
   void UpdateDelegateFactory();
@@ -169,6 +171,8 @@ class PaymentRequestTestController {
 
   base::WeakPtr<ContentPaymentRequestDelegate> delegate_;
 #endif
+
+  base::WeakPtrFactory<PaymentRequestTestController> weak_ptr_factory_{this};
 };
 
 }  // namespace payments

@@ -27,6 +27,7 @@
 
 #include "base/atomic_sequence_num.h"
 #include "base/process/process_handle.h"
+#include "third_party/blink/renderer/core/css/css_style_sheet.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/dom/weak_identifier_map.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
@@ -80,9 +81,9 @@ String IdentifiersFactory::SubresourceRequestId(uint64_t identifier) {
 }
 
 // static
-String IdentifiersFactory::FrameId(Frame* frame) {
+const String& IdentifiersFactory::FrameId(Frame* frame) {
   // Note: this should be equal to GetFrameIdForTracing(frame).
-  return String(GetFrameIdForTracing(frame).data());
+  return GetFrameIdForTracing(frame);
 }
 
 // static
@@ -103,7 +104,7 @@ String IdentifiersFactory::LoaderId(DocumentLoader* loader) {
     return g_empty_string;
   const base::UnguessableToken& token = loader->GetDevToolsNavigationToken();
   // token.ToString() is latin1.
-  return String(token.ToString().c_str());
+  return String(token.ToString());
 }
 
 // static
@@ -111,12 +112,12 @@ String IdentifiersFactory::IdFromToken(const base::UnguessableToken& token) {
   if (token.is_empty())
     return g_empty_string;
   // token.ToString() is latin1.
-  return String(token.ToString().c_str());
+  return String(token.ToString());
 }
 
 // static
 int IdentifiersFactory::IntIdForNode(Node* node) {
-  return static_cast<int>(DOMNodeIds::IdForNode(node));
+  return node->GetDomNodeId();
 }
 
 // static

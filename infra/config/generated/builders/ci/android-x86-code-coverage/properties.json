@@ -1,6 +1,9 @@
 {
   "$build/chromium_tests_builder_config": {
     "builder_config": {
+      "additional_exclusions": [
+        "infra/config/generated/builders/ci/android-x86-code-coverage/gn-args.json"
+      ],
       "builder_db": {
         "entries": [
           {
@@ -10,21 +13,25 @@
               "project": "chromium"
             },
             "builder_spec": {
-              "build_gs_bucket": "chromium-fyi-archive",
               "builder_group": "chromium.coverage",
               "execution_mode": "COMPILE_AND_TEST",
               "legacy_android_config": {
-                "config": "x86_builder_mb"
+                "config": "base_config"
               },
               "legacy_chromium_config": {
+                "apply_configs": [
+                  "mb"
+                ],
                 "build_config": "Release",
-                "config": "android",
+                "config": "main_builder",
+                "target_arch": "intel",
                 "target_bits": 32,
                 "target_platform": "android"
               },
               "legacy_gclient_config": {
                 "apply_configs": [
                   "android",
+                  "chromium_with_telemetry_dependencies",
                   "enable_wpr_tests"
                 ],
                 "config": "chromium"
@@ -39,7 +46,14 @@
           "builder": "android-x86-code-coverage",
           "project": "chromium"
         }
-      ]
+      ],
+      "mirroring_builder_group_and_names": [
+        {
+          "builder": "android-x86-code-coverage",
+          "group": "tryserver.chromium.android"
+        }
+      ],
+      "targets_spec_directory": "infra/config/generated/builders/ci/android-x86-code-coverage/targets"
     }
   },
   "$build/code_coverage": {
@@ -50,10 +64,16 @@
     "export_coverage_to_zoss": true,
     "use_java_coverage": true
   },
-  "$build/reclient": {
-    "instance": "rbe-chromium-trusted",
-    "jobs": 500,
-    "metrics_project": "chromium-reclient-metrics"
+  "$build/siso": {
+    "configs": [
+      "builder"
+    ],
+    "enable_cloud_monitoring": true,
+    "enable_cloud_trace": true,
+    "experiments": [],
+    "profile_mode": "cloud",
+    "project": "rbe-chromium-trusted",
+    "remote_jobs": 500
   },
   "$recipe_engine/resultdb/test_presentation": {
     "column_keys": [],

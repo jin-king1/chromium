@@ -4,17 +4,12 @@
 
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_button_item.h"
 
-#import "base/mac/foundation_util.h"
-#import "ios/chrome/browser/shared/ui/table_view/chrome_table_view_styler.h"
+#import "base/apple/foundation_util.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace {
 using TableViewTextButtonItemTest = PlatformTest;
@@ -22,12 +17,10 @@ using TableViewTextButtonItemTest = PlatformTest;
 
 // Tests that the UILabels are set properly after a call to `configureCell:`.
 TEST_F(TableViewTextButtonItemTest, SetProperties) {
-  NSString* text = @"You need to do something.";
   NSString* buttonText = @"Tap to do something.";
 
   TableViewTextButtonItem* item =
       [[TableViewTextButtonItem alloc] initWithType:0];
-  item.text = text;
   item.buttonText = buttonText;
 
   ASSERT_TRUE(item.dimBackgroundWhenDisabled);
@@ -36,12 +29,9 @@ TEST_F(TableViewTextButtonItemTest, SetProperties) {
   ASSERT_TRUE([cell isMemberOfClass:[TableViewTextButtonCell class]]);
 
   TableViewTextButtonCell* textButtonCell =
-      base::mac::ObjCCastStrict<TableViewTextButtonCell>(cell);
-  EXPECT_FALSE(textButtonCell.textLabel.text);
-  EXPECT_FALSE(textButtonCell.button.titleLabel.text);
+      base::apple::ObjCCastStrict<TableViewTextButtonCell>(cell);
+  EXPECT_FALSE(textButtonCell.button.configuration.title);
 
-  [item configureCell:textButtonCell
-           withStyler:[[ChromeTableViewStyler alloc] init]];
-  EXPECT_NSEQ(text, textButtonCell.textLabel.text);
-  EXPECT_NSEQ(buttonText, textButtonCell.button.titleLabel.text);
+  [item configureCell:textButtonCell];
+  EXPECT_NSEQ(buttonText, textButtonCell.button.configuration.title);
 }

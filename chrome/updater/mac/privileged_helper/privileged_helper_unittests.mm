@@ -5,14 +5,11 @@
 #include "base/files/file_path.h"
 #include "base/path_service.h"
 #include "build/branding_buildflags.h"
+#include "build/build_config.h"
 #include "build/buildflag.h"
 #include "chrome/updater/mac/privileged_helper/service.h"
 #include "chrome/updater/updater_branding.h"
 #include "testing/gtest/include/gtest/gtest.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace updater {
 
@@ -25,11 +22,13 @@ TEST(PrivilegedHelperTest, VerifyUpdaterSignature) {
       VerifyUpdaterSignature(src_dir.Append("third_party")
                                  .Append("updater")
                                  .Append("chrome_mac_universal_prod")
+                                 .Append("cipd")
                                  .Append(PRODUCT_FULLNAME_STRING ".app")));
   ASSERT_FALSE(
       VerifyUpdaterSignature(src_dir.Append("third_party")
                                  .Append("updater")
                                  .Append("chrome_mac_universal")
+                                 .Append("cipd")
                                  .Append(PRODUCT_FULLNAME_STRING "_test.app")));
 }
 

@@ -5,6 +5,7 @@
 #include "ash/quick_pair/repository/oauth_http_fetcher.h"
 
 #include "ash/quick_pair/common/mock_quick_pair_browser_delegate.h"
+#include "base/byte_size.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/test/task_environment.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
@@ -20,7 +21,6 @@ namespace {
 
 constexpr char kBody[] = "body";
 constexpr char kTestUrl[] = "http://www.test.com/";
-constexpr char kTestScope[] = "http://www.test.com/scope";
 const net::PartialNetworkTrafficAnnotationTag kTrafficAnnotation =
     net::DefinePartialNetworkTrafficAnnotation("test_request",
                                                "oauth2_api_call_flow",
@@ -53,8 +53,8 @@ class OAuthHttpFetcherTest : public testing::Test {
   }
 
   void SetUp() override {
-    http_fetcher_ =
-        std::make_unique<OAuthHttpFetcher>(kTrafficAnnotation, kTestScope);
+    http_fetcher_ = std::make_unique<OAuthHttpFetcher>(
+        kTrafficAnnotation, signin::OAuthConsumerId::kFastPair);
     browser_delegate_ = std::make_unique<MockQuickPairBrowserDelegate>();
     ON_CALL(*browser_delegate_, GetURLLoaderFactory())
         .WillByDefault(
@@ -82,11 +82,11 @@ TEST_F(OAuthHttpFetcherTest, ExecuteGetRequest_Success) {
       net::HttpUtil::AssembleRawHeaders(""));
   head->headers->GetMimeType(&head->mime_type);
   network::URLLoaderCompletionStatus status(net::Error::OK);
-  status.decoded_body_length = body.size();
+  status.decoded_body_length = base::ByteSize(body.size());
   url_loader_factory_.AddResponse(url, std::move(head), body, status);
 
   http_fetcher_->ExecuteGetRequest(
-      url, base::BindOnce([](std::unique_ptr<std::string> response,
+      url, base::BindOnce([](std::optional<std::string> response,
                              std::unique_ptr<FastPairHttpResult> result) {
         ASSERT_EQ(kBody, *response);
         ASSERT_TRUE(result->IsSuccess());
@@ -100,9 +100,9 @@ TEST_F(OAuthHttpFetcherTest, ExecuteGetRequest_Failure) {
 
   http_fetcher_->ExecuteGetRequest(
       GURL(kTestUrl),
-      base::BindOnce([](std::unique_ptr<std::string> response,
+      base::BindOnce([](std::optional<std::string> response,
                         std::unique_ptr<FastPairHttpResult> result) {
-        ASSERT_EQ(nullptr, response);
+        ASSERT_EQ(std::nullopt, response);
         ASSERT_FALSE(result->IsSuccess());
         ASSERT_EQ(result->http_response_error(),
                   net::HTTP_INTERNAL_SERVER_ERROR);
@@ -116,23 +116,15 @@ TEST_F(OAuthHttpFetcherTest, ExecuteGetRequest_MultipleCalls) {
 
   http_fetcher_->ExecuteGetRequest(
       GURL(kTestUrl),
-      base::BindOnce([](std::unique_ptr<std::string> response,
+      base::BindOnce([](std::optional<std::string> response,
                         std::unique_ptr<FastPairHttpResult> result) {
-        ASSERT_EQ(nullptr, response);
+        ASSERT_EQ(std::nullopt, response);
         ASSERT_FALSE(result->IsSuccess());
         ASSERT_EQ(result->http_response_error(),
                   net::HTTP_INTERNAL_SERVER_ERROR);
       }));
-#if DCHECK_IS_ON()
   EXPECT_DEATH(
       http_fetcher_->ExecuteGetRequest(GURL(kTestUrl), base::DoNothing()), "");
-#else
-  http_fetcher_->ExecuteGetRequest(
-      GURL(kTestUrl),
-      base::BindOnce(
-          [](std::unique_ptr<std::string> response,
-             std::unique_ptr<FastPairHttpResult> result) { FAIL(); }));
-#endif
   task_environment_.RunUntilIdle();
 }
 
@@ -142,9 +134,9 @@ TEST_F(OAuthHttpFetcherTest, ExecuteGetRequest_NoToken) {
                                   net::HTTP_INTERNAL_SERVER_ERROR);
   http_fetcher_->ExecuteGetRequest(
       GURL(kTestUrl),
-      base::BindOnce([](std::unique_ptr<std::string> response,
+      base::BindOnce([](std::optional<std::string> response,
                         std::unique_ptr<FastPairHttpResult> result) {
-        ASSERT_EQ(nullptr, response);
+        ASSERT_EQ(std::nullopt, response);
         ASSERT_EQ(nullptr, result);
       }));
   task_environment_.RunUntilIdle();
@@ -157,9 +149,9 @@ TEST_F(OAuthHttpFetcherTest, ExecuteGetRequest_NoUrlFactory) {
                                   net::HTTP_INTERNAL_SERVER_ERROR);
   http_fetcher_->ExecuteGetRequest(
       GURL(kTestUrl),
-      base::BindOnce([](std::unique_ptr<std::string> response,
+      base::BindOnce([](std::optional<std::string> response,
                         std::unique_ptr<FastPairHttpResult> result) {
-        ASSERT_EQ(nullptr, response);
+        ASSERT_EQ(std::nullopt, response);
         ASSERT_EQ(nullptr, result);
       }));
   task_environment_.RunUntilIdle();
@@ -169,32 +161,16 @@ TEST_F(OAuthHttpFetcherTest, ExecuteGetRequest_NoIdentityManager) {
   ON_CALL(*browser_delegate_, GetIdentityManager())
       .WillByDefault(testing::Return(nullptr));
 
-#if DCHECK_IS_ON()
   EXPECT_DEATH(
       http_fetcher_->ExecuteGetRequest(GURL(kTestUrl), base::DoNothing()), "");
-#else
-  http_fetcher_->ExecuteGetRequest(
-      GURL(kTestUrl),
-      base::BindOnce(
-          [](std::unique_ptr<std::string> response,
-             std::unique_ptr<FastPairHttpResult> result) { FAIL(); }));
-#endif
 
   task_environment_.RunUntilIdle();
 }
 
 TEST_F(OAuthHttpFetcherTest, ExecuteGetRequest_MultipleRaceCondition) {
   http_fetcher_->ExecuteGetRequest(GURL(kTestUrl), base::DoNothing());
-#if DCHECK_IS_ON()
   EXPECT_DEATH(
       http_fetcher_->ExecuteGetRequest(GURL(kTestUrl), base::DoNothing()), "");
-#else
-  http_fetcher_->ExecuteGetRequest(
-      GURL(kTestUrl),
-      base::BindOnce(
-          [](std::unique_ptr<std::string> response,
-             std::unique_ptr<FastPairHttpResult> result) { FAIL(); }));
-#endif
   task_environment_.RunUntilIdle();
 }
 
@@ -206,12 +182,12 @@ TEST_F(OAuthHttpFetcherTest, ExecutePostRequest_Success) {
       net::HttpUtil::AssembleRawHeaders(""));
   head->headers->GetMimeType(&head->mime_type);
   network::URLLoaderCompletionStatus status(net::Error::OK);
-  status.decoded_body_length = body.size();
+  status.decoded_body_length = base::ByteSize(body.size());
   url_loader_factory_.AddResponse(url, std::move(head), body, status);
 
   http_fetcher_->ExecutePostRequest(
       url, kBody,
-      base::BindOnce([](std::unique_ptr<std::string> response,
+      base::BindOnce([](std::optional<std::string> response,
                         std::unique_ptr<FastPairHttpResult> result) {
         ASSERT_TRUE(result->IsSuccess());
       }));
@@ -226,11 +202,11 @@ TEST_F(OAuthHttpFetcherTest, ExecuteDeleteRequest_Success) {
       net::HttpUtil::AssembleRawHeaders(""));
   head->headers->GetMimeType(&head->mime_type);
   network::URLLoaderCompletionStatus status(net::Error::OK);
-  status.decoded_body_length = body.size();
+  status.decoded_body_length = base::ByteSize(body.size());
   url_loader_factory_.AddResponse(url, std::move(head), body, status);
 
   http_fetcher_->ExecuteDeleteRequest(
-      url, base::BindOnce([](std::unique_ptr<std::string> response,
+      url, base::BindOnce([](std::optional<std::string> response,
                              std::unique_ptr<FastPairHttpResult> result) {
         ASSERT_TRUE(result->IsSuccess());
       }));

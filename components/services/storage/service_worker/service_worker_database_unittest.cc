@@ -7,9 +7,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
 #include <string>
 
-#include "base/containers/contains.h"
+#include "base/byte_size.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/path_service.h"
@@ -20,10 +21,12 @@
 #include "components/services/storage/service_worker/service_worker_database.pb.h"
 #include "net/base/features.h"
 #include "services/network/public/cpp/web_sandbox_flags.h"
+#include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "services/network/public/mojom/referrer_policy.mojom-shared.h"
 #include "services/network/public/mojom/web_sandbox_flags.mojom-shared.h"
-#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/safe_url_pattern.h"
+#include "third_party/blink/public/common/service_worker/service_worker_router_rule.h"
 #include "third_party/blink/public/mojom/frame/policy_container.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_object.mojom.h"
 #include "third_party/blink/public/mojom/service_worker/service_worker_registration.mojom.h"
@@ -47,7 +50,7 @@ struct AvailableIds {
   int64_t ver_id;
 
   AvailableIds() : reg_id(-1), res_id(-1), ver_id(-1) {}
-  ~AvailableIds() {}
+  ~AvailableIds() = default;
 };
 
 GURL URL(const GURL& origin, const std::string& path) {
@@ -60,11 +63,11 @@ GURL URL(const GURL& origin, const std::string& path) {
 
 ResourceRecordPtr CreateResource(int64_t resource_id,
                                  const GURL& url,
-                                 uint64_t size_bytes) {
+                                 uint64_t size) {
   EXPECT_TRUE(url.is_valid());
   return mojom::ServiceWorkerResourceRecord::New(
-      resource_id, url, size_bytes,
-      /*sha256_checksum=*/absl::nullopt);
+      resource_id, url, base::ByteSize(size),
+      /*sha256_checksum=*/std::nullopt);
 }
 
 ServiceWorkerDatabase* CreateDatabase(const base::FilePath& path) {
@@ -88,12 +91,12 @@ void VerifyRegistrationData(const RegistrationData& expected,
   EXPECT_EQ(expected.fetch_handler_type, actual.fetch_handler_type);
   EXPECT_EQ(expected.last_update_check, actual.last_update_check);
   EXPECT_EQ(expected.used_features, actual.used_features);
-  EXPECT_EQ(expected.resources_total_size_bytes,
-            actual.resources_total_size_bytes);
+  EXPECT_EQ(expected.resources_total_size, actual.resources_total_size);
   EXPECT_EQ(expected.script_response_time, actual.script_response_time);
   EXPECT_EQ(expected.ancestor_frame_type, actual.ancestor_frame_type);
   EXPECT_EQ(expected.policy_container_policies,
             actual.policy_container_policies);
+  EXPECT_EQ(expected.router_rules, actual.router_rules);
 }
 
 void VerifyResourceRecords(const std::vector<ResourceRecordPtr>& expected,
@@ -102,7 +105,7 @@ void VerifyResourceRecords(const std::vector<ResourceRecordPtr>& expected,
   for (size_t i = 0; i < expected.size(); ++i) {
     EXPECT_EQ(expected[i]->resource_id, actual[i]->resource_id);
     EXPECT_EQ(expected[i]->url, actual[i]->url);
-    EXPECT_EQ(expected[i]->size_bytes, actual[i]->size_bytes);
+    EXPECT_EQ(expected[i]->size, actual[i]->size);
     EXPECT_EQ(expected[i]->sha256_checksum, actual[i]->sha256_checksum);
   }
 }
@@ -188,7 +191,7 @@ TEST(ServiceWorkerDatabaseTest, DatabaseVersion_ValidSchemaVersion) {
   data.scope = origin;
   data.key =
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data.scope));
-  data.resources_total_size_bytes = 10;
+  data.resources_total_size = base::ByteSize(10);
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->WriteRegistration(data, resources, &deleted_version));
 
@@ -214,7 +217,7 @@ TEST(ServiceWorkerDatabaseTest, DatabaseVersion_ObsoleteSchemaVersion) {
   data.scope = origin;
   data.key =
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data.scope));
-  data.resources_total_size_bytes = 10;
+  data.resources_total_size = base::ByteSize(10);
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->WriteRegistration(data, resources, &deleted_version));
   int64_t db_version = -1;
@@ -255,7 +258,7 @@ TEST(ServiceWorkerDatabaseTest, DatabaseVersion_CorruptedSchemaVersion) {
   data.scope = origin;
   data.key =
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data.scope));
-  data.resources_total_size_bytes = 10;
+  data.resources_total_size = base::ByteSize(10);
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->WriteRegistration(data, resources, &deleted_version));
   int64_t db_version = -1;
@@ -336,7 +339,7 @@ TEST(ServiceWorkerDatabaseTest, GetNextAvailableIds) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data1.scope));
   data1.script = URL(origin, "/script1.js");
   data1.version_id = 200;
-  data1.resources_total_size_bytes = 300;
+  data1.resources_total_size = base::ByteSize(300);
   resources1.push_back(CreateResource(1, data1.script, 300));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->WriteRegistration(data1, resources1, &deleted_version));
@@ -357,7 +360,7 @@ TEST(ServiceWorkerDatabaseTest, GetNextAvailableIds) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data2.scope));
   data2.script = URL(origin, "/script2.js");
   data2.version_id = 20;
-  data2.resources_total_size_bytes = 400;
+  data2.resources_total_size = base::ByteSize(400);
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(2, data2.script, 400));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -399,7 +402,7 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   data1.key = key1;
   data1.script = URL(origin1, "/script1.js");
   data1.version_id = 456;
-  data1.resources_total_size_bytes = 100;
+  data1.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, data1.script, 100));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -414,7 +417,7 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   data2.key = key2;
   data2.script = URL(origin2, "/script2.js");
   data2.version_id = 567;
-  data2.resources_total_size_bytes = 200;
+  data2.resources_total_size = base::ByteSize(200);
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(2, data2.script, 200));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -429,7 +432,7 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   data3.key = key3;
   data3.script = URL(origin3, "/script3.js");
   data3.version_id = 678;
-  data3.resources_total_size_bytes = 300;
+  data3.resources_total_size = base::ByteSize(300);
   std::vector<ResourceRecordPtr> resources3;
   resources3.push_back(CreateResource(3, data3.script, 300));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -442,7 +445,7 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   data4.key = key3;
   data4.script = URL(origin3, "/script4.js");
   data4.version_id = 789;
-  data4.resources_total_size_bytes = 400;
+  data4.resources_total_size = base::ByteSize(400);
   std::vector<ResourceRecordPtr> resources4;
   resources4.push_back(CreateResource(4, data4.script, 400));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -466,7 +469,7 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   data5.key = key5;
   data5.script = URL(origin5, "/script5.js");
   data5.version_id = 890;
-  data5.resources_total_size_bytes = 500;
+  data5.resources_total_size = base::ByteSize(500);
   std::vector<ResourceRecordPtr> resources5;
   resources5.push_back(CreateResource(5, data5.script, 500));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -483,7 +486,7 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   data6.key = key6;
   data6.script = URL(origin6, "/script6.js");
   data6.version_id = 8910;
-  data6.resources_total_size_bytes = 600;
+  data6.resources_total_size = base::ByteSize(600);
   std::vector<ResourceRecordPtr> resources6;
   resources6.push_back(CreateResource(6, data6.script, 600));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -506,7 +509,7 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   data7.key = key7;
   data7.script = URL(origin7, "/script7.js");
   data7.version_id = 91011;
-  data7.resources_total_size_bytes = 700;
+  data7.resources_total_size = base::ByteSize(700);
   std::vector<ResourceRecordPtr> resources7;
   resources7.push_back(CreateResource(7, data7.script, 700));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -516,10 +519,10 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->GetStorageKeysWithRegistrations(&keys));
   EXPECT_EQ(4U, keys.size());
-  EXPECT_TRUE(base::Contains(keys, key1));
-  EXPECT_TRUE(base::Contains(keys, key2));
-  EXPECT_TRUE(base::Contains(keys, key3));
-  EXPECT_TRUE(base::Contains(keys, key7));
+  EXPECT_TRUE(keys.contains(key1));
+  EXPECT_TRUE(keys.contains(key2));
+  EXPECT_TRUE(keys.contains(key3));
+  EXPECT_TRUE(keys.contains(key7));
 
   // |key3| has another registration, so should not remove it from the
   // unique origin list.
@@ -532,10 +535,10 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->GetStorageKeysWithRegistrations(&keys));
   EXPECT_EQ(4U, keys.size());
-  EXPECT_TRUE(base::Contains(keys, key1));
-  EXPECT_TRUE(base::Contains(keys, key2));
-  EXPECT_TRUE(base::Contains(keys, key3));
-  EXPECT_TRUE(base::Contains(keys, key7));
+  EXPECT_TRUE(keys.contains(key1));
+  EXPECT_TRUE(keys.contains(key2));
+  EXPECT_TRUE(keys.contains(key3));
+  EXPECT_TRUE(keys.contains(key7));
 
   // |key3| should be removed from the unique origin list.
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -547,9 +550,9 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->GetStorageKeysWithRegistrations(&keys));
   EXPECT_EQ(3U, keys.size());
-  EXPECT_TRUE(base::Contains(keys, key1));
-  EXPECT_TRUE(base::Contains(keys, key2));
-  EXPECT_TRUE(base::Contains(keys, key7));
+  EXPECT_TRUE(keys.contains(key1));
+  EXPECT_TRUE(keys.contains(key2));
+  EXPECT_TRUE(keys.contains(key7));
 
   // Now re-enable kThirdPartyStoragePartitioning and check for the partitioned
   // keys.
@@ -561,11 +564,11 @@ TEST(ServiceWorkerDatabaseTest, GetStorageKeysWithRegistrations) {
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->GetStorageKeysWithRegistrations(&keys));
   EXPECT_EQ(5U, keys.size());
-  EXPECT_TRUE(base::Contains(keys, key1));
-  EXPECT_TRUE(base::Contains(keys, key2));
-  EXPECT_TRUE(base::Contains(keys, key5));
-  EXPECT_TRUE(base::Contains(keys, key6));
-  EXPECT_TRUE(base::Contains(keys, key7));
+  EXPECT_TRUE(keys.contains(key1));
+  EXPECT_TRUE(keys.contains(key2));
+  EXPECT_TRUE(keys.contains(key5));
+  EXPECT_TRUE(keys.contains(key6));
+  EXPECT_TRUE(keys.contains(key7));
 }
 
 TEST(ServiceWorkerDatabaseTest, GetRegistrationsForStorageKey) {
@@ -598,8 +601,8 @@ TEST(ServiceWorkerDatabaseTest, GetRegistrationsForStorageKey) {
   data1.key = key1;
   data1.script = URL(origin1, "/script1.js");
   data1.version_id = 1000;
-  data1.resources_total_size_bytes = 100;
-  data1.script_response_time = base::Time::FromJsTime(0);
+  data1.resources_total_size = base::ByteSize(100);
+  data1.script_response_time = base::Time::UnixEpoch();
   data1.ancestor_frame_type = blink::mojom::AncestorFrameType::kNormalFrame;
   data1.policy_container_policies =
       blink::mojom::PolicyContainerPolicies::New();
@@ -624,8 +627,8 @@ TEST(ServiceWorkerDatabaseTest, GetRegistrationsForStorageKey) {
   data2.key = key2;
   data2.script = URL(origin2, "/script2.js");
   data2.version_id = 2000;
-  data2.resources_total_size_bytes = 200;
-  data2.script_response_time = base::Time::FromJsTime(42);
+  data2.resources_total_size = base::ByteSize(200);
+  data2.script_response_time = base::Time::FromMillisecondsSinceUnixEpoch(42);
   data2.ancestor_frame_type = blink::mojom::AncestorFrameType::kFencedFrame;
   data2.policy_container_policies =
       blink::mojom::PolicyContainerPolicies::New();
@@ -652,8 +655,8 @@ TEST(ServiceWorkerDatabaseTest, GetRegistrationsForStorageKey) {
   data3.key = key3;
   data3.script = URL(origin3, "/script3.js");
   data3.version_id = 3000;
-  data3.resources_total_size_bytes = 300;
-  data3.script_response_time = base::Time::FromJsTime(420);
+  data3.resources_total_size = base::ByteSize(300);
+  data3.script_response_time = base::Time::FromMillisecondsSinceUnixEpoch(420);
   data3.policy_container_policies =
       blink::mojom::PolicyContainerPolicies::New();
   data3.policy_container_policies->cross_origin_embedder_policy =
@@ -670,8 +673,8 @@ TEST(ServiceWorkerDatabaseTest, GetRegistrationsForStorageKey) {
   data4.key = key3;
   data4.script = URL(origin3, "/script4.js");
   data4.version_id = 4000;
-  data4.resources_total_size_bytes = 400;
-  data4.script_response_time = base::Time::FromJsTime(4200);
+  data4.resources_total_size = base::ByteSize(400);
+  data4.script_response_time = base::Time::FromMillisecondsSinceUnixEpoch(4200);
   data4.policy_container_policies =
       blink::mojom::PolicyContainerPolicies::New();
   data4.policy_container_policies->cross_origin_embedder_policy =
@@ -721,7 +724,7 @@ TEST(ServiceWorkerDatabaseTest, GetAllRegistrations) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data1.scope));
   data1.script = URL(origin1, "/script1.js");
   data1.version_id = 1000;
-  data1.resources_total_size_bytes = 100;
+  data1.resources_total_size = base::ByteSize(100);
   data1.ancestor_frame_type = blink::mojom::AncestorFrameType::kNormalFrame;
   data1.policy_container_policies =
       blink::mojom::PolicyContainerPolicies::New();
@@ -740,7 +743,7 @@ TEST(ServiceWorkerDatabaseTest, GetAllRegistrations) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data2.scope));
   data2.script = URL(origin2, "/script2.js");
   data2.version_id = 2000;
-  data2.resources_total_size_bytes = 200;
+  data2.resources_total_size = base::ByteSize(200);
   data2.update_via_cache = blink::mojom::ServiceWorkerUpdateViaCache::kNone;
   data2.ancestor_frame_type = blink::mojom::AncestorFrameType::kFencedFrame;
   data2.policy_container_policies =
@@ -760,7 +763,7 @@ TEST(ServiceWorkerDatabaseTest, GetAllRegistrations) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data3.scope));
   data3.script = URL(origin3, "/script3.js");
   data3.version_id = 3000;
-  data3.resources_total_size_bytes = 300;
+  data3.resources_total_size = base::ByteSize(300);
   data3.policy_container_policies =
       blink::mojom::PolicyContainerPolicies::New();
   data3.policy_container_policies->cross_origin_embedder_policy =
@@ -778,7 +781,7 @@ TEST(ServiceWorkerDatabaseTest, GetAllRegistrations) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data4.scope));
   data4.script = URL(origin3, "/script4.js");
   data4.version_id = 4000;
-  data4.resources_total_size_bytes = 400;
+  data4.resources_total_size = base::ByteSize(400);
   std::vector<ResourceRecordPtr> resources4;
   resources4.push_back(CreateResource(4, data4.script, 400));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -801,7 +804,7 @@ TEST(ServiceWorkerDatabaseTest, GetAllRegistrations) {
       blink::mojom::AncestorChainBit::kCrossSite);
   data5.script = URL(origin5, "/script5.js");
   data5.version_id = 5000;
-  data5.resources_total_size_bytes = 500;
+  data5.resources_total_size = base::ByteSize(500);
   std::vector<ResourceRecordPtr> resources5;
   data5.policy_container_policies =
       blink::mojom::PolicyContainerPolicies::New();
@@ -821,7 +824,7 @@ TEST(ServiceWorkerDatabaseTest, GetAllRegistrations) {
       blink::mojom::AncestorChainBit::kCrossSite);
   data6.script = URL(origin6, "/script6.js");
   data6.version_id = 6000;
-  data6.resources_total_size_bytes = 600;
+  data6.resources_total_size = base::ByteSize(600);
   data6.policy_container_policies =
       blink::mojom::PolicyContainerPolicies::New();
   data6.policy_container_policies->cross_origin_embedder_policy =
@@ -846,7 +849,7 @@ TEST(ServiceWorkerDatabaseTest, GetAllRegistrations) {
       url::Origin::Create(data7.scope), token);
   data7.script = URL(origin7, "/script7.js");
   data7.version_id = 7000;
-  data7.resources_total_size_bytes = 700;
+  data7.resources_total_size = base::ByteSize(700);
   data7.policy_container_policies =
       blink::mojom::PolicyContainerPolicies::New();
   data7.policy_container_policies->cross_origin_embedder_policy =
@@ -893,7 +896,7 @@ TEST(ServiceWorkerDatabaseTest, Registration_Basic) {
   data.key = key;
   data.script = URL(origin, "/resource1");
   data.version_id = 200;
-  data.resources_total_size_bytes = 10939 + 200;
+  data.resources_total_size = base::ByteSize(10939 + 200);
   data.used_features = {blink::mojom::WebFeature::kNavigatorVendor,
                         blink::mojom::WebFeature::kLinkRelPreload,
                         blink::mojom::WebFeature::kCSSFilterInvert};
@@ -967,8 +970,10 @@ TEST(ServiceWorkerDatabaseTest, Registration_Basic) {
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->GetPurgeableResourceIds(&purgeable_ids_out));
   EXPECT_EQ(2u, purgeable_ids_out.size());
-  EXPECT_TRUE(base::Contains(purgeable_ids_out, resources[0]->resource_id));
-  EXPECT_TRUE(base::Contains(purgeable_ids_out, resources[1]->resource_id));
+  EXPECT_TRUE(
+      std::ranges::contains(purgeable_ids_out, resources[0]->resource_id));
+  EXPECT_TRUE(
+      std::ranges::contains(purgeable_ids_out, resources[1]->resource_id));
 }
 
 TEST(ServiceWorkerDatabaseTest, DeleteNonExistentRegistration) {
@@ -982,7 +987,7 @@ TEST(ServiceWorkerDatabaseTest, DeleteNonExistentRegistration) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data.scope));
   data.script = URL(origin, "/resource1");
   data.version_id = 200;
-  data.resources_total_size_bytes = 19 + 29129;
+  data.resources_total_size = base::ByteSize(19 + 29129);
 
   std::vector<ResourceRecordPtr> resources;
   resources.push_back(CreateResource(1, URL(origin, "/resource1"), 19));
@@ -1037,7 +1042,7 @@ TEST(ServiceWorkerDatabaseTest, Registration_Overwrite) {
   data.key = key;
   data.script = URL(origin, "/resource1");
   data.version_id = 200;
-  data.resources_total_size_bytes = 10 + 11;
+  data.resources_total_size = base::ByteSize(10 + 11);
   data.used_features = {blink::mojom::WebFeature::kNavigatorVendor,
                         blink::mojom::WebFeature::kLinkRelPreload,
                         blink::mojom::WebFeature::kCSSFilterInvert};
@@ -1068,7 +1073,7 @@ TEST(ServiceWorkerDatabaseTest, Registration_Overwrite) {
   mojom::ServiceWorkerRegistrationDataPtr updated_data = data.Clone();
   updated_data->script = URL(origin, "/resource3");
   updated_data->version_id = data.version_id + 1;
-  updated_data->resources_total_size_bytes = 12 + 13;
+  updated_data->resources_total_size = base::ByteSize(12 + 13);
   updated_data->used_features = {
       blink::mojom::WebFeature::kFormElement,
       blink::mojom::WebFeature::kDocumentExitPointerLock,
@@ -1103,8 +1108,10 @@ TEST(ServiceWorkerDatabaseTest, Registration_Overwrite) {
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->GetPurgeableResourceIds(&purgeable_ids_out));
   EXPECT_EQ(2u, purgeable_ids_out.size());
-  EXPECT_TRUE(base::Contains(purgeable_ids_out, resources1[0]->resource_id));
-  EXPECT_TRUE(base::Contains(purgeable_ids_out, resources1[1]->resource_id));
+  EXPECT_TRUE(
+      std::ranges::contains(purgeable_ids_out, resources1[0]->resource_id));
+  EXPECT_TRUE(
+      std::ranges::contains(purgeable_ids_out, resources1[1]->resource_id));
 }
 
 TEST(ServiceWorkerDatabaseTest, Registration_Multiple) {
@@ -1122,7 +1129,7 @@ TEST(ServiceWorkerDatabaseTest, Registration_Multiple) {
   data1.key = key;
   data1.script = URL(origin, "/resource1");
   data1.version_id = 200;
-  data1.resources_total_size_bytes = 1451 + 15234;
+  data1.resources_total_size = base::ByteSize(1451 + 15234);
 
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, URL(origin, "/resource1"), 1451));
@@ -1137,7 +1144,7 @@ TEST(ServiceWorkerDatabaseTest, Registration_Multiple) {
   data2.key = key;
   data2.script = URL(origin, "/resource3");
   data2.version_id = 201;
-  data2.resources_total_size_bytes = 5 + 6;
+  data2.resources_total_size = base::ByteSize(5 + 6);
 
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(3, URL(origin, "/resource3"), 5));
@@ -1196,8 +1203,10 @@ TEST(ServiceWorkerDatabaseTest, Registration_Multiple) {
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->GetPurgeableResourceIds(&purgeable_ids_out));
   EXPECT_EQ(2u, purgeable_ids_out.size());
-  EXPECT_TRUE(base::Contains(purgeable_ids_out, resources1[0]->resource_id));
-  EXPECT_TRUE(base::Contains(purgeable_ids_out, resources1[1]->resource_id));
+  EXPECT_TRUE(
+      std::ranges::contains(purgeable_ids_out, resources1[0]->resource_id));
+  EXPECT_TRUE(
+      std::ranges::contains(purgeable_ids_out, resources1[1]->resource_id));
 
   // Make sure that registration2 is still alive.
   resources_out.clear();
@@ -1272,7 +1281,7 @@ TEST(ServiceWorkerDatabaseTest, Registration_ScriptType) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data1.scope));
   data1.script = URL(origin1, "/resource1");
   data1.version_id = 100;
-  data1.resources_total_size_bytes = 10 + 10000;
+  data1.resources_total_size = base::ByteSize(10 + 10000);
   EXPECT_EQ(blink::mojom::ScriptType::kClassic, data1.script_type);
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, URL(origin1, "/resource1"), 10));
@@ -1289,7 +1298,7 @@ TEST(ServiceWorkerDatabaseTest, Registration_ScriptType) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data2.scope));
   data2.script = URL(origin2, "/resource3");
   data2.version_id = 200;
-  data2.resources_total_size_bytes = 20 + 20000;
+  data2.resources_total_size = base::ByteSize(20 + 20000);
   data2.script_type = blink::mojom::ScriptType::kClassic;
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(3, URL(origin2, "/resource3"), 20));
@@ -1306,7 +1315,7 @@ TEST(ServiceWorkerDatabaseTest, Registration_ScriptType) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data3.scope));
   data3.script = URL(origin3, "/resource5");
   data3.version_id = 300;
-  data3.resources_total_size_bytes = 30 + 30000;
+  data3.resources_total_size = base::ByteSize(30 + 30000);
   data3.script_type = blink::mojom::ScriptType::kModule;
   std::vector<ResourceRecordPtr> resources3;
   resources3.push_back(CreateResource(5, URL(origin3, "/resource5"), 30));
@@ -1359,7 +1368,7 @@ TEST(ServiceWorkerDatabaseTest, UserData_Basic) {
   data.key = key;
   data.script = URL(kOrigin.GetURL(), "/script.js");
   data.version_id = 200;
-  data.resources_total_size_bytes = 100;
+  data.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources;
   resources.push_back(CreateResource(1, data.script, 100));
   ServiceWorkerDatabase::DeletedVersion deleted_version;
@@ -1481,7 +1490,7 @@ TEST(ServiceWorkerDatabaseTest,
   data1.key = kKey;
   data1.script = URL(kOrigin.GetURL(), "/script1.js");
   data1.version_id = 200;
-  data1.resources_total_size_bytes = 100;
+  data1.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, data1.script, 100));
 
@@ -1492,7 +1501,7 @@ TEST(ServiceWorkerDatabaseTest,
   data2.key = kKey;
   data2.script = URL(kOrigin.GetURL(), "/script2.js");
   data2.version_id = 201;
-  data2.resources_total_size_bytes = 200;
+  data2.resources_total_size = base::ByteSize(200);
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(2, data2.script, 200));
 
@@ -1577,7 +1586,7 @@ TEST(ServiceWorkerDatabaseTest, ReadUserDataByKeyPrefix) {
   data.key = kKey;
   data.script = URL(kOrigin.GetURL(), "/script.js");
   data.version_id = 200;
-  data.resources_total_size_bytes = 100;
+  data.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources;
   resources.push_back(CreateResource(1, data.script, 100));
   ServiceWorkerDatabase::DeletedVersion deleted_version;
@@ -1625,7 +1634,7 @@ TEST(ServiceWorkerDatabaseTest, ReadUserKeysAndDataByKeyPrefix) {
   data.key = kKey;
   data.script = URL(kOrigin.GetURL(), "/script.js");
   data.version_id = 200;
-  data.resources_total_size_bytes = 100;
+  data.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources;
   resources.push_back(CreateResource(1, data.script, 100));
   ServiceWorkerDatabase::DeletedVersion deleted_version;
@@ -1677,7 +1686,7 @@ TEST(ServiceWorkerDatabaseTest, UserData_DeleteUserDataByKeyPrefixes) {
   data1.key = key;
   data1.script = URL(kOrigin.GetURL(), "/script1.js");
   data1.version_id = 200;
-  data1.resources_total_size_bytes = 100;
+  data1.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, data1.script, 100));
 
@@ -1688,7 +1697,7 @@ TEST(ServiceWorkerDatabaseTest, UserData_DeleteUserDataByKeyPrefixes) {
   data2.key = key;
   data2.script = URL(kOrigin.GetURL(), "/script2.js");
   data2.version_id = 201;
-  data2.resources_total_size_bytes = 200;
+  data2.resources_total_size = base::ByteSize(200);
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(2, data2.script, 200));
 
@@ -1788,7 +1797,7 @@ TEST(ServiceWorkerDatabaseTest,
   data1.key = kKey;
   data1.script = URL(kOrigin.GetURL(), "/script1.js");
   data1.version_id = 200;
-  data1.resources_total_size_bytes = 100;
+  data1.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, data1.script, 100));
 
@@ -1799,7 +1808,7 @@ TEST(ServiceWorkerDatabaseTest,
   data2.key = kKey;
   data2.script = URL(kOrigin.GetURL(), "/script2.js");
   data2.version_id = 201;
-  data2.resources_total_size_bytes = 200;
+  data2.resources_total_size = base::ByteSize(200);
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(2, data2.script, 200));
 
@@ -1878,7 +1887,7 @@ TEST(ServiceWorkerDatabaseTest, UserData_DataIsolation) {
   data1.key = kKey;
   data1.script = URL(kOrigin.GetURL(), "/script1.js");
   data1.version_id = 200;
-  data1.resources_total_size_bytes = 100;
+  data1.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, data1.script, 100));
 
@@ -1889,7 +1898,7 @@ TEST(ServiceWorkerDatabaseTest, UserData_DataIsolation) {
   data2.key = kKey;
   data2.script = URL(kOrigin.GetURL(), "/script2.js");
   data2.version_id = 201;
-  data2.resources_total_size_bytes = 200;
+  data2.resources_total_size = base::ByteSize(200);
   data2.update_via_cache = blink::mojom::ServiceWorkerUpdateViaCache::kImports;
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(2, data2.script, 200));
@@ -1979,7 +1988,7 @@ TEST(ServiceWorkerDatabaseTest, UserData_DeleteRegistration) {
   data1.key = kKey;
   data1.script = URL(kOrigin.GetURL(), "/script1.js");
   data1.version_id = 200;
-  data1.resources_total_size_bytes = 100;
+  data1.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, data1.script, 100));
 
@@ -1990,7 +1999,7 @@ TEST(ServiceWorkerDatabaseTest, UserData_DeleteRegistration) {
   data2.key = kKey;
   data2.script = URL(kOrigin.GetURL(), "/script2.js");
   data2.version_id = 201;
-  data2.resources_total_size_bytes = 200;
+  data2.resources_total_size = base::ByteSize(200);
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(2, data2.script, 200));
 
@@ -2106,7 +2115,7 @@ TEST(ServiceWorkerDatabaseTest, UpdateVersionToActive) {
   data.script = URL(origin, "/script.js");
   data.version_id = 200;
   data.is_active = false;
-  data.resources_total_size_bytes = 100;
+  data.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources;
   resources.push_back(CreateResource(1, data.script, 100));
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -2165,7 +2174,7 @@ TEST(ServiceWorkerDatabaseTest, UpdateLastCheckTime) {
   data.script = URL(origin, "/script.js");
   data.version_id = 200;
   data.last_update_check = base::Time::Now();
-  data.resources_total_size_bytes = 100;
+  data.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources;
   resources.push_back(CreateResource(1, data.script, 100));
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -2229,7 +2238,7 @@ TEST(ServiceWorkerDatabaseTest, UpdateFetchHandlerType) {
   data.last_update_check = base::Time::Now();
   data.fetch_handler_type =
       blink::mojom::ServiceWorkerFetchHandlerType::kNotSkippable;
-  data.resources_total_size_bytes = 100;
+  data.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources;
   resources.push_back(CreateResource(1, data.script, 100));
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -2295,7 +2304,7 @@ TEST(ServiceWorkerDatabaseTest, UpdateResourceSha256Checksums) {
   data.last_update_check = base::Time::Now();
   data.fetch_handler_type =
       blink::mojom::ServiceWorkerFetchHandlerType::kNotSkippable;
-  data.resources_total_size_bytes = 100;
+  data.resources_total_size = base::ByteSize(100);
   std::vector<ResourceRecordPtr> resources;
   resources.push_back(CreateResource(1, data.script, 100));
   EXPECT_EQ(ServiceWorkerDatabase::Status::kOk,
@@ -2356,7 +2365,7 @@ TEST(ServiceWorkerDatabaseTest, UpdateResourceSha256Checksums) {
   // Test with the resource_id which is not stored in the database. The update
   // should fail.
   data.version_id = 201;
-  data.resources_total_size_bytes = 205;
+  data.resources_total_size = base::ByteSize(205);
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(2, data.script, 100));
   resources2.push_back(CreateResource(3, URL(origin, "/script2.js"), 105));
@@ -2490,7 +2499,7 @@ void DeleteAllDataForStorageKeyTest::TestDeleteAllDataForStorageKey(
   data1.key = registered_key;
   data1.script = URL(reg_url, "/resource1");
   data1.version_id = 100;
-  data1.resources_total_size_bytes = 2013 + 512;
+  data1.resources_total_size = base::ByteSize(2013 + 512);
 
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, URL(reg_url, "/resource1"), 2013));
@@ -2512,7 +2521,7 @@ void DeleteAllDataForStorageKeyTest::TestDeleteAllDataForStorageKey(
   data2.key = registered_key;
   data2.script = URL(reg_url, "/resource3");
   data2.version_id = 101;
-  data2.resources_total_size_bytes = 4 + 5;
+  data2.resources_total_size = base::ByteSize(4 + 5);
 
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(3, URL(reg_url, "/resource3"), 4));
@@ -2540,7 +2549,7 @@ void DeleteAllDataForStorageKeyTest::TestDeleteAllDataForStorageKey(
   exiting_data.key = existing_key;
   exiting_data.script = URL(existing_url, "/resource5");
   exiting_data.version_id = 55;
-  exiting_data.resources_total_size_bytes = 2013;
+  exiting_data.resources_total_size = base::ByteSize(2013);
 
   std::vector<ResourceRecordPtr> existing_resources;
   existing_resources.push_back(
@@ -2583,10 +2592,10 @@ void DeleteAllDataForStorageKeyTest::TestDeleteAllDataForStorageKey(
     ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
               database->GetPurgeableResourceIds(&purgeable_ids_out));
     ASSERT_EQ(4u, purgeable_ids_out.size());
-    ASSERT_TRUE(base::Contains(purgeable_ids_out, 1));
-    ASSERT_TRUE(base::Contains(purgeable_ids_out, 2));
-    ASSERT_TRUE(base::Contains(purgeable_ids_out, 3));
-    ASSERT_TRUE(base::Contains(purgeable_ids_out, 4));
+    ASSERT_TRUE(std::ranges::contains(purgeable_ids_out, 1));
+    ASSERT_TRUE(std::ranges::contains(purgeable_ids_out, 2));
+    ASSERT_TRUE(std::ranges::contains(purgeable_ids_out, 3));
+    ASSERT_TRUE(std::ranges::contains(purgeable_ids_out, 4));
 
     // The user data associated with `registered_key` should be removed.
     std::vector<std::string> user_data_out;
@@ -2610,7 +2619,7 @@ void DeleteAllDataForStorageKeyTest::TestDeleteAllDataForStorageKey(
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->GetStorageKeysWithRegistrations(&unique_keys));
   ASSERT_EQ(2u, unique_keys.size());  // registered_key + existing_key
-  ASSERT_TRUE(base::Contains(unique_keys, registered_key));
+  ASSERT_TRUE(unique_keys.contains(registered_key));
 
   // The registration for `registered_key` should not be removed.
   RegistrationDataPtr data_out;
@@ -2691,7 +2700,7 @@ void DeleteAllDataForStorageKeyTest::
   data1.key = registered_key;
   data1.script = URL(reg_url, "/resource1");
   data1.version_id = 100;
-  data1.resources_total_size_bytes = 2013 + 512;
+  data1.resources_total_size = base::ByteSize(2013 + 512);
 
   std::vector<ResourceRecordPtr> resources1;
   resources1.push_back(CreateResource(1, URL(reg_url, "/resource1"), 2013));
@@ -2713,7 +2722,7 @@ void DeleteAllDataForStorageKeyTest::
   data2.key = registered_key;
   data2.script = URL(reg_url, "/resource3");
   data2.version_id = 101;
-  data2.resources_total_size_bytes = 4 + 5;
+  data2.resources_total_size = base::ByteSize(4 + 5);
 
   std::vector<ResourceRecordPtr> resources2;
   resources2.push_back(CreateResource(3, URL(reg_url, "/resource3"), 4));
@@ -2768,10 +2777,10 @@ void DeleteAllDataForStorageKeyTest::
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->GetPurgeableResourceIds(&purgeable_ids_out));
   ASSERT_EQ(4u, purgeable_ids_out.size());
-  ASSERT_TRUE(base::Contains(purgeable_ids_out, 1));
-  ASSERT_TRUE(base::Contains(purgeable_ids_out, 2));
-  ASSERT_TRUE(base::Contains(purgeable_ids_out, 3));
-  ASSERT_TRUE(base::Contains(purgeable_ids_out, 4));
+  ASSERT_TRUE(std::ranges::contains(purgeable_ids_out, 1));
+  ASSERT_TRUE(std::ranges::contains(purgeable_ids_out, 2));
+  ASSERT_TRUE(std::ranges::contains(purgeable_ids_out, 3));
+  ASSERT_TRUE(std::ranges::contains(purgeable_ids_out, 4));
 
   // The user data associated with `registered_key` should be removed.
   std::vector<std::string> user_data_out;
@@ -2979,7 +2988,7 @@ TEST(ServiceWorkerDatabaseTest, Corruption_NoMainResource) {
       blink::StorageKey::CreateFirstParty(url::Origin::Create(data.scope));
   data.script = URL(origin, "/resource1");
   data.version_id = 100;
-  data.resources_total_size_bytes = 2016;
+  data.resources_total_size = base::ByteSize(2016);
 
   // Simulate that "/resource1" wasn't correctly written in the database by not
   // adding it.
@@ -3018,7 +3027,7 @@ TEST(ServiceWorkerDatabaseTest, Corruption_GetRegistrationsForStorageKey) {
   data1.key = key;
   data1.script = URL(origin, "/resource1");
   data1.version_id = 1;
-  data1.resources_total_size_bytes = 2016;
+  data1.resources_total_size = base::ByteSize(2016);
   resources.push_back(CreateResource(1, URL(origin, "/resource1"), 2016));
   ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
             database->WriteRegistration(data1, resources, &deleted_version));
@@ -3030,7 +3039,7 @@ TEST(ServiceWorkerDatabaseTest, Corruption_GetRegistrationsForStorageKey) {
   data2.key = key;
   data2.script = URL(origin, "/resource2");
   data2.version_id = 2;
-  data2.resources_total_size_bytes = 2016;
+  data2.resources_total_size = base::ByteSize(2016);
   // Simulate that "/resource2" wasn't correctly written in the database by
   // not adding it.
   resources.clear();
@@ -3087,7 +3096,7 @@ TEST(ServiceWorkerDatabaseTest, InvalidWebFeature) {
       static_cast<uint32_t>(blink::mojom::WebFeature::kBackgroundSync));
   // Add an out of range feature.
   data.add_used_features(
-      static_cast<uint32_t>(blink::mojom::WebFeature::kNumberOfFeatures) + 11);
+      static_cast<uint32_t>(blink::mojom::WebFeature::kMaxValue) + 12);
   data.add_used_features(
       static_cast<uint32_t>(blink::mojom::WebFeature::kNetInfoType));
 
@@ -3125,7 +3134,7 @@ TEST(ServiceWorkerDatabaseTest, CrossOriginEmbedderPolicyStoreRestore) {
         blink::StorageKey::CreateFirstParty(url::Origin::Create(data.scope));
     data.script = URL(origin, "/script.js");
     data.version_id = 456;
-    data.resources_total_size_bytes = 100;
+    data.resources_total_size = base::ByteSize(100);
     data.policy_container_policies =
         blink::mojom::PolicyContainerPolicies::New();
     data.policy_container_policies->cross_origin_embedder_policy = policy;
@@ -3243,11 +3252,12 @@ const network::mojom::WebSandboxFlags kWebSandboxFlags[] = {
     network::mojom::WebSandboxFlags::kDownloads,
     network::mojom::WebSandboxFlags::kStorageAccessByUserActivation,
     network::mojom::WebSandboxFlags::kTopNavigationToCustomProtocols,
+    network::mojom::WebSandboxFlags::kAllowSameSiteNoneCookies,
     network::mojom::WebSandboxFlags::kAll,
 };
 
 static_assert(
-    network::mojom::WebSandboxFlags::kTopNavigationToCustomProtocols ==
+    network::mojom::WebSandboxFlags::kAllowSameSiteNoneCookies ==
         network::mojom::WebSandboxFlags::kMaxValue,
     "The array should contain all the flags");
 
@@ -3265,7 +3275,7 @@ TEST(ServiceWorkerDatabaseTest, PolicyContainerPoliciesStoreRestore) {
             url::Origin::Create(data.scope));
         data.script = URL(origin, "/script.js");
         data.version_id = 456;
-        data.resources_total_size_bytes = 100;
+        data.resources_total_size = base::ByteSize(100);
         data.policy_container_policies = std::move(policies);
         std::vector<ResourceRecordPtr> resources;
         resources.push_back(CreateResource(1, data.script, 100));
@@ -3360,7 +3370,7 @@ TEST(ServiceWorkerDatabaseTest, PolicyContainerPoliciesStoreRestore) {
 // impl can still be correctly read by the blink::StorageKey impl.
 TEST(ServiceWorkerDatabaseTest, StorageKeyImplCanReadPreviousOriginImplDB) {
   base::FilePath root_path;
-  base::PathService::Get(base::DIR_SOURCE_ROOT, &root_path);
+  base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &root_path);
   base::FilePath database_dir = root_path.AppendASCII(
       "components/test/data/service_worker/created_by_origin_impl/Database/");
 
@@ -3517,7 +3527,7 @@ TEST(ServiceWorkerDatabaseTest, FetchHandlerTypeStoreRestore) {
         data.script = URL(origin, "/script.js");
         data.version_id = 456;
         data.fetch_handler_type = type;
-        data.resources_total_size_bytes = 100;
+        data.resources_total_size = base::ByteSize(100);
         data.policy_container_policies =
             blink::mojom::PolicyContainerPolicies::New();
         std::vector<ResourceRecordPtr> resources;
@@ -3547,6 +3557,506 @@ TEST(ServiceWorkerDatabaseTest, FetchHandlerTypeStoreRestore) {
   store_and_restore(blink::mojom::ServiceWorkerFetchHandlerType::kNotSkippable);
   store_and_restore(
       blink::mojom::ServiceWorkerFetchHandlerType::kEmptyFetchHandler);
+}
+
+TEST(ServiceWorkerDatabaseTest, RouterRulesStoreRestore) {
+  auto store_and_restore = [](blink::ServiceWorkerRouterRules rules) {
+    GURL origin("https://example.com");
+    RegistrationData data;
+    data.registration_id = 123;
+    data.scope = URL(origin, "/foo");
+    data.key =
+        blink::StorageKey::CreateFirstParty(url::Origin::Create(data.scope));
+    data.script = URL(origin, "/script.js");
+    data.version_id = 456;
+    data.fetch_handler_type =
+        blink::mojom::ServiceWorkerFetchHandlerType::kNoHandler;
+    data.resources_total_size = base::ByteSize(100);
+    data.policy_container_policies =
+        blink::mojom::PolicyContainerPolicies::New();
+    data.router_rules = rules;
+    std::vector<ResourceRecordPtr> resources;
+    resources.push_back(CreateResource(1, data.script, 100));
+
+    // Store.
+    std::unique_ptr<ServiceWorkerDatabase> database(CreateDatabaseInMemory());
+    ServiceWorkerDatabase::DeletedVersion deleted_version;
+    ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
+              database->WriteRegistration(data, resources, &deleted_version));
+
+    // Restore.
+    std::vector<mojom::ServiceWorkerRegistrationDataPtr> registrations;
+    std::vector<std::vector<ResourceRecordPtr>> resources_list;
+    EXPECT_EQ(
+        ServiceWorkerDatabase::Status::kOk,
+        database->GetRegistrationsForStorageKey(
+            blink::StorageKey::CreateFirstParty(url::Origin::Create(origin)),
+            &registrations, &resources_list));
+
+    // The data must not have been altered.
+    VerifyRegistrationData(data, *registrations[0]);
+  };
+
+  // simple
+  {
+    blink::ServiceWorkerRouterRules router_rules;
+    blink::ServiceWorkerRouterRule rule;
+    blink::SafeUrlPattern url_pattern;
+    url_pattern.protocol.emplace_back(liburlpattern::PartType::kFixed, "https",
+                                      liburlpattern::Modifier::kNone);
+    url_pattern.username.emplace_back(liburlpattern::PartType::kFixed,
+                                      "username",
+                                      liburlpattern::Modifier::kNone);
+    url_pattern.password.emplace_back(liburlpattern::PartType::kFixed,
+                                      "password",
+                                      liburlpattern::Modifier::kNone);
+    url_pattern.hostname.emplace_back(liburlpattern::PartType::kFixed,
+                                      "example.com",
+                                      liburlpattern::Modifier::kNone);
+    url_pattern.port.emplace_back(liburlpattern::PartType::kFixed, "8000",
+                                  liburlpattern::Modifier::kNone);
+    url_pattern.pathname.emplace_back(liburlpattern::PartType::kFixed,
+                                      "/test_data",
+                                      liburlpattern::Modifier::kNone);
+    url_pattern.search.emplace_back(liburlpattern::PartType::kFixed, "search",
+                                    liburlpattern::Modifier::kNone);
+    url_pattern.hash.emplace_back(liburlpattern::PartType::kFixed, "hash",
+                                  liburlpattern::Modifier::kNone);
+    url_pattern.options.ignore_case = true;
+    rule.condition =
+        blink::ServiceWorkerRouterCondition::WithUrlPattern(url_pattern);
+
+    blink::ServiceWorkerRouterSource source;
+    source.type = network::mojom::ServiceWorkerRouterSourceType::kNetwork;
+    source.network_source = blink::ServiceWorkerRouterNetworkSource{};
+    rule.sources.emplace_back(source);
+    router_rules.rules.emplace_back(rule);
+
+    store_and_restore(router_rules);
+  }
+
+  // `or` condition
+  {
+    blink::ServiceWorkerRouterRules router_rules;
+    blink::ServiceWorkerRouterRule rule;
+    blink::ServiceWorkerRouterOrCondition or_condition;
+    {
+      or_condition.conditions =
+          std::vector(3, blink::ServiceWorkerRouterCondition::WithRequest({}));
+    }
+    rule.condition =
+        blink::ServiceWorkerRouterCondition::WithOrCondition(or_condition);
+
+    blink::ServiceWorkerRouterSource source;
+    source.type = network::mojom::ServiceWorkerRouterSourceType::kNetwork;
+    source.network_source = blink::ServiceWorkerRouterNetworkSource{};
+    rule.sources.emplace_back(source);
+    router_rules.rules.emplace_back(rule);
+
+    store_and_restore(router_rules);
+  }
+
+  // `not` condition
+  {
+    blink::ServiceWorkerRouterRules router_rules;
+    blink::ServiceWorkerRouterRule rule;
+    blink::ServiceWorkerRouterNotCondition not_condition;
+    {
+      not_condition.condition =
+          std::make_unique<blink::ServiceWorkerRouterCondition>(
+              blink::ServiceWorkerRouterCondition::WithRequest({}));
+    }
+    rule.condition =
+        blink::ServiceWorkerRouterCondition::WithNotCondition(not_condition);
+
+    blink::ServiceWorkerRouterSource source;
+    source.type = network::mojom::ServiceWorkerRouterSourceType::kNetwork;
+    source.network_source = blink::ServiceWorkerRouterNetworkSource{};
+    rule.sources.emplace_back(source);
+    router_rules.rules.emplace_back(rule);
+
+    store_and_restore(router_rules);
+  }
+
+  // empty request
+  {
+    blink::ServiceWorkerRouterRules router_rules;
+    blink::ServiceWorkerRouterRule rule;
+    {
+      // test with request.
+      rule.condition = blink::ServiceWorkerRouterCondition::WithRequest({});
+    }
+
+    blink::ServiceWorkerRouterSource source;
+    source.type = network::mojom::ServiceWorkerRouterSourceType::kNetwork;
+    source.network_source = blink::ServiceWorkerRouterNetworkSource{};
+    rule.sources.emplace_back(source);
+    router_rules.rules.emplace_back(rule);
+
+    store_and_restore(router_rules);
+  }
+
+  // multiple conditions
+  {
+    blink::ServiceWorkerRouterRules router_rules;
+    blink::ServiceWorkerRouterRule rule;
+    {
+      blink::SafeUrlPattern url_pattern;
+      {
+        url_pattern.protocol.emplace_back(liburlpattern::PartType::kFixed,
+                                          "https",
+                                          liburlpattern::Modifier::kNone);
+        url_pattern.username.emplace_back(liburlpattern::PartType::kFixed,
+                                          "username",
+                                          liburlpattern::Modifier::kNone);
+        url_pattern.password.emplace_back(liburlpattern::PartType::kFixed,
+                                          "password",
+                                          liburlpattern::Modifier::kNone);
+        url_pattern.hostname.emplace_back(liburlpattern::PartType::kFixed,
+                                          "example.com",
+                                          liburlpattern::Modifier::kNone);
+        url_pattern.port.emplace_back(liburlpattern::PartType::kFixed, "8000",
+                                      liburlpattern::Modifier::kNone);
+        url_pattern.pathname.emplace_back(liburlpattern::PartType::kFixed,
+                                          "/test_data",
+                                          liburlpattern::Modifier::kNone);
+        url_pattern.search.emplace_back(liburlpattern::PartType::kFixed,
+                                        "search",
+                                        liburlpattern::Modifier::kNone);
+        url_pattern.hash.emplace_back(liburlpattern::PartType::kFixed, "hash",
+                                      liburlpattern::Modifier::kNone);
+      }
+      // test with request.
+      blink::ServiceWorkerRouterRequestCondition request;
+      {
+        request.method = "GET";
+        request.mode = network::mojom::RequestMode::kNavigate;
+        request.destination = network::mojom::RequestDestination::kDocument;
+      }
+      // test for running status.
+      blink::ServiceWorkerRouterRunningStatusCondition running_status;
+      {
+        running_status.status =
+            blink::ServiceWorkerRouterRunningStatusCondition::
+                RunningStatusEnum::kRunning;
+      }
+      rule.condition = {url_pattern, request, running_status, std::nullopt,
+                        std::nullopt};
+    }
+
+    blink::ServiceWorkerRouterSource source;
+    source.type = network::mojom::ServiceWorkerRouterSourceType::kNetwork;
+    source.network_source = blink::ServiceWorkerRouterNetworkSource{};
+    rule.sources.emplace_back(source);
+    router_rules.rules.emplace_back(rule);
+
+    store_and_restore(router_rules);
+  }
+
+  // multiple pathnames.
+  {
+    blink::ServiceWorkerRouterRules router_rules;
+    blink::ServiceWorkerRouterRule rule;
+    blink::SafeUrlPattern url_pattern;
+    url_pattern.pathname.emplace_back(liburlpattern::PartType::kFixed,
+                                      "/test_data",
+                                      liburlpattern::Modifier::kNone);
+    url_pattern.pathname.emplace_back(liburlpattern::PartType::kFullWildcard,
+                                      "name", "prefix", "", "suffix",
+                                      liburlpattern::Modifier::kZeroOrMore);
+    url_pattern.pathname.emplace_back(liburlpattern::PartType::kSegmentWildcard,
+                                      "name", "prefix", "", "suffix",
+                                      liburlpattern::Modifier::kOptional);
+    url_pattern.pathname.emplace_back(liburlpattern::PartType::kSegmentWildcard,
+                                      "name", "prefix", "", "suffix",
+                                      liburlpattern::Modifier::kOneOrMore);
+    rule.condition =
+        blink::ServiceWorkerRouterCondition::WithUrlPattern(url_pattern);
+
+    blink::ServiceWorkerRouterSource source;
+    source.type = network::mojom::ServiceWorkerRouterSourceType::kNetwork;
+    source.network_source = blink::ServiceWorkerRouterNetworkSource{};
+    rule.sources.emplace_back(source);
+    router_rules.rules.emplace_back(rule);
+
+    store_and_restore(router_rules);
+  }
+
+  // multiple hostnames.
+  {
+    blink::ServiceWorkerRouterRules router_rules;
+    blink::ServiceWorkerRouterRule rule;
+    blink::SafeUrlPattern url_pattern;
+    url_pattern.hostname.emplace_back(liburlpattern::PartType::kFixed,
+                                      "example.com",
+                                      liburlpattern::Modifier::kNone);
+    url_pattern.hostname.emplace_back(liburlpattern::PartType::kFullWildcard,
+                                      "name", "prefix", "", "suffix",
+                                      liburlpattern::Modifier::kZeroOrMore);
+    url_pattern.hostname.emplace_back(liburlpattern::PartType::kSegmentWildcard,
+                                      "name", "prefix", "", "suffix",
+                                      liburlpattern::Modifier::kOptional);
+    url_pattern.hostname.emplace_back(liburlpattern::PartType::kSegmentWildcard,
+                                      "name", "prefix", "", "suffix",
+                                      liburlpattern::Modifier::kOneOrMore);
+    rule.condition =
+        blink::ServiceWorkerRouterCondition::WithUrlPattern(url_pattern);
+
+    blink::ServiceWorkerRouterSource source;
+    source.type = network::mojom::ServiceWorkerRouterSourceType::kNetwork;
+    source.network_source = blink::ServiceWorkerRouterNetworkSource{};
+    rule.sources.emplace_back(source);
+    router_rules.rules.emplace_back(rule);
+
+    store_and_restore(router_rules);
+  }
+
+  // multiple sources
+  {
+    blink::ServiceWorkerRouterRules router_rules;
+    blink::ServiceWorkerRouterRule rule;
+    blink::SafeUrlPattern url_pattern;
+    url_pattern.hostname.emplace_back(liburlpattern::PartType::kFixed,
+                                      "example.com",
+                                      liburlpattern::Modifier::kNone);
+    url_pattern.pathname.emplace_back(liburlpattern::PartType::kFixed,
+                                      "/test_data",
+                                      liburlpattern::Modifier::kNone);
+    rule.condition =
+        blink::ServiceWorkerRouterCondition::WithUrlPattern(url_pattern);
+
+    {
+      blink::ServiceWorkerRouterSource source;
+      source.type = network::mojom::ServiceWorkerRouterSourceType::kNetwork;
+      source.network_source.emplace();
+      rule.sources.push_back(source);
+    }
+    {
+      blink::ServiceWorkerRouterSource source;
+      source.type = network::mojom::ServiceWorkerRouterSourceType::
+          kRaceNetworkAndFetchEvent;
+      source.race_network_and_fetch_event_source.emplace();
+      rule.sources.push_back(source);
+    }
+    {
+      blink::ServiceWorkerRouterSource source;
+      source.type = network::mojom::ServiceWorkerRouterSourceType::kFetchEvent;
+      source.fetch_event_source.emplace();
+      rule.sources.push_back(source);
+    }
+    {  // cache source without cache_name.
+      blink::ServiceWorkerRouterSource source;
+      source.type = network::mojom::ServiceWorkerRouterSourceType::kCache;
+      source.cache_source.emplace();
+      rule.sources.push_back(source);
+    }
+    {  // cache source with cache_name.
+      blink::ServiceWorkerRouterSource source;
+      source.type = network::mojom::ServiceWorkerRouterSourceType::kCache;
+      blink::ServiceWorkerRouterCacheSource cache_source;
+      cache_source.cache_name = "example_cache_name";
+      source.cache_source = cache_source;
+      rule.sources.push_back(source);
+    }
+    {
+      // Race network and cache without cache_name.
+      blink::ServiceWorkerRouterSource source;
+      source.type =
+          network::mojom::ServiceWorkerRouterSourceType::kRaceNetworkAndCache;
+      source.race_network_and_cache_source.emplace();
+
+      blink::ServiceWorkerRouterCacheSource cache_source;
+      source.race_network_and_cache_source->cache_source = cache_source;
+
+      rule.sources.push_back(source);
+    }
+    {
+      // Race network and cache with cache_name.
+      blink::ServiceWorkerRouterSource source;
+      source.type =
+          network::mojom::ServiceWorkerRouterSourceType::kRaceNetworkAndCache;
+      source.race_network_and_cache_source.emplace();
+
+      blink::ServiceWorkerRouterCacheSource cache_source;
+      cache_source.cache_name = "example_cache_name";
+      source.race_network_and_cache_source->cache_source = cache_source;
+
+      rule.sources.push_back(source);
+    }
+    router_rules.rules.emplace_back(rule);
+
+    store_and_restore(router_rules);
+  }
+
+  // multiple routes
+  {
+    blink::ServiceWorkerRouterRules router_rules;
+    blink::ServiceWorkerRouterRule rule;
+    blink::SafeUrlPattern url_pattern;
+    url_pattern.pathname.emplace_back(liburlpattern::PartType::kFixed,
+                                      "/test_data",
+                                      liburlpattern::Modifier::kNone);
+    rule.condition =
+        blink::ServiceWorkerRouterCondition::WithUrlPattern(url_pattern);
+
+    blink::ServiceWorkerRouterSource source;
+    source.type = network::mojom::ServiceWorkerRouterSourceType::kNetwork;
+    source.network_source = blink::ServiceWorkerRouterNetworkSource{};
+    rule.sources.emplace_back(source);
+    router_rules.rules.push_back(rule);
+    router_rules.rules.push_back(rule);
+
+    store_and_restore(router_rules);
+  }
+}
+
+TEST(ServiceWorkerDatabaseTest, RouterRulesLegacyPathname) {
+  std::unique_ptr<ServiceWorkerDatabase> database(CreateDatabaseInMemory());
+
+  ServiceWorkerRegistrationData data;
+  data.set_registration_id(1);
+  data.set_scope_url("https://example.com");
+  data.set_script_url("https://example.com/sw");
+  data.set_version_id(1);
+  data.set_is_active(true);
+  data.set_has_fetch_handler(true);
+  data.set_last_update_check_time(
+      base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds());
+
+  database->next_avail_registration_id_ = 2;
+  database->next_avail_version_id_ = 2;
+
+  blink::StorageKey key =
+      blink::StorageKey::CreateFromStringForTesting(data.scope_url());
+
+  {
+    {
+      auto* rules = data.mutable_router_rules();
+      // service_worker_internals::kRouterRuleVersion
+      // in service_worker_database.cc
+      rules->set_version(1);
+      auto* v1 = rules->add_v1();
+      auto* condition = v1->add_condition();
+      auto* mutable_url_pattern = condition->mutable_url_pattern();
+      auto* legacy_pathname = mutable_url_pattern->mutable_legacy_pathname();
+      auto* part = legacy_pathname->Add();
+      part->set_modifier(ServiceWorkerRegistrationData::RouterRules::RuleV1::
+                             Condition::URLPattern::Part::kNone);
+      auto* fixed = part->mutable_fixed();
+      fixed->set_value("/fake");
+      auto* source = v1->add_source();
+      source->mutable_network_source();
+    }
+
+    // Write the serialization.
+    std::string value;
+    ASSERT_TRUE(data.SerializeToString(&value));
+
+    // Parse the serialized data.
+    // The legacy path should be converted to the new URLPattern.
+    RegistrationDataPtr registration;
+    ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
+              database->ParseRegistrationData(value, key, &registration));
+    EXPECT_FALSE(registration->router_rules->rules.empty());
+
+    blink::SafeUrlPattern url_pattern;
+    {
+      liburlpattern::Part part;
+      part.modifier = liburlpattern::Modifier::kNone;
+      part.type = liburlpattern::PartType::kFullWildcard;
+      part.name = "0";
+
+      url_pattern.protocol.push_back(part);
+      url_pattern.username.push_back(part);
+      url_pattern.password.push_back(part);
+      url_pattern.hostname.push_back(part);
+      url_pattern.port.push_back(part);
+      url_pattern.pathname.emplace_back(liburlpattern::PartType::kFixed,
+                                        "/fake",
+                                        liburlpattern::Modifier::kNone);
+      url_pattern.search.push_back(part);
+      url_pattern.hash.push_back(part);
+    }
+
+    const auto& registered_url_pattern =
+        std::get<std::optional<blink::SafeUrlPattern>&>(
+            registration->router_rules->rules[0].condition.get());
+    EXPECT_EQ(url_pattern, registered_url_pattern);
+  }
+}
+
+// Ensure that all chrome-extension service workers have an address space of
+// kLoopback regardless of the IP address space in the database.
+//
+// Regression test for crbug.com/456078996
+TEST(ServiceWorkerDatabaseTest, ExtensionStoreRestore) {
+  base::HistogramTester histogram_tester;
+  auto store_and_restore = [](blink::mojom::PolicyContainerPoliciesPtr
+                                  policies) {
+    // Build the minimal RegistrationData with the given |policy|.
+    GURL origin("chrome-extension://fdafdafdadfa");
+    RegistrationData data;
+    data.registration_id = 123;
+    data.scope = URL(origin, "");
+    data.key =
+        blink::StorageKey::CreateFirstParty(url::Origin::Create(data.scope));
+    data.script = URL(origin, "/script.js");
+    data.version_id = 456;
+    data.resources_total_size = base::ByteSize(100);
+    data.policy_container_policies = std::move(policies);
+    std::vector<ResourceRecordPtr> resources;
+    resources.push_back(CreateResource(1, data.script, 100));
+
+    // Store.
+    std::unique_ptr<ServiceWorkerDatabase> database(CreateDatabaseInMemory());
+    ServiceWorkerDatabase::DeletedVersion deleted_version;
+    ASSERT_EQ(ServiceWorkerDatabase::Status::kOk,
+              database->WriteRegistration(data, resources, &deleted_version));
+
+    // Restore.
+    std::vector<mojom::ServiceWorkerRegistrationDataPtr> registrations;
+    std::vector<std::vector<ResourceRecordPtr>> resources_list;
+    EXPECT_EQ(
+        ServiceWorkerDatabase::Status::kOk,
+        database->GetRegistrationsForStorageKey(
+            blink::StorageKey::CreateFirstParty(url::Origin::Create(origin)),
+            &registrations, &resources_list));
+
+    // The data must not have been altered, except for the address space,
+    // which should always be kLoopback.
+    data.policy_container_policies->ip_address_space =
+        network::mojom::IPAddressSpace::kLoopback;
+    VerifyRegistrationData(data, *registrations[0]);
+  };
+
+  {
+    auto policies = blink::mojom::PolicyContainerPolicies::New();
+
+    for (auto ip_address_space : {
+             network::mojom::IPAddressSpace::kLoopback,
+             network::mojom::IPAddressSpace::kLocal,
+             network::mojom::IPAddressSpace::kPublic,
+             network::mojom::IPAddressSpace::kUnknown,
+         }) {
+      policies->ip_address_space = ip_address_space;
+      store_and_restore(policies->Clone());
+    }
+  }
+
+  histogram_tester.ExpectTotalCount(
+      "ServiceWorker.ChromeExtensionUpdateIPAddressSpace", 3);
+  // network::mojom::IPAddressSpace::kLoopback
+  histogram_tester.ExpectBucketCount(
+      "ServiceWorker.ChromeExtensionUpdateIPAddressSpace", 0, 0);
+  // network::mojom::IPAddressSpace::kLocal
+  histogram_tester.ExpectBucketCount(
+      "ServiceWorker.ChromeExtensionUpdateIPAddressSpace", 1, 1);
+  // network::mojom::IPAddressSpace::kPublic
+  histogram_tester.ExpectBucketCount(
+      "ServiceWorker.ChromeExtensionUpdateIPAddressSpace", 2, 1);
+  // network::mojom::IPAddressSpace::kUnknown
+  histogram_tester.ExpectBucketCount(
+      "ServiceWorker.ChromeExtensionUpdateIPAddressSpace", 3, 1);
 }
 
 }  // namespace storage

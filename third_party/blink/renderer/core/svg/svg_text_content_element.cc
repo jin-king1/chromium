@@ -20,17 +20,19 @@
 
 #include "third_party/blink/renderer/core/svg/svg_text_content_element.h"
 
+#include "third_party/blink/renderer/bindings/core/v8/v8_dom_point_init.h"
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css_value_keywords.h"
 #include "third_party/blink/renderer/core/editing/frame_selection.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
-#include "third_party/blink/renderer/core/layout/ng/svg/layout_ng_svg_text.h"
-#include "third_party/blink/renderer/core/layout/ng/svg/ng_svg_text_query.h"
+#include "third_party/blink/renderer/core/layout/svg/layout_svg_text.h"
+#include "third_party/blink/renderer/core/layout/svg/svg_text_query.h"
 #include "third_party/blink/renderer/core/svg/svg_animated_length.h"
 #include "third_party/blink/renderer/core/svg/svg_enumeration_map.h"
 #include "third_party/blink/renderer/core/svg/svg_point_tear_off.h"
 #include "third_party/blink/renderer/core/svg/svg_rect_tear_off.h"
+#include "third_party/blink/renderer/core/svg/svg_zoom_migration.h"
 #include "third_party/blink/renderer/core/svg_names.h"
 #include "third_party/blink/renderer/core/xml_names.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
@@ -43,18 +45,18 @@ namespace blink {
 namespace {
 
 bool IsNGTextOrInline(const LayoutObject* object) {
-  return object && (object->IsNGSVGText() ||
-                    object->IsInLayoutNGInlineFormattingContext());
+  return object &&
+         (object->IsSVGText() || object->IsInLayoutNGInlineFormattingContext());
 }
 
 }  // namespace
 
 template <>
 const SVGEnumerationMap& GetEnumerationMap<SVGLengthAdjustType>() {
-  static const SVGEnumerationMap::Entry enum_items[] = {
-      {kSVGLengthAdjustSpacing, "spacing"},
-      {kSVGLengthAdjustSpacingAndGlyphs, "spacingAndGlyphs"},
-  };
+  static constexpr auto enum_items = std::to_array<const char* const>({
+      "spacing",
+      "spacingAndGlyphs",
+  });
   static const SVGEnumerationMap entries(enum_items);
   return entries;
 }
@@ -90,10 +92,7 @@ SVGTextContentElement::SVGTextContentElement(const QualifiedName& tag_name,
           MakeGarbageCollected<SVGAnimatedEnumeration<SVGLengthAdjustType>>(
               this,
               svg_names::kLengthAdjustAttr,
-              kSVGLengthAdjustSpacing)) {
-  AddToPropertyMap(text_length_);
-  AddToPropertyMap(length_adjust_);
-}
+              kSVGLengthAdjustSpacing)) {}
 
 void SVGTextContentElement::Trace(Visitor* visitor) const {
   visitor->Trace(text_length_);
@@ -106,7 +105,7 @@ unsigned SVGTextContentElement::getNumberOfChars() {
                                             DocumentUpdateReason::kJavaScript);
   auto* layout_object = GetLayoutObject();
   if (IsNGTextOrInline(layout_object))
-    return NGSvgTextQuery(*layout_object).NumberOfCharacters();
+    return SvgTextQuery(*layout_object).NumberOfCharacters();
   return 0;
 }
 
@@ -115,8 +114,10 @@ float SVGTextContentElement::getComputedTextLength() {
                                             DocumentUpdateReason::kJavaScript);
   auto* layout_object = GetLayoutObject();
   if (IsNGTextOrInline(layout_object)) {
-    NGSvgTextQuery query(*layout_object);
-    return query.SubStringLength(0, query.NumberOfCharacters());
+    SvgTextQuery query(*layout_object);
+    return NoopWillBeInvScaleScalar(
+        query.SubStringLength(0, query.NumberOfCharacters()),
+        layout_object->StyleRef().EffectiveZoom());
   }
   return 0;
 }
@@ -141,8 +142,11 @@ float SVGTextContentElement::getSubStringLength(
     nchars = number_of_chars - charnum;
 
   auto* layout_object = GetLayoutObject();
-  if (IsNGTextOrInline(layout_object))
-    return NGSvgTextQuery(*layout_object).SubStringLength(charnum, nchars);
+  if (IsNGTextOrInline(layout_object)) {
+    return NoopWillBeInvScaleScalar(
+        SvgTextQuery(*layout_object).SubStringLength(charnum, nchars),
+        layout_object->StyleRef().EffectiveZoom());
+  }
   return 0;
 }
 
@@ -163,7 +167,9 @@ SVGPointTearOff* SVGTextContentElement::getStartPositionOfChar(
   gfx::PointF point;
   auto* layout_object = GetLayoutObject();
   if (IsNGTextOrInline(layout_object)) {
-    point = NGSvgTextQuery(*layout_object).StartPositionOfCharacter(charnum);
+    point = NoopWillBeInvScalePoint(
+        SvgTextQuery(*layout_object).StartPositionOfCharacter(charnum),
+        layout_object->StyleRef().EffectiveZoom());
   }
   return SVGPointTearOff::CreateDetached(point);
 }
@@ -185,7 +191,9 @@ SVGPointTearOff* SVGTextContentElement::getEndPositionOfChar(
   gfx::PointF point;
   auto* layout_object = GetLayoutObject();
   if (IsNGTextOrInline(layout_object)) {
-    point = NGSvgTextQuery(*layout_object).EndPositionOfCharacter(charnum);
+    point = NoopWillBeInvScalePoint(
+        SvgTextQuery(*layout_object).EndPositionOfCharacter(charnum),
+        layout_object->StyleRef().EffectiveZoom());
   }
   return SVGPointTearOff::CreateDetached(point);
 }
@@ -207,7 +215,9 @@ SVGRectTearOff* SVGTextContentElement::getExtentOfChar(
   gfx::RectF rect;
   auto* layout_object = GetLayoutObject();
   if (IsNGTextOrInline(layout_object)) {
-    rect = NGSvgTextQuery(*layout_object).ExtentOfCharacter(charnum);
+    rect = NoopWillBeInvScaleRect(
+        SvgTextQuery(*layout_object).ExtentOfCharacter(charnum),
+        layout_object->StyleRef().EffectiveZoom());
   }
   return SVGRectTearOff::CreateDetached(rect);
 }
@@ -228,19 +238,25 @@ float SVGTextContentElement::getRotationOfChar(
 
   auto* layout_object = GetLayoutObject();
   if (IsNGTextOrInline(layout_object))
-    return NGSvgTextQuery(*layout_object).RotationOfCharacter(charnum);
+    return SvgTextQuery(*layout_object).RotationOfCharacter(charnum);
   return 0.0f;
 }
 
-int SVGTextContentElement::getCharNumAtPosition(
-    SVGPointTearOff* point,
-    ExceptionState& exception_state) {
+int SVGTextContentElement::getCharNumAtPosition(const DOMPointInit* point) {
+  // If either of the x or y properties on point are infinite or NaN, then the
+  // method must return -1.
+  if (!std::isfinite(point->x()) || !std::isfinite(point->y())) {
+    return -1;
+  }
   GetDocument().UpdateStyleAndLayoutForNode(this,
                                             DocumentUpdateReason::kJavaScript);
   auto* layout_object = GetLayoutObject();
   if (IsNGTextOrInline(layout_object)) {
-    return NGSvgTextQuery(*layout_object)
-        .CharacterNumberAtPosition(point->Target()->Value());
+    const gfx::PointF local_point(ClampTo<float>(point->x()),
+                                  ClampTo<float>(point->y()));
+    const gfx::PointF query_point = NoopWillBeScalePoint(
+        local_point, layout_object->StyleRef().EffectiveZoom());
+    return SvgTextQuery(*layout_object).CharacterNumberAtPosition(query_point);
   }
   return -1;
 }
@@ -274,35 +290,25 @@ bool SVGTextContentElement::IsPresentationAttribute(
 void SVGTextContentElement::CollectStyleForPresentationAttribute(
     const QualifiedName& name,
     const AtomicString& value,
-    MutableCSSPropertyValueSet* style) {
+    HeapVector<CSSPropertyValue, 8>& style) {
   if (name.Matches(xml_names::kSpaceAttr)) {
     DEFINE_STATIC_LOCAL(const AtomicString, preserve_string, ("preserve"));
 
     if (value == preserve_string) {
       UseCounter::Count(GetDocument(), WebFeature::kWhiteSpacePreFromXMLSpace);
-      if (!RuntimeEnabledFeatures::CSSWhiteSpaceShorthandEnabled()) {
-        AddPropertyToPresentationAttributeStyle(
-            style, CSSPropertyID::kWhiteSpace, CSSValueID::kPre);
-      } else {
-        // Longhands of `white-space: pre`.
-        AddPropertyToPresentationAttributeStyle(
-            style, CSSPropertyID::kWhiteSpaceCollapse, CSSValueID::kPreserve);
-        AddPropertyToPresentationAttributeStyle(style, CSSPropertyID::kTextWrap,
-                                                CSSValueID::kNowrap);
-      }
+      // Longhands of `white-space: pre`.
+      AddPropertyToPresentationAttributeStyle(
+          style, CSSPropertyID::kWhiteSpaceCollapse, CSSValueID::kPreserve);
+      AddPropertyToPresentationAttributeStyle(
+          style, CSSPropertyID::kTextWrapMode, CSSValueID::kNowrap);
     } else {
       UseCounter::Count(GetDocument(),
                         WebFeature::kWhiteSpaceNowrapFromXMLSpace);
-      if (!RuntimeEnabledFeatures::CSSWhiteSpaceShorthandEnabled()) {
-        AddPropertyToPresentationAttributeStyle(
-            style, CSSPropertyID::kWhiteSpace, CSSValueID::kNowrap);
-      } else {
-        // Longhands of `white-space: nowrap`.
-        AddPropertyToPresentationAttributeStyle(
-            style, CSSPropertyID::kWhiteSpaceCollapse, CSSValueID::kCollapse);
-        AddPropertyToPresentationAttributeStyle(style, CSSPropertyID::kTextWrap,
-                                                CSSValueID::kNowrap);
-      }
+      // Longhands of `white-space: nowrap`.
+      AddPropertyToPresentationAttributeStyle(
+          style, CSSPropertyID::kWhiteSpaceCollapse, CSSValueID::kCollapse);
+      AddPropertyToPresentationAttributeStyle(
+          style, CSSPropertyID::kTextWrapMode, CSSValueID::kNowrap);
     }
   } else {
     SVGGraphicsElement::CollectStyleForPresentationAttribute(name, value,
@@ -319,11 +325,9 @@ void SVGTextContentElement::SvgAttributeChanged(
   if (attr_name == svg_names::kTextLengthAttr ||
       attr_name == svg_names::kLengthAdjustAttr ||
       attr_name == xml_names::kSpaceAttr) {
-    SVGElement::InvalidationGuard invalidation_guard(this);
-
     if (LayoutObject* layout_object = GetLayoutObject()) {
       if (auto* ng_text =
-              LayoutNGSVGText::LocateLayoutSVGTextAncestor(layout_object)) {
+              LayoutSVGText::LocateLayoutSVGTextAncestor(layout_object)) {
         ng_text->SetNeedsPositioningValuesUpdate();
       }
       MarkForLayoutAndParentResourceInvalidation(*layout_object);
@@ -345,6 +349,23 @@ bool SVGTextContentElement::SelfHasRelativeLengths() const {
 SVGTextContentElement* SVGTextContentElement::ElementFromLineLayoutItem(
     const LineLayoutItem& line_layout_item) {
   return nullptr;
+}
+
+SVGAnimatedPropertyBase* SVGTextContentElement::PropertyFromAttribute(
+    const QualifiedName& attribute_name) const {
+  if (attribute_name == text_length_->AttributeName()) {
+    return text_length_.Get();
+  } else if (attribute_name == svg_names::kLengthAdjustAttr) {
+    return length_adjust_.Get();
+  } else {
+    return SVGGraphicsElement::PropertyFromAttribute(attribute_name);
+  }
+}
+
+void SVGTextContentElement::SynchronizeAllSVGAttributes() const {
+  SVGAnimatedPropertyBase* attrs[]{text_length_.Get(), length_adjust_.Get()};
+  SynchronizeListOfSVGAttributes(attrs);
+  SVGGraphicsElement::SynchronizeAllSVGAttributes();
 }
 
 }  // namespace blink

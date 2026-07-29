@@ -14,6 +14,8 @@
 #include "components/exo/security_delegate.h"
 #include "components/exo/wayland/server.h"
 
+struct wl_display;
+
 namespace exo {
 
 namespace wayland {
@@ -26,16 +28,19 @@ class NotificationSurfaceManager;
 class ToastSurfaceManager;
 class WMHelper;
 class WaylandServerHandle;
+class WindowOcclusionManager;
 
 class WaylandServerController {
  public:
   static std::unique_ptr<WaylandServerController> CreateForArcIfNecessary(
-      std::unique_ptr<DataExchangeDelegate> data_exchange_delegate);
+      std::unique_ptr<DataExchangeDelegate> data_exchange_delegate,
+      std::unique_ptr<SecurityDelegate> security_delegate);
 
   // Creates WaylandServerController. Returns null if controller should not be
   // created.
   static std::unique_ptr<WaylandServerController> CreateIfNecessary(
       std::unique_ptr<DataExchangeDelegate> data_exchange_delegate,
+      std::unique_ptr<SecurityDelegate> security_delegate,
       std::unique_ptr<NotificationSurfaceManager> notification_surface_manager,
       std::unique_ptr<InputMethodSurfaceManager> input_method_surface_manager,
       std::unique_ptr<ToastSurfaceManager> toast_surface_manager);
@@ -49,12 +54,16 @@ class WaylandServerController {
 
   ~WaylandServerController();
 
+  // Gets the Server instance for the `display` if it exists.
+  wayland::Server* GetServerForDisplay(wl_display* display);
+
   InputMethodSurfaceManager* input_method_surface_manager() {
     return display_->input_method_surface_manager();
   }
 
   WaylandServerController(
       std::unique_ptr<DataExchangeDelegate> data_exchange_delegate,
+      std::unique_ptr<SecurityDelegate> security_delegate,
       std::unique_ptr<NotificationSurfaceManager> notification_surface_manager,
       std::unique_ptr<InputMethodSurfaceManager> input_method_surface_manager,
       std::unique_ptr<ToastSurfaceManager> toast_surface_manager);
@@ -80,6 +89,7 @@ class WaylandServerController {
 
   std::unique_ptr<WMHelper> wm_helper_;
   std::unique_ptr<Display> display_;
+  std::unique_ptr<WindowOcclusionManager> window_occlusion_manager_;
   std::unique_ptr<wayland::Server> default_server_;
   base::flat_map<WaylandServerHandle*, std::unique_ptr<wayland::Server>>
       on_demand_servers_;

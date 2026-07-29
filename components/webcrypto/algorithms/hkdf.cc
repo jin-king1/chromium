@@ -26,7 +26,7 @@ const blink::WebCryptoKeyUsageMask kValidUsages =
 
 class HkdfImplementation : public AlgorithmImplementation {
  public:
-  HkdfImplementation() {}
+  HkdfImplementation() = default;
 
   Status ImportKey(blink::WebCryptoKeyFormat format,
                    base::span<const uint8_t> key_data,
@@ -36,6 +36,7 @@ class HkdfImplementation : public AlgorithmImplementation {
                    blink::WebCryptoKey* key) const override {
     switch (format) {
       case blink::kWebCryptoKeyFormatRaw:
+      case blink::kWebCryptoKeyFormatRawSecret:
         return ImportKeyRaw(key_data, algorithm, extractable, usages, key);
       default:
         return Status::ErrorUnsupportedImportKeyFormat();
@@ -63,7 +64,7 @@ class HkdfImplementation : public AlgorithmImplementation {
 
   Status DeriveBits(const blink::WebCryptoAlgorithm& algorithm,
                     const blink::WebCryptoKey& base_key,
-                    absl::optional<unsigned int> length_bits,
+                    std::optional<unsigned int> length_bits,
                     std::vector<uint8_t>* derived_bytes) const override {
     crypto::OpenSSLErrStackTracer err_tracer(FROM_HERE);
     if (!length_bits.has_value()) {
@@ -102,6 +103,16 @@ class HkdfImplementation : public AlgorithmImplementation {
     return Status::Success();
   }
 
+  bool Supports(blink::WebCryptoOperation op,
+                const blink::WebCryptoAlgorithm& algorithm,
+                std::optional<unsigned int> length_bits) const override {
+    if (op == blink::kWebCryptoOperationDeriveBits) {
+      return length_bits.has_value() && (length_bits.value() % 8 == 0);
+    } else {
+      return true;
+    }
+  }
+
   Status DeserializeKeyForClone(const blink::WebCryptoKeyAlgorithm& algorithm,
                                 blink::WebCryptoKeyType type,
                                 bool extractable,
@@ -120,10 +131,9 @@ class HkdfImplementation : public AlgorithmImplementation {
                                     key);
   }
 
-  Status GetKeyLength(
-      const blink::WebCryptoAlgorithm& key_length_algorithm,
-      absl::optional<unsigned int>* length_bits) const override {
-    *length_bits = absl::nullopt;
+  Status GetKeyLength(const blink::WebCryptoAlgorithm& key_length_algorithm,
+                      std::optional<unsigned int>* length_bits) const override {
+    *length_bits = std::nullopt;
     return Status::Success();
   }
 };

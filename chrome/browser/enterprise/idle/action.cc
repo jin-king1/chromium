@@ -4,6 +4,7 @@
 
 #include "chrome/browser/enterprise/idle/action.h"
 
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -12,14 +13,17 @@
 #include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/ranges/algorithm.h"
 #include "base/scoped_observation.h"
+#include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_constants.h"
 #include "chrome/browser/enterprise/idle/action_runner.h"
+#include "chrome/browser/enterprise/idle/idle_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
+#include "components/enterprise/idle/idle_pref_names.h"
+#include "components/enterprise/idle/metrics.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browsing_data_remover.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -27,11 +31,12 @@
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #else
 #include "chrome/browser/enterprise/idle/dialog_manager.h"
+#include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"  // nogncheck crbug.com/40147906
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/idle_bubble.h"
-#include "chrome/browser/ui/profile_picker.h"
+#include "chrome/browser/ui/profiles/profile_picker.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
 namespace enterprise_idle {
@@ -42,10 +47,18 @@ namespace {
 bool ProfileHasBrowsers(const Profile* profile) {
   DCHECK(profile);
   profile = profile->GetOriginalProfile();
-  return base::ranges::any_of(
-      *BrowserList::GetInstance(), [profile](Browser* browser) {
-        return browser->profile()->GetOriginalProfile() == profile;
+  bool has_browsers = false;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [profile,
+       &has_browsers](BrowserWindowInterface* browser_window_interface) {
+        if (browser_window_interface->GetProfile()->GetOriginalProfile() ==
+            profile) {
+          has_browsers = true;
+          return false;
+        }
+        return true;
       });
+  return has_browsers;
 }
 
 // Wrapper Action for DialogManager. Shows a 30s warning dialog, shared across
@@ -54,27 +67,33 @@ class ShowDialogAction : public Action {
  public:
   explicit ShowDialogAction(base::flat_set<ActionType> action_types)
       : Action(static_cast<int>(ActionType::kShowDialog)),
-        action_types_(action_types) {}
+        action_types_(std::move(action_types)) {}
 
   void Run(Profile* profile, Continuation continuation) override {
     base::TimeDelta timeout =
-        profile->GetPrefs()->GetTimeDelta(prefs::kIdleTimeout);
+        IdleServiceFactory::GetForBrowserContext(profile)->GetTimeout();
     continuation_ = std::move(continuation);
     // Action object's lifetime extends until it calls `continuation_`, so
     // passing `this` as a raw pointer is safe.
-    subscription_ = DialogManager::GetInstance()->ShowDialog(
-        timeout, action_types_,
-        base::BindOnce(&ShowDialogAction::OnCloseFinished,
-                       base::Unretained(this)));
+    base::CallbackListSubscription subscription =
+        DialogManager::GetInstance()->MaybeShowDialog(
+            profile, timeout, action_types_,
+            base::BindOnce(&ShowDialogAction::OnDialogFinished,
+                           base::Unretained(this)));
+    if (subscription) {
+      // If there is no dialog to show, MaybeShowDialog() resolves immediately
+      // and we destroy this object via OnCloseFinished(). This if guards
+      // against a use-after-free.
+      subscription_ = std::move(subscription);
+    }
   }
 
   bool ShouldNotifyUserOfPendingDestructiveAction(Profile* profile) override {
     NOTREACHED();  // Should only be called in ActionFactory::Build().
-    return false;
   }
 
  private:
-  void OnCloseFinished(bool expired) {
+  void OnDialogFinished(bool expired) {
     std::move(continuation_).Run(/*success=*/expired);
   }
 
@@ -98,15 +117,15 @@ class CloseBrowsersAction : public Action {
     }
 
     continuation_ = std::move(continuation);
-    // TODO(crbug.com/1316551): Get customer feedback on whether
+    // TODO(crbug.com/40222234): Get customer feedback on whether
     // skip_beforeunload should be true or false.
-    BrowserList::CloseAllBrowsersWithProfile(
+    chrome::CloseAllBrowsersWithProfile(
         profile,
+        /*skip_beforeunload=*/true,
         base::BindRepeating(&CloseBrowsersAction::OnCloseSuccess,
                             base::Unretained(this)),
         base::BindRepeating(&CloseBrowsersAction::OnCloseAborted,
-                            base::Unretained(this)),
-        /*skip_beforeunload=*/true);
+                            base::Unretained(this)));
   }
 
   bool ShouldNotifyUserOfPendingDestructiveAction(Profile* profile) override {
@@ -116,10 +135,14 @@ class CloseBrowsersAction : public Action {
 
  private:
   void OnCloseSuccess(const base::FilePath& profile_dir) {
+    metrics::RecordActionsSuccess(
+        metrics::IdleTimeoutActionType::kCloseBrowsers, true);
     std::move(continuation_).Run(/*success=*/true);
   }
 
   void OnCloseAborted(const base::FilePath& profile_dir) {
+    metrics::RecordActionsSuccess(
+        metrics::IdleTimeoutActionType::kCloseBrowsers, false);
     std::move(continuation_).Run(/*success=*/false);
   }
   Action::Continuation continuation_;
@@ -136,6 +159,8 @@ class ShowProfilePickerAction : public Action {
   void Run(Profile* profile, Continuation continuation) override {
     ProfilePicker::Show(ProfilePicker::Params::FromEntryPoint(
         ProfilePicker::EntryPoint::kProfileIdle));
+    metrics::RecordActionsSuccess(
+        metrics::IdleTimeoutActionType::kShowProfilePicker, true);
     std::move(continuation).Run(true);
   }
 
@@ -149,7 +174,7 @@ class ShowProfilePickerAction : public Action {
 // Multiple data types may be grouped into a single ClearBrowsingDataAction
 // object.
 //
-// TODO(crbug.com/1326685): Call ChromeBrowsingDataLifetimeManager, instead of
+// TODO(crbug.com/40840688): Call ChromeBrowsingDataLifetimeManager, instead of
 // BrowsingDataRemover directly? Especially if we add a keepalive, or use
 // kClearBrowsingDataOnExitDeletionPending...
 class ClearBrowsingDataAction : public Action,
@@ -159,7 +184,7 @@ class ClearBrowsingDataAction : public Action,
       base::flat_set<ActionType> action_types,
       content::BrowsingDataRemover* browsing_data_remover_for_testing)
       : Action(static_cast<int>(ActionType::kClearBrowsingHistory)),
-        action_types_(action_types),
+        action_types_(std::move(action_types)),
         browsing_data_remover_for_testing_(browsing_data_remover_for_testing) {}
 
   ~ClearBrowsingDataAction() override = default;
@@ -174,9 +199,10 @@ class ClearBrowsingDataAction : public Action,
     continuation_ = std::move(continuation);
     // Action object's lifetime extends until it calls `continuation_`, so
     // passing `this` as a raw pointer is safe.
+    deletion_start_time_ = base::TimeTicks::Now();
     remover->RemoveAndReply(base::Time(), base::Time::Max(), GetRemoveMask(),
                             GetOriginTypeMask(), this);
-    // TODO(crbug.com/1326685): Add a pair of keepalives?
+    // TODO(crbug.com/40840688): Add a pair of keepalives?
   }
 
   bool ShouldNotifyUserOfPendingDestructiveAction(Profile* profile) override {
@@ -191,6 +217,11 @@ class ClearBrowsingDataAction : public Action,
   void OnBrowsingDataRemoverDone(uint64_t failed_data_types) override {
     bool success = failed_data_types == 0;
     observation_.Reset();
+    metrics::RecordActionsSuccess(
+        metrics::IdleTimeoutActionType::kClearBrowsingData, success);
+    metrics::RecordIdleTimeoutActionTimeTaken(
+        metrics::IdleTimeoutActionType::kClearBrowsingData,
+        base::TimeTicks::Now() - deletion_start_time_);
     std::move(continuation_).Run(success);
   }
 
@@ -198,25 +229,28 @@ class ClearBrowsingDataAction : public Action,
   uint64_t GetRemoveMask() const {
     using content::BrowsingDataRemover;
     static const std::pair<ActionType, uint64_t> entries[] = {
-        {ActionType::kClearBrowsingHistory,
-         chrome_browsing_data_remover::DATA_TYPE_HISTORY},
-        {ActionType::kClearDownloadHistory,
-         BrowsingDataRemover::DATA_TYPE_DOWNLOADS},
-        {ActionType::kClearCookiesAndOtherSiteData,
-         chrome_browsing_data_remover::DATA_TYPE_SITE_DATA},
-        {ActionType::kClearCachedImagesAndFiles,
-         BrowsingDataRemover::DATA_TYPE_CACHE},
-        {ActionType::kClearPasswordSignin,
-         chrome_browsing_data_remover::DATA_TYPE_PASSWORDS},
-        {ActionType::kClearAutofill,
-         chrome_browsing_data_remover::DATA_TYPE_FORM_DATA},
-        {ActionType::kClearSiteSettings,
-         chrome_browsing_data_remover::DATA_TYPE_CONTENT_SETTINGS},
-        {ActionType::kClearHostedAppData,
-         chrome_browsing_data_remover::DATA_TYPE_SITE_DATA}};
+#if !BUILDFLAG(IS_ANDROID)
+      {ActionType::kClearDownloadHistory,
+       BrowsingDataRemover::DATA_TYPE_DOWNLOADS},
+      {ActionType::kClearHostedAppData,
+       chrome_browsing_data_remover::DATA_TYPE_SITE_DATA},
+#endif  // !BUILDFLAG(IS_ANDROID)
+      {ActionType::kClearBrowsingHistory,
+       chrome_browsing_data_remover::DATA_TYPE_HISTORY},
+      {ActionType::kClearCookiesAndOtherSiteData,
+       chrome_browsing_data_remover::DATA_TYPE_SITE_DATA},
+      {ActionType::kClearCachedImagesAndFiles,
+       BrowsingDataRemover::DATA_TYPE_CACHE},
+      {ActionType::kClearPasswordSignin,
+       chrome_browsing_data_remover::DATA_TYPE_PASSWORDS},
+      {ActionType::kClearAutofill,
+       chrome_browsing_data_remover::DATA_TYPE_FORM_DATA},
+      {ActionType::kClearSiteSettings,
+       chrome_browsing_data_remover::DATA_TYPE_CONTENT_SETTINGS}
+    };
     uint64_t result = 0;
     for (const auto& [action_type, mask] : entries) {
-      if (base::Contains(action_types_, action_type)) {
+      if (action_types_.contains(action_type)) {
         result |= mask;
       }
     }
@@ -226,18 +260,21 @@ class ClearBrowsingDataAction : public Action,
   uint64_t GetOriginTypeMask() const {
     using content::BrowsingDataRemover;
     uint64_t result = 0;
-    if (base::Contains(action_types_,
-                       ActionType::kClearCookiesAndOtherSiteData)) {
+    if (action_types_.contains(ActionType::kClearCookiesAndOtherSiteData)) {
       result |= BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB;
     }
-    if (base::Contains(action_types_, ActionType::kClearHostedAppData)) {
+#if !BUILDFLAG(IS_ANDROID)
+    if (action_types_.contains(ActionType::kClearHostedAppData)) {
       result |= BrowsingDataRemover::ORIGIN_TYPE_PROTECTED_WEB;
     }
+#endif  // !BUILDFLAG(IS_ANDROID)
     return result;
   }
 
+  base::TimeTicks deletion_start_time_;
   base::flat_set<ActionType> action_types_;
-  raw_ptr<content::BrowsingDataRemover> browsing_data_remover_for_testing_;
+  raw_ptr<content::BrowsingDataRemover, DanglingUntriaged>
+      browsing_data_remover_for_testing_;
   base::ScopedObservation<content::BrowsingDataRemover,
                           content::BrowsingDataRemover::Observer>
       observation_{this};
@@ -252,11 +289,6 @@ class ReloadPagesAction : public Action {
 #if BUILDFLAG(IS_ANDROID)
     // This covers regular tabs, PWAs, and CCTs.
     for (TabModel* model : TabModelList::models()) {
-#else
-    // This covers regular tabs and PWAs.
-    for (Browser* browser : *BrowserList::GetInstance()) {
-      TabStripModel* model = browser->tab_strip_model();
-#endif  // BUILDFLAG(IS_ANDROID)
       if (model->GetProfile() != profile) {
         continue;  // Deliberately ignore incognito.
       }
@@ -266,6 +298,25 @@ class ReloadPagesAction : public Action {
             /*check_for_repost=*/true);
       }
     }
+#else
+    // This covers regular tabs and PWAs.
+    ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+        [profile](BrowserWindowInterface* browser_window_interface) {
+          const TabStripModel* model =
+              browser_window_interface->GetTabStripModel();
+          if (model->profile() != profile) {
+            return true;
+          }
+          for (int i = 0; i < model->count(); i++) {
+            model->GetWebContentsAt(i)->GetController().Reload(
+                content::ReloadType::NORMAL,
+                /*check_for_repost=*/true);
+          }
+          return true;
+        });
+#endif  // BUILDFLAG(IS_ANDROID)
+    metrics::RecordActionsSuccess(metrics::IdleTimeoutActionType::kReloadPages,
+                                  true);
     std::move(continuation).Run(/*success=*/true);
   }
 
@@ -287,19 +338,21 @@ class ShowBubbleAction : public Action {
         action_types_(std::move(action_types)) {}
 
   void Run(Profile* profile, Continuation continuation) override {
-    Browser* browser = chrome::FindBrowserWithActiveWindow();
-    if (browser && browser->profile() == profile &&
-        !base::Contains(action_types_, ActionType::kCloseBrowsers)) {
+    BrowserWindowInterface* const bwi =
+        GetLastActiveBrowserWindowInterfaceWithAnyProfile();
+    profile->GetPrefs()->SetBoolean(prefs::kIdleTimeoutShowBubbleOnStartup,
+                                    true);
+    if (bwi && bwi->IsActive() && bwi->GetProfile() == profile &&
+        !action_types_.contains(ActionType::kCloseBrowsers)) {
       // A browser for this profile has focus. Show the bubble there.
-      ShowIdleBubble(browser,
-                     profile->GetPrefs()->GetTimeDelta(prefs::kIdleTimeout),
-                     ActionsToActionSet(action_types_));
+      ShowIdleBubble(
+          bwi, IdleServiceFactory::GetForBrowserContext(profile)->GetTimeout(),
+          ActionsToActionSet(action_types_),
+          base::BindOnce(&ShowBubbleAction::OnClose, bwi->GetWeakPtr()));
     } else {
       // No active browser for this profile. Show the bubble when a browser
-      // gains focus, or on next startup. Let IdleServide::BrowserObserver do
-      // the work.
-      profile->GetPrefs()->SetBoolean(prefs::kIdleTimeoutShowBubbleOnStartup,
-                                      true);
+      // gains focus, or on next startup. Let IdleService::BrowserObserver do
+      // it.
     }
     std::move(continuation).Run(true);
   }
@@ -309,6 +362,14 @@ class ShowBubbleAction : public Action {
   }
 
  private:
+  static void OnClose(base::WeakPtr<BrowserWindowInterface> bwi) {
+    if (!bwi) {
+      return;
+    }
+    bwi->GetProfile()->GetPrefs()->SetBoolean(
+        prefs::kIdleTimeoutShowBubbleOnStartup, false);
+  }
+
   base::flat_set<ActionType> action_types_;
 };
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -351,14 +412,16 @@ ActionFactory::ActionQueue ActionFactory::Build(
       // "clear_*" actions are all grouped into a single Action object. Collect
       // them in a flat_set<>, and create the shared object once we have the
       // entire collection.
-      case ActionType::kClearBrowsingHistory:
+#if !BUILDFLAG(IS_ANDROID)
       case ActionType::kClearDownloadHistory:
+      case ActionType::kClearHostedAppData:
+#endif  // !BUILDFLAG(IS_ANDROID)
+      case ActionType::kClearBrowsingHistory:
       case ActionType::kClearCookiesAndOtherSiteData:
       case ActionType::kClearCachedImagesAndFiles:
       case ActionType::kClearPasswordSignin:
       case ActionType::kClearAutofill:
       case ActionType::kClearSiteSettings:
-      case ActionType::kClearHostedAppData:
         clear_actions.insert(action_type);
         break;
 
@@ -367,7 +430,7 @@ ActionFactory::ActionQueue ActionFactory::Build(
         break;
 
       default:
-        // TODO(crbug.com/1316551): Perform validation in the `PolicyHandler`.
+        // TODO(crbug.com/40222234): Perform validation in the `PolicyHandler`.
         NOTREACHED();
     }
   }
@@ -379,7 +442,7 @@ ActionFactory::ActionQueue ActionFactory::Build(
   }
 
 #if !BUILDFLAG(IS_ANDROID)
-  bool needs_dialog = base::ranges::any_of(actions, [profile](const auto& a) {
+  bool needs_dialog = std::ranges::any_of(actions, [profile](const auto& a) {
     return a->ShouldNotifyUserOfPendingDestructiveAction(profile);
   });
   if (needs_dialog) {

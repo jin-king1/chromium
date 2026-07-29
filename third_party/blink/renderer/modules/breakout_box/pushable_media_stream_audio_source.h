@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_BREAKOUT_BOX_PUSHABLE_MEDIA_STREAM_AUDIO_SOURCE_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_BREAKOUT_BOX_PUSHABLE_MEDIA_STREAM_AUDIO_SOURCE_H_
 
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
@@ -25,8 +26,7 @@ class MODULES_EXPORT PushableMediaStreamAudioSource
   // PushableMediaStreamAudioSource from multiple threads. This also includes
   // safely posting tasks to/from outside the main thread.
   // The public methods of this class can be called on any thread.
-  class MODULES_EXPORT LOCKABLE Broker
-      : public WTF::ThreadSafeRefCounted<Broker> {
+  class MODULES_EXPORT LOCKABLE Broker : public ThreadSafeRefCounted<Broker> {
    public:
     Broker(const Broker&) = delete;
     Broker& operator=(const Broker&) = delete;
@@ -46,7 +46,11 @@ class MODULES_EXPORT PushableMediaStreamAudioSource
     // old client disconnects.
     void OnClientStopped();
     bool IsRunning();
-    void PushAudioData(scoped_refptr<media::AudioBuffer> data);
+    // Push audio data to the source tracks.
+    // If capture_time is null/default, it falls back to the legacy
+    // timestamp calculation (base::TimeTicks() + data->timestamp()).
+    void PushAudioData(scoped_refptr<media::AudioBuffer> data,
+                       base::TimeTicks capture_time = base::TimeTicks());
     void StopSource();
     void SetShouldDeliverAudioOnAudioTaskRunner(
         bool should_deliver_audio_on_audio_task_runner);
@@ -70,7 +74,7 @@ class MODULES_EXPORT PushableMediaStreamAudioSource
     // It is not necessary to guard it with |lock_| to read its value on
     // |main_task_runner_|. This helps avoid deadlocks in
     // Stop()/OnSourceDestroyedOrStopped() interactions.
-    PushableMediaStreamAudioSource* source_;
+    raw_ptr<PushableMediaStreamAudioSource> source_;
     // The same apples to |is_running_|, but since it does not have complex
     // interactions with owners, like |source_| does, we always guard it for
     // simplicity.
@@ -98,7 +102,8 @@ class MODULES_EXPORT PushableMediaStreamAudioSource
  private:
   friend class Broker;
   // Actually push data to the audio tracks. Can be called from any thread.
-  void DeliverData(scoped_refptr<media::AudioBuffer> data);
+  void DeliverData(scoped_refptr<media::AudioBuffer> data,
+                   base::TimeTicks capture_time);
 
   // MediaStreamAudioSource implementation.
   bool EnsureSourceIsStarted() final;

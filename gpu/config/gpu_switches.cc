@@ -32,6 +32,9 @@ const char kGpuPreferences[] = "gpu-preferences";
 // Ignores GPU blocklist.
 const char kIgnoreGpuBlocklist[] = "ignore-gpu-blocklist";
 
+// Disables the GPU shader on disk cache.
+const char kDisableGpuShaderDiskCache[] = "disable-gpu-shader-disk-cache";
+
 // Allows explicitly specifying the shader disk cache size for embedded devices.
 // Default value is 6MB. On Android, 2MB is default and 128KB for low-end
 // devices.
@@ -41,7 +44,14 @@ const char kGpuDiskCacheSizeKB[] = "gpu-disk-cache-size-kb";
 const char kDisableGpuProcessForDX12InfoCollection[] =
     "disable-gpu-process-for-dx12-info-collection";
 
+// Enables WebGL draft extensions (not yet approved by the
+// community). This has side-effects in the GPU process, so the flag
+// is here so that code in both gpu/ and content/ can access it.
+const char kEnableWebGLDraftExtensions[] = "enable-webgl-draft-extensions";
+
 const char kEnableUnsafeWebGPU[] = "enable-unsafe-webgpu";
+
+const char kForceHighPerformanceGPU[] = "force-high-performance-gpu";
 
 // Enables WebGPU developer features which are not generally exposed to the web
 // platform.
@@ -52,11 +62,13 @@ const char kEnableWebGPUDeveloperFeatures[] =
 const char kEnableDawnBackendValidation[] = "enable-dawn-backend-validation";
 
 // The adapter to use for WebGPU content.
-GPU_EXPORT extern const char kUseWebGPUAdapter[] = "use-webgpu-adapter";
+extern const char kUseWebGPUAdapter[] = "use-webgpu-adapter";
 
 // The adapter selecting strategy related to GPUPowerPreference.
-GPU_EXPORT extern const char kUseWebGPUPowerPreference[] =
-    "use-webgpu-power-preference";
+extern const char kUseWebGPUPowerPreference[] = "use-webgpu-power-preference";
+
+// Force all WebGPU content to run in WebGPU Compatibility mode.
+const char kForceWebGPUCompat[] = "force-webgpu-compat";
 
 // Set the Dawn features(toggles) enabled on the creation of Dawn devices.
 const char kEnableDawnFeatures[] = "enable-dawn-features";
@@ -64,10 +76,9 @@ const char kEnableDawnFeatures[] = "enable-dawn-features";
 // Set the Dawn features(toggles) disabled on the creation of Dawn devices.
 const char kDisableDawnFeatures[] = "disable-dawn-features";
 
-// Changes the type (to kRealtimeAudio) of gpu process and compositor thread.
-// This is only to be used for perf tests on macOS for more reliable values.
-const char kUseHighGPUThreadPriorityForPerfTests[] =
-    "use-gpu-high-thread-priority-for-perf-tests";
+// Start the GPU process for Dawn info collection immediately after the browser
+// starts. The default is to delay for 120 seconds.
+const char kCollectDawnInfoEagerly[] = "collect-dawn-info-eagerly";
 
 // Start the non-sandboxed GPU process for DX12 and Vulkan info collection
 // immediately after the browser starts. The default is to delay for 120
@@ -111,11 +122,11 @@ const char kDisableVulkanFallbackToGLForTesting[] =
     "disable-vulkan-fallback-to-gl-for-testing";
 
 // Specifies the heap limit for Vulkan memory.
-// TODO(crbug/1158000): Remove this switch.
+// TODO(crbug.com/40161102): Remove this switch.
 const char kVulkanHeapMemoryLimitMb[] = "vulkan-heap-memory-limit-mb";
 
 // Specifies the sync CPU limit for total Vulkan memory.
-// TODO(crbug/1158000): Remove this switch.
+// TODO(crbug.com/40161102): Remove this switch.
 const char kVulkanSyncCpuMemoryLimitMb[] = "vulkan-sync-cpu-memory-limit-mb";
 
 // Crash Chrome if GPU process crashes. This is to force a test to fail when
@@ -130,10 +141,35 @@ const char kGpuWatchdogTimeoutSeconds[] = "gpu-watchdog-timeout-seconds";
 const char kForceSeparateEGLDisplayForWebGLTesting[] =
     "force-separate-egl-display-for-webgl-testing";
 
-// Specify which backend to use for Skia Graphite - "dawn" (default) or "metal"
-// (only allowed on non-official developer builds).
-const char kSkiaGraphiteBackend[] = "skia-graphite-backend";
-const char kSkiaGraphiteBackendDawn[] = "dawn";
-const char kSkiaGraphiteBackendMetal[] = "metal";
+// Specify which Dawn backend to use for Skia Graphite.
+const char kSkiaGraphiteDawnBackend[] = "skia-graphite-dawn-backend";
+const char kSkiaGraphiteDawnBackendD3D11[] = "d3d11";
+const char kSkiaGraphiteDawnBackendD3D12[] = "d3d12";
+const char kSkiaGraphiteDawnBackendMetal[] = "metal";
+const char kSkiaGraphiteDawnBackendOpenGLES[] = "opengles";
+const char kSkiaGraphiteDawnBackendSwiftshader[] = "swiftshader";
+const char kSkiaGraphiteDawnBackendVulkan[] = "vulkan";
+
+// Force disabling/enabling Skia Graphite. Disabling will take precedence over
+// enabling if both are specified.
+const char kDisableSkiaGraphite[] = "disable-skia-graphite";
+const char kEnableSkiaGraphite[] = "enable-skia-graphite";
+
+// Force disabling/enabling Skia Graphite's Pipeline Precompilation. Disabling
+// will take precedence over enabling if both are specified.
+const char kDisableSkiaGraphitePrecompilation[] =
+    "disable-skia-graphite-precompilation";
+const char kEnableSkiaGraphitePrecompilation[] =
+    "enable-skia-graphite-precompilation";
+
+// Enables ThreadControllerWithMessagePumpImpl's TimeKeeper UMA metrics using
+// CrGpuMain as suffix.
+const char kEnableGpuMainTimeKeeperMetrics[] =
+    "enable-gpu-main-time-keeper-metrics";
+
+// Suppresses GL_DEBUG_TYPE_PERFORMANCE log messages for web tests that can get
+// sent to the JS console and cause unnecessary test failures due test output
+// log expectation comparisons.
+const char kSuppressPerformanceLogs[] = "suppress-performance-logs";
 
 }  // namespace switches

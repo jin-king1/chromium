@@ -21,7 +21,6 @@ This requirement is needed to upload the resources to the Google storage
 build bucket.
 """
 
-USE_PYTHON3 = True
 
 CURRENT_VERSION_VARIABLE = 'current_shell_apk_version'
 CURRENT_VERSION_LOCAL_PATH = 'shell_apk/current_version/current_version.gni'
@@ -35,6 +34,7 @@ TRIGGER_CURRENT_VERSION_UPDATE_LOCAL_PATHS = [
     'libs/common/res_splash/',
     'shell_apk/AndroidManifest.xml',
     'shell_apk/res/',
+    'shell_apk/res_template',
     'shell_apk/src/',
 ]
 
@@ -85,7 +85,7 @@ def _CheckChromeUpdateTriggerRule(input_api, output_api):
                                   REQUEST_UPDATE_FOR_VERSION_LOCAL_PATH,
                                   REQUEST_UPDATE_FOR_VERSION_VARIABLE):
     if (len(input_api.AffectedFiles()) != 1 or
-        len(input_api.AffectedFiles[0].ChangedContents()) != 1):
+        len(input_api.AffectedFiles()[0].ChangedContents()) != 1):
       return [
         output_api.PresubmitError(
             '{} in {} must be updated in a standalone CL.'.format(

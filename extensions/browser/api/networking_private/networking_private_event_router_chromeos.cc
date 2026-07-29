@@ -4,6 +4,8 @@
 
 #include "extensions/browser/api/networking_private/networking_private_event_router.h"
 
+#include <memory>
+
 #include "base/memory/raw_ptr.h"
 #include "chromeos/ash/components/network/device_state.h"
 #include "chromeos/ash/components/network/network_certificate_handler.h"
@@ -34,7 +36,7 @@ api::networking_private::CaptivePortalStatus GetCaptivePortalStatus(
   if (!network->IsConnectedState()) {
     return api::networking_private::CaptivePortalStatus::kOffline;
   }
-  switch (network->GetPortalState()) {
+  switch (network->portal_state()) {
     case NetworkState::PortalState::kUnknown:
       return api::networking_private::CaptivePortalStatus::kUnknown;
     case NetworkState::PortalState::kOnline:
@@ -43,8 +45,6 @@ api::networking_private::CaptivePortalStatus GetCaptivePortalStatus(
     case NetworkState::PortalState::kPortal:
     case NetworkState::PortalState::kNoInternet:
       return api::networking_private::CaptivePortalStatus::kPortal;
-    case NetworkState::PortalState::kProxyAuthRequired:
-      return api::networking_private::CaptivePortalStatus::kProxyAuthRequired;
   }
 }
 
@@ -91,7 +91,7 @@ class NetworkingPrivateEventRouterImpl
   // Otherwise, we want to unregister and not be listening to network changes.
   void StartOrStopListeningForNetworkChanges();
 
-  raw_ptr<content::BrowserContext, ExperimentalAsh> context_;
+  raw_ptr<content::BrowserContext> context_;
   bool listening_ = false;
 };
 
@@ -231,9 +231,9 @@ void NetworkingPrivateEventRouterImpl::NetworkPropertiesUpdated(
                  << NetworkId(network);
   auto args(api::networking_private::OnNetworksChanged::Create(
       std::vector<std::string>(1, network->guid())));
-  std::unique_ptr<Event> extension_event(new Event(
+  auto extension_event = std::make_unique<Event>(
       events::NETWORKING_PRIVATE_ON_NETWORKS_CHANGED,
-      api::networking_private::OnNetworksChanged::kEventName, std::move(args)));
+      api::networking_private::OnNetworksChanged::kEventName, std::move(args));
   event_router->BroadcastEvent(std::move(extension_event));
 }
 
@@ -307,9 +307,9 @@ void NetworkingPrivateEventRouterImpl::PortalStateChanged(
   event_router->BroadcastEvent(std::move(extension_event));
 }
 
-NetworkingPrivateEventRouter* NetworkingPrivateEventRouter::Create(
-    content::BrowserContext* context) {
-  return new NetworkingPrivateEventRouterImpl(context);
+std::unique_ptr<NetworkingPrivateEventRouter>
+NetworkingPrivateEventRouter::Create(content::BrowserContext* context) {
+  return std::make_unique<NetworkingPrivateEventRouterImpl>(context);
 }
 
 }  // namespace extensions

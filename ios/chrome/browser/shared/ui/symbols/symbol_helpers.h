@@ -7,9 +7,21 @@
 
 #import <UIKit/UIKit.h>
 
+#import "ios/chrome/browser/shared/ui/symbols/symbol_enums.h"
+
 /// *******
 /// Import `symbols.h` and not this file directly.
 /// *******
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Returns a SF Symbol to be used in a toolbar to symbolize "close".
+UIImage* DefaultCloseButtonForToolbar();
+
+// Returns a SF Symbol to be used in a toolbar to symbolize "done".
+UIImage* DefaultDoneButtonForToolbar();
 
 // Returns a SF symbol named `symbol_name` configured with the given
 // `configuration`.
@@ -48,8 +60,7 @@ UIImage* MakeSymbolMonochrome(UIImage* symbol);
 UIImage* MakeSymbolMulticolor(UIImage* symbol);
 
 // Returns the given `symbol`, with the palette of `colors` applied.
-UIImage* SymbolWithPalette(UIImage* symbol, NSArray<UIColor*>* colors)
-    API_AVAILABLE(ios(15.0));
+UIImage* SymbolWithPalette(UIImage* symbol, NSArray<UIColor*>* colors);
 
 // Returns a SF symbol named `symbol_name` configured for the Settings root
 // screen.
@@ -62,5 +73,33 @@ UIImage* CustomSettingsRootSymbol(NSString* symbol_name);
 // Returns a custom symbol named `symbol_name` configured for the Settings
 // root screen, with multicolor enabled.
 UIImage* CustomSettingsRootMulticolorSymbol(NSString* symbol_name);
+
+// Returns a custom accessory symbol named `symbol_name` configured with
+// UIImageSymbolWeightRegular.
+UIImage* DefaultAccessorySymbolConfigurationWithRegularWeight(
+    NSString* symbol_name);
+
+// Returns a symbol configured with the given `configuration`.
+UIImage* SymbolWithConfiguration(Symbol symbol,
+                                 UIImageConfiguration* configuration);
+
+// Returns a symbol configured with the default configuration and the given
+// `point_size`.
+UIImage* SymbolWithPointSize(Symbol symbol, CGFloat point_size);
+
+// Returns a symbol as a template image, configured with the default
+// configuration and the given `point_size`.
+UIImage* SymbolTemplateWithPointSize(Symbol symbol, CGFloat point_size);
+
+// Returns a symbol configured for the Settings root screen.
+UIImage* SettingsRootSymbol(Symbol symbol);
+
+// Returns a symbol configured for the Settings root screen with multicolor
+// enabled.
+UIImage* SettingsRootMulticolorSymbol(Symbol symbol);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif
 
 #endif  // IOS_CHROME_BROWSER_SHARED_UI_SYMBOLS_SYMBOL_HELPERS_H_

@@ -7,9 +7,10 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include "base/functional/callback.h"
-#include "base/strings/string_piece.h"
+#include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
 #include "url/gurl.h"
@@ -43,7 +44,7 @@ class ChromeOSWebUIConfig : public content::WebUIConfig {
   }
 
   // Constructs a WebUIConfig for a ChromeOS WebUI.
-  ChromeOSWebUIConfig(base::StringPiece scheme, base::StringPiece host)
+  ChromeOSWebUIConfig(std::string_view scheme, std::string_view host)
       : ChromeOSWebUIConfig(
             scheme,
             host,
@@ -53,8 +54,8 @@ class ChromeOSWebUIConfig : public content::WebUIConfig {
   // can be used to pass a function to construct T. Used when we need to inject
   // dependencies into T e.g. T needs a delegate that is implemented in
   // //chrome.
-  ChromeOSWebUIConfig(base::StringPiece scheme,
-                      base::StringPiece host,
+  ChromeOSWebUIConfig(std::string_view scheme,
+                      std::string_view host,
                       CreateWebUIControllerFunc create_controller_func)
       : WebUIConfig(scheme, host),
         create_controller_func_(create_controller_func) {}
@@ -73,4 +74,4 @@ class ChromeOSWebUIConfig : public content::WebUIConfig {
 
 }  //  namespace ash
 
-#endif  //  ASH_WEBUI_COMMON_CHROME_OS_WEBUI_CONFIG_H_
+#endif  // ASH_WEBUI_COMMON_CHROME_OS_WEBUI_CONFIG_H_

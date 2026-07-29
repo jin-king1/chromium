@@ -5,15 +5,8 @@
 #ifndef CHROME_BROWSER_UI_COCOA_APPLESCRIPT_BOOKMARK_APPLESCRIPT_TEST_UTILS_H_
 #define CHROME_BROWSER_UI_COCOA_APPLESCRIPT_BOOKMARK_APPLESCRIPT_TEST_UTILS_H_
 
-#import <Foundation/Foundation.h>
-
-#include "base/mac/scoped_nsobject.h"
 #import "chrome/browser/ui/cocoa/applescript/bookmark_folder_applescript.h"
 #include "chrome/test/base/in_process_browser_test.h"
-
-// Used to emulate an active running script, useful for testing purposes.
-@interface FakeScriptCommand : NSScriptCommand
-@end
 
 // The base class for all our bookmark related unit tests.
 class BookmarkAppleScriptTest : public InProcessBrowserTest {
@@ -25,7 +18,7 @@ class BookmarkAppleScriptTest : public InProcessBrowserTest {
   Profile* profile() const;
 
  protected:
-  base::scoped_nsobject<BookmarkFolderAppleScript> bookmark_bar_;
+  BookmarkFolderAppleScript* __strong bookmark_bar_;
 };
 
 #endif  // CHROME_BROWSER_UI_COCOA_APPLESCRIPT_BOOKMARK_APPLESCRIPT_TEST_UTILS_H_

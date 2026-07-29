@@ -1,4 +1,4 @@
-(async function (testRunner) {
+(async function(/** @type {import('test_runner').TestRunner} */ testRunner) {
   const stabilizeNames =
     [...TestRunner.stabilizeNames, 'storageKey', 'bucketId', 'expiration'];
   const { dp, session } = await testRunner.startBlank(
@@ -6,9 +6,8 @@
   await dp.Page.enable();
 
   const frameId = (await dp.Page.getResourceTree()).result.frameTree.frame.id;
-  const storageKey = (await dp.Storage.getStorageKeyForFrame({
-    frameId: frameId
-  })).result.storageKey;
+  const storageKey =
+      (await dp.Storage.getStorageKey({frameId: frameId})).result.storageKey;
 
   await dp.Storage.setStorageBucketTracking({ storageKey, enable: true });
 

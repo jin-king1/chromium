@@ -69,10 +69,10 @@ class EcheSignaler : public mojom::SignalingMessageExchanger,
   FRIEND_TEST_ALL_PREFIXES(EcheSignalerTest,
                            TestConnectionFailWhenRemoteDeviceOnCellular);
   FRIEND_TEST_ALL_PREFIXES(EcheSignalerTest,
-                           OnRequestCloseConnnectionDoesNotStreamEventFailures);
+                           OnRequestCloseConnectionDoesNotStreamEventFailures);
 
   // EcheConnectionStatusHandler::Observer
-  void OnRequestCloseConnnection() override;
+  void OnConnectionClosed() override;
 
   void RecordSignalingTimeout();
   void ProcessAndroidNetworkInfo(const proto::ExoMessage& message);
@@ -84,15 +84,13 @@ class EcheSignaler : public mojom::SignalingMessageExchanger,
   EcheTray::ConnectionFailReason probably_connection_failed_reason_ =
       EcheTray::ConnectionFailReason::kUnknown;
 
-  raw_ptr<SystemInfoProvider, DanglingUntriaged | ExperimentalAsh>
-      system_info_provider_ = nullptr;
-  raw_ptr<EcheConnector, ExperimentalAsh> eche_connector_ = nullptr;
-  raw_ptr<AppsLaunchInfoProvider, ExperimentalAsh> apps_launch_info_provider_ =
+  raw_ptr<SystemInfoProvider, DanglingUntriaged> system_info_provider_ =
       nullptr;
-  raw_ptr<EcheConnectionStatusHandler, ExperimentalAsh>
-      eche_connection_status_handler_ = nullptr;
-  raw_ptr<secure_channel::ConnectionManager, ExperimentalAsh>
-      connection_manager_ = nullptr;
+  raw_ptr<EcheConnector> eche_connector_ = nullptr;
+  raw_ptr<AppsLaunchInfoProvider> apps_launch_info_provider_ = nullptr;
+  raw_ptr<EcheConnectionStatusHandler> eche_connection_status_handler_ =
+      nullptr;
+  raw_ptr<secure_channel::ConnectionManager> connection_manager_ = nullptr;
   mojo::Remote<mojom::SignalingMessageObserver> observer_;
   mojo::Receiver<mojom::SignalingMessageExchanger> exchanger_{this};
 };

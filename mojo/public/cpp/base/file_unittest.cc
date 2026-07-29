@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <string_view>
+
+#include "base/containers/span.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/sync_socket.h"
 #include "build/build_config.h"
@@ -10,7 +13,6 @@
 #include "mojo/public/cpp/base/read_only_file_mojom_traits.h"
 #include "mojo/public/cpp/test_support/test_utils.h"
 #include "mojo/public/mojom/base/file.mojom.h"
-#include "mojo/public/mojom/base/read_only_file.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace mojo_base {
@@ -23,21 +25,18 @@ TEST(FileTest, File) {
   base::File file(
       temp_dir.GetPath().AppendASCII("test_file.txt"),
       base::File::FLAG_CREATE | base::File::FLAG_WRITE | base::File::FLAG_READ);
-  const base::StringPiece test_content =
+  const std::string_view test_content =
       "A test string to be stored in a test file";
-  file.WriteAtCurrentPos(test_content.data(),
-                         base::checked_cast<int>(test_content.size()));
+  file.WriteAtCurrentPos(base::as_byte_span(test_content));
 
   base::File file_out;
   ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::File>(file, file_out));
-  std::vector<char> content(test_content.size());
   ASSERT_TRUE(file_out.IsValid());
   ASSERT_FALSE(file_out.async());
-  ASSERT_EQ(static_cast<int>(test_content.size()),
-            file_out.Read(0, content.data(),
-                          base::checked_cast<int>(test_content.size())));
-  EXPECT_EQ(test_content,
-            base::StringPiece(content.data(), test_content.size()));
+
+  std::string content(test_content.size(), '\0');
+  ASSERT_TRUE(file_out.ReadAndCheck(0, base::as_writable_byte_span(content)));
+  EXPECT_EQ(test_content, content);
 }
 
 TEST(FileTest, AsyncFile) {
@@ -46,9 +45,8 @@ TEST(FileTest, AsyncFile) {
   base::FilePath path = temp_dir.GetPath().AppendASCII("async_test_file.txt");
 
   base::File write_file(path, base::File::FLAG_CREATE | base::File::FLAG_WRITE);
-  const base::StringPiece test_content = "test string";
-  write_file.WriteAtCurrentPos(test_content.data(),
-                               base::checked_cast<int>(test_content.size()));
+  const std::string_view test_content = "test string";
+  write_file.WriteAtCurrentPos(base::as_byte_span(test_content));
   write_file.Close();
 
   base::File file(path, base::File::FLAG_OPEN | base::File::FLAG_READ |
@@ -78,10 +76,9 @@ TEST(FileTest, ReadOnlyFile) {
   base::File file(
       temp_dir.GetPath().AppendASCII("test_file.txt"),
       base::File::FLAG_CREATE | base::File::FLAG_WRITE | base::File::FLAG_READ);
-  const base::StringPiece test_content =
+  const std::string_view test_content =
       "A test string to be stored in a test file";
-  file.WriteAtCurrentPos(test_content.data(),
-                         base::checked_cast<int>(test_content.size()));
+  file.WriteAtCurrentPos(base::as_byte_span(test_content));
   file.Close();
 
   base::File readonly(temp_dir.GetPath().AppendASCII("test_file.txt"),
@@ -90,19 +87,17 @@ TEST(FileTest, ReadOnlyFile) {
   base::File file_out;
   ASSERT_TRUE(mojo::test::SerializeAndDeserialize<mojom::ReadOnlyFile>(
       readonly, file_out));
-  std::vector<char> content(test_content.size());
   ASSERT_TRUE(file_out.IsValid());
   ASSERT_FALSE(file_out.async());
-  ASSERT_EQ(static_cast<int>(test_content.size()),
-            file_out.Read(0, content.data(),
-                          base::checked_cast<int>(test_content.size())));
-  EXPECT_EQ(test_content,
-            base::StringPiece(content.data(), test_content.size()));
+
+  std::string content(test_content.size(), '\0');
+  ASSERT_TRUE(file_out.ReadAndCheck(0, base::as_writable_byte_span(content)));
+  EXPECT_EQ(test_content, content);
 }
 
 // This dies only if we can interrogate the underlying platform handle.
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
-#if !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_AIX)
+#if !BUILDFLAG(IS_AIX)
 TEST(FileTest, ReadOnlyFileDeath) {
 #if defined(OFFICIAL_BUILD)
   const char kReadOnlyFileCheckFailedRegex[] = "";
@@ -116,10 +111,9 @@ TEST(FileTest, ReadOnlyFileDeath) {
   base::File file(
       temp_dir.GetPath().AppendASCII("test_file.txt"),
       base::File::FLAG_CREATE | base::File::FLAG_WRITE | base::File::FLAG_READ);
-  const base::StringPiece test_content =
+  const std::string_view test_content =
       "A test string to be stored in a test file";
-  file.WriteAtCurrentPos(test_content.data(),
-                         base::checked_cast<int>(test_content.size()));
+  file.WriteAtCurrentPos(base::as_byte_span(test_content));
   file.Close();
 
   base::File writable(
@@ -132,7 +126,7 @@ TEST(FileTest, ReadOnlyFileDeath) {
                                                                file_out),
       kReadOnlyFileCheckFailedRegex);
 }
-#endif  // !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_AIX)
+#endif  // !BUILDFLAG(IS_AIX)
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_FUCHSIA)
 
 // This should work on all platforms. This check might be relaxed in which case
@@ -143,7 +137,7 @@ TEST(FileTest, NonPhysicalFileDeath) {
 #if defined(OFFICIAL_BUILD)
   const char kPhysicalFileCheckFailedRegex[] = "";
 #else
-  const char kPhysicalFileCheckFailedRegex[] = "Check failed: IsPhysicalFile";
+  const char kPhysicalFileCheckFailedRegex[] = "DCHECK failed: IsPhysicalFile";
 #endif
 
   base::SyncSocket sync_a;

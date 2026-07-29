@@ -17,7 +17,6 @@
 #include "ash/public/cpp/session/session_observer.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
-#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/one_shot_event.h"
@@ -25,8 +24,10 @@
 #include "base/timer/timer.h"
 #include "base/unguessable_token.h"
 #include "base/values.h"
-#include "chromeos/crosapi/mojom/clipboard_history.mojom.h"
-#include "ui/views/widget/widget_observer.h"
+#include "chromeos/ui/clipboard_history/clipboard_history_types.h"
+#include "ui/base/mojom/menu_source_type.mojom-forward.h"
+
+class PrefRegistrySimple;
 
 namespace aura {
 class Window;
@@ -38,15 +39,13 @@ class Rect;
 
 namespace ash {
 
+class ClipboardHistoryControllerDelegate;
 class ClipboardHistoryItem;
 class ClipboardHistoryMenuModelAdapter;
 class ClipboardHistoryResourceManager;
-class ClipboardManagerBubbleView;
 class ClipboardNudgeController;
-enum class LoginStatus;
 class ScopedClipboardHistoryPause;
-
-constexpr char kClipboardCopyToastId[] = "CopiedToClipboard";
+enum class LoginStatus;
 
 // Shows a menu with the last few things saved in the clipboard when the
 // keyboard shortcut is pressed.
@@ -54,7 +53,6 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
     : public ClipboardHistoryController,
       public ClipboardHistory::Observer,
       public ClipboardHistoryResourceManager::Observer,
-      public views::WidgetObserver,
       public SessionObserver {
  public:
   // Source and plain vs. rich text info for each paste. These values are used
@@ -71,15 +69,21 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
     kRichTextTouch = 7,             // Rich text paste triggered by gesture tap
     kPlainTextVirtualKeyboard = 8,  // Plain text paste triggered by VK request
     kRichTextVirtualKeyboard = 9,   // Rich text paste triggered by VK request
-    kMaxValue = 9
+    kPlainTextCtrlV = 10,           // Plain text paste triggered by Ctrl+V
+    kRichTextCtrlV = 11,            // Rich text paste triggered by Ctrl+V
+    kMaxValue = 11
   };
 
-  ClipboardHistoryControllerImpl();
+  explicit ClipboardHistoryControllerImpl(
+      std::unique_ptr<ClipboardHistoryControllerDelegate> delegate);
   ClipboardHistoryControllerImpl(const ClipboardHistoryControllerImpl&) =
       delete;
   ClipboardHistoryControllerImpl& operator=(
       const ClipboardHistoryControllerImpl&) = delete;
   ~ClipboardHistoryControllerImpl() override;
+
+  // Registers clipboard history profile prefs with the specified `registry`.
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 
   // Clean up the child widgets prior to destruction.
   void Shutdown();
@@ -99,14 +103,12 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
   void AddObserver(ClipboardHistoryController::Observer* observer) override;
   void RemoveObserver(ClipboardHistoryController::Observer* observer) override;
   bool ShowMenu(const gfx::Rect& anchor_rect,
-                ui::MenuSourceType source_type,
-                crosapi::mojom::ClipboardHistoryControllerShowSource
-                    show_source) override;
-  bool ShowMenu(
-      const gfx::Rect& anchor_rect,
-      ui::MenuSourceType source_type,
-      crosapi::mojom::ClipboardHistoryControllerShowSource show_source,
-      OnMenuClosingCallback callback) override;
+                ui::mojom::MenuSourceType source_type,
+                chromeos::clipboard_history::ShowSource show_source) override;
+  bool ShowMenu(const gfx::Rect& anchor_rect,
+                ui::mojom::MenuSourceType source_type,
+                chromeos::clipboard_history::ShowSource show_source,
+                OnMenuClosingCallback callback) override;
   void GetHistoryValues(GetHistoryValuesCallback callback) const override;
 
   // Whether the clipboard history has items.
@@ -142,7 +144,7 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
   }
 
   void set_buffer_restoration_delay_for_test(
-      absl::optional<base::TimeDelta> delay) {
+      std::optional<base::TimeDelta> delay) {
     buffer_restoration_delay_for_test_ = delay;
   }
 
@@ -172,8 +174,7 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
   bool PasteClipboardItemById(
       const std::string& item_id,
       int event_flags,
-      crosapi::mojom::ClipboardHistoryControllerShowSource paste_source)
-      override;
+      chromeos::clipboard_history::ShowSource paste_source) override;
   bool DeleteClipboardItemById(const std::string& item_id) override;
 
   // ClipboardHistory::Observer:
@@ -186,9 +187,6 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
   // ClipboardHistoryResourceManager:
   void OnCachedImageModelUpdated(
       const std::vector<base::UnguessableToken>& menu_item_ids) override;
-
-  // views::WidgetObserver:
-  void OnWidgetClosing(views::Widget* widget) override;
 
   // SessionObserver:
   void OnSessionStateChanged(session_manager::SessionState state) override;
@@ -226,10 +224,9 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
 
   // Posts a task to paste `item` with `paste_type` to the active window, if
   // any.
-  void MaybePostPasteTask(
-      const ClipboardHistoryItem& item,
-      ClipboardHistoryPasteType paste_type,
-      crosapi::mojom::ClipboardHistoryControllerShowSource paste_source);
+  void MaybePostPasteTask(const ClipboardHistoryItem& item,
+                          ClipboardHistoryPasteType paste_type,
+                          chromeos::clipboard_history::ShowSource paste_source);
 
   // Pastes the specified clipboard history item, if `intended_window` matches
   // the active window. `paste_type` indicates the mode of paste execution for
@@ -240,7 +237,7 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
       aura::Window* intended_window,
       ClipboardHistoryItem item,
       ClipboardHistoryPasteType paste_type,
-      crosapi::mojom::ClipboardHistoryControllerShowSource paste_source);
+      chromeos::clipboard_history::ShowSource paste_source);
 
   // Delete the menu item being selected and its corresponding data. If no item
   // is selected, do nothing.
@@ -261,8 +258,9 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
   // Called when the contextual menu is closed.
   void OnMenuClosed();
 
-  // Called when toast button is pressed.
-  void ShowMenuFromToast();
+  // Either the browser-implemented or test-implemented delegate depending on
+  // whether we are running in an Ash-only test context.
+  const std::unique_ptr<ClipboardHistoryControllerDelegate> delegate_;
 
   // Observers notified when clipboard history is shown, used, or updated.
   base::ObserverList<ClipboardHistoryController::Observer> observers_;
@@ -275,24 +273,19 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
   std::unique_ptr<AcceleratorTarget> accelerator_target_;
   // Controller that shows contextual nudges for multipaste.
   std::unique_ptr<ClipboardNudgeController> nudge_controller_;
-
-  // Context menu displayed by `ShowMenu()` when the clipboard history refresh
-  // feature is disabled. Null when `MenuIsShowing()` is false.
+  // Context menu displayed by `ShowMenu()`. Null when `MenuIsShowing()` is
+  // false.
   std::unique_ptr<ClipboardHistoryMenuModelAdapter> context_menu_;
   // Handles events on the `context_menu_`.
   std::unique_ptr<MenuDelegate> menu_delegate_;
-  // Bubble view displayed by `ShowMenu()` when the clipboard history refresh
-  // feature is enabled. Null when `MenuIsShowing()` is false.
-  raw_ptr<ClipboardManagerBubbleView> clipboard_manager_ = nullptr;
 
-  // The timestamp when the clipboard history menu was last shown.
-  base::TimeTicks last_menu_show_time_;
+  // How the user last caused the `context_menu_` to show.
+  chromeos::clipboard_history::ShowSource last_menu_source_ =
+      chromeos::clipboard_history::ShowSource::kUnknown;
 
-  // How the user last caused the clipboard history menu to show.
-  crosapi::mojom::ClipboardHistoryControllerShowSource last_menu_source_;
-
-  // Whether a paste is currently being performed.
-  bool currently_pasting_ = false;
+  // Indicates whether the clipboard data has been replaced due to an
+  // in-progress clipboard history paste.
+  bool clipboard_data_replaced_ = false;
 
   // Used to post asynchronous tasks when opening or closing the clipboard
   // history menu. Note that those tasks have data races between each other.
@@ -318,7 +311,7 @@ class ASH_EXPORT ClipboardHistoryControllerImpl
 
   // The delay interval for restoring the clipboard buffer to its original
   // state following a paste event.
-  absl::optional<base::TimeDelta> buffer_restoration_delay_for_test_;
+  std::optional<base::TimeDelta> buffer_restoration_delay_for_test_;
 
   // Called when the first item view is selected after the clipboard history
   // menu opens.

@@ -11,7 +11,6 @@
 #include "base/location.h"
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/system/sys_info.h"
 #include "base/task/sequenced_task_runner.h"
@@ -48,9 +47,9 @@ void GetStorageStatsImpl(const base::FilePath& temporary_archives_dir,
   // Currently both temporary and private archive directories are in the
   // internal storage.
   storage_stats.internal_free_disk_space =
-      base::SysInfo::AmountOfFreeDiskSpace(temporary_archives_dir);
+      base::SysInfo::AmountOfFreeDiskSpace(temporary_archives_dir).value_or(-1);
   storage_stats.external_free_disk_space =
-      base::SysInfo::AmountOfFreeDiskSpace(public_archives_dir);
+      base::SysInfo::AmountOfFreeDiskSpace(public_archives_dir).value_or(-1);
   if (!temporary_archives_dir.empty()) {
     storage_stats.temporary_archives_size =
         base::ComputeDirectorySize(temporary_archives_dir);
@@ -70,9 +69,10 @@ void GetStorageStatsImpl(const base::FilePath& temporary_archives_dir,
       std::string extension =
           file_enumerator.GetInfo().GetName().FinalExtension();
 #endif
-      if (extension == "mhtml" || extension == "mht")
+      if (extension == "mhtml" || extension == "mht") {
         storage_stats.public_archives_size +=
             file_enumerator.GetInfo().GetSize();
+      }
     }
   }
   task_runner->PostTask(FROM_HERE,
@@ -82,7 +82,7 @@ void GetStorageStatsImpl(const base::FilePath& temporary_archives_dir,
 }  // namespace
 
 // protected and used for testing.
-ArchiveManager::ArchiveManager() {}
+ArchiveManager::ArchiveManager() = default;
 
 ArchiveManager::ArchiveManager(
     const base::FilePath& temporary_archives_dir,
@@ -94,7 +94,7 @@ ArchiveManager::ArchiveManager(
       public_archives_dir_(public_archives_dir),
       task_runner_(task_runner) {}
 
-ArchiveManager::~ArchiveManager() {}
+ArchiveManager::~ArchiveManager() = default;
 
 void ArchiveManager::EnsureArchivesDirCreated(
     base::OnceCallback<void()> callback) {

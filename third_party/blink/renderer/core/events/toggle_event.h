@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_EVENTS_TOGGLE_EVENT_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_EVENTS_TOGGLE_EVENT_H_
 
+#include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
 
 namespace blink {
@@ -22,9 +23,10 @@ class ToggleEvent final : public Event {
   static ToggleEvent* Create(const AtomicString& type,
                              Event::Cancelable cancelable,
                              const String& old_state,
-                             const String& new_state) {
+                             const String& new_state,
+                             Element* source) {
     auto* event = MakeGarbageCollected<ToggleEvent>(type, cancelable, old_state,
-                                                    new_state);
+                                                    new_state, source);
     DCHECK(!event->bubbles());
     return event;
   }
@@ -33,20 +35,34 @@ class ToggleEvent final : public Event {
   ToggleEvent(const AtomicString& type,
               Event::Cancelable cancelable,
               const String& old_state,
-              const String& new_state);
+              const String& new_state,
+              Element* source);
   ToggleEvent(const AtomicString& type, const ToggleEventInit* initializer);
   ~ToggleEvent() override;
 
   const String& oldState() const;
   const String& newState() const;
+  Element* source() const;
+
+  EventTarget* relatedTarget() const override { return related_target_.Get(); }
+  void SetRelatedTarget(EventTarget* related_target) override {
+    related_target_ = related_target;
+  }
 
   const AtomicString& InterfaceName() const override;
+
+  DispatchEventResult DispatchEvent(EventDispatcher&) override;
 
   void Trace(Visitor*) const override;
 
  private:
   String old_state_;
   String new_state_;
+  // crbug.com/346835896: When ShadowRootReferenceTargetEnabled ships, the
+  // event's source will be managed by `related_target_` instead of `source_`.
+  // When the flag is cleaned up the `source_` member will be removed.
+  Member<Element> source_;
+  Member<EventTarget> related_target_;
 };
 
 }  // namespace blink

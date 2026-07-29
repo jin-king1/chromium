@@ -12,7 +12,7 @@
 #include "components/viz/common/quads/compositor_frame.h"
 #include "components/viz/common/quads/texture_draw_quad.h"
 #include "components/viz/common/resources/resource_id.h"
-#include "gpu/command_buffer/client/gpu_memory_buffer_manager.h"
+#include "gpu/command_buffer/client/client_shared_image.h"
 #include "gpu/command_buffer/client/shared_image_interface.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "ui/aura/env.h"
@@ -26,7 +26,6 @@
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/geometry/transform.h"
-#include "ui/gfx/gpu_memory_buffer.h"
 
 namespace ash {
 namespace fast_ink_internal {
@@ -35,19 +34,19 @@ namespace {
 // Get a UiResource to paint the texture. We try to reuse any
 // existing resources in `resource_manager` before creating a new resource.
 std::unique_ptr<UiResource> AcquireUiResource(
-    const gfx::Size& size,
     bool is_overlay_candidate,
-    gfx::GpuMemoryBuffer* gpu_memory_buffer,
-    UiResourceManager* resource_manager) {
-  viz::ResourceId reusable_resource_id = resource_manager->FindResourceToReuse(
-      size, kFastInkSharedImageFormat, kFastInkUiSourceId);
-  std::unique_ptr<UiResource> resource;
-  if (reusable_resource_id != viz::kInvalidResourceId) {
-    resource = resource_manager->ReleaseAvailableResource(reusable_resource_id);
+    UiResourceManager* resource_manager,
+    const scoped_refptr<gpu::ClientSharedImage>& shared_image,
+    gpu::SyncToken sync_token) {
+  CHECK(shared_image);
+  std::unique_ptr<UiResource> resource = resource_manager->GetResourceToReuse(
+      shared_image->size(), kFastInkSharedImageFormat, kFastInkUiSourceId);
+
+  if (resource) {
+    CHECK(shared_image == resource->client_shared_image());
   } else {
-    resource =
-        CreateUiResource(size, kFastInkSharedImageFormat, kFastInkUiSourceId,
-                         is_overlay_candidate, gpu_memory_buffer);
+    resource = CreateUiResource(kFastInkUiSourceId, is_overlay_candidate,
+                                shared_image, sync_token);
   }
 
   return resource;
@@ -67,28 +66,22 @@ void AppendQuad(const viz::TransferableResource& resource,
                      /*layer_rect=*/output_rect,
                      /*visible_layer_rect=*/output_rect,
                      /*filter_info=*/gfx::MaskFilterInfo(),
-                     /*clip=*/absl::nullopt, /*contents_opaque=*/false,
+                     /*clip=*/std::nullopt, /*contents_opaque=*/false,
                      /*opacity_f=*/1.f,
                      /*blend=*/SkBlendMode::kSrcOver,
-                     /*sorting_context=*/0);
+                     /*sorting_context=*/0,
+                     /*layer_id=*/0u, /*fast_rounded_corner=*/false);
 
   viz::TextureDrawQuad* texture_quad =
       render_pass_out.CreateAndAppendDrawQuad<viz::TextureDrawQuad>();
 
-  static constexpr float kVertexOpacity[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  gfx::RectF uv_crop(quad_rect);
-  uv_crop.Scale(1.f / buffer_size.width(), 1.f / buffer_size.height());
-
   texture_quad->SetNew(
       quad_state, quad_rect, quad_rect,
-      /*needs_blending=*/true, resource.id,
-      /*premultiplied=*/true, uv_crop.origin(), uv_crop.bottom_right(),
-      SkColors::kTransparent, kVertexOpacity,
-      /*flipped=*/false,
+      /*needs_blending=*/true, resource.id, gfx::PointF(quad_rect.origin()),
+      gfx::PointF(quad_rect.bottom_right()), SkColors::kTransparent,
       /*nearest=*/false,
-      /*secure_output=*/false, gfx::ProtectedVideoType::kClear);
-
-  texture_quad->set_resource_size_in_pixels(resource.size);
+      /*secure_output=*/false, gfx::ProtectedVideoType::kClear,
+      /*is_tex_coords_normalized=*/false);
 }
 
 }  // namespace
@@ -104,58 +97,38 @@ gfx::Rect BufferRectFromWindowRect(
   return buffer_rect;
 }
 
-std::unique_ptr<gfx::GpuMemoryBuffer> CreateGpuBuffer(
+scoped_refptr<gpu::ClientSharedImage> CreateMappableSharedImage(
     const gfx::Size& size,
-    const gfx::BufferUsageAndFormat& usage_and_format) {
-  return aura::Env::GetInstance()
-      ->context_factory()
-      ->GetGpuMemoryBufferManager()
-      ->CreateGpuMemoryBuffer(size, usage_and_format.format,
-                              usage_and_format.usage, gpu::kNullSurfaceHandle,
-                              nullptr);
+    gpu::SharedImageUsageSet shared_image_usage,
+    gfx::BufferUsage buffer_usage) {
+  return GetContextProvider()->SharedImageInterface()->CreateSharedImage(
+      {kFastInkSharedImageFormat, size, gfx::ColorSpace(), shared_image_usage,
+       "FastInkHostUIResource"},
+      gpu::kNullSurfaceHandle, buffer_usage);
 }
 
 std::unique_ptr<UiResource> CreateUiResource(
-    const gfx::Size& size,
-    viz::SharedImageFormat format,
     UiSourceId ui_source_id,
     bool is_overlay_candidate,
-    gfx::GpuMemoryBuffer* gpu_memory_buffer) {
-  DCHECK(!size.IsEmpty());
+    const scoped_refptr<gpu::ClientSharedImage>& shared_image,
+    gpu::SyncToken sync_token) {
   DCHECK(ui_source_id > 0);
+  CHECK(shared_image);
 
-  auto resource = std::make_unique<UiResource>();
+  auto context_provider = GetContextProvider();
 
-  resource->context_provider = aura::Env::GetInstance()
-                                   ->context_factory()
-                                   ->SharedMainThreadContextProvider();
-
-  if (!resource->context_provider) {
+  if (!context_provider) {
     LOG(ERROR) << "Failed to acquire a context provider";
     return nullptr;
   }
 
-  gpu::SharedImageInterface* sii =
-      resource->context_provider->SharedImageInterface();
+  auto resource = std::make_unique<UiResource>(
+      context_provider->SharedImageInterface(), shared_image);
 
-  uint32_t usage = gpu::SHARED_IMAGE_USAGE_DISPLAY_READ;
-  if (is_overlay_candidate) {
-    usage |= gpu::SHARED_IMAGE_USAGE_SCANOUT;
-  }
-
-  gpu::GpuMemoryBufferManager* gmb_manager =
-      aura::Env::GetInstance()->context_factory()->GetGpuMemoryBufferManager();
-
-  resource->mailbox =
-      sii->CreateSharedImage(gpu_memory_buffer, gmb_manager, gfx::ColorSpace(),
-                             kTopLeft_GrSurfaceOrigin, kPremul_SkAlphaType,
-                             usage, "FastInkHostUIResource");
-  resource->sync_token = sii->GenVerifiedSyncToken();
+  resource->sync_token = sync_token;
   resource->damaged = true;
   resource->is_overlay_candidate = is_overlay_candidate;
-  resource->format = format;
   resource->ui_source_id = ui_source_id;
-  resource->resource_size = size;
   return resource;
 }
 
@@ -165,41 +138,41 @@ std::unique_ptr<viz::CompositorFrame> CreateCompositorFrame(
     const gfx::Rect& total_damage_rect,
     bool auto_update,
     const aura::Window& host_window,
-    gfx::GpuMemoryBuffer* gpu_memory_buffer,
-    UiResourceManager* resource_manager) {
+    UiResourceManager* resource_manager,
+    const scoped_refptr<gpu::ClientSharedImage>& shared_image,
+    gpu::SyncToken sync_token) {
   float device_scale_factor = host_window.layer()->device_scale_factor();
   const gfx::Transform& window_to_buffer_transform =
       host_window.GetHost()->GetRootTransform();
   gfx::Size window_size_in_dip = host_window.GetBoundsInScreen().size();
 
-  // TODO(crbug.com/1131619): Should this be ceil? Why do we choose floor?
-  const gfx::Size window_size_in_pixel = gfx::ToFlooredSize(
-      gfx::ConvertSizeToPixels(window_size_in_dip, device_scale_factor));
+  const gfx::Size window_size_in_pixel =
+      gfx::ScaleToEnclosingRectIgnoringError(gfx::Rect{window_size_in_dip},
+                                             device_scale_factor)
+          .size();
 
-  const gfx::Size buffer_size = gpu_memory_buffer->GetSize();
+  // NOTE: `shared_image` is guaranteed to be non-null by contract of this
+  // method.
+  CHECK(shared_image);
 
   // In auto_update mode, we use hardware overlays to render the content.
-  auto resource = AcquireUiResource(buffer_size, auto_update, gpu_memory_buffer,
-                                    resource_manager);
+  auto resource = AcquireUiResource(auto_update, resource_manager, shared_image,
+                                    sync_token);
 
   if (!resource) {
     return nullptr;
   }
 
   if (resource->damaged) {
-    DCHECK(resource->context_provider);
-    gpu::SharedImageInterface* sii =
-        resource->context_provider->SharedImageInterface();
-
-    sii->UpdateSharedImage(resource->sync_token, resource->mailbox);
-    resource->sync_token = sii->GenVerifiedSyncToken();
+    resource->sync_token =
+        resource->client_shared_image()->BackingWasExternallyUpdated(
+            resource->sync_token);
+    resource->shared_image_interface->VerifySyncToken(resource->sync_token);
     resource->damaged = false;
   }
 
-  viz::ResourceId frame_resource_id =
-      resource_manager->OfferResource(std::move(resource));
   viz::TransferableResource transferable_resource =
-      resource_manager->PrepareResourceForExport(frame_resource_id);
+      resource_manager->OfferAndPrepareResourceForExport(std::move(resource));
 
   gfx::Transform target_to_buffer_transform(window_to_buffer_transform);
   target_to_buffer_transform.Scale(1.f / device_scale_factor,
@@ -212,6 +185,8 @@ std::unique_ptr<viz::CompositorFrame> CreateCompositorFrame(
 
   gfx::Rect quad_rect;
   gfx::Rect damage_rect;
+
+  const gfx::Size buffer_size = shared_image->size();
 
   // Continuously redraw the full output rectangle when in auto-update mode.
   // This is necessary in order to allow single buffered updates without having
@@ -251,6 +226,12 @@ std::unique_ptr<viz::CompositorFrame> CreateCompositorFrame(
   frame->render_pass_list.push_back(std::move(render_pass));
 
   return frame;
+}
+
+scoped_refptr<viz::RasterContextProvider> GetContextProvider() {
+  return aura::Env::GetInstance()
+      ->context_factory()
+      ->SharedMainThreadRasterContextProvider();
 }
 
 }  // namespace fast_ink_internal

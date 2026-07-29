@@ -36,13 +36,8 @@ bool LegacyTechReportPolicyHandler::CheckPolicySettings(
     return false;
   }
 
-  const policy::PolicyMap::Entry* policy = policies.Get(policy_name());
-  if (policy->source != policy::POLICY_SOURCE_CLOUD) {
-    errors->AddError(policy_name(), IDS_POLICY_CLOUD_SOURCE_ONLY_ERROR);
-    return false;
-  }
-
 #if !BUILDFLAG(IS_CHROMEOS)
+  const policy::PolicyMap::Entry* policy = policies.Get(policy_name());
   // If policy is set with the signed in account, it must be affiliated.
   if (policy->scope == policy::POLICY_SCOPE_USER &&
       !policies.IsUserAffiliated()) {
@@ -55,7 +50,7 @@ bool LegacyTechReportPolicyHandler::CheckPolicySettings(
 }
 
 size_t LegacyTechReportPolicyHandler::max_items() {
-  return 100;
+  return 1000;
 }
 
 bool LegacyTechReportPolicyHandler::ValidatePolicyEntry(

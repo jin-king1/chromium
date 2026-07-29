@@ -13,6 +13,7 @@
 #include <string>
 
 #include "base/compiler_specific.h"
+#include "base/memory/raw_ptr.h"
 #include "media/audio/aecdump_recording_manager.h"
 #include "media/audio/agc_audio_stream.h"
 #include "media/audio/audio_debug_recording_helper.h"
@@ -20,12 +21,14 @@
 #include "media/audio/cras/audio_manager_cras_base.h"
 #include "media/audio/system_glitch_reporter.h"
 #include "media/base/amplitude_peak_detector.h"
+#include "media/base/audio_glitch_info.h"
 #include "media/base/audio_parameters.h"
 #include "media/base/media_export.h"
 
 namespace media {
 
 class AudioManagerCrasBase;
+class CrasAudioInputStreamProxy;
 
 // Provides an input stream for audio capture based on CRAS, the ChromeOS Audio
 // Server.  This object is not thread safe and all methods should be invoked in
@@ -63,6 +66,8 @@ class MEDIA_EXPORT CrasInputStream : public AgcAudioStream<AudioInputStream>,
   void StopAecdump() override;
 
  private:
+  friend class CrasAudioInputStreamProxy;
+
   // Handles requests to get samples from the provided buffer.  This will be
   // called by the audio server when it has samples ready.
   static int SamplesReady(struct libcras_stream_cb_data* data);
@@ -73,11 +78,16 @@ class MEDIA_EXPORT CrasInputStream : public AgcAudioStream<AudioInputStream>,
                          int err,
                          void* arg);
 
+  int OnSamplesReady(struct libcras_stream_cb_data* data);
+  int OnStreamError(cras_client* client, cras_stream_id_t stream_id, int err);
+
   // Reads one or more buffers of audio from the device, passes on to the
   // registered callback. Called from SamplesReady().
-  void ReadAudio(size_t frames, uint8_t* buffer, const timespec* latency_ts);
+  void ReadAudio(base::span<const int16_t> source_data,
+                 const timespec* latency_ts);
 
-  // Deals with an error that occured in the stream.  Called from StreamError().
+  // Deals with an error that occurred in the stream.  Called from
+  // StreamError().
   void NotifyStreamError(int err);
 
   // Convert from dB * 100 to a volume ratio.
@@ -95,6 +105,13 @@ class MEDIA_EXPORT CrasInputStream : public AgcAudioStream<AudioInputStream>,
   // Return true to use AGC in CRAS for this input stream.
   inline bool UseCrasAgc() const;
 
+  // Return true to use client controlled voice isolation in CRAS for this
+  // input stream.
+  inline bool UseClientControlledVoiceIsolation() const;
+
+  // Return true to use voice isolation in CRAS for this input stream.
+  inline bool UseCrasVoiceIsolation() const;
+
   // Return true to allow AEC on DSP for this input stream.
   inline bool DspBasedAecIsAllowed() const;
 
@@ -103,6 +120,9 @@ class MEDIA_EXPORT CrasInputStream : public AgcAudioStream<AudioInputStream>,
 
   // Return true to allow AGC on DSP for this input stream.
   inline bool DspBasedAgcIsAllowed() const;
+
+  // Return true if UI Gains should be ignored for this input stream.
+  inline bool IgnoreUiGains() const;
 
   // Called from the dtor and when the stream is reset.
   void ReportAndResetStats();
@@ -126,13 +146,13 @@ class MEDIA_EXPORT CrasInputStream : public AgcAudioStream<AudioInputStream>,
   // want circular references.  Additionally, stream objects live on the
   // audio thread, which is owned by the audio manager and we don't want to
   // addref the manager from that thread.
-  AudioManagerCrasBase* const audio_manager_;
+  raw_ptr<AudioManagerCrasBase> const audio_manager_;
 
   // Callback to pass audio samples too, valid while recording.
-  AudioInputCallback* callback_ = NULL;
+  raw_ptr<AudioInputCallback> callback_ = nullptr;
 
   // The client used to communicate with the audio server.
-  struct libcras_client* client_ = NULL;
+  raw_ptr<struct libcras_client, DanglingUntriaged> client_ = nullptr;
 
   // PCM parameters for the stream.
   const AudioParameters params_;
@@ -172,6 +192,8 @@ class MEDIA_EXPORT CrasInputStream : public AgcAudioStream<AudioInputStream>,
   // text logs (when a stream ends).
   SystemGlitchReporter glitch_reporter_;
 
+  AudioGlitchInfo::Accumulator glitch_info_accumulator_;
+
   // Callback to send statistics info.
   const AudioManager::LogCallback log_callback_;
 
@@ -187,6 +209,8 @@ class MEDIA_EXPORT CrasInputStream : public AgcAudioStream<AudioInputStream>,
   base::TimeDelta last_dropped_samples_duration_;
 
   AmplitudePeakDetector peak_detector_;
+
+  std::unique_ptr<CrasAudioInputStreamProxy> proxy_;
 
   base::WeakPtrFactory<CrasInputStream> weak_factory_{this};
 };

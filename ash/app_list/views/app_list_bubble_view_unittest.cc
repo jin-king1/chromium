@@ -7,6 +7,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -22,41 +23,39 @@
 #include "ash/app_list/views/app_list_folder_view.h"
 #include "ash/app_list/views/app_list_toast_container_view.h"
 #include "ash/app_list/views/app_list_toast_view.h"
-#include "ash/app_list/views/assistant/app_list_bubble_assistant_page.h"
 #include "ash/app_list/views/continue_section_view.h"
 #include "ash/app_list/views/continue_task_view.h"
 #include "ash/app_list/views/recent_apps_view.h"
 #include "ash/app_list/views/scrollable_apps_grid_view.h"
 #include "ash/app_list/views/search_box_view.h"
-#include "ash/assistant/model/assistant_ui_model.h"
-#include "ash/controls/gradient_layer_delegate.h"
+#include "ash/constants/ash_features.h"
+#include "ash/constants/web_app_id_constants.h"
 #include "ash/controls/scroll_view_gradient_helper.h"
-#include "ash/drag_drop/drag_drop_controller.h"
 #include "ash/public/cpp/app_list/app_list_features.h"
-#include "ash/public/cpp/assistant/controller/assistant_ui_controller.h"
 #include "ash/public/cpp/style/color_provider.h"
-#include "ash/public/cpp/test/assistant_test_api.h"
-#include "ash/public/cpp/test/shell_test_api.h"
+#include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/style/ash_color_provider.h"
+#include "ash/system/notification_center/notification_center_tray.h"
 #include "ash/system/tray/tray_constants.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/test/ash_test_base.h"
-#include "base/run_loop.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
-#include "chromeos/ash/services/assistant/public/cpp/assistant_enums.h"
+#include "chromeos/constants/chromeos_features.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
 #include "ui/compositor/test/test_utils.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes_posix.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notifier_id.h"
@@ -96,10 +95,6 @@ views::View* GetSearchBoxSeparator() {
   return GetBubblePresenter()->bubble_view_for_test()->separator_for_test();
 }
 
-AssistantVisibility GetAssistantVisibility() {
-  return AssistantUiController::Get()->GetModel()->visibility();
-}
-
 bool IsAnimatingProperty(
     ui::Layer* layer,
     ui::LayerAnimationElement::AnimatableProperty property) {
@@ -111,12 +106,6 @@ class AppListBubbleViewTest : public AshTestBase {
  public:
   AppListBubbleViewTest() = default;
   ~AppListBubbleViewTest() override = default;
-
-  // Simulates the Assistant being enabled.
-  void SimulateAssistantEnabled() {
-    assistant_test_api_ = AssistantTestApi::Create();
-    assistant_test_api_->EnableAssistantAndWait();
-  }
 
   // Shows the app list on the primary display.
   void ShowAppList() { GetAppListTestHelper()->ShowAppList(); }
@@ -167,10 +156,6 @@ class AppListBubbleViewTest : public AshTestBase {
     return GetAppListTestHelper()->GetBubbleSearchPage();
   }
 
-  AppListBubbleAssistantPage* GetAssistantPage() {
-    return GetAppListTestHelper()->GetBubbleAssistantPage();
-  }
-
   views::View* GetFocusedView() {
     return GetAppListTestHelper()
         ->GetBubbleView()
@@ -178,52 +163,39 @@ class AppListBubbleViewTest : public AshTestBase {
         ->GetFocusedView();
   }
 
-  const char* GetFocusedViewName() {
+  bool IsNotificationBubbleShown() {
+    return GetPrimaryShelf()
+        ->GetStatusAreaWidget()
+        ->notification_center_tray()
+        ->IsBubbleShown();
+  }
+
+  std::string_view GetFocusedViewName() {
     auto* view = GetFocusedView();
     return view ? view->GetClassName() : "none";
   }
 
-  std::unique_ptr<AssistantTestApi> assistant_test_api_;
-};
+  void SimulateGeminiAppInstalled() {
+    auto kTestAccountId =
+        Shell::Get()->session_controller()->GetActiveAccountId();
 
-class AppListBubbleViewDragTest : public AppListBubbleViewTest,
-                                  public testing::WithParamInterface<bool> {
- public:
-  AppListBubbleViewDragTest() = default;
-  ~AppListBubbleViewDragTest() override = default;
+    apps::AppRegistryCacheWrapper::Get().AddAppRegistryCache(kTestAccountId,
+                                                             &cache);
 
-  void SetUp() override {
-    scoped_feature_list_.InitWithFeatureState(
-        app_list_features::kDragAndDropRefactor, GetParam());
-    AppListBubbleViewTest::SetUp();
+    std::unique_ptr<apps::App> app =
+        std::make_unique<apps::App>(apps::AppType::kChromeApp, kGeminiAppId);
+    app->name = "Gemini App";
+
+    std::vector<apps::AppPtr> apps;
+    apps.push_back(std::move(app));
+
+    cache.OnAppsForTesting(std::move(apps), apps::AppType::kChromeApp,
+                           /*should_notify_initialized=*/false);
   }
 
-  void MaybeRunDragAndDropSequence(std::list<base::OnceClosure>* tasks) {
-    if (!GetParam()) {
-      while (!tasks->empty()) {
-        std::move(tasks->front()).Run();
-        tasks->pop_front();
-      }
-      return;
-    }
-
-    ShellTestApi().drag_drop_controller()->SetLoopClosureForTesting(
-        base::BindLambdaForTesting([&]() {
-          auto task = std::move(tasks->front());
-          tasks->pop_front();
-          std::move(task).Run();
-        }),
-        base::DoNothing());
-    tasks->push_front(base::BindLambdaForTesting([&]() {
-      // Generate OnDragEnter() event for the host view.
-      GetEventGenerator()->MoveMouseBy(10, 10);
-    }));
-    // Start Drag and Drop Sequence by moving the mouse.
-    GetEventGenerator()->MoveMouseBy(10, 10);
-  }
-  base::test::ScopedFeatureList scoped_feature_list_;
+ private:
+  apps::AppRegistryCache cache;
 };
-INSTANTIATE_TEST_SUITE_P(All, AppListBubbleViewDragTest, testing::Bool());
 
 TEST_F(AppListBubbleViewTest, LayerConfiguration) {
   ShowAppList();
@@ -286,8 +258,8 @@ TEST_F(AppListBubbleViewTest,
 
 TEST_F(AppListBubbleViewTest, OpeningBubbleTriggersAnimations) {
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Enable app list nudge to test the animation.
   GetAppListTestHelper()->DisableAppListNudge(false);
@@ -333,8 +305,8 @@ TEST_F(AppListBubbleViewTest, OpeningBubbleTriggersAnimations) {
 
 TEST_F(AppListBubbleViewTest, OpeningBubbleWithSideShelfTriggersAnimations) {
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Enable app list nudge to test the animation.
   GetAppListTestHelper()->DisableAppListNudge(false);
@@ -383,8 +355,8 @@ TEST_F(AppListBubbleViewTest, OpeningBubbleWithSideShelfTriggersAnimations) {
 
 TEST_F(AppListBubbleViewTest, ShowAnimationCreatesAndDestroysLayers) {
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Enable app list nudge to test the animation.
   GetAppListTestHelper()->DisableAppListNudge(false);
@@ -423,8 +395,8 @@ TEST_F(AppListBubbleViewTest, ShowAnimationCreatesAndDestroysLayers) {
 
 TEST_F(AppListBubbleViewTest, ShowAnimationDestroysAndRestoresShadow) {
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   AddAppItems(20);
   ShowAppList();
@@ -437,16 +409,17 @@ TEST_F(AppListBubbleViewTest, ShowAnimationDestroysAndRestoresShadow) {
   auto* apps_grid_view = GetAppsGridView();
   ui::LayerAnimationStoppedWaiter().Wait(apps_grid_view->layer());
 
-  // Shadow is restored.
-  EXPECT_TRUE(app_list_bubble_view->view_shadow_for_test());
+  // Shadow is restored - when kJelly is enabled, no shadow is expected, for
+  // consistency with bubbles in system tray area.
+  EXPECT_FALSE(app_list_bubble_view->view_shadow_for_test());
 }
 
 TEST_F(AppListBubbleViewTest, ShowAnimationRecordsSmoothnessHistogram) {
   base::HistogramTester histograms;
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Show an app list with just the apps grid.
   AddAppItems(5);
@@ -476,8 +449,8 @@ TEST_F(AppListBubbleViewTest, HideAnimationsRecordsSmoothnessHistogram) {
   ShowAppList();
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   AppListBubbleView* view = GetBubblePresenter()->bubble_view_for_test();
   ui::Layer* layer = view->layer();
@@ -496,43 +469,12 @@ TEST_F(AppListBubbleViewTest, HideAnimationsRecordsSmoothnessHistogram) {
       "Apps.ClamshellLauncher.AnimationSmoothness.Close", 1);
 }
 
-TEST_F(AppListBubbleViewTest, AssistantScreenshotClosesBubbleWithoutAnimation) {
-  SimulateAssistantEnabled();
-  AddAppItems(5);
-
-  // Show the app list without animation.
-  ShowAppList();
-
-  // Switch to the assistant page.
-  LeftClickOn(GetSearchBoxView()->assistant_button());
-
-  // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
-
-  // Simulate the app list being closed by taking a screenshot with assistant.
-  // This makes AppListControllerImpl::ShouldDismissImmediately() return true.
-  AssistantUiController::Get()->ToggleUi(
-      absl::nullopt, assistant::AssistantExitPoint::kScreenshot);
-
-  // The bubble dismissed immediately so it is not animating.
-  ui::Layer* bubble_layer = GetAppListTestHelper()->GetBubbleView()->layer();
-  ASSERT_TRUE(bubble_layer);
-  EXPECT_FALSE(IsAnimatingProperty(
-      bubble_layer, ui::LayerAnimationElement::AnimatableProperty::BOUNDS));
-  EXPECT_FALSE(IsAnimatingProperty(
-      bubble_layer, ui::LayerAnimationElement::AnimatableProperty::OPACITY));
-
-  // App list is closed.
-  EXPECT_FALSE(Shell::Get()->app_list_controller()->IsVisible());
-}
-
 TEST_F(AppListBubbleViewTest, ShutdownDuringHideAnimationDoesNotCrash) {
   base::HistogramTester histograms;
 
   // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
 
   // Show the app list and wait for the show animation to finish.
   AddAppItems(5);
@@ -564,13 +506,15 @@ TEST_F(AppListBubbleViewTest, SearchBoxCloseButtonVisibleLongQuery) {
   PressAndReleaseKey(ui::VKEY_A);
 
   EXPECT_TRUE(GetSearchPage()->GetVisible());
-  EXPECT_TRUE(search_box_view->close_button()->GetVisible());
+  EXPECT_TRUE(
+      search_box_view->filter_and_close_button_container()->GetVisible());
   for (int i = 0; i < 100; ++i) {
     PressAndReleaseKey(ui::VKEY_A);
   }
   // Close button should be visible for long queries and within search box
   // view bounds.
-  EXPECT_TRUE(search_box_view->close_button()->GetVisible());
+  EXPECT_TRUE(
+      search_box_view->filter_and_close_button_container()->GetVisible());
   EXPECT_TRUE(search_box_view->GetBoundsInScreen().Contains(
       search_box_view->close_button()->GetBoundsInScreen()));
 }
@@ -604,7 +548,6 @@ TEST_F(AppListBubbleViewTest, ClosingBubbleClearsSearch) {
 
   EXPECT_FALSE(GetAppsPage()->GetVisible());
   EXPECT_TRUE(GetSearchPage()->GetVisible());
-  EXPECT_FALSE(GetAssistantPage()->GetVisible());
 
   views::Textfield* search_box_input = GetSearchBoxView()->search_box();
   EXPECT_TRUE(search_box_input->HasFocus());
@@ -622,54 +565,10 @@ TEST_F(AppListBubbleViewTest, ClosingBubbleClearsSearch) {
   ShowAppList();
   EXPECT_TRUE(GetAppsPage()->GetVisible());
   EXPECT_FALSE(GetSearchPage()->GetVisible());
-  EXPECT_FALSE(GetAssistantPage()->GetVisible());
 
   search_box_input = GetSearchBoxView()->search_box();
   EXPECT_TRUE(search_box_input->HasFocus());
   EXPECT_EQ(u"", search_box_input->GetText());
-}
-
-// Regression test for https://crbug.com/1313140
-TEST_F(AppListBubbleViewTest, CanOpenMessageCenterWithKeyboardShortcut) {
-  // Add a notification so there's something to focus in the message center.
-  auto notification = std::make_unique<message_center::Notification>(
-      message_center::NOTIFICATION_TYPE_SIMPLE, "id", u"Title", u"Message",
-      ui::ImageModel(), /*display_source=*/std::u16string(), GURL(),
-      message_center::NotifierId(), message_center::RichNotificationData(),
-      /*delegate=*/nullptr);
-  message_center::MessageCenter::Get()->AddNotification(
-      std::move(notification));
-
-  // Message center starts closed.
-  auto* system_tray = GetPrimaryUnifiedSystemTray();
-  ASSERT_FALSE(system_tray->IsMessageCenterBubbleShown());
-
-  // Open the launcher and do a search.
-  AddAppItems(1);
-  ShowAppList();
-  PressAndReleaseKey(ui::VKEY_A);
-
-  // Search box has focus.
-  views::Textfield* search_box_input = GetSearchBoxView()->search_box();
-  ASSERT_TRUE(search_box_input->HasFocus());
-
-  // Enable animations.
-  ui::ScopedAnimationDurationScaleMode duration(
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
-
-  // Move focus to the message center notification area with Alt-Shift-N. The
-  // message center will open and the app list will dismiss.
-  PressAndReleaseKey(ui::VKEY_N, ui::EF_ALT_DOWN | ui::EF_SHIFT_DOWN);
-
-  // Wait for the app list hide animation to finish.
-  AppListBubbleView* view = GetBubblePresenter()->bubble_view_for_test();
-  ui::LayerAnimationStoppedWaiter().Wait(view->layer());
-
-  // Search box did not steal focus.
-  EXPECT_FALSE(search_box_input->HasFocus());
-
-  // Message center is still open.
-  EXPECT_TRUE(system_tray->IsMessageCenterBubbleShown());
 }
 
 TEST_F(AppListBubbleViewTest, SearchBoxTextUsesPrimaryTextColor) {
@@ -677,58 +576,7 @@ TEST_F(AppListBubbleViewTest, SearchBoxTextUsesPrimaryTextColor) {
 
   views::Textfield* search_box = GetSearchBoxView()->search_box();
   EXPECT_EQ(search_box->GetTextColor(),
-            AshColorProvider::Get()->GetContentLayerColor(
-                AshColorProvider::ContentLayerType::kTextColorPrimary));
-}
-
-TEST_F(AppListBubbleViewTest, SearchBoxShowsAssistantButton) {
-  SimulateAssistantEnabled();
-  ShowAppList();
-
-  // By default the assistant button is visible.
-  SearchBoxView* view = GetSearchBoxView();
-  EXPECT_TRUE(view->assistant_button()->GetVisible());
-  EXPECT_FALSE(view->close_button()->GetVisible());
-
-  // Typing text shows the close button instead.
-  PressAndReleaseKey(ui::VKEY_A);
-  EXPECT_FALSE(view->assistant_button()->GetVisible());
-  EXPECT_TRUE(view->close_button()->GetVisible());
-}
-
-TEST_F(AppListBubbleViewTest, ClickingAssistantButtonShowsAssistantPage) {
-  SimulateAssistantEnabled();
-  ShowAppList();
-  ASSERT_EQ(AssistantVisibility::kClosed, GetAssistantVisibility());
-
-  SearchBoxView* search_box = GetSearchBoxView();
-  LeftClickOn(search_box->assistant_button());
-
-  EXPECT_FALSE(search_box->GetVisible());
-  EXPECT_FALSE(GetSearchBoxSeparator()->GetVisible());
-  EXPECT_FALSE(GetAppsPage()->GetVisible());
-  EXPECT_FALSE(GetSearchPage()->GetVisible());
-  EXPECT_TRUE(GetAssistantPage()->GetVisible());
-
-  // Assistant was notified of visibility change.
-  EXPECT_EQ(AssistantVisibility::kVisible, GetAssistantVisibility());
-}
-
-TEST_F(AppListBubbleViewTest, AssistantPageLayout) {
-  SimulateAssistantEnabled();
-  ShowAppList();
-  LeftClickOn(GetSearchBoxView()->assistant_button());
-
-  // Assistant not have a background so the blurred launcher is visible
-  // underneath the AppListBubbleAssistantPage view.
-  EXPECT_FALSE(GetAssistantPage()->GetBackground());
-
-  // Assistant fills the bubble view, so that any suggestion chips will appear
-  // at the bottom.
-  auto* app_list_bubble_view = GetAppListTestHelper()->GetBubbleView();
-  gfx::Rect expected_bounds = app_list_bubble_view->bounds();
-  expected_bounds.Inset(kBorderInset);
-  EXPECT_EQ(GetAssistantPage()->bounds(), expected_bounds);
+            AshColorProvider::Get()->GetColor(cros_tokens::kTextColorPrimary));
 }
 
 TEST_F(AppListBubbleViewTest, SearchBoxCloseButton) {
@@ -741,7 +589,9 @@ TEST_F(AppListBubbleViewTest, SearchBoxCloseButton) {
 
   // Close button is visible after typing text.
   SearchBoxView* search_box_view = GetSearchBoxView();
-  EXPECT_TRUE(search_box_view->close_button()->GetVisible());
+  search_box_view->GetWidget()->LayoutRootViewIfNecessary();
+  EXPECT_TRUE(
+      search_box_view->filter_and_close_button_container()->GetVisible());
   EXPECT_FALSE(search_box_view->search_box()->GetText().empty());
 
   // Clicking the close button clears the search, but the search box is still
@@ -749,7 +599,8 @@ TEST_F(AppListBubbleViewTest, SearchBoxCloseButton) {
   LeftClickOn(search_box_view->close_button());
   EXPECT_EQ(std::vector<std::u16string>({u""}),
             app_list_client->GetAndResetPastSearchQueries());
-  EXPECT_FALSE(search_box_view->close_button()->GetVisible());
+  EXPECT_FALSE(
+      search_box_view->filter_and_close_button_container()->GetVisible());
   EXPECT_TRUE(search_box_view->search_box()->GetText().empty());
   EXPECT_TRUE(search_box_view->search_box()->HasFocus());
   EXPECT_TRUE(search_box_view->is_search_box_active());
@@ -760,7 +611,6 @@ TEST_F(AppListBubbleViewTest, AppsPageShownByDefault) {
 
   EXPECT_TRUE(GetAppsPage()->GetVisible());
   EXPECT_FALSE(GetSearchPage()->GetVisible());
-  EXPECT_FALSE(GetAssistantPage()->GetVisible());
 }
 
 TEST_F(AppListBubbleViewTest, TypingTextShowsSearchPage) {
@@ -899,8 +749,8 @@ TEST_F(AppListBubbleViewTest, CanSelectSearchResults) {
 
   // Search results becoming available allows keyboard selection.
   AddSearchResult("id", u"title");
-  base::RunLoop().RunUntilIdle();  // Update search model observers.
-  EXPECT_TRUE(view->CanSelectSearchResults());
+  ASSERT_TRUE(
+      base::test::RunUntil([&] { return view->CanSelectSearchResults(); }));
 }
 
 TEST_F(AppListBubbleViewTest, DownArrowMovesFocusToApps) {
@@ -926,9 +776,90 @@ TEST_F(AppListBubbleViewTest, DownArrowMovesFocusToApps) {
   EXPECT_FALSE(app_item->HasFocus());
 }
 
-// Exercises AssistantButtonFocusSkipper.
-TEST_F(AppListBubbleViewTest, DownAndUpArrowSkipsAssistantButton) {
-  SimulateAssistantEnabled();
+class AppListBubbleViewSunfishDisabledTest : public AppListBubbleViewTest {
+ public:
+  AppListBubbleViewSunfishDisabledTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/{}, /*disabled_features=*/{
+            features::kSunfishFeature,
+            features::kScannerUpdate,
+            features::kScannerDogfood,
+        });
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+class AppListBubbleViewSunfishEnabledTest : public AppListBubbleViewTest {
+ public:
+  AppListBubbleViewSunfishEnabledTest() {
+    feature_list_.InitWithFeatures(
+        /*enabled_features=*/
+        {
+            features::kSunfishFeature,
+            features::kScannerUpdate,
+            features::kScannerDogfood,
+        },
+        /*disabled_features=*/{});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+// Exercises ButtonFocusSkipper with the Gemini button.
+TEST_F(AppListBubbleViewSunfishDisabledTest, DownAndUpArrowSkipsGeminiButton) {
+  SimulateGeminiAppInstalled();
+
+  // Add an app, but no "Continue" suggestions.
+  AddAppItems(1);
+  ShowAppList();
+
+  auto* apps_grid_view = GetAppsGridView();
+  AppListItemView* app_item = apps_grid_view->GetItemViewAt(0);
+  SearchBoxView* search_box_view = GetSearchBoxView();
+
+  // Enable animations.
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+
+  // Wait for the animation to finish.
+  ui::Layer* layer = GetAppsGridView()->layer();
+  ui::LayerAnimationStoppedWaiter().Wait(layer);
+
+  EXPECT_TRUE(search_box_view->search_box()->HasFocus());
+  ASSERT_TRUE(search_box_view->gemini_button());
+  ASSERT_TRUE(search_box_view->gemini_button()->GetVisible());
+
+  // Pressing down arrow moves focus into apps.
+  PressAndReleaseKey(ui::VKEY_DOWN);
+  EXPECT_FALSE(search_box_view->search_box()->HasFocus());
+  EXPECT_FALSE(search_box_view->gemini_button()->HasFocus());
+  EXPECT_TRUE(app_item->HasFocus());
+
+  // Pressing up arrow moves focus back to search box.
+  PressAndReleaseKey(ui::VKEY_UP);
+  EXPECT_TRUE(search_box_view->search_box()->HasFocus());
+  EXPECT_FALSE(search_box_view->gemini_button()->HasFocus());
+  EXPECT_FALSE(app_item->HasFocus());
+
+  // Tab key moves focus to Gemini button.
+  PressAndReleaseKey(ui::VKEY_TAB);
+  EXPECT_FALSE(search_box_view->search_box()->HasFocus());
+  EXPECT_TRUE(search_box_view->gemini_button()->HasFocus());
+
+  // Shift-tab moves focus back to search box.
+  PressAndReleaseKey(ui::VKEY_TAB, ui::EF_SHIFT_DOWN);
+  EXPECT_TRUE(search_box_view->search_box()->HasFocus());
+  EXPECT_FALSE(search_box_view->gemini_button()->HasFocus());
+}
+
+// Exercises ButtonFocusSkipper with both Sunfish and Gemini buttons.
+TEST_F(AppListBubbleViewSunfishEnabledTest,
+       DownAndUpArrowSkipsSunfishAndGeminiButton) {
+  SimulateGeminiAppInstalled();
+
   // Add an app, but no "Continue" suggestions.
   AddAppItems(1);
   ShowAppList();
@@ -937,28 +868,84 @@ TEST_F(AppListBubbleViewTest, DownAndUpArrowSkipsAssistantButton) {
   AppListItemView* app_item = apps_grid_view->GetItemViewAt(0);
   SearchBoxView* search_box_view = GetSearchBoxView();
   EXPECT_TRUE(search_box_view->search_box()->HasFocus());
+  ASSERT_TRUE(search_box_view->sunfish_button());
+  ASSERT_TRUE(search_box_view->sunfish_button()->GetVisible());
+  ASSERT_TRUE(search_box_view->gemini_button());
+  ASSERT_TRUE(search_box_view->gemini_button()->GetVisible());
 
   // Pressing down arrow moves focus into apps.
   PressAndReleaseKey(ui::VKEY_DOWN);
   EXPECT_FALSE(search_box_view->search_box()->HasFocus());
-  EXPECT_FALSE(search_box_view->assistant_button()->HasFocus());
+  EXPECT_FALSE(search_box_view->sunfish_button()->HasFocus());
+  EXPECT_FALSE(search_box_view->gemini_button()->HasFocus());
   EXPECT_TRUE(app_item->HasFocus());
 
   // Pressing up arrow moves focus back to search box.
   PressAndReleaseKey(ui::VKEY_UP);
   EXPECT_TRUE(search_box_view->search_box()->HasFocus());
-  EXPECT_FALSE(search_box_view->assistant_button()->HasFocus());
+  EXPECT_FALSE(search_box_view->sunfish_button()->HasFocus());
+  EXPECT_FALSE(search_box_view->gemini_button()->HasFocus());
   EXPECT_FALSE(app_item->HasFocus());
 
-  // Tab key moves focus to assistant button.
+  // Tab key moves focus to Sunfish button.
   PressAndReleaseKey(ui::VKEY_TAB);
   EXPECT_FALSE(search_box_view->search_box()->HasFocus());
-  EXPECT_TRUE(search_box_view->assistant_button()->HasFocus());
+  EXPECT_TRUE(search_box_view->sunfish_button()->HasFocus());
+  EXPECT_FALSE(search_box_view->gemini_button()->HasFocus());
+
+  // Tab key moves focus to Gemini button.
+  PressAndReleaseKey(ui::VKEY_TAB);
+  EXPECT_FALSE(search_box_view->search_box()->HasFocus());
+  EXPECT_FALSE(search_box_view->sunfish_button()->HasFocus());
+  EXPECT_TRUE(search_box_view->gemini_button()->HasFocus());
+
+  // Shift-tab moves focus back to Sunfish button.
+  PressAndReleaseKey(ui::VKEY_TAB, ui::EF_SHIFT_DOWN);
+  EXPECT_FALSE(search_box_view->search_box()->HasFocus());
+  EXPECT_TRUE(search_box_view->sunfish_button()->HasFocus());
+  EXPECT_FALSE(search_box_view->gemini_button()->HasFocus());
 
   // Shift-tab moves focus back to search box.
   PressAndReleaseKey(ui::VKEY_TAB, ui::EF_SHIFT_DOWN);
   EXPECT_TRUE(search_box_view->search_box()->HasFocus());
-  EXPECT_FALSE(search_box_view->assistant_button()->HasFocus());
+  EXPECT_FALSE(search_box_view->sunfish_button()->HasFocus());
+  EXPECT_FALSE(search_box_view->gemini_button()->HasFocus());
+}
+
+// Exercises ButtonFocusSkipper with only the Sunfish button.
+TEST_F(AppListBubbleViewSunfishEnabledTest, DownAndUpArrowSkipsSunfishButton) {
+  // Add an app, but no "Continue" suggestions.
+  AddAppItems(1);
+  ShowAppList();
+
+  auto* apps_grid_view = GetAppListTestHelper()->GetScrollableAppsGridView();
+  AppListItemView* app_item = apps_grid_view->GetItemViewAt(0);
+  SearchBoxView* search_box_view = GetSearchBoxView();
+  EXPECT_TRUE(search_box_view->search_box()->HasFocus());
+  ASSERT_TRUE(search_box_view->sunfish_button());
+  ASSERT_TRUE(search_box_view->sunfish_button()->GetVisible());
+
+  // Pressing down arrow moves focus into apps.
+  PressAndReleaseKey(ui::VKEY_DOWN);
+  EXPECT_FALSE(search_box_view->search_box()->HasFocus());
+  EXPECT_FALSE(search_box_view->sunfish_button()->HasFocus());
+  EXPECT_TRUE(app_item->HasFocus());
+
+  // Pressing up arrow moves focus back to search box.
+  PressAndReleaseKey(ui::VKEY_UP);
+  EXPECT_TRUE(search_box_view->search_box()->HasFocus());
+  EXPECT_FALSE(search_box_view->sunfish_button()->HasFocus());
+  EXPECT_FALSE(app_item->HasFocus());
+
+  // Tab key moves focus to Sunfish button.
+  PressAndReleaseKey(ui::VKEY_TAB);
+  EXPECT_FALSE(search_box_view->search_box()->HasFocus());
+  EXPECT_TRUE(search_box_view->sunfish_button()->HasFocus());
+
+  // Shift-tab moves focus back to search box.
+  PressAndReleaseKey(ui::VKEY_TAB, ui::EF_SHIFT_DOWN);
+  EXPECT_TRUE(search_box_view->search_box()->HasFocus());
+  EXPECT_FALSE(search_box_view->sunfish_button()->HasFocus());
 }
 
 TEST_F(AppListBubbleViewTest, DownArrowSelectsRecentsThenApps) {
@@ -1202,22 +1189,6 @@ TEST_F(AppListBubbleViewTest, FolderClosedOnAppListDismiss) {
   EXPECT_FALSE(GetAppListTestHelper()->GetBubbleFolderView()->GetVisible());
 }
 
-TEST_F(AppListBubbleViewTest, FolderClosedAfterInvokingAssistant) {
-  SimulateAssistantEnabled();
-  AddFolderWithApps(3);
-  ShowAppList();
-
-  AppListItemView* folder_item = GetAppsGridView()->GetItemViewAt(0);
-  LeftClickOn(folder_item);
-  ASSERT_TRUE(GetAppListTestHelper()->IsInFolderView());
-  ASSERT_TRUE(GetAppListTestHelper()->GetBubbleFolderView()->GetVisible());
-
-  PressAndReleaseKey(ui::VKEY_ASSISTANT);
-  EXPECT_TRUE(GetAssistantPage()->GetVisible());
-  EXPECT_FALSE(GetAppListTestHelper()->IsInFolderView());
-  EXPECT_FALSE(GetAppListTestHelper()->GetBubbleFolderView()->GetVisible());
-}
-
 TEST_F(AppListBubbleViewTest, LargeFolderViewFitsInsideMainBubble) {
   // Create more apps than fit in the default sized folder.
   AddFolderWithApps(30);
@@ -1259,7 +1230,7 @@ TEST_F(AppListBubbleViewTest, ClickOutsideFolderClosesFolder) {
   EXPECT_FALSE(GetAppListTestHelper()->GetBubbleFolderView()->GetVisible());
 }
 
-TEST_P(AppListBubbleViewDragTest, ReparentDragOutOfFolderClosesFolder) {
+TEST_F(AppListBubbleViewTest, ReparentDragOutOfFolderClosesFolder) {
   AddFolderWithApps(3);
   ShowAppList();
 
@@ -1282,28 +1253,22 @@ TEST_P(AppListBubbleViewDragTest, ReparentDragOutOfFolderClosesFolder) {
         folder_view->GetBoundsInScreen().bottom_right() + gfx::Vector2d(10, 10);
     generator->MoveMouseTo(outside_view);
     generator->MoveMouseBy(10, 10);
-    folder_view->items_grid_view()->FireFolderItemReparentTimerForTest();
     // Folder visually closed.
     EXPECT_FALSE(GetAppListTestHelper()->IsInFolderView());
-    if (!GetParam()) {
-      // Folder is still "visible" because the drag has not ended for the old
-      // drag and drop flow. On drag and drop refactor, the drag ends when
-      // exiting the view.
-      EXPECT_TRUE(GetAppListTestHelper()->GetBubbleFolderView()->GetVisible());
-    }
+    EXPECT_FALSE(GetAppListTestHelper()->GetBubbleFolderView()->GetVisible());
   }));
   tasks.push_back(base::BindLambdaForTesting([&]() {  // End the drag.
     generator->ReleaseLeftButton();
     EXPECT_FALSE(GetAppListTestHelper()->GetBubbleFolderView()->GetVisible());
   }));
-  MaybeRunDragAndDropSequence(&tasks);
+  MaybeRunDragAndDropSequenceForAppList(&tasks, /*is_touch=*/false);
 
   // End the drag.
   generator->ReleaseLeftButton();
   EXPECT_FALSE(GetAppListTestHelper()->GetBubbleFolderView()->GetVisible());
 }
 
-TEST_P(AppListBubbleViewDragTest, DragItemInsideFolderDoesNotSelectItem) {
+TEST_F(AppListBubbleViewTest, DragItemInsideFolderDoesNotSelectItem) {
   AddFolderWithApps(3);
   ShowAppList();
 
@@ -1328,7 +1293,7 @@ TEST_P(AppListBubbleViewDragTest, DragItemInsideFolderDoesNotSelectItem) {
     EXPECT_FALSE(folder_view->items_grid_view()->has_selected_view());
     EXPECT_FALSE(GetFocusedView()) << GetFocusedViewName();
   }));
-  MaybeRunDragAndDropSequence(&tasks);
+  MaybeRunDragAndDropSequenceForAppList(&tasks, /*is_touch=*/false);
 }
 
 TEST_F(AppListBubbleViewTest, OpenFolderWithMouseDoesNotFocusItem) {
@@ -1428,33 +1393,33 @@ TEST_F(AppListBubbleViewTest, OpeningFolderRemovesOtherViewsFromAccessibility) {
   LeftClickOn(folder_item);
 
   auto* search_box = GetSearchBoxView();
-  EXPECT_TRUE(search_box->GetViewAccessibility().IsIgnored());
+  EXPECT_TRUE(search_box->GetViewAccessibility().GetIsIgnored());
   EXPECT_TRUE(search_box->GetViewAccessibility().IsLeaf());
   auto* continue_section = GetContinueSectionView();
-  EXPECT_TRUE(continue_section->GetViewAccessibility().IsIgnored());
+  EXPECT_TRUE(continue_section->GetViewAccessibility().GetIsIgnored());
   EXPECT_TRUE(continue_section->GetViewAccessibility().IsLeaf());
   auto* recent_apps = GetRecentAppsView();
-  EXPECT_TRUE(recent_apps->GetViewAccessibility().IsIgnored());
+  EXPECT_TRUE(recent_apps->GetViewAccessibility().GetIsIgnored());
   EXPECT_TRUE(recent_apps->GetViewAccessibility().IsLeaf());
   auto* toast_container = GetToastContainerView();
-  EXPECT_TRUE(toast_container->GetViewAccessibility().IsIgnored());
+  EXPECT_TRUE(toast_container->GetViewAccessibility().GetIsIgnored());
   EXPECT_TRUE(toast_container->GetViewAccessibility().IsLeaf());
   auto* apps_grid = GetAppsGridView();
-  EXPECT_TRUE(apps_grid->GetViewAccessibility().IsIgnored());
+  EXPECT_TRUE(apps_grid->GetViewAccessibility().GetIsIgnored());
   EXPECT_TRUE(apps_grid->GetViewAccessibility().IsLeaf());
 
   // Close the folder.
   PressAndReleaseKey(ui::VKEY_ESCAPE);
 
-  EXPECT_FALSE(search_box->GetViewAccessibility().IsIgnored());
+  EXPECT_FALSE(search_box->GetViewAccessibility().GetIsIgnored());
   EXPECT_FALSE(search_box->GetViewAccessibility().IsLeaf());
-  EXPECT_FALSE(continue_section->GetViewAccessibility().IsIgnored());
+  EXPECT_FALSE(continue_section->GetViewAccessibility().GetIsIgnored());
   EXPECT_FALSE(continue_section->GetViewAccessibility().IsLeaf());
-  EXPECT_FALSE(recent_apps->GetViewAccessibility().IsIgnored());
+  EXPECT_FALSE(recent_apps->GetViewAccessibility().GetIsIgnored());
   EXPECT_FALSE(recent_apps->GetViewAccessibility().IsLeaf());
-  EXPECT_FALSE(toast_container->GetViewAccessibility().IsIgnored());
+  EXPECT_FALSE(toast_container->GetViewAccessibility().GetIsIgnored());
   EXPECT_FALSE(toast_container->GetViewAccessibility().IsLeaf());
-  EXPECT_FALSE(apps_grid->GetViewAccessibility().IsIgnored());
+  EXPECT_FALSE(apps_grid->GetViewAccessibility().GetIsIgnored());
   EXPECT_FALSE(apps_grid->GetViewAccessibility().IsLeaf());
 }
 
@@ -1625,7 +1590,7 @@ TEST_F(AppListBubbleViewTest, AutoScrollToFitViewOnFocus) {
   EXPECT_FALSE(gradient_mask_bounds_end.Intersects(app_view_bounds));
 }
 
-TEST_P(AppListBubbleViewDragTest, AutoScrollOnTopOfTheBubble) {
+TEST_F(AppListBubbleViewTest, AutoScrollOnTopOfTheBubble) {
   // Show an app list with enough apps to fill the page and trigger a gradient
   // at the bottom.
   const int kTotalAppItems = 50;
@@ -1667,7 +1632,7 @@ TEST_P(AppListBubbleViewDragTest, AutoScrollOnTopOfTheBubble) {
   }));
   tasks.push_back(
       base::BindLambdaForTesting([&]() { generator->ReleaseLeftButton(); }));
-  MaybeRunDragAndDropSequence(&tasks);
+  MaybeRunDragAndDropSequenceForAppList(&tasks, /*is_touch=*/false);
 }
 
 // Verifies that hidden app list bubble view does not attempt to change its
@@ -1684,6 +1649,48 @@ TEST_F(AppListBubbleViewTest, HiddenAppListPageNotSetDuringShutdown) {
   AppListModelProvider::Get()->ClearActiveModel();
   EXPECT_EQ(AppListBubblePage::kNone,
             GetAppListTestHelper()->GetBubbleView()->current_page_for_test());
+}
+
+// Regression test for https://crbug.com/1313140
+TEST_F(AppListBubbleViewTest, CanOpenMessageCenterWithKeyboardShortcut) {
+  // Add a notification so there's something to focus in the message center.
+  auto notification = std::make_unique<message_center::Notification>(
+      message_center::NOTIFICATION_TYPE_SIMPLE, "id", u"Title", u"Message",
+      ui::ImageModel(), /*display_source=*/std::u16string(), GURL(),
+      message_center::NotifierId(), message_center::RichNotificationData(),
+      /*delegate=*/nullptr);
+  message_center::MessageCenter::Get()->AddNotification(
+      std::move(notification));
+
+  // Message center starts closed.
+  ASSERT_FALSE(IsNotificationBubbleShown());
+
+  // Open the launcher and do a search.
+  AddAppItems(1);
+  ShowAppList();
+  PressAndReleaseKey(ui::VKEY_A);
+
+  // Search box has focus.
+  views::Textfield* search_box_input = GetSearchBoxView()->search_box();
+  ASSERT_TRUE(search_box_input->HasFocus());
+
+  // Enable animations.
+  gfx::ScopedAnimationDurationScaleMode duration(
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION);
+
+  // Move focus to the message center notification area with Alt-Shift-N. The
+  // message center will open and the app list will dismiss.
+  PressAndReleaseKey(ui::VKEY_N, ui::EF_ALT_DOWN | ui::EF_SHIFT_DOWN);
+
+  // Wait for the app list hide animation to finish.
+  AppListBubbleView* view = GetBubblePresenter()->bubble_view_for_test();
+  ui::LayerAnimationStoppedWaiter().Wait(view->layer());
+
+  // Search box did not steal focus.
+  EXPECT_FALSE(search_box_input->HasFocus());
+
+  // Message center is still open.
+  EXPECT_TRUE(IsNotificationBubbleShown());
 }
 
 }  // namespace

@@ -13,8 +13,8 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/nearby_sharing/contacts/nearby_share_contact_manager.h"
-#include "chrome/browser/nearby_sharing/proto/rpc_resources.pb.h"
 #include "content/public/browser/web_ui_message_handler.h"
+#include "third_party/nearby/sharing/proto/rpc_resources.pb.h"
 
 namespace content {
 class BrowserContext;
@@ -39,20 +39,20 @@ class NearbyInternalsContactHandler
 
  private:
   // Message handler callback that initializes JavaScript.
-  void InitializeContents(const base::Value::List& args);
+  void InitializeContents(const base::ListValue& args);
 
   // NearbyShareContactManager::Observer:
   void OnContactsDownloaded(
       const std::set<std::string>& allowed_contact_ids,
-      const std::vector<nearbyshare::proto::ContactRecord>& contacts,
+      const std::vector<nearby::sharing::proto::ContactRecord>& contacts,
       uint32_t num_unreachable_contacts_filtered_out) override;
   void OnContactsUploaded(bool did_contacts_change_since_last_upload) override;
 
   // Message handler callback that requests a contacts download from the contact
   // manager.
-  void HandleDownloadContacts(const base::Value::List& args);
+  void HandleDownloadContacts(const base::ListValue& args);
 
-  raw_ptr<content::BrowserContext, ExperimentalAsh> context_;
+  raw_ptr<content::BrowserContext> context_;
   base::ScopedObservation<NearbyShareContactManager,
                           NearbyShareContactManager::Observer>
       observation_{this};

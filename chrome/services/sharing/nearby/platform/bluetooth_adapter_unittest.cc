@@ -16,8 +16,7 @@
 #include "mojo/public/cpp/bindings/shared_remote.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace nearby {
-namespace chrome {
+namespace nearby::chrome {
 
 class BluetoothAdapterTest : public testing::Test {
  public:
@@ -43,7 +42,7 @@ class BluetoothAdapterTest : public testing::Test {
   }
 
  protected:
-  raw_ptr<bluetooth::FakeAdapter, ExperimentalAsh> fake_adapter_;
+  raw_ptr<bluetooth::FakeAdapter> fake_adapter_;
   std::unique_ptr<BluetoothAdapter> bluetooth_adapter_;
 
  private:
@@ -120,13 +119,21 @@ TEST_F(BluetoothAdapterTest, TestGetName) {
 TEST_F(BluetoothAdapterTest, TestSetName) {
   std::string name = "NewName";
   EXPECT_NE(name, fake_adapter_->name_);
-  EXPECT_TRUE(bluetooth_adapter_->SetName(name));
+  EXPECT_TRUE(bluetooth_adapter_->SetName(name, /*persist=*/true));
+  EXPECT_EQ(name, fake_adapter_->name_);
+
+  name = "DifferentName";
+  EXPECT_NE(name, fake_adapter_->name_);
+  EXPECT_TRUE(bluetooth_adapter_->SetName(name, /*persist=*/false));
   EXPECT_EQ(name, fake_adapter_->name_);
 }
 
-TEST_F(BluetoothAdapterTest, TestGetAddress) {
+TEST_F(BluetoothAdapterTest, TestGetMacAddress) {
   EXPECT_EQ(fake_adapter_->address_, bluetooth_adapter_->GetMacAddress());
 }
 
-}  // namespace chrome
-}  // namespace nearby
+TEST_F(BluetoothAdapterTest, TestGetAddress) {
+  EXPECT_EQ(fake_adapter_->address_, bluetooth_adapter_->GetAddress());
+}
+
+}  // namespace nearby::chrome

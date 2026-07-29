@@ -20,19 +20,8 @@ function getExpectedFontFamily(expectingSystemFont: boolean): string {
       // <if expr="is_win">
       '"Segoe UI"';
       // </if>
-      // <if expr="chromeos_ash">
+      // <if expr="is_chromeos">
       'Roboto';
-      // </if>
-      // <if expr="chromeos_lacros">
-      // TODO(crbug.com/1427641): Change to 'Roboto' once bug is fixed.
-      'sans';
-      // </if>
-      // <if expr="is_fuchsia">
-      // TODO(dpapad): WebUI tests are compiled on Fuchsia but don't seem to run
-      // on any bot, so the value below does not matter, it just makes the code
-      // syntactically valid. Figure out whether the tests should be run, or
-      // excluded from compilation on Fuchsia.
-      'unknown';
       // </if>
 
   return fontFamily;
@@ -44,15 +33,13 @@ function assertFontFamilyRule(
     link: HTMLLinkElement, expectingSystemFont: boolean) {
   assertTrue(!!link.sheet);
   const styleRules =
-      Array.from(link.sheet.cssRules).filter(r => r instanceof CSSStyleRule) as
-      CSSStyleRule[];
+      Array.from(link.sheet.cssRules).filter(r => r instanceof CSSStyleRule);
   assertTrue(styleRules.length > 0);
 
   const fontFamily = styleRules[0]!.style.getPropertyValue('font-family');
   const expectedFontFamily = getExpectedFontFamily(expectingSystemFont);
   assertTrue(
-      fontFamily.startsWith(expectedFontFamily),
-      `Found: '${fontFamily.toString()}'`);
+      fontFamily.startsWith(expectedFontFamily), `Found: '${fontFamily}'`);
 }
 
 // Asserts that a 'div' inherits the expected font-family value.
@@ -100,30 +87,12 @@ suite('TextDefaults', function() {
   });
 
   test('text_defaults_md.css', function() {
+    let expectingSystemFont = true;
+    // <if expr="is_linux">
+    expectingSystemFont = false;
+    // </if>
+
     return testFontFamily(
-        'chrome://resources/css/text_defaults_md.css',
-        false /*expectingSystemFont*/);
+        'chrome://resources/css/text_defaults_md.css', expectingSystemFont);
   });
 });
-
-// <if expr="not is_linux">
-// Test that text_defaults_md.css reverts back to the text_defaults.css
-// behavior when the WebUiSystemFont flag is enabled.
-suite('TextDefaultsSystemFont', function() {
-  setup(function() {
-    document.body.innerHTML = window.trustedTypes!.emptyHTML;
-  });
-
-  test('text_defaults.css', function() {
-    return testFontFamily(
-        'chrome://resources/css/text_defaults.css',
-        true /*expectingSystemFont*/);
-  });
-
-  test('text_defaults_md.css', function() {
-    return testFontFamily(
-        'chrome://resources/css/text_defaults_md.css',
-        true /*expectingSystemFont*/);
-  });
-});
-// </if>

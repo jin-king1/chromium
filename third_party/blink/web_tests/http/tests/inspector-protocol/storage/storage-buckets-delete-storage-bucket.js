@@ -1,4 +1,4 @@
-(async function (testRunner) {
+(async function(/** @type {import('test_runner').TestRunner} */ testRunner) {
   const { dp, session } = await testRunner.startBlank(
     `Tests that deleting a bucket works correctly\n`);
   await dp.Page.enable();
@@ -8,7 +8,7 @@
 
   const frameId = (await dp.Page.getResourceTree()).result.frameTree.frame.id;
   const storageKey =
-    (await dp.Storage.getStorageKeyForFrame({ frameId })).result.storageKey;
+      (await dp.Storage.getStorageKey({frameId})).result.storageKey;
   await dp.Storage.setStorageBucketTracking({ storageKey, enable: true });
   const bucketName = 'test-bucket';
 

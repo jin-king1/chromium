@@ -5,6 +5,7 @@
 #include "ash/system/network/network_tray_view.h"
 
 #include <memory>
+#include <vector>
 
 #include "ash/shelf/shelf.h"
 #include "ash/shell.h"
@@ -16,11 +17,14 @@
 #include "ash/test/ash_test_base.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/test/bind.h"
 #include "chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom.h"
 #include "chromeos/ash/services/network_config/public/cpp/cros_network_config_test_helper.h"
 #include "chromeos/services/network_config/public/cpp/fake_cros_network_config.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/image_view.h"
 #include "ui/views/widget/widget.h"
 
 namespace ash {
@@ -29,6 +33,7 @@ namespace {
 
 using ::chromeos::network_config::FakeCrosNetworkConfig;
 using ::chromeos::network_config::mojom::ConnectionStateType;
+using ::chromeos::network_config::mojom::DeviceStatePropertiesPtr;
 using ::chromeos::network_config::mojom::NetworkStatePropertiesPtr;
 using ::chromeos::network_config::mojom::NetworkType;
 using ::chromeos::network_config::mojom::PortalState;
@@ -51,7 +56,15 @@ class NetworkTrayViewTest : public AshTestBase {
         ->system_tray_model()
         ->network_state_model()
         ->ConfigureRemoteForTesting(cros_network()->GetPendingRemote());
-    base::RunLoop().RunUntilIdle();
+    // Ensure the test remote receives the observer registration above.
+    base::RunLoop run_loop;
+    Shell::Get()
+        ->system_tray_model()
+        ->network_state_model()
+        ->cros_network_config()
+        ->GetDeviceStateList(base::BindLambdaForTesting(
+            [&](std::vector<DeviceStatePropertiesPtr>) { run_loop.Quit(); }));
+    run_loop.Run();
 
     std::unique_ptr<NetworkTrayView> network_tray_view =
         std::make_unique<NetworkTrayView>(GetPrimaryShelf(),
@@ -63,6 +76,7 @@ class NetworkTrayViewTest : public AshTestBase {
   }
 
   void TearDown() override {
+    network_tray_view_ = nullptr;
     widget_.reset();
 
     AshTestBase::TearDown();
@@ -70,12 +84,16 @@ class NetworkTrayViewTest : public AshTestBase {
 
   FakeCrosNetworkConfig* cros_network() { return cros_network_.get(); }
 
-  std::u16string get_tooltip() { return network_tray_view_->tooltip_; }
+  NetworkTrayView* network_tray_view() { return network_tray_view_; }
+
+  const std::u16string get_tooltip() {
+    return network_tray_view_->GetRenderedTooltipText(gfx::Point());
+  }
 
  private:
   std::unique_ptr<FakeCrosNetworkConfig> cros_network_;
   std::unique_ptr<views::Widget> widget_;
-  raw_ptr<NetworkTrayView, ExperimentalAsh> network_tray_view_;
+  raw_ptr<NetworkTrayView> network_tray_view_;
 };
 
 TEST_F(NetworkTrayViewTest, NetworkIconTooltip) {
@@ -100,6 +118,68 @@ TEST_F(NetworkTrayViewTest, NetworkIconTooltip) {
   EXPECT_EQ(l10n_util::GetStringFUTF16(IDS_ASH_STATUS_TRAY_NETWORK_CONNECTED,
                                        u"wifi"),
             get_tooltip());
+}
+
+TEST_F(NetworkTrayViewTest, AccessibleDescription) {
+  auto cellular =
+      CrosNetworkConfigTestHelper::CreateStandaloneNetworkProperties(
+          "cellular", NetworkType::kCellular, ConnectionStateType::kConnected,
+          50);
+
+  auto cell = mojo::Clone(cellular);
+  cros_network()->AddNetworkAndDevice(std::move(cell));
+
+  EXPECT_EQ(l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_NETWORK_SIGNAL_WEAK),
+            network_tray_view()->GetViewAccessibility().GetCachedDescription());
+
+  cellular->type_state->get_cellular()->signal_strength = 150;
+
+  cros_network()->UpdateNetworkProperties(std::move(cellular));
+
+  EXPECT_EQ(
+      l10n_util::GetStringUTF16(IDS_ASH_STATUS_TRAY_NETWORK_SIGNAL_STRONG),
+      network_tray_view()->GetViewAccessibility().GetCachedDescription());
+}
+
+// Regression test for http://b/284983806
+TEST_F(NetworkTrayViewTest, EthernetVpnIconIsNotClipped) {
+  // Set up an Ethernet network with a VPN.
+  cros_network()->AddNetworkAndDevice(
+      CrosNetworkConfigTestHelper::CreateStandaloneNetworkProperties(
+          "ethernet", NetworkType::kEthernet, ConnectionStateType::kConnected));
+  cros_network()->AddNetworkAndDevice(
+      CrosNetworkConfigTestHelper::CreateStandaloneNetworkProperties(
+          "vpn", NetworkType::kVPN, ConnectionStateType::kConnected));
+
+  // The view's preferred size is as least as large as the image (so it doesn't
+  // clip).
+  gfx::Size view_size = network_tray_view()->CalculatePreferredSize({});
+  gfx::Size image_size = network_tray_view()->image_view()->GetImage().size();
+  EXPECT_GE(view_size.width(), image_size.width());
+  EXPECT_GE(view_size.height(), image_size.height());
+}
+
+TEST_F(NetworkTrayViewTest, AccessibleProperties) {
+  ui::AXNodeData data;
+
+  // Initial Accessible Properties.
+  network_tray_view()->GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(data.role, ax::mojom::Role::kImage);
+  EXPECT_EQ(data.GetString16Attribute(ax::mojom::StringAttribute::kName),
+            l10n_util::GetStringUTF16(
+                IDS_ASH_STATUS_TRAY_NETWORK_NOT_CONNECTED_A11Y));
+
+  // Set up an Ethernet network.
+  cros_network()->AddNetworkAndDevice(
+      CrosNetworkConfigTestHelper::CreateStandaloneNetworkProperties(
+          "ethernet", NetworkType::kEthernet, ConnectionStateType::kConnected));
+  data = ui::AXNodeData();
+  network_tray_view()->GetViewAccessibility().GetAccessibleNodeData(&data);
+  EXPECT_EQ(
+      data.GetString16Attribute(ax::mojom::StringAttribute::kName),
+      l10n_util::GetStringFUTF16(IDS_ASH_STATUS_TRAY_NETWORK_CONNECTED,
+                                 /* network_name= */ l10n_util::GetStringUTF16(
+                                     IDS_ASH_STATUS_TRAY_ETHERNET)));
 }
 
 }  // namespace ash

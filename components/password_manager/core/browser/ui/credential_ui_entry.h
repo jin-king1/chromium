@@ -5,16 +5,20 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_UI_CREDENTIAL_UI_ENTRY_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_UI_CREDENTIAL_UI_ENTRY_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/types/strong_alias.h"
 #include "components/password_manager/core/browser/import/csv_password.h"
 #include "components/password_manager/core/browser/password_form.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 
 namespace password_manager {
+
+class PasskeyCredential;
 
 using DisplayName = base::StrongAlias<class DisplayNameTag, std::string>;
 using SignonRealm = base::StrongAlias<class SignonRealmTag, std::string>;
@@ -58,7 +62,7 @@ struct CredentialFacet {
 // Simple struct that represents an entry inside Settings UI. Allows implicit
 // construction from PasswordForm for convenience. A single entry might
 // correspond to multiple PasswordForms.
-// TODO(crbug.com/1374029): Use class here instead of struct.
+// TODO(crbug.com/40872079): Use class here instead of struct.
 struct CredentialUIEntry {
   // Structure which represents affiliated domain and can be used by the UI to
   // display affiliated domains as links.
@@ -72,6 +76,22 @@ struct CredentialUIEntry {
 
     // signon_realm of a corresponding PasswordForm.
     std::string signon_realm;
+
+    friend bool operator==(const DomainInfo& lhs,
+                           const DomainInfo& rhs) = default;
+
+    friend auto operator<=>(const DomainInfo& lhs,
+                            const DomainInfo& rhs) = default;
+  };
+
+  // Structure which represents a recovery password for a password changed in a
+  // password change flow.
+  struct BackupPasswordInfo {
+    // The value of the backup password.
+    std::u16string value;
+
+    // The timestamp of when the backup password was set.
+    base::Time creation_timestamp;
   };
 
   struct Less {
@@ -82,6 +102,9 @@ struct CredentialUIEntry {
   CredentialUIEntry();
   explicit CredentialUIEntry(const PasswordForm& form);
   explicit CredentialUIEntry(const std::vector<PasswordForm>& forms);
+  explicit CredentialUIEntry(StoredCredential cred);
+  explicit CredentialUIEntry(std::vector<StoredCredential> creds);
+  explicit CredentialUIEntry(const PasskeyCredential& passkey);
   explicit CredentialUIEntry(
       const CSVPassword& csv_password,
       PasswordForm::Store to_store = PasswordForm::Store::kProfileStore);
@@ -92,6 +115,11 @@ struct CredentialUIEntry {
   CredentialUIEntry& operator=(const CredentialUIEntry& other);
   CredentialUIEntry& operator=(CredentialUIEntry&& other);
 
+  // If this is a passkey, a non empty credential id as a byte string. Empty
+  // otherwise.
+  // https://w3c.github.io/webauthn/#credential-id
+  std::vector<uint8_t> passkey_credential_id;
+
   // List of facets represented by this entry which contains the display name,
   // url and sign-on realm of a credential.
   std::vector<CredentialFacet> facets;
@@ -99,11 +127,24 @@ struct CredentialUIEntry {
   // The current username.
   std::u16string username;
 
+  // The user's display name, if this is a passkey. Always empty otherwise.
+  std::u16string user_display_name;
+
   // The current password.
   std::u16string password;
 
+  // Recovery password for automatic password change.
+  std::optional<BackupPasswordInfo> backup_password;
+
   // The origin of identity provider used for federated login.
-  url::Origin federation_origin;
+  url::SchemeHostPort federation_origin;
+
+  // The creation time of the credential. It can be `std::nullopt` in some
+  // cases, e.g. when the field is not set during credential import.
+  // TODO(crbug.com/501020786): Credential import / export should probably
+  // operate on `StoredCredential`. Modify comment back if it's just used for
+  // passkeys in settings UI.
+  std::optional<base::Time> creation_time;
 
   // Indicates the stores where the credential is stored.
   base::flat_set<PasswordForm::Store> stored_in;
@@ -124,6 +165,15 @@ struct CredentialUIEntry {
   // Indicates when the credential was last used by the user to login to the
   // site. Defaults to |date_created|.
   base::Time last_used_time;
+
+  // Indicates that the credential was marked for deletion (e.g. by a website)
+  // and should be marked as such in management surfaces. Used for passkeys
+  // only.
+  bool hidden = false;
+
+  // The relying party identifier. Used for passkeys only, empty otherwise.
+  // https://w3c.github.io/webauthn/#relying-party-identifier
+  std::string rp_id;
 
   // Information about password insecurities.
   bool IsLeaked() const;
@@ -152,7 +202,7 @@ struct CredentialUIEntry {
 
   // Returns the URL which allows to change the password of compromised
   // credentials. Can be null for Android credentials.
-  absl::optional<GURL> GetChangePasswordURL() const;
+  std::optional<GURL> GetChangePasswordURL() const;
 
   // Returns a vector of pairs, where the first element is formatted string
   // representing website or an Android application and a second parameter is a
@@ -161,8 +211,16 @@ struct CredentialUIEntry {
   std::vector<DomainInfo> GetAffiliatedDomains() const;
 };
 
+// Creates key for sorting password or password exception entries. The key is
+// eTLD+1 followed by the reversed list of domains (e.g.
+// secure.accounts.example.com => example.com.com.example.accounts.secure) and
+// the scheme. If |form| is not blocklisted, username, password and federation
+// are appended to the key. If not, no further information is added. For Android
+// credentials the canocial spec is included.
+// TODO(vsemeniuk): find a better name for this function.
+std::string CreateSortKey(const CredentialUIEntry& credential);
+
 bool operator==(const CredentialUIEntry& lhs, const CredentialUIEntry& rhs);
-bool operator!=(const CredentialUIEntry& lhs, const CredentialUIEntry& rhs);
 bool operator<(const CredentialUIEntry& lhs, const CredentialUIEntry& rhs);
 
 // Returns true when the credential is either leaked or phished.

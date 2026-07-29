@@ -4,17 +4,17 @@
 
 #import "ios/web/content/js_messaging/content_java_script_feature_manager.h"
 
+#import "base/feature_list.h"
 #import "base/ios/ios_util.h"
+#import "base/logging.h"
 #import "base/strings/string_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/js_injection/browser/js_communication_host.h"
+#import "components/js_injection/common/enum.mojom.h"
 #import "content/public/browser/render_frame_host.h"
 #import "ios/web/public/js_messaging/java_script_feature.h"
 #import "ios/web/public/js_messaging/java_script_feature_util.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+#import "ios/web/public/js_messaging/script_message.h"
 
 namespace web {
 
@@ -28,6 +28,9 @@ std::u16string MakeInjectableIntoMainFrameOnly(const std::u16string& script) {
 
 }  // namespace
 
+BASE_FEATURE(kContentEnableInjectedFeatureScripts,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 ContentJavaScriptFeatureManager::ContentJavaScriptFeatureManager(
     std::vector<JavaScriptFeature*> features) {
   for (JavaScriptFeature* feature : features) {
@@ -40,7 +43,9 @@ ContentJavaScriptFeatureManager::~ContentJavaScriptFeatureManager() {}
 void ContentJavaScriptFeatureManager::AddDocumentStartScripts(
     js_injection::JsCommunicationHost* js_communication_host) {
   for (std::u16string user_script : document_start_scripts_) {
-    js_communication_host->AddDocumentStartJavaScript(user_script, {"*"});
+    js_communication_host->AddPersistentJavaScript(
+        user_script, js_injection::mojom::DocumentInjectionTime::kDocumentStart,
+        {"*"}, 0);
   }
 }
 
@@ -54,11 +59,15 @@ void ContentJavaScriptFeatureManager::InjectDocumentEndScripts(
 
 bool ContentJavaScriptFeatureManager::HasFeature(
     const JavaScriptFeature* feature) const {
-  return features_.find(feature) != features_.end();
+  return features_.contains(feature);
 }
 
 void ContentJavaScriptFeatureManager::AddFeature(
     const JavaScriptFeature* feature) {
+  if (!base::FeatureList::IsEnabled(kContentEnableInjectedFeatureScripts)) {
+    return;
+  }
+
   if (HasFeature(feature)) {
     return;
   }
@@ -91,7 +100,30 @@ void ContentJavaScriptFeatureManager::AddFeature(
     }
   }
 
-  // TODO(crbug.com/1423527): Add mapping for script message handlers.
+  std::optional<std::string> handler_name =
+      feature->GetScriptMessageHandlerName();
+  if (handler_name) {
+    CHECK(!script_message_features_.count(*handler_name));
+    script_message_features_[*handler_name] = feature->AsWeakPtr();
+  }
+}
+
+void ContentJavaScriptFeatureManager::ScriptMessageReceived(
+    const ScriptMessage& script_message,
+    std::string handler_name,
+    WebState* web_state) {
+  auto it = script_message_features_.find(handler_name);
+  if (it == script_message_features_.end()) {
+    LOG(ERROR) << "No message handler for " << handler_name;
+    return;
+  }
+
+  base::WeakPtr<JavaScriptFeature> feature = it->second;
+  if (!feature) {
+    return;
+  }
+
+  feature->ScriptMessageReceived(web_state, script_message);
 }
 
 }  // namespace web

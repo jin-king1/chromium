@@ -5,10 +5,9 @@
 #include "chrome/browser/ui/views/payments/payment_handler_modal_dialog_manager_delegate.h"
 
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
-#include "components/web_modal/web_contents_modal_dialog_manager_delegate.h"
 #include "content/public/browser/web_contents.h"
 
 namespace payments {
@@ -32,20 +31,24 @@ void PaymentHandlerModalDialogManagerDelegate::SetWebContentsBlocked(
 }
 
 web_modal::WebContentsModalDialogHost*
-PaymentHandlerModalDialogManagerDelegate::GetWebContentsModalDialogHost() {
-  if (!host_web_contents_)
+PaymentHandlerModalDialogManagerDelegate::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
+  if (!host_web_contents_) {
     return nullptr;
+  }
 
-  auto* dialog_manager =
-      static_cast<web_modal::WebContentsModalDialogManagerDelegate*>(
-          chrome::FindBrowserWithWebContents(host_web_contents_.get()));
-  if (!dialog_manager)
+  tabs::TabInterface* tab =
+      tabs::TabInterface::MaybeGetFromContents(host_web_contents_.get());
+  if (!tab) {
     return nullptr;
+  }
+
+  BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
 
   // Borrow the browser's WebContentModalDialogHost to display modal dialogs
   // triggered by the payment handler's web view (e.g. WebAuthn and Secure
   // Payment Confirmation dialogs).
-  return dialog_manager->GetWebContentsModalDialogHost();
+  return browser->GetWebContentsModalDialogHostForTab(tab);
 }
 
 bool PaymentHandlerModalDialogManagerDelegate::IsWebContentsVisible(

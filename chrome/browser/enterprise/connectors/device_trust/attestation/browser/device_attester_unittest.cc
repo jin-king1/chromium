@@ -4,17 +4,18 @@
 
 #include "chrome/browser/enterprise/connectors/device_trust/attestation/browser/device_attester.h"
 
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/browser/mock_device_trust_key_manager.h"
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/core/persistence/scoped_key_persistence_delegate_factory.h"
 #include "components/enterprise/browser/controller/fake_browser_dm_token_storage.h"
+#include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/mock_cloud_policy_store.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 using testing::_;
-using testing::Invoke;
 
 namespace enterprise_connectors {
 
@@ -38,7 +39,7 @@ class DeviceAttesterTest : public testing::Test {
     fake_dm_token_storage_.SetClientId(kFakeDeviceId);
     test_key_pair_ =
         persistence_delegate_factory_.CreateKeyPersistenceDelegate()
-            ->LoadKeyPair();
+            ->LoadKeyPair(KeyStorageType::kPermanent, nullptr);
     levels_.insert(DTCPolicyLevel::kBrowser);
   }
 
@@ -52,9 +53,8 @@ class DeviceAttesterTest : public testing::Test {
   void SetupPubkeyExport(bool can_export_pubkey = true) {
     EXPECT_CALL(mock_key_manager_, ExportPublicKeyAsync(_))
         .WillOnce(
-            Invoke([&, can_export_pubkey](
-                       base::OnceCallback<void(absl::optional<std::string>)>
-                           callback) {
+            [&, can_export_pubkey](
+                base::OnceCallback<void(std::optional<std::string>)> callback) {
               if (can_export_pubkey) {
                 auto public_key_info =
                     test_key_pair_->key()->GetSubjectPublicKeyInfo();
@@ -63,35 +63,37 @@ class DeviceAttesterTest : public testing::Test {
                 public_key_ = public_key;
                 std::move(callback).Run(public_key);
               } else {
-                std::move(callback).Run(absl::nullopt);
+                std::move(callback).Run(std::nullopt);
               }
-            }));
+            });
   }
 
   void SetupSignature(bool can_sign = true) {
     EXPECT_CALL(mock_key_manager_, SignStringAsync(_, _))
-        .WillOnce(Invoke(
-            [&, can_sign](const std::string& str,
-                          base::OnceCallback<void(
-                              absl::optional<std::vector<uint8_t>>)> callback) {
+        .WillOnce(
+            [&, can_sign](
+                const std::string& str,
+                base::OnceCallback<void(std::optional<std::vector<uint8_t>>)>
+                    callback) {
               if (can_sign) {
-                signature = test_key_pair_->key()->SignSlowly(
-                    base::as_bytes(base::make_span(str)));
+                signature =
+                    test_key_pair_->key()->SignSlowly(base::as_byte_span(str));
                 std::move(callback).Run(signature);
               } else {
-                std::move(callback).Run(absl::nullopt);
+                std::move(callback).Run(std::nullopt);
               }
-            }));
+            });
   }
 
   base::test::SingleThreadTaskEnvironment task_environment_;
   test::ScopedKeyPersistenceDelegateFactory persistence_delegate_factory_;
-  std::unique_ptr<SigningKeyPair> test_key_pair_;
-  absl::optional<std::vector<uint8_t>> signature;
+  scoped_refptr<SigningKeyPair> test_key_pair_;
+  std::optional<std::vector<uint8_t>> signature;
   std::string public_key_;
   testing::StrictMock<test::MockDeviceTrustKeyManager> mock_key_manager_;
   policy::FakeBrowserDMTokenStorage fake_dm_token_storage_;
-  policy::MockCloudPolicyStore mock_browser_cloud_policy_store_;
+  policy::MockCloudPolicyStore mock_browser_cloud_policy_store_{
+      policy::dm_protocol::kChromeMachineLevelUserCloudPolicyType};
   DeviceAttester device_attester_;
   base::test::TestFuture<void> future_;
   KeyInfo key_info_;

@@ -13,7 +13,6 @@
 #include "chrome/browser/ash/login/signin/oauth2_login_manager.h"
 #include "chrome/browser/ash/login/signin/oauth2_login_manager_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/url_constants.h"
 #include "components/google/core/common/google_util.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/browser_thread.h"
@@ -166,7 +165,6 @@ bool ShouldDelayRequestForProfile(Profile* profile) {
   }
 
   NOTREACHED();
-  return false;
 }
 
 bool ShouldDelayRequestForWebContents(content::WebContents* web_contents) {

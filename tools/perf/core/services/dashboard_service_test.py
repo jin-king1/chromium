@@ -2,11 +2,18 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import sys
 import unittest
+from unittest import mock
 
-# TODO(crbug.com/996778): Figure out how to get httplib2 hermetically.
+from pathlib import Path
+
+# Add tools/perf to sys.path.
+FILE_PATH = Path(__file__).resolve()
+sys.path.append(str(FILE_PATH.parents[2]))
+
+# TODO(crbug.com/40641687): Figure out how to get httplib2 hermetically.
 import httplib2  # pylint: disable=import-error
-import mock
 
 from core.services import dashboard_service
 from core.services import request
@@ -111,8 +118,8 @@ class TestDashboardApi(unittest.TestCase):
       del kwargs  # Unused.
       self.assertEqual(endpoint, dashboard_service.SERVICE_URL + '/api/alerts')
       self.assertEqual(method, 'POST')
-      self.assertDictContainsSubset(
-          {'test_suite': 'loading.mobile', 'limit': 1000}, params)
+      self.assertEqual('loading.mobile', params['test_suite'])
+      self.assertEqual(1000, params['limit'])
       cursor = params.get('cursor', 'page1')
       return pages[cursor]
 
@@ -122,3 +129,7 @@ class TestDashboardApi(unittest.TestCase):
         for resp in dashboard_service.IterAlerts(test_suite='loading.mobile')]
     self.assertEqual(response, ['foo', 'bar'])
     self.assertEqual(self.mock_request.call_count, 2)
+
+
+if __name__ == '__main__':
+  unittest.main()

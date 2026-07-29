@@ -38,10 +38,6 @@
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 @class NSCalendar;
 @class NSDateFormatter;
 @class NSLocale;
@@ -56,7 +52,7 @@ class PLATFORM_EXPORT LocaleMac : public Locale {
 
   const Vector<String>& WeekDayShortLabels() override;
   unsigned FirstDayOfWeek() override;
-  bool IsRTL() override;
+  bool IsRtl() override;
 
   String DateFormat() override;
   String MonthFormat() override;
@@ -69,7 +65,7 @@ class PLATFORM_EXPORT LocaleMac : public Locale {
   const Vector<String>& ShortMonthLabels() override;
   const Vector<String>& StandAloneMonthLabels() override;
   const Vector<String>& ShortStandAloneMonthLabels() override;
-  const Vector<String>& TimeAMPMLabels() override;
+  const Vector<String>& TimeAmPmLabels() override;
 
  private:
   explicit LocaleMac(NSLocale*);

@@ -19,7 +19,7 @@ GLTexturePassthroughAndroidImageRepresentation::
     : GLTexturePassthroughImageRepresentation(manager, backing, tracker),
       egl_image_(std::move(egl_image)),
       texture_(std::move(texture)) {
-  // TODO(https://crbug.com/1172769): Remove this CHECK.
+  // TODO(crbug.com/40166788): Remove this CHECK.
   CHECK(texture_);
 }
 
@@ -32,8 +32,8 @@ GLTexturePassthroughAndroidImageRepresentation::
 
 const scoped_refptr<gles2::TexturePassthrough>&
 GLTexturePassthroughAndroidImageRepresentation::GetTexturePassthrough(
-    int plane_index) {
-  DCHECK_EQ(plane_index, 0);
+    size_t plane_index) {
+  DCHECK_EQ(plane_index, 0u);
   return texture_;
 }
 

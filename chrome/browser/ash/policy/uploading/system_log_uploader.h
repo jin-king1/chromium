@@ -8,19 +8,24 @@
 #include <stdint.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/policy/uploading/upload_job.h"
-#include "chrome/browser/ash/settings/cros_settings.h"
+#include "chromeos/ash/components/settings/cros_settings.h"
 #include "components/policy/core/common/remote_commands/remote_command_job.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "url/gurl.h"
+
+class GURL;
+class PrefService;
 
 namespace base {
 class SequencedTaskRunner;
@@ -70,7 +75,7 @@ class SystemLogUploader : public UploadJob::Delegate {
     using ZippedLogUploadCallback =
         base::OnceCallback<void(std::string zipped_system_logs)>;
 
-    virtual ~Delegate() {}
+    virtual ~Delegate() = default;
 
     // Returns current policy dump in JSON format.
     virtual std::string GetPolicyAsJSON() = 0;
@@ -89,11 +94,12 @@ class SystemLogUploader : public UploadJob::Delegate {
                                ZippedLogUploadCallback upload_callback) = 0;
   };
 
-  // Constructor. Callers can inject their own Delegate. A nullptr can be passed
-  // for |syslog_delegate| to use the default implementation.
-  SystemLogUploader(
-      std::unique_ptr<Delegate> syslog_delegate,
-      const scoped_refptr<base::SequencedTaskRunner>& task_runner);
+  // `local_state` must be non-null and must outlive `this`.
+  // `syslog_delegate` must be non-null.
+  SystemLogUploader(PrefService* local_state,
+                    std::unique_ptr<Delegate> syslog_delegate,
+                    const scoped_refptr<base::SequencedTaskRunner>& task_runner,
+                    const GURL& upload_url);
 
   SystemLogUploader(const SystemLogUploader&) = delete;
   SystemLogUploader& operator=(const SystemLogUploader&) = delete;
@@ -128,25 +134,26 @@ class SystemLogUploader : public UploadJob::Delegate {
   void RefreshUploadSettings();
 
   // Starts the system log loading process.
-  void StartLogUpload(
-      absl::optional<RemoteCommandJob::UniqueIDType> command_id);
+  void StartLogUpload(std::optional<RemoteCommandJob::UniqueIDType> command_id);
 
   // The callback is invoked by the Delegate if system logs have been loaded
   // from disk, adds policy dump and calls UploadSystemLogs.
   void OnSystemLogsLoaded(
-      absl::optional<RemoteCommandJob::UniqueIDType> command_id,
+      std::optional<RemoteCommandJob::UniqueIDType> command_id,
       std::unique_ptr<SystemLogs> system_logs);
 
   // Uploads zipped system logs.
   void UploadZippedSystemLogs(
-      absl::optional<RemoteCommandJob::UniqueIDType> command_id,
+      std::optional<RemoteCommandJob::UniqueIDType> command_id,
       std::string zipped_system_logs);
 
   // Helper method that figures out when the next system log upload should
   // be scheduled.
   void ScheduleNextSystemLogUpload(
       base::TimeDelta frequency,
-      absl::optional<RemoteCommandJob::UniqueIDType> command_id);
+      std::optional<RemoteCommandJob::UniqueIDType> command_id);
+
+  const raw_ref<PrefService> local_state_;
 
   // The number of consequent retries after the failed uploads.
   int retry_count_;
@@ -170,6 +177,9 @@ class SystemLogUploader : public UploadJob::Delegate {
   // CrosSettings can switch to an unstrusted state temporarily, and we want to
   // use the last-known trusted values.
   bool upload_enabled_;
+
+  // The URL to upload system logs to.
+  const GURL upload_url_;
 
   // Subscription for callback on changes in system log upload settings.
   base::CallbackListSubscription upload_enabled_subscription_;

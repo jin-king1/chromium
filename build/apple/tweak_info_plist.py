@@ -31,12 +31,30 @@ import tempfile
 
 TOP = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 
+assert sys.version_info.major >= 3, "Requires python 3.0 or higher."
 
-def _ConvertPlist(source_plist, output_plist, fmt):
-  """Convert |source_plist| to |fmt| and save as |output_plist|."""
-  assert sys.version_info.major == 2, "Use plistlib directly in Python 3"
-  return subprocess.call(
-      ['plutil', '-convert', fmt, '-o', output_plist, source_plist])
+
+def _WritePlistIfChanged(plist, output_path, fmt):
+  """Write a plist file.
+
+  Write `plist` to `output_path` in `fmt`. If `output_path` already exist,
+  the file is only overwritten if its content would be different. This allows
+  ninja to consider all dependent step to be considered as unnecessary (see
+  "restat" in ninja documentation).
+  """
+  if os.path.isfile(output_path):
+    with open(output_path, 'rb') as f:
+      try:
+        exising_plist = plistlib.load(f)
+        if exising_plist == plist:
+          return
+      except plistlib.InvalidFileException:
+        # If the file cannot be parsed by plistlib, then overwrite it.
+        pass
+
+  with open(output_path, 'wb') as f:
+    plist_format = {'binary1': plistlib.FMT_BINARY, 'xml1': plistlib.FMT_XML}
+    plistlib.dump(plist, f, fmt=plist_format[fmt])
 
 
 def _GetOutput(args):
@@ -171,6 +189,12 @@ def _RemoveBreakpadKeys(plist):
               'BreakpadSendAndExit', 'BreakpadSkipConfirm')
 
 
+def _IsValidBundleId(bundle_identifier):
+  # Based on apple developer documentation, see
+  # https://developer.apple.com/documentation/bundleresources/information-property-list/cfbundleidentifier
+  return re.match(r'^[0-9a-zA-Z-.]+$', bundle_identifier) is not None
+
+
 def _TagSuffixes():
   # Keep this list sorted in the order that tag suffix components are to
   # appear in a tag value. That is to say, it should be sorted per ASCII.
@@ -230,12 +254,51 @@ def _RemoveGTMKeys(plist):
 
 def _AddPrivilegedHelperId(plist, privileged_helper_id):
   plist['SMPrivilegedExecutables'] = {
-      privileged_helper_id: 'identifier ' + privileged_helper_id
+      privileged_helper_id: f'identifier "{privileged_helper_id}"'
   }
 
 
 def _RemovePrivilegedHelperId(plist):
   _RemoveKeys(plist, 'SMPrivilegedExecutables')
+
+
+def _SetDirectLaunchUrlScheme(plist, bundle_identifier):
+  """Sets the direct launch URL scheme in the plist."""
+  if not bundle_identifier:
+    return
+
+  scheme = None
+  if bundle_identifier == 'com.google.Chrome':
+    scheme = 'google-chrome'
+    # This logic should match shell_integration::GetDirectLaunchUrlScheme()
+    # in chrome/browser/shell_integration_mac.mm.
+    # Note: chrome/installer/mac/signing/modification.py handles removing
+    # this scheme for non-stable channels during signing.
+  elif bundle_identifier == 'org.chromium.Chromium':
+    scheme = 'chromium'
+
+  url_types = plist.get('CFBundleURLTypes')
+  if not url_types:
+    return
+
+  placeholder = '%DIRECT_LAUNCH_URL_SCHEME%'
+  new_url_types = []
+
+  for url_type in url_types:
+    schemes = url_type.get('CFBundleURLSchemes')
+    if schemes and placeholder in schemes:
+      if len(schemes) != 1:
+        raise Exception(f'Placeholder {placeholder} must be the only scheme.')
+
+      if scheme is not None:
+        schemes[0] = scheme
+        new_url_types.append(url_type)
+      # Else: scheme is None, so we drop this url_type.
+    else:
+      # This url_type does not contain the placeholder, so keep it as is.
+      new_url_types.append(url_type)
+
+  plist['CFBundleURLTypes'] = new_url_types
 
 
 def Main(argv):
@@ -289,7 +352,7 @@ def Main(argv):
                     default=None,
                     help='The bundle id of the binary')
   parser.add_option('--platform',
-                    choices=('ios', 'mac'),
+                    choices=('ios', 'mac', 'watchos'),
                     default='mac',
                     help='The target platform of the bundle')
   parser.add_option('--add-gtm-metadata',
@@ -331,17 +394,9 @@ def Main(argv):
     print('No --plist specified.', file=sys.stderr)
     return 1
 
-  # Read the plist into its parsed format. Convert the file to 'xml1' as
-  # plistlib only supports that format in Python 2.7.
-  with tempfile.NamedTemporaryFile() as temp_info_plist:
-    if sys.version_info.major == 2:
-      retcode = _ConvertPlist(options.plist_path, temp_info_plist.name, 'xml1')
-      if retcode != 0:
-        return retcode
-      plist = plistlib.readPlist(temp_info_plist.name)
-    else:
-      with open(options.plist_path, 'rb') as f:
-        plist = plistlib.load(f)
+  # Read the plist into its parsed format.
+  with open(options.plist_path, 'rb') as f:
+    plist = plistlib.load(f)
 
   # Convert overrides.
   overrides = {}
@@ -405,6 +460,9 @@ def Main(argv):
     if options.bundle_identifier is None:
       print('Use of Keystone requires the bundle id.', file=sys.stderr)
       return 1
+    if not _IsValidBundleId(options.bundle_identifier):
+      print(f'Invalid bundle id: {options.bundle_identifier}', file=sys.stderr)
+      return 1
     _AddKeystoneKeys(plist, options.bundle_identifier,
                      options.keystone_base_tag)
   else:
@@ -422,9 +480,15 @@ def Main(argv):
 
   # Add SMPrivilegedExecutables keys.
   if options.privileged_helper_id:
+    if not _IsValidBundleId(options.privileged_helper_id):
+      print(f'Invalid privileged helper id: {options.privileged_helper_id}',
+            file=sys.stderr)
+      return 1
     _AddPrivilegedHelperId(plist, options.privileged_helper_id)
   else:
     _RemovePrivilegedHelperId(plist)
+
+  _SetDirectLaunchUrlScheme(plist, options.bundle_identifier)
 
   output_path = options.plist_path
   if options.plist_output is not None:
@@ -433,17 +497,11 @@ def Main(argv):
   # Now that all keys have been mutated, rewrite the file.
   # Convert Info.plist to the format requested by the --format flag. Any
   # format would work on Mac but iOS requires specific format.
-  if sys.version_info.major == 2:
-    with tempfile.NamedTemporaryFile() as temp_info_plist:
-      plistlib.writePlist(plist, temp_info_plist.name)
-      return _ConvertPlist(temp_info_plist.name, output_path, options.format)
-  with open(output_path, 'wb') as f:
-    plist_format = {'binary1': plistlib.FMT_BINARY, 'xml1': plistlib.FMT_XML}
-    plistlib.dump(plist, f, fmt=plist_format[options.format])
+  _WritePlistIfChanged(plist, output_path, options.format)
 
 
 if __name__ == '__main__':
-  # TODO(https://crbug.com/941669): Temporary workaround until all scripts use
+  # TODO(crbug.com/40618161): Temporary workaround until all scripts use
   # python3 by default.
   if sys.version_info[0] < 3:
     os.execvp('python3', ['python3'] + sys.argv)

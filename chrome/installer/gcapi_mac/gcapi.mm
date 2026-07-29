@@ -12,9 +12,7 @@
 #include <sys/types.h>
 #include <sys/utsname.h>
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+#include "base/compiler_specific.h"
 
 namespace {
 
@@ -50,7 +48,7 @@ NSString* const kUserMasterPrefsPath =
 // Condensed from chromium's base/mac/mac_util.mm.
 bool IsMacOSVersionSupported() {
   // base::OperatingSystemVersionNumbers() at one time called Gestalt(), which
-  // was observed to be able to spawn threads (see https://crbug.com/53200).
+  // was observed to be able to spawn threads (see https://crbug.com/41201866).
   // Nowadays that function calls -[NSProcessInfo operatingSystemVersion], whose
   // current implementation does things like hit the file system, which is
   // possibly a blocking operation. Either way, it's overkill for what needs to
@@ -65,11 +63,11 @@ bool IsMacOSVersionSupported() {
   if (uname(&uname_info) != 0) {
     return false;
   }
-  if (strcmp(uname_info.sysname, "Darwin") != 0) {
+  if (UNSAFE_TODO(strcmp(uname_info.sysname, "Darwin")) != 0) {
     return false;
   }
 
-  char* dot = strchr(uname_info.release, '.');
+  char* dot = UNSAFE_TODO(strchr(uname_info.release, '.'));
   if (!dot) {
     return false;
   }
@@ -90,8 +88,8 @@ bool IsMacOSVersionSupported() {
     macos_version = 100 * (darwin_major_version - 9);
   }
 
-  // Chrome is known to work on 10.13 - 13.x.
-  return macos_version >= 1013 && macos_version < 1400;
+  // Chrome is known to work on 11.0 - 15.x.
+  return macos_version >= 1100 && macos_version < 1600;
 }
 
 // Returns the pid/gid of the logged-in user, even if getuid() claims that the
@@ -464,9 +462,9 @@ int InstallGoogleChrome(const char* source_path,
     }
 
     BOOL valid_brand_code =
-        brand_code && strlen(brand_code) == 4 && isbrandchar(brand_code[0]) &&
-        isbrandchar(brand_code[1]) && isbrandchar(brand_code[2]) &&
-        isbrandchar(brand_code[3]);
+        UNSAFE_TODO(brand_code && strlen(brand_code) == 4 &&
+                    isbrandchar(brand_code[0]) && isbrandchar(brand_code[1]) &&
+                    isbrandchar(brand_code[2]) && isbrandchar(brand_code[3]));
 
     if (valid_brand_code) {
       WriteBrandCode(brand_code, user);

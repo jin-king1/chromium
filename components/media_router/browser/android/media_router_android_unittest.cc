@@ -2,21 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "components/media_router/browser/android/media_router_android.h"
+
 #include <memory>
 
 #include "base/android/jni_android.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/mock_callback.h"
-#include "components/media_router/browser/android/media_router_android.h"
 #include "components/media_router/browser/android/media_router_android_bridge.h"
-#include "components/media_router/browser/android/test_jni_headers/TestMediaRouterClient_jni.h"
 #include "components/media_router/browser/test/test_helper.h"
 #include "content/public/browser/presentation_service_delegate.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/origin.h"
+
+// Must come after all headers that specialize FromJniType() / ToJniType().
+#include "components/media_router/browser/android/test_jni_headers/TestMediaRouterClient_jni.h"
 
 using blink::mojom::PresentationConnectionState;
 using testing::_;
@@ -30,25 +33,37 @@ class MockMediaRouterAndroidBridge : public MediaRouterAndroidBridge {
   MockMediaRouterAndroidBridge() : MediaRouterAndroidBridge(nullptr) {}
   ~MockMediaRouterAndroidBridge() override = default;
 
-  MOCK_METHOD6(CreateRoute,
-               void(const MediaSource::Id&,
-                    const MediaSink::Id&,
-                    const std::string&,
-                    const url::Origin&,
-                    content::WebContents*,
-                    int));
-  MOCK_METHOD5(JoinRoute,
-               void(const MediaSource::Id&,
-                    const std::string&,
-                    const url::Origin&,
-                    content::WebContents*,
-                    int));
-  MOCK_METHOD1(TerminateRoute, void(const MediaRoute::Id&));
-  MOCK_METHOD2(SendRouteMessage,
-               void(const MediaRoute::Id&, const std::string&));
-  MOCK_METHOD1(DetachRoute, void(const MediaRoute::Id&));
-  MOCK_METHOD1(StartObservingMediaSinks, bool(const MediaSource::Id&));
-  MOCK_METHOD1(StopObservingMediaSinks, void(const MediaSource::Id&));
+  MOCK_METHOD(void,
+              CreateRoute,
+              (const MediaSource::Id&,
+               const MediaSink::Id&,
+               const std::string&,
+               const url::Origin&,
+               content::WebContents*,
+               int),
+              (override));
+  MOCK_METHOD(void,
+              JoinRoute,
+              (const MediaSource::Id&,
+               const std::string&,
+               const url::Origin&,
+               content::WebContents*,
+               int),
+              (override));
+  MOCK_METHOD(void, TerminateRoute, (const MediaRoute::Id&), (override));
+  MOCK_METHOD(void,
+              SendRouteMessage,
+              (const MediaRoute::Id&, const std::string&),
+              (override));
+  MOCK_METHOD(void, DetachRoute, (const MediaRoute::Id&), (override));
+  MOCK_METHOD(bool,
+              StartObservingMediaSinks,
+              (const MediaSource::Id&, const url::Origin&),
+              (override));
+  MOCK_METHOD(void,
+              StopObservingMediaSinks,
+              (const MediaSource::Id&),
+              (override));
 };
 
 class MediaRouterAndroidTest : public testing::Test {
@@ -87,7 +102,7 @@ TEST_F(MediaRouterAndroidTest, DetachRoute) {
       .WillOnce(Return());
 
   router_->CreateRoute("source", "sink", url::Origin(), nullptr,
-                       base::DoNothing(), base::TimeDelta(), false);
+                       base::DoNothing(), base::TimeDelta());
   router_->OnRouteCreated("route", "sink", 1, false);
 
   EXPECT_NE(nullptr, router_->FindRouteBySource("source"));
@@ -106,7 +121,7 @@ TEST_F(MediaRouterAndroidTest, OnRouteTerminated) {
           .WillOnce(Return());
 
   router_->CreateRoute("source", "sink", url::Origin(), nullptr,
-                       base::DoNothing(), base::TimeDelta(), false);
+                       base::DoNothing(), base::TimeDelta());
   router_->OnRouteCreated("route", "sink", 1, false);
 
   EXPECT_NE(nullptr, router_->FindRouteBySource("source"));
@@ -135,7 +150,7 @@ TEST_F(MediaRouterAndroidTest, OnRouteClosed) {
           .WillOnce(Return());
 
   router_->CreateRoute("source", "sink", url::Origin(), nullptr,
-                       base::DoNothing(), base::TimeDelta(), false);
+                       base::DoNothing(), base::TimeDelta());
   router_->OnRouteCreated("route", "sink", 1, false);
 
   EXPECT_NE(nullptr, router_->FindRouteBySource("source"));
@@ -143,7 +158,7 @@ TEST_F(MediaRouterAndroidTest, OnRouteClosed) {
   base::CallbackListSubscription subscription =
       router_->AddPresentationConnectionStateChangedCallback("route",
                                                              callback.Get());
-  router_->OnRouteClosed("route", absl::nullopt);
+  router_->OnRouteClosed("route", std::nullopt);
 
   EXPECT_EQ(nullptr, router_->FindRouteBySource("source"));
 }
@@ -163,7 +178,7 @@ TEST_F(MediaRouterAndroidTest, OnRouteClosedWithError) {
           .WillOnce(Return());
 
   router_->CreateRoute("source", "sink", url::Origin(), nullptr,
-                       base::DoNothing(), base::TimeDelta(), false);
+                       base::DoNothing(), base::TimeDelta());
   router_->OnRouteCreated("route", "sink", 1, false);
 
   EXPECT_NE(nullptr, router_->FindRouteBySource("source"));
@@ -188,7 +203,7 @@ TEST_F(MediaRouterAndroidTest, OnRouteMediaSourceUpdated) {
       .WillOnce(Return());
 
   router_->CreateRoute(source_id, sink_id, origin, nullptr, base::DoNothing(),
-                       base::TimeDelta(), false);
+                       base::TimeDelta());
   router_->OnRouteCreated(route_id, sink_id, 1, false);
 
   EXPECT_NE(nullptr, router_->FindRouteBySource(source_id));
@@ -201,3 +216,5 @@ TEST_F(MediaRouterAndroidTest, OnRouteMediaSourceUpdated) {
 }
 
 }  // namespace media_router
+
+DEFINE_JNI(TestMediaRouterClient)

@@ -22,28 +22,22 @@
 
 #import <Foundation/Foundation.h>
 
-#include "base/mac/bridging.h"
+#include "base/apple/bridging.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+namespace blink {
 
-namespace WTF {
-
-base::ScopedCFTypeRef<CFStringRef> StringImpl::CreateCFString() {
-  return base::ScopedCFTypeRef<CFStringRef>(
+base::apple::ScopedCFTypeRef<CFStringRef> StringImpl::CreateCFString() {
+  return base::apple::ScopedCFTypeRef<CFStringRef>(
       Is8Bit()
-          ? CFStringCreateWithBytes(
-                kCFAllocatorDefault,
-                reinterpret_cast<const UInt8*>(Characters8()), length_,
-                kCFStringEncodingISOLatin1, /*isExternalRepresentation=*/false)
-          : CFStringCreateWithCharacters(
-                kCFAllocatorDefault,
-                reinterpret_cast<const UniChar*>(Characters16()), length_));
+          ? CFStringCreateWithBytes(kCFAllocatorDefault, RawByteSpan().data(),
+                                    length_, kCFStringEncodingISOLatin1,
+                                    /*isExternalRepresentation=*/false)
+          : CFStringCreateWithCharacters(kCFAllocatorDefault,
+                                         SpanUint16().data(), length_));
 }
 
 StringImpl::operator NSString*() {
-  return base::mac::CFToNSOwnershipCast(CreateCFString().release());
+  return base::apple::CFToNSOwnershipCast(CreateCFString().release());
 }
 
-}  // namespace WTF
+}  // namespace blink

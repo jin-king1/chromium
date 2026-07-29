@@ -6,31 +6,32 @@
 
 namespace optimization_guide {
 
-const base::FilePath::CharType kUnindexedHintsFileName[] =
-    FILE_PATH_LITERAL("optimization-hints.pb");
 
-const char kRulesetFormatVersionString[] = "1.0.0";
+const base::FilePath::CharType kOptimizationGuideModelStoreDirPrefix[] =
+    FILE_PATH_LITERAL("optimization_guide_model_store");
 
-const char kOptimizationGuideServiceGetHintsDefaultURL[] =
-    "https://optimizationguide-pa.googleapis.com/v1:GetHints";
+const char kOptimizationGuideModelExecutionDebugLogsHeaderKey[] =
+    "X-Model-Execution-Debug-Logs";
 
-const char kOptimizationGuideServiceGetModelsDefaultURL[] =
-    "https://optimizationguide-pa.googleapis.com/v1:GetModels";
+const base::FilePath::CharType kWeightsFile[] =
+    FILE_PATH_LITERAL("weights.bin");
 
-const char kLoadedHintLocalHistogramString[] =
-    "OptimizationGuide.LoadedHint.Result";
+const base::FilePath::CharType kWeightCacheFile[] =
+    FILE_PATH_LITERAL("cache.bin");
 
-const base::FilePath::CharType kOptimizationGuideHintStore[] =
-    FILE_PATH_LITERAL("optimization_guide_hint_cache_store");
+const base::FilePath::CharType kEncoderCacheFile[] =
+    FILE_PATH_LITERAL("encoder_cache.bin");
 
-const base::FilePath::CharType
-    kOptimizationGuidePredictionModelMetadataStore[] =
-        FILE_PATH_LITERAL("optimization_guide_model_metadata_store");
+const base::FilePath::CharType kAdapterCacheFile[] =
+    FILE_PATH_LITERAL("adapter_cache.bin");
 
-const base::FilePath::CharType kOptimizationGuidePredictionModelDownloads[] =
-    FILE_PATH_LITERAL("optimization_guide_prediction_model_downloads");
+const base::FilePath::CharType kProgramCacheFile[] =
+    FILE_PATH_LITERAL("program_cache.bin");
 
-const base::FilePath::CharType kPageEntitiesMetadataStore[] =
-    FILE_PATH_LITERAL("page_content_annotations_page_entities_metadata_store");
+const base::FilePath::CharType kOnDeviceModelExecutionConfigFile[] =
+    FILE_PATH_LITERAL("on_device_model_execution_config.pb");
+
+const base::FilePath::CharType kOnDeviceModelAdaptationWeightsFile[] =
+    FILE_PATH_LITERAL("adaptation_weights.bin");
 
 }  // namespace optimization_guide

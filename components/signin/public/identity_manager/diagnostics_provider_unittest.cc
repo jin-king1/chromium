@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "components/signin/internal/identity_manager/diagnostics_provider_impl.h"
-
 #include "base/functional/callback_helpers.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "components/signin/internal/identity_manager/diagnostics_provider_impl.h"
 #include "components/signin/public/identity_manager/accounts_cookie_mutator.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/load_credentials_state.h"
@@ -14,7 +13,6 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 constexpr char kAccountEmail[] = "user @gmail.com ";
-constexpr char kAccountGaiaId[] = "user_gaia_id";
 
 namespace {
 
@@ -64,8 +62,7 @@ TEST_F(DiagnosticsProviderTest, GetDelayBeforeMakingAccessTokenRequests) {
   CoreAccountId account_id =
       identity_test_env()->MakeAccountAvailable(kAccountEmail).account_id;
   identity_test_env()->UpdatePersistentErrorOfRefreshTokenForAccount(
-      account_id, GoogleServiceAuthError(
-                      GoogleServiceAuthError::State::SERVICE_UNAVAILABLE));
+      account_id, GoogleServiceAuthError::FromServiceUnavailable(""));
   EXPECT_GT(diagnostics_provider()->GetDelayBeforeMakingAccessTokenRequests(),
             zero);
 }
@@ -75,11 +72,10 @@ TEST_F(DiagnosticsProviderTest, GetDelayBeforeMakingCookieRequests) {
   identity_test_env()
       ->identity_manager()
       ->GetAccountsCookieMutator()
-      ->AddAccountToCookie(CoreAccountId::FromGaiaId(kAccountGaiaId),
-                           gaia::GaiaSource::kChrome, base::DoNothing());
+      ->LogOutAllAccounts(gaia::GaiaSource::kChrome, base::DoNothing());
   EXPECT_EQ(diagnostics_provider()->GetDelayBeforeMakingCookieRequests(), zero);
 
-  identity_test_env()->SimulateMergeSessionFailure(
-      GoogleServiceAuthError(GoogleServiceAuthError::REQUEST_CANCELED));
+  identity_test_env()->SimulateGaiaLogOutFailure(
+      GoogleServiceAuthError::CreateRequestCanceled());
   EXPECT_GT(diagnostics_provider()->GetDelayBeforeMakingCookieRequests(), zero);
 }

@@ -4,13 +4,12 @@
 
 #include "chrome/browser/ash/hats/hats_finch_helper.h"
 
+#include "ash/constants/ash_pref_names.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/rand_util.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/ash/hats/hats_config.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/chrome_features.h"
-#include "chrome/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 
 namespace ash {
@@ -92,7 +91,8 @@ HatsFinchHelper::HatsFinchHelper(Profile* profile,
     profile_->GetPrefs()->ClearPref(hats_config.cycle_end_timestamp_pref_name);
     profile_->GetPrefs()->ClearPref(hats_config.is_selected_pref_name);
     if (reset_hats_)
-      profile_->GetPrefs()->ClearPref(prefs::kHatsLastInteractionTimestamp);
+      profile_->GetPrefs()->ClearPref(
+          ash::prefs::kHatsLastInteractionTimestamp);
     return;
   }
 
@@ -129,10 +129,11 @@ void HatsFinchHelper::LoadFinchParamValues(const HatsConfig& hats_config) {
                << first_survey_start_date_ms;
     // Set a random date in the distant future so that the survey never starts
     // until a new finch seed is received with the correct start date.
-    first_survey_start_date_ms = 2 * base::Time::Now().ToJsTime();
+    first_survey_start_date_ms =
+        2 * base::Time::Now().InMillisecondsFSinceUnixEpoch();
   }
   first_survey_start_date_ =
-      base::Time().FromJsTime(first_survey_start_date_ms);
+      base::Time().FromMillisecondsSinceUnixEpoch(first_survey_start_date_ms);
 
   trigger_id_ = GetTriggerID(hats_config);
 
@@ -146,8 +147,8 @@ void HatsFinchHelper::LoadFinchParamValues(const HatsConfig& hats_config) {
   if (reset_survey_cycle_ || reset_hats_) {
     probability_of_pick_ = 0;
     survey_cycle_length_ = INT_MAX;
-    first_survey_start_date_ =
-        base::Time().FromJsTime(2 * base::Time::Now().ToJsTime());
+    first_survey_start_date_ = base::Time().FromMillisecondsSinceUnixEpoch(
+        2 * base::Time::Now().InMillisecondsFSinceUnixEpoch());
   }
 }
 

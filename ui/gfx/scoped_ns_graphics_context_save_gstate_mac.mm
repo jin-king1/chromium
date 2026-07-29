@@ -11,7 +11,7 @@
 namespace gfx {
 
 struct ScopedNSGraphicsContextSaveGState::ObjCStorage {
-  NSGraphicsContext* context;  // weak
+  NSGraphicsContext* __weak context;
 };
 
 ScopedNSGraphicsContextSaveGState::ScopedNSGraphicsContextSaveGState()

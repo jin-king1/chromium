@@ -9,7 +9,7 @@
 #include "base/logging.h"
 #include "media/base/decoder_buffer.h"
 #include "media/cast/openscreen/remoting_proto_utils.h"
-#include "third_party/openscreen/src/cast/streaming/encoded_frame.h"
+#include "third_party/openscreen/src/cast/streaming/public/encoded_frame.h"
 
 namespace cast_streaming {
 
@@ -20,27 +20,13 @@ RemotingDecoderBufferFactory::~RemotingDecoderBufferFactory() = default;
 scoped_refptr<media::DecoderBuffer>
 RemotingDecoderBufferFactory::ToDecoderBuffer(
     const openscreen::cast::EncodedFrame& encoded_frame,
-    FrameContents& frame_contents) {
-  auto span = frame_contents.Get();
+    base::span<const uint8_t> frame_data) {
   scoped_refptr<media::DecoderBuffer> decoder_buffer =
-      media::cast::ByteArrayToDecoderBuffer(span.data(), span.size());
+      media::cast::ByteArrayToDecoderBuffer(frame_data);
   if (!decoder_buffer) {
     DLOG(WARNING) << "Deserialization failed!";
     return nullptr;
   }
-
-  if (!frame_contents.Reset(decoder_buffer->data_size())) {
-    DLOG(WARNING) << "Buffer overflow!";
-    return nullptr;
-  }
-
-  // Replace the old contents of |frame_contents| (the entire Decoderbuffer)
-  // with just the |DecoderBuffer::data()| field per method contract.
-  span = frame_contents.Get();
-  base::span<const uint8_t> decoder_buffer_data(decoder_buffer->data(),
-                                                decoder_buffer->data_size());
-  std::copy(decoder_buffer_data.begin(), decoder_buffer_data.end(),
-            span.begin());
 
   return decoder_buffer;
 }

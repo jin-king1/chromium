@@ -2,10 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {TestRunner} from 'test_runner';
+import {ConsoleTestRunner} from 'console_test_runner';
+
+import * as Console from 'devtools/panels/console/console.js';
+
 (async function() {
   TestRunner.addResult(`Tests that property values can be edited inline in the console via double click.\n`);
 
-  await TestRunner.loadLegacyModule('console'); await TestRunner.loadTestModule('console_test_runner');
   await TestRunner.showPanel('console');
 
   await TestRunner.evaluateInPagePromise(`
@@ -22,48 +26,53 @@
     ConsoleTestRunner.expandConsoleMessages(step2);
   }
 
-  function step2() {
-    var valueElements = getValueElements();
-    doubleClickTypeAndEnter(valueElements[0], '1 + 2');
+  async function step2() {
+    var valueElements = await getValueElements();
+    await doubleClickTypeAndEnter(valueElements[0], '1 + 2');
     ConsoleTestRunner.waitForRemoteObjectsConsoleMessages(step3);
   }
 
-  function step3() {
-    var valueElements = getValueElements();
-    doubleClickTypeAndEnter(valueElements[1], 'nonExistingValue');
+  async function step3() {
+    var valueElements = await getValueElements();
+    await doubleClickTypeAndEnter(valueElements[1], 'nonExistingValue');
     ConsoleTestRunner.waitForRemoteObjectsConsoleMessages(step4);
   }
 
-  function step4() {
-    var valueElements = getValueElements();
-    doubleClickTypeAndEnter(valueElements[2], '[1, 2, 3]');
+  async function step4() {
+    var valueElements = await getValueElements();
+    await doubleClickTypeAndEnter(valueElements[2], '[1, 2, 3]');
     ConsoleTestRunner.waitForRemoteObjectsConsoleMessages(step5);
   }
 
-  function step5() {
-    var valueElements = getValueElements();
-    doubleClickTypeAndEnter(valueElements[3], '{x: 2}');
+  async function step5() {
+    var valueElements = await getValueElements();
+    await doubleClickTypeAndEnter(valueElements[3], '{x: 2}');
     ConsoleTestRunner.waitForRemoteObjectsConsoleMessages(step6);
   }
 
   async function step6() {
+    await new Promise(requestAnimationFrame);
     await ConsoleTestRunner.dumpConsoleMessagesIgnoreErrorStackFrames();
     TestRunner.completeTest();
   }
 
-  function getValueElements() {
-    var messageElement = Console.ConsoleView.instance().visibleViewMessages[1].element();
+  async function getValueElements() {
+    await new Promise(requestAnimationFrame);
+    var messageElement = Console.ConsoleView.ConsoleView.instance().visibleViewMessages[1].element();
     return messageElement.querySelector('.console-message-text *').shadowRoot.querySelectorAll('.value');
   }
 
-  function doubleClickTypeAndEnter(node, text) {
+  async function doubleClickTypeAndEnter(node, text) {
     var event = document.createEvent('MouseEvent');
     event.initMouseEvent('dblclick', true, true, null, 2);
     node.dispatchEvent(event);
-    TestRunner.addResult('Node was hidden after dblclick: ' + node.classList.contains('hidden'));
-    var messageElement = Console.ConsoleView.instance().visibleViewMessages[1].element();
-    var editPrompt = messageElement.querySelector('.console-message-text *').shadowRoot.querySelector('.text-prompt');
+    await new Promise(requestAnimationFrame);
+    var messageElement = Console.ConsoleView.ConsoleView.instance().visibleViewMessages[1].element();
+    var editPrompt = messageElement.querySelector('.console-message-text *').shadowRoot.
+      querySelector('devtools-prompt[editing]').shadowRoot.
+      querySelector('.text-prompt');
     editPrompt.textContent = text;
     editPrompt.dispatchEvent(TestRunner.createKeyEvent('Enter'));
+    await new Promise(requestAnimationFrame);
   }
 })();

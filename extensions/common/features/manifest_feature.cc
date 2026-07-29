@@ -6,6 +6,7 @@
 
 #include "base/values.h"
 #include "extensions/common/manifest.h"
+#include "extensions/common/mojom/context_type.mojom.h"
 
 namespace extensions {
 
@@ -17,7 +18,7 @@ ManifestFeature::~ManifestFeature() {
 
 Feature::Availability ManifestFeature::IsAvailableToContextImpl(
     const Extension* extension,
-    Feature::Context context,
+    mojom::ContextType context,
     const GURL& url,
     Feature::Platform platform,
     int context_id,
@@ -32,9 +33,10 @@ Feature::Availability ManifestFeature::IsAvailableToContextImpl(
   // We know we can skip manifest()->GetKey() here because we just did the same
   // validation it would do above.
   if (extension && !extension->manifest()->value()->contains(name()))
-    return CreateAvailability(NOT_PRESENT, extension->GetType());
+    return CreateAvailability(AvailabilityResult::kNotPresent,
+                              extension->GetType());
 
-  return CreateAvailability(IS_AVAILABLE);
+  return CreateAvailability(AvailabilityResult::kIsAvailable);
 }
 
 }  // namespace extensions

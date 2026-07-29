@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include "base/check_op.h"
@@ -15,17 +16,25 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "crypto/hash.h"
+#include "crypto/keypair.h"
+#include "mojo/public/cpp/base/proto_wrapper.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "net/base/features.h"
 #include "net/base/net_errors.h"
 #include "net/cert/cert_status_flags.h"
 #include "net/cert/cert_verify_result.h"
 #include "net/cert/test_root_certs.h"
 #include "net/cert/x509_certificate.h"
+#include "net/cert/x509_util.h"
 #include "net/log/net_log_with_source.h"
 #include "net/net_buildflags.h"
 #include "net/test/cert_builder.h"
@@ -39,12 +48,19 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/platform_test.h"
 
+#if BUILDFLAG(IS_CT_SUPPORTED)
+#include "components/certificate_transparency/chrome_ct_policy_enforcer.h"
+#include "services/network/public/mojom/ct_log_info.mojom.h"
+#endif
+
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+#include "base/version_info/version_info.h"  // nogncheck
 #include "mojo/public/cpp/base/big_buffer.h"
 #include "net/cert/internal/trust_store_chrome.h"
-#include "net/cert/pki/parse_name.h"
 #include "net/cert/root_store_proto_lite/root_store.pb.h"
-#include "net/der/input.h"
+#include "net/cert/root_store_proto_lite/signer_set.pb.h"
+#include "third_party/boringssl/src/pki/input.h"
+#include "third_party/boringssl/src/pki/parse_name.h"
 #endif
 
 using net::test::IsError;
@@ -52,6 +68,8 @@ using net::test::IsOk;
 
 namespace cert_verifier {
 namespace {
+
+constexpr base::TimeDelta kNetworkTimeUncertainty = base::Seconds(31);
 
 struct DummyCVServiceRequest : public mojom::CertVerifierRequest {
   explicit DummyCVServiceRequest(base::RepeatingClosure on_finish)
@@ -109,8 +127,7 @@ std::tuple<int, net::CertVerifyResult> Verify(
                                        /*flags=*/0,
                                        /*ocsp_response=*/std::string(),
                                        /*sct_list=*/std::string()),
-      static_cast<uint32_t>(net_log.source().type), net_log.source().id,
-      net_log.source().start_time,
+      net_log.source(),
       dummy_cv_service_req_receiver.BindNewPipeAndPassRemote());
 
   request_completed_run_loop.Run();
@@ -119,16 +136,15 @@ std::tuple<int, net::CertVerifyResult> Verify(
 
 void UpdateCRLSetWithTestFile(
     CertVerifierServiceFactoryImpl* cv_service_factory_impl,
-    base::StringPiece crlset_file_name) {
+    std::string_view crlset_file_name) {
   std::string crl_set_bytes;
   EXPECT_TRUE(base::ReadFileToString(
       net::GetTestCertsDirectory().AppendASCII(crlset_file_name),
       &crl_set_bytes));
 
   base::RunLoop update_run_loop;
-  cv_service_factory_impl->UpdateCRLSet(
-      base::as_bytes(base::make_span(crl_set_bytes)),
-      update_run_loop.QuitClosure());
+  cv_service_factory_impl->UpdateCRLSet(base::as_byte_span(crl_set_bytes),
+                                        update_run_loop.QuitClosure());
   update_run_loop.Run();
 }
 
@@ -142,6 +158,16 @@ void EnableChromeRootStoreIfOptional(CertVerifierServiceFactoryImpl* factory) {
   }
 #endif
 }
+
+#if BUILDFLAG(IS_CT_SUPPORTED)
+std::string Sha256AsByteString(std::string_view str) {
+  return std::string(base::as_string_view(crypto::hash::Sha256(str)));
+}
+
+std::string Sha256AsByteString(base::span<const uint8_t> str) {
+  return std::string(base::as_string_view(crypto::hash::Sha256(str)));
+}
+#endif
 
 }  // namespace
 
@@ -164,6 +190,7 @@ TEST(CertVerifierServiceFactoryTest, GetNewCertVerifier) {
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.InitWithNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -185,15 +212,10 @@ TEST(CertVerifierServiceFactoryTest, GetNewCertVerifierWithUpdatedRootStore) {
   leaf->SetValidity(now - base::Days(1), now + base::Days(1));
 
   // Create updated Chrome Root Store with just the root cert from above.
-  chrome_root_store::RootStore root_store_proto;
-  root_store_proto.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
-  chrome_root_store::TrustAnchor* anchor = root_store_proto.add_trust_anchors();
+  chrome_root_store::RootStore root_store;
+  root_store.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
+  chrome_root_store::TrustAnchor* anchor = root_store.add_trust_anchors();
   anchor->set_der(root->GetDER());
-  std::string proto_serialized;
-  root_store_proto.SerializeToString(&proto_serialized);
-  cert_verifier::mojom::ChromeRootStorePtr root_store_ptr =
-      cert_verifier::mojom::ChromeRootStore::New(
-          base::as_bytes(base::make_span(proto_serialized)));
 
   mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
   CertVerifierServiceFactoryImpl cv_service_factory_impl(
@@ -205,7 +227,8 @@ TEST(CertVerifierServiceFactoryTest, GetNewCertVerifierWithUpdatedRootStore) {
   {
     base::RunLoop update_run_loop;
     cv_service_factory_impl.UpdateChromeRootStore(
-        std::move(root_store_ptr), update_run_loop.QuitClosure());
+        mojo_base::ProtoWrapper(root_store), std::nullopt,
+        update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 
@@ -216,6 +239,7 @@ TEST(CertVerifierServiceFactoryTest, GetNewCertVerifierWithUpdatedRootStore) {
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -250,6 +274,7 @@ TEST(CertVerifierServiceFactoryTest, UpdateExistingCertVerifierWithRootStore) {
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -264,21 +289,17 @@ TEST(CertVerifierServiceFactoryTest, UpdateExistingCertVerifierWithRootStore) {
   EXPECT_EQ(cv_service_client.changed_count_, 0u);
 
   // Create updated Chrome Root Store with just the root cert from above.
-  chrome_root_store::RootStore root_store_proto;
-  root_store_proto.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
-  chrome_root_store::TrustAnchor* anchor = root_store_proto.add_trust_anchors();
+  chrome_root_store::RootStore root_store;
+  root_store.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
+  chrome_root_store::TrustAnchor* anchor = root_store.add_trust_anchors();
   anchor->set_der(root->GetDER());
-  std::string proto_serialized;
-  root_store_proto.SerializeToString(&proto_serialized);
-  cert_verifier::mojom::ChromeRootStorePtr root_store_ptr =
-      cert_verifier::mojom::ChromeRootStore::New(
-          base::as_bytes(base::make_span(proto_serialized)));
 
   // Feed factory the new Chrome Root Store.
   {
     base::RunLoop update_run_loop;
     cv_service_factory_impl.UpdateChromeRootStore(
-        std::move(root_store_ptr), update_run_loop.QuitClosure());
+        mojo_base::ProtoWrapper(root_store), std::nullopt,
+        update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 
@@ -303,15 +324,10 @@ TEST(CertVerifierServiceFactoryTest, OldRootStoreUpdateIgnored) {
 
   // Create updated Chrome Root Store with just the root cert from above, but
   // set the version # so that the version is ignored.
-  chrome_root_store::RootStore root_store_proto;
-  root_store_proto.set_version_major(net::CompiledChromeRootStoreVersion());
-  chrome_root_store::TrustAnchor* anchor = root_store_proto.add_trust_anchors();
+  chrome_root_store::RootStore root_store;
+  root_store.set_version_major(net::CompiledChromeRootStoreVersion());
+  chrome_root_store::TrustAnchor* anchor = root_store.add_trust_anchors();
   anchor->set_der(root->GetDER());
-  std::string proto_serialized;
-  root_store_proto.SerializeToString(&proto_serialized);
-  cert_verifier::mojom::ChromeRootStorePtr root_store_ptr =
-      cert_verifier::mojom::ChromeRootStore::New(
-          base::as_bytes(base::make_span(proto_serialized)));
 
   mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
   CertVerifierServiceFactoryImpl cv_service_factory_impl(
@@ -323,7 +339,8 @@ TEST(CertVerifierServiceFactoryTest, OldRootStoreUpdateIgnored) {
   {
     base::RunLoop update_run_loop;
     cv_service_factory_impl.UpdateChromeRootStore(
-        std::move(root_store_ptr), update_run_loop.QuitClosure());
+        mojo_base::ProtoWrapper(root_store), std::nullopt,
+        update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 
@@ -334,6 +351,7 @@ TEST(CertVerifierServiceFactoryTest, OldRootStoreUpdateIgnored) {
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -355,15 +373,10 @@ TEST(CertVerifierServiceFactoryTest, BadRootStoreUpdateIgnored) {
   leaf->SetValidity(now - base::Days(1), now + base::Days(1));
 
   // Create updated Chrome Root Store with just the root cert from above.
-  chrome_root_store::RootStore root_store_proto;
-  root_store_proto.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
-  chrome_root_store::TrustAnchor* anchor = root_store_proto.add_trust_anchors();
+  chrome_root_store::RootStore root_store;
+  root_store.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
+  chrome_root_store::TrustAnchor* anchor = root_store.add_trust_anchors();
   anchor->set_der(root->GetDER());
-  std::string proto_serialized;
-  root_store_proto.SerializeToString(&proto_serialized);
-  cert_verifier::mojom::ChromeRootStorePtr root_store_ptr =
-      cert_verifier::mojom::ChromeRootStore::New(
-          base::as_bytes(base::make_span(proto_serialized)));
 
   mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
   CertVerifierServiceFactoryImpl cv_service_factory_impl(
@@ -375,7 +388,8 @@ TEST(CertVerifierServiceFactoryTest, BadRootStoreUpdateIgnored) {
   {
     base::RunLoop update_run_loop;
     cv_service_factory_impl.UpdateChromeRootStore(
-        std::move(root_store_ptr), update_run_loop.QuitClosure());
+        mojo_base::ProtoWrapper(root_store), std::nullopt,
+        update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 
@@ -386,6 +400,7 @@ TEST(CertVerifierServiceFactoryTest, BadRootStoreUpdateIgnored) {
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -399,22 +414,19 @@ TEST(CertVerifierServiceFactoryTest, BadRootStoreUpdateIgnored) {
 
   // Create updated Chrome Root Store with an invalid cert; update should be
   // ignored.
-  chrome_root_store::RootStore invalid_root_store_proto;
-  invalid_root_store_proto.set_version_major(
-      net::CompiledChromeRootStoreVersion() + 2);
+  chrome_root_store::RootStore invalid_root_store;
+  invalid_root_store.set_version_major(net::CompiledChromeRootStoreVersion() +
+                                       2);
   chrome_root_store::TrustAnchor* invalid_anchor =
-      invalid_root_store_proto.add_trust_anchors();
+      invalid_root_store.add_trust_anchors();
   invalid_anchor->set_der("gibberishcert");
-  invalid_root_store_proto.SerializeToString(&proto_serialized);
-  cert_verifier::mojom::ChromeRootStorePtr invalid_root_store_ptr =
-      cert_verifier::mojom::ChromeRootStore::New(
-          base::as_bytes(base::make_span(proto_serialized)));
 
   // Feed factory the new Chrome Root Store.
   {
     base::RunLoop update_run_loop;
     cv_service_factory_impl.UpdateChromeRootStore(
-        std::move(invalid_root_store_ptr), update_run_loop.QuitClosure());
+        mojo_base::ProtoWrapper(invalid_root_store), std::nullopt,
+        update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 
@@ -426,17 +438,14 @@ TEST(CertVerifierServiceFactoryTest, BadRootStoreUpdateIgnored) {
   }
 
   // Clear all certs from the proto
-  root_store_proto.clear_trust_anchors();
-  root_store_proto.SerializeToString(&proto_serialized);
-  cert_verifier::mojom::ChromeRootStorePtr empty_root_store_ptr =
-      cert_verifier::mojom::ChromeRootStore::New(
-          base::as_bytes(base::make_span(proto_serialized)));
+  root_store.clear_trust_anchors();
 
-  // Feed factory the new Chrome Root Store.
+  // Feed factory the new empty Chrome Root Store.
   {
     base::RunLoop update_run_loop;
     cv_service_factory_impl.UpdateChromeRootStore(
-        std::move(empty_root_store_ptr), update_run_loop.QuitClosure());
+        mojo_base::ProtoWrapper(root_store), std::nullopt,
+        update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 
@@ -466,15 +475,10 @@ TEST(CertVerifierServiceFactoryTest, RootStoreInfoWithUpdatedRootStore) {
   leaf->SetValidity(now - base::Days(1), now + base::Days(1));
 
   // Create updated Chrome Root Store with just the root cert from above.
-  chrome_root_store::RootStore root_store_proto;
-  root_store_proto.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
-  chrome_root_store::TrustAnchor* anchor = root_store_proto.add_trust_anchors();
+  chrome_root_store::RootStore root_store;
+  root_store.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
+  chrome_root_store::TrustAnchor* anchor = root_store.add_trust_anchors();
   anchor->set_der(root->GetDER());
-  std::string proto_serialized;
-  root_store_proto.SerializeToString(&proto_serialized);
-  cert_verifier::mojom::ChromeRootStorePtr root_store_ptr =
-      cert_verifier::mojom::ChromeRootStore::New(
-          base::as_bytes(base::make_span(proto_serialized)));
 
   mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
   CertVerifierServiceFactoryImpl cv_service_factory_impl(
@@ -484,7 +488,278 @@ TEST(CertVerifierServiceFactoryTest, RootStoreInfoWithUpdatedRootStore) {
   {
     base::RunLoop update_run_loop;
     cv_service_factory_impl.UpdateChromeRootStore(
-        std::move(root_store_ptr), update_run_loop.QuitClosure());
+        mojo_base::ProtoWrapper(root_store), std::nullopt,
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  cert_verifier::mojom::ChromeRootStoreInfoPtr info_ptr;
+  base::RunLoop request_completed_run_loop;
+  cv_service_factory_remote->GetChromeRootStoreInfo(base::BindOnce(
+      &GetRootStoreInfo, &info_ptr, request_completed_run_loop.QuitClosure()));
+  request_completed_run_loop.Run();
+  ASSERT_TRUE(info_ptr);
+  EXPECT_EQ(info_ptr->version, root_store.version_major());
+  ASSERT_EQ(info_ptr->root_cert_info.size(), static_cast<std::size_t>(1));
+
+  net::SHA256HashValue root_hash =
+      net::X509Certificate::CalculateFingerprint256(root->GetCertBuffer());
+  EXPECT_EQ(info_ptr->root_cert_info[0]->sha256hash_hex,
+            base::HexEncode(root_hash));
+  EXPECT_TRUE(net::x509_util::CryptoBufferEqual(
+      net::x509_util::CreateCryptoBuffer(info_ptr->root_cert_info[0]->cert)
+          .get(),
+      root->GetCertBuffer()));
+}
+
+void SetFakeProtoTrustedSubtreeData(
+    chrome_root_store::MtcAnchorData* mtc_anchor_metadata) {
+  chrome_root_store::MtcSubTree* subtree =
+      mtc_anchor_metadata->add_trusted_subtrees();
+  subtree->set_start_inclusive(1);
+  subtree->set_end_exclusive(2);
+  std::array<uint8_t, crypto::hash::kSha256Size> hash;
+  hash.fill(0);
+  subtree->set_hash(base::as_string_view(hash));
+}
+
+TEST(CertVerifierServiceFactoryTest, RootStoreInfoWithMerkleTreeCertAnchors) {
+  base::test::ScopedFeatureList feature_list_{net::features::kVerifyMTCs};
+
+  // Create leaf and root certs.
+  base::test::TaskEnvironment task_environment;
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+
+  base::Time now = base::Time::Now();
+  base::Time now_truncated_to_seconds =
+      base::Time::FromMillisecondsSinceUnixEpoch(
+          now.InMillisecondsSinceUnixEpoch() / 1000 * 1000);
+  leaf->SetValidity(now - base::Days(1), now + base::Days(1));
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  int64_t kRootStoreVersion = net::CompiledChromeRootStoreVersion() + 1;
+
+  {
+    // Create updated Chrome Root Store with a regular anchor and 2 MTC anchors.
+    chrome_root_store::RootStore root_store;
+    root_store.set_version_major(kRootStoreVersion);
+    chrome_root_store::TrustAnchor* anchor = root_store.add_trust_anchors();
+    anchor->set_der(root->GetDER());
+
+    // Two anchors that will have matching MTC metadata
+    chrome_root_store::MtcAnchor* mtc_anchor = root_store.add_mtc_anchors();
+    mtc_anchor->set_log_id({0x01, 0x02, 0x03});
+    mtc_anchor->set_tls_trust_anchor(true);
+
+    mtc_anchor = root_store.add_mtc_anchors();
+    mtc_anchor->set_log_id({0x21, 0x22});
+    mtc_anchor->set_tls_trust_anchor(true);
+
+    // One anchor that doesn't match the MTC metadata.
+    mtc_anchor = root_store.add_mtc_anchors();
+    mtc_anchor->set_log_id({0x31, 0x32});
+    mtc_anchor->set_tls_trust_anchor(true);
+
+    // Feed factory the new Chrome Root Store.
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store), std::nullopt,
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  {
+    cert_verifier::mojom::ChromeRootStoreInfoPtr info_ptr;
+    base::RunLoop request_completed_run_loop;
+    cv_service_factory_remote->GetChromeRootStoreInfo(
+        base::BindOnce(&GetRootStoreInfo, &info_ptr,
+                       request_completed_run_loop.QuitClosure()));
+    request_completed_run_loop.Run();
+    ASSERT_TRUE(info_ptr);
+    EXPECT_EQ(info_ptr->version, kRootStoreVersion);
+    ASSERT_EQ(info_ptr->root_cert_info.size(), 1u);
+
+    EXPECT_EQ(info_ptr->mtc_metadata_update_time, std::nullopt);
+    ASSERT_EQ(info_ptr->root_mtc_info.size(), 0u);
+  }
+
+  {
+    // Now create MTC Metadata proto as well.
+    chrome_root_store::MtcMetadata mtc_metadata_proto;
+    mtc_metadata_proto.set_update_time_seconds(
+        now.InMillisecondsSinceUnixEpoch() / 1000);
+
+    // Two anchor metadatas that match the MTC anchors above.
+    chrome_root_store::MtcAnchorData* mtc_anchor_metadata =
+        mtc_metadata_proto.add_mtc_anchor_data();
+    mtc_anchor_metadata->set_log_id({0x01, 0x02, 0x03});
+    mtc_anchor_metadata->mutable_trusted_landmark_ids_range()->set_base_id(
+        {0x04, 0x05});
+    mtc_anchor_metadata->mutable_trusted_landmark_ids_range()
+        ->set_min_active_landmark_inclusive(1);
+    mtc_anchor_metadata->mutable_trusted_landmark_ids_range()
+        ->set_last_landmark_inclusive(42);
+    SetFakeProtoTrustedSubtreeData(mtc_anchor_metadata);
+
+    mtc_anchor_metadata = mtc_metadata_proto.add_mtc_anchor_data();
+    mtc_anchor_metadata->set_log_id({0x21, 0x22});
+    mtc_anchor_metadata->mutable_trusted_landmark_ids_range()->set_base_id(
+        {0x24, 0x25});
+    mtc_anchor_metadata->mutable_trusted_landmark_ids_range()
+        ->set_min_active_landmark_inclusive(21);
+    mtc_anchor_metadata->mutable_trusted_landmark_ids_range()
+        ->set_last_landmark_inclusive(242);
+    SetFakeProtoTrustedSubtreeData(mtc_anchor_metadata);
+
+    // One anchor metadata that doesn't match the MTC anchors above.
+    mtc_anchor_metadata = mtc_metadata_proto.add_mtc_anchor_data();
+    mtc_anchor_metadata->set_log_id({0x41, 0x42});
+    mtc_anchor_metadata->mutable_trusted_landmark_ids_range()->set_base_id(
+        {0x44, 0x45});
+    mtc_anchor_metadata->mutable_trusted_landmark_ids_range()
+        ->set_min_active_landmark_inclusive(41);
+    mtc_anchor_metadata->mutable_trusted_landmark_ids_range()
+        ->set_last_landmark_inclusive(442);
+    SetFakeProtoTrustedSubtreeData(mtc_anchor_metadata);
+
+    // Feed factory the new MTC metadata.
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateMtcMetadata(
+        mojo_base::ProtoWrapper(mtc_metadata_proto),
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  {
+    cert_verifier::mojom::ChromeRootStoreInfoPtr info_ptr;
+    base::RunLoop request_completed_run_loop;
+    cv_service_factory_remote->GetChromeRootStoreInfo(
+        base::BindOnce(&GetRootStoreInfo, &info_ptr,
+                       request_completed_run_loop.QuitClosure()));
+    request_completed_run_loop.Run();
+    ASSERT_TRUE(info_ptr);
+    EXPECT_EQ(info_ptr->version, kRootStoreVersion);
+    ASSERT_EQ(info_ptr->root_cert_info.size(), 1u);
+
+    EXPECT_EQ(info_ptr->mtc_metadata_update_time, now_truncated_to_seconds);
+
+    // root_mtc_info only includes anchors that were present in both the root
+    // store mtc_anchors and the mtc metadata.
+    ASSERT_EQ(info_ptr->root_mtc_info.size(), 2u);
+    {
+      const auto& mtc_info = *info_ptr->root_mtc_info[0];
+      EXPECT_EQ(mtc_info.log_id_text, "1.2.3");
+      EXPECT_EQ(mtc_info.min_landmark_id_text, "4.5.1");
+      EXPECT_EQ(mtc_info.last_landmark_id_text, "4.5.42");
+    }
+    {
+      const auto& mtc_info = *info_ptr->root_mtc_info[1];
+      EXPECT_EQ(mtc_info.log_id_text, "33.34");
+      EXPECT_EQ(mtc_info.min_landmark_id_text, "36.37.21");
+      EXPECT_EQ(mtc_info.last_landmark_id_text, "36.37.242");
+    }
+  }
+}
+
+std::string CurVersionString() {
+  return version_info::GetVersion().GetString();
+}
+std::string NextVersionString() {
+  const std::vector<uint32_t>& components =
+      version_info::GetVersion().components();
+  return base::Version(
+             {components[0], components[1], components[2], components[3] + 1})
+      .GetString();
+}
+std::string PrevVersionString() {
+  const std::vector<uint32_t>& components =
+      version_info::GetVersion().components();
+  if (components[3] > 0) {
+    return base::Version(
+               {components[0], components[1], components[2], components[3] - 1})
+        .GetString();
+  } else {
+    return base::Version(
+               {components[0], components[1], components[2] - 1, UINT32_MAX})
+        .GetString();
+  }
+}
+
+TEST(CertVerifierServiceFactoryTest, RootStoreInfoWithVersionConstraintUnmet) {
+  // Create leaf and root certs.
+  base::test::TaskEnvironment task_environment;
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+
+  base::Time now = base::Time::Now();
+  leaf->SetValidity(now - base::Days(1), now + base::Days(1));
+
+  // Create updated Chrome Root Store with just the root cert from above.
+  chrome_root_store::RootStore root_store_proto;
+  root_store_proto.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
+  chrome_root_store::TrustAnchor* anchor = root_store_proto.add_trust_anchors();
+  anchor->set_der(root->GetDER());
+  chrome_root_store::ConstraintSet* constraint = anchor->add_constraints();
+
+  // root should not be trusted
+  constraint->set_max_version_exclusive(PrevVersionString());
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  // Feed factory the new Chrome Root Store.
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto), std::nullopt,
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  cert_verifier::mojom::ChromeRootStoreInfoPtr info_ptr;
+  base::RunLoop request_completed_run_loop;
+  cv_service_factory_remote->GetChromeRootStoreInfo(base::BindOnce(
+      &GetRootStoreInfo, &info_ptr, request_completed_run_loop.QuitClosure()));
+  request_completed_run_loop.Run();
+  ASSERT_TRUE(info_ptr);
+  EXPECT_EQ(info_ptr->version, root_store_proto.version_major());
+  ASSERT_EQ(info_ptr->root_cert_info.size(), static_cast<std::size_t>(0));
+}
+
+TEST(CertVerifierServiceFactoryTest, RootStoreInfoWithVersionConstraintMet) {
+  // Create leaf and root certs.
+  base::test::TaskEnvironment task_environment;
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+
+  base::Time now = base::Time::Now();
+  leaf->SetValidity(now - base::Days(1), now + base::Days(1));
+
+  // Create updated Chrome Root Store with just the root cert from above.
+  chrome_root_store::RootStore root_store_proto;
+  root_store_proto.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
+  chrome_root_store::TrustAnchor* anchor = root_store_proto.add_trust_anchors();
+  anchor->set_der(root->GetDER());
+  // Root should not be trusted because of this constraint ...
+  chrome_root_store::ConstraintSet* constraint = anchor->add_constraints();
+  constraint->set_max_version_exclusive(PrevVersionString());
+  // .. but should be trusted because of this.
+  constraint = anchor->add_constraints();
+  constraint->set_min_version(PrevVersionString());
+  constraint->set_max_version_exclusive(NextVersionString());
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  // Feed factory the new Chrome Root Store.
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto), std::nullopt,
+        update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 
@@ -496,23 +771,12 @@ TEST(CertVerifierServiceFactoryTest, RootStoreInfoWithUpdatedRootStore) {
   ASSERT_TRUE(info_ptr);
   EXPECT_EQ(info_ptr->version, root_store_proto.version_major());
   ASSERT_EQ(info_ptr->root_cert_info.size(), static_cast<std::size_t>(1));
-
-  net::der::Input subject_tlv(&root->GetSubject());
-  net::RDNSequence subject_rdn;
-  ASSERT_TRUE(net::ParseName(subject_tlv, &subject_rdn));
-  std::string subject_string;
-  ASSERT_TRUE(net::ConvertToRFC2253(subject_rdn, &subject_string));
-  EXPECT_EQ(info_ptr->root_cert_info[0]->name, subject_string);
-
-  net::SHA256HashValue root_hash =
-      net::X509Certificate::CalculateFingerprint256(root->GetCertBuffer());
-  EXPECT_EQ(info_ptr->root_cert_info[0]->sha256hash_hex,
-            base::HexEncode(root_hash.data, std::size(root_hash.data)));
 }
 
 TEST(CertVerifierServiceFactoryTest, RootStoreInfoWithCompiledRootStore) {
   base::test::TaskEnvironment task_environment;
-  net::ParsedCertificateList anchors = net::CompiledChromeRootStoreAnchors();
+  net::ChromeRootStoreData root_store_data =
+      net::ChromeRootStoreData::CreateFromCompiledRootStore();
 
   mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
   CertVerifierServiceFactoryImpl cv_service_factory_impl(
@@ -525,30 +789,294 @@ TEST(CertVerifierServiceFactoryTest, RootStoreInfoWithCompiledRootStore) {
 
   ASSERT_TRUE(info_ptr);
   EXPECT_EQ(info_ptr->version, net::CompiledChromeRootStoreVersion());
-  EXPECT_EQ(info_ptr->root_cert_info.size(), anchors.size());
+  // In cases where the compiled Chrome Root Store has roots with version
+  // constraints, there might be less trusted roots depending on what version #
+  // the test is running at.
+  EXPECT_LE(info_ptr->root_cert_info.size(),
+            root_store_data.trust_anchors().size());
+  EXPECT_GT(info_ptr->root_cert_info.size(), static_cast<std::size_t>(0));
 }
 
 #endif  // BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 
-class CertVerifierServiceFactoryCRLSetTest : public ::testing::Test {
+#if BUILDFLAG(IS_CT_SUPPORTED)
+TEST(CertVerifierServiceFactoryTest, UpdateCtLogList) {
+  base::test::TaskEnvironment task_environment;
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  // Should start with empty log list.
+  EXPECT_EQ(cv_service_factory_impl.get_impl_params().ct_logs.size(), 0u);
+  EXPECT_FALSE(cv_service_factory_impl.get_impl_params().ct_policy_enforcer);
+
+  auto log1_spki =
+      crypto::keypair::PrivateKey::GenerateEcP256().ToSubjectPublicKeyInfo();
+  const auto log1_id = Sha256AsByteString(log1_spki);
+  auto log2_spki =
+      crypto::keypair::PrivateKey::GenerateEcP256().ToSubjectPublicKeyInfo();
+  const auto log2_id = Sha256AsByteString(log2_spki);
+  const std::string kLog1Operator = "log operator";
+  const std::string kLog2Operator = "log2 operator";
+  const std::string kLog3Operator = "log3 operator";
+
+  // Test the 1st log list update.
+  {
+    std::vector<network::mojom::CTLogInfoPtr> log_list_mojo;
+    {
+      network::mojom::CTLogInfoPtr log_info = network::mojom::CTLogInfo::New();
+      log_info->public_key = std::string(base::as_string_view(log1_spki));
+      log_info->id = log1_id;
+      log_info->name = "log name";
+      log_info->current_operator = kLog1Operator;
+      log_list_mojo.push_back(std::move(log_info));
+    }
+    {
+      network::mojom::CTLogInfoPtr log_info = network::mojom::CTLogInfo::New();
+      log_info->public_key = std::string(base::as_string_view(log2_spki));
+      log_info->id = log2_id;
+      log_info->name = "log2 name";
+      log_info->current_operator = kLog2Operator;
+      log_list_mojo.push_back(std::move(log_info));
+    }
+
+    {
+      base::RunLoop run_loop;
+      cv_service_factory_remote->UpdateCtLogList(
+          std::move(log_list_mojo), base::Time::Now(), run_loop.QuitClosure());
+      run_loop.Run();
+    }
+
+    ASSERT_EQ(cv_service_factory_impl.get_impl_params().ct_logs.size(), 2u);
+    EXPECT_EQ(cv_service_factory_impl.get_impl_params().ct_logs[0]->key_id(),
+              log1_id);
+    EXPECT_EQ(cv_service_factory_impl.get_impl_params().ct_logs[1]->key_id(),
+              log2_id);
+
+    net::CTPolicyEnforcer* request_enforcer =
+        cv_service_factory_impl.get_impl_params().ct_policy_enforcer.get();
+    ASSERT_TRUE(request_enforcer);
+    certificate_transparency::ChromeCTPolicyEnforcer* policy_enforcer =
+        reinterpret_cast<certificate_transparency::ChromeCTPolicyEnforcer*>(
+            request_enforcer);
+
+    std::map<std::string, certificate_transparency::LogInfo> log_info =
+        policy_enforcer->log_info_for_testing();
+    EXPECT_EQ(log_info[log1_id].operator_history.current_operator,
+              kLog1Operator);
+    EXPECT_EQ(log_info[log2_id].operator_history.current_operator,
+              kLog2Operator);
+  }
+
+  // Test a 2nd log list update.
+  {
+    std::vector<network::mojom::CTLogInfoPtr> log_list_mojo;
+    {
+      network::mojom::CTLogInfoPtr log_info = network::mojom::CTLogInfo::New();
+      log_info->public_key = std::string(log1_spki.begin(), log1_spki.end());
+      log_info->id = log1_id;
+      log_info->name = "log name";
+      log_info->current_operator = kLog1Operator;
+      log_list_mojo.push_back(std::move(log_info));
+    }
+    const std::string log3_public_key = "bad public key";
+    const std::string log3_id = Sha256AsByteString(log3_public_key);
+    {
+      network::mojom::CTLogInfoPtr log_info = network::mojom::CTLogInfo::New();
+      log_info->public_key = log3_public_key;
+      log_info->id = log3_id;
+      log_info->name = "log3 name";
+      log_info->current_operator = kLog3Operator;
+      log_list_mojo.push_back(std::move(log_info));
+    }
+
+    {
+      base::RunLoop run_loop;
+      cv_service_factory_remote->UpdateCtLogList(
+          std::move(log_list_mojo), base::Time::Now(), run_loop.QuitClosure());
+      run_loop.Run();
+    }
+
+    // The log with the bad key should have been ignored.
+    ASSERT_EQ(cv_service_factory_impl.get_impl_params().ct_logs.size(), 1u);
+    EXPECT_EQ(cv_service_factory_impl.get_impl_params().ct_logs[0]->key_id(),
+              log1_id);
+
+    net::CTPolicyEnforcer* request_enforcer =
+        cv_service_factory_impl.get_impl_params().ct_policy_enforcer.get();
+    ASSERT_TRUE(request_enforcer);
+    certificate_transparency::ChromeCTPolicyEnforcer* policy_enforcer =
+        reinterpret_cast<certificate_transparency::ChromeCTPolicyEnforcer*>(
+            request_enforcer);
+
+    // CTPolicyEnforcer doesn't parse the key, so it accepts both logs.
+    std::map<std::string, certificate_transparency::LogInfo> log_info =
+        policy_enforcer->log_info_for_testing();
+    EXPECT_EQ(log_info[log1_id].operator_history.current_operator,
+              kLog1Operator);
+    EXPECT_EQ(log_info[log3_id].operator_history.current_operator,
+              kLog3Operator);
+  }
+}
+
+TEST(CertVerifierServiceFactoryTest, CTPolicyEnforcerConfig) {
+  base::test::TaskEnvironment task_environment;
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  std::vector<network::mojom::CTLogInfoPtr> log_list_mojo;
+
+  // The log public keys do not matter for the test, so invalid keys are used.
+  // However, because the log IDs are derived from the SHA-256 hash of the log
+  // key, the log keys are generated such that qualified logs are in the form
+  // of four digits (e.g. "0000", "1111"), while disqualified logs are in the
+  // form of four letters (e.g. "AAAA", "BBBB").
+
+  for (int i = 0; i < 6; ++i) {
+    network::mojom::CTLogInfoPtr log_info = network::mojom::CTLogInfo::New();
+    // Shift to ASCII '0' (0x30)
+    log_info->public_key = std::string(4, 0x30 + static_cast<char>(i));
+    log_info->name = std::string(4, 0x30 + static_cast<char>(i));
+    if (i % 2) {
+      log_info->current_operator = "Google";
+    } else {
+      log_info->current_operator = "Not Google";
+    }
+    log_list_mojo.push_back(std::move(log_info));
+  }
+  for (int i = 0; i < 3; ++i) {
+    network::mojom::CTLogInfoPtr log_info = network::mojom::CTLogInfo::New();
+    // Shift to ASCII 'A' (0x41)
+    log_info->public_key = std::string(4, 0x41 + static_cast<char>(i));
+    log_info->name = std::string(4, 0x41 + static_cast<char>(i));
+    log_info->disqualified_at = base::Time::FromTimeT(i);
+    log_info->current_operator = "Not Google Either";
+
+    log_list_mojo.push_back(std::move(log_info));
+  }
+
+  base::RunLoop run_loop;
+  cv_service_factory_remote->UpdateCtLogList(
+      std::move(log_list_mojo), base::Time::Now(), run_loop.QuitClosure());
+  run_loop.Run();
+
+  net::CTPolicyEnforcer* request_enforcer =
+      cv_service_factory_impl.get_impl_params().ct_policy_enforcer.get();
+  ASSERT_TRUE(request_enforcer);
+
+  certificate_transparency::ChromeCTPolicyEnforcer* policy_enforcer =
+      reinterpret_cast<certificate_transparency::ChromeCTPolicyEnforcer*>(
+          request_enforcer);
+
+  EXPECT_TRUE(
+      std::is_sorted(policy_enforcer->disqualified_logs_for_testing().begin(),
+                     policy_enforcer->disqualified_logs_for_testing().end()));
+
+  EXPECT_THAT(
+      policy_enforcer->disqualified_logs_for_testing(),
+      ::testing::UnorderedElementsAre(
+          ::testing::Pair(Sha256AsByteString("AAAA"), base::Time::FromTimeT(0)),
+          ::testing::Pair(Sha256AsByteString("BBBB"), base::Time::FromTimeT(1)),
+          ::testing::Pair(Sha256AsByteString("CCCC"),
+                          base::Time::FromTimeT(2))));
+
+  std::map<std::string, certificate_transparency::LogInfo> log_info =
+      policy_enforcer->log_info_for_testing();
+
+  for (auto log : policy_enforcer->disqualified_logs_for_testing()) {
+    EXPECT_EQ(log_info[log.first].operator_history.current_operator,
+              "Not Google Either");
+    EXPECT_TRUE(
+        log_info[log.first].operator_history.previous_operators.empty());
+  }
+}
+
+TEST(CertVerifierServiceFactoryTest,
+     CTPolicyEnforcerConfigWithOperatorSwitches) {
+  base::test::TaskEnvironment task_environment;
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  std::vector<network::mojom::CTLogInfoPtr> log_list_mojo;
+
+  // The log public keys do not matter for the test, so invalid keys are used.
+  // However, because the log IDs are derived from the SHA-256 hash of the log
+  // key, the log keys are generated such that the log that never switched
+  // operator is "0000", while the one that did is "AAAA".
+  network::mojom::CTLogInfoPtr log_info = network::mojom::CTLogInfo::New();
+  // Shift to ASCII '0' (0x30)
+  log_info->public_key = std::string(4, 0x30);
+  log_info->name = std::string(4, 0x30);
+  log_info->current_operator = "Forever Operator";
+  log_list_mojo.push_back(std::move(log_info));
+
+  log_info = network::mojom::CTLogInfo::New();
+  // Shift to ASCII 'A' (0x41)
+  log_info->public_key = std::string(4, 0x41);
+  log_info->name = std::string(4, 0x41);
+  log_info->current_operator = "Changed Operator";
+  for (int i = 0; i < 3; i++) {
+    network::mojom::PreviousOperatorEntryPtr previous_operator =
+        network::mojom::PreviousOperatorEntry::New();
+    previous_operator->name = "Operator " + base::NumberToString(i);
+    previous_operator->end_time = base::Time::FromTimeT(i);
+    log_info->previous_operators.push_back(std::move(previous_operator));
+  }
+  log_list_mojo.push_back(std::move(log_info));
+
+  base::RunLoop run_loop;
+  cv_service_factory_remote->UpdateCtLogList(
+      std::move(log_list_mojo), base::Time::Now(), run_loop.QuitClosure());
+  run_loop.Run();
+
+  net::CTPolicyEnforcer* request_enforcer =
+      cv_service_factory_impl.get_impl_params().ct_policy_enforcer.get();
+  ASSERT_TRUE(request_enforcer);
+
+  certificate_transparency::ChromeCTPolicyEnforcer* policy_enforcer =
+      reinterpret_cast<certificate_transparency::ChromeCTPolicyEnforcer*>(
+          request_enforcer);
+
+  std::map<std::string, certificate_transparency::LogInfo> log_info_map =
+      policy_enforcer->log_info_for_testing();
+
+  EXPECT_EQ(log_info_map[Sha256AsByteString("0000")]
+                .operator_history.current_operator,
+            "Forever Operator");
+  EXPECT_TRUE(log_info_map[Sha256AsByteString("0000")]
+                  .operator_history.previous_operators.empty());
+
+  EXPECT_EQ(log_info_map[Sha256AsByteString("AAAA")]
+                .operator_history.current_operator,
+            "Changed Operator");
+  EXPECT_THAT(log_info_map[Sha256AsByteString("AAAA")]
+                  .operator_history.previous_operators,
+              ::testing::ElementsAre(
+                  ::testing::Pair("Operator 0", base::Time::FromTimeT(0)),
+                  ::testing::Pair("Operator 1", base::Time::FromTimeT(1)),
+                  ::testing::Pair("Operator 2", base::Time::FromTimeT(2))));
+}
+#endif
+
+class CertVerifierServiceFactoryBuiltinVerifierTest : public ::testing::Test {
  public:
   void SetUp() override {
-    if (!SystemSupportsCRLSets()) {
-      GTEST_SKIP() << "Skipping test because system doesn't support CRLSets";
+    if (!SystemUsesBuiltinVerifier()) {
+      GTEST_SKIP()
+          << "Skipping test because system doesn't use builtin verifier";
     }
 
     ::testing::Test::SetUp();
   }
 
  private:
-  bool SystemSupportsCRLSets() {
-#if BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || \
-    BUILDFLAG(CHROME_ROOT_STORE_ONLY)
-    return true;
-#elif BUILDFLAG(CHROME_ROOT_STORE_OPTIONAL)
+  bool SystemUsesBuiltinVerifier() {
+#if BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
     // On CHROME_ROOT_STORE_OPTIONAL platforms, the tests set
     // use_chrome_root_store=true, so the tests will also work on those
-    // platforms even if the kChromeRootStoreUsed default is false.
+    // platforms.
     // (This doesn't result in missing coverage of the
     // use_chrome_root_store=false case since the only non-CRS implementations
     // remaining don't support CRLSets.)
@@ -563,12 +1091,12 @@ class CertVerifierServiceFactoryCRLSetTest : public ::testing::Test {
 
 // Test that a new Cert verifier will use an updated CRLSet if
 // one was already passed into CertVerifierServiceFactory.
-TEST_F(CertVerifierServiceFactoryCRLSetTest,
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest,
        GetNewCertVerifierWithUpdatedCRLSet) {
   scoped_refptr<net::X509Certificate> test_root(net::ImportCertFromFile(
       net::GetTestCertsDirectory(), "root_ca_cert.pem"));
   ASSERT_TRUE(test_root);
-  net::ScopedTestRoot scoped_test_root(test_root.get());
+  net::ScopedTestRoot scoped_test_root(test_root);
   scoped_refptr<net::X509Certificate> ok_cert(
       net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem"));
   ASSERT_TRUE(ok_cert);
@@ -591,6 +1119,7 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest,
   // CRLSet already active.
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -605,12 +1134,12 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest,
 
 // Test that an existing CertVerifierService will use an updated CRLSet if one
 // is provided to the CertVerifierServiceFactory
-TEST_F(CertVerifierServiceFactoryCRLSetTest,
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest,
        UpdateExistingCertVerifierWithCRLSet) {
   scoped_refptr<net::X509Certificate> test_root(net::ImportCertFromFile(
       net::GetTestCertsDirectory(), "root_ca_cert.pem"));
   ASSERT_TRUE(test_root);
-  net::ScopedTestRoot scoped_test_root(test_root.get());
+  net::ScopedTestRoot scoped_test_root(test_root);
   scoped_refptr<net::X509Certificate> ok_cert(
       net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem"));
   ASSERT_TRUE(ok_cert);
@@ -628,6 +1157,7 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest,
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -654,11 +1184,11 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest,
 }
 
 // Verifies newer CRLSets (by sequence number) are applied.
-TEST_F(CertVerifierServiceFactoryCRLSetTest, CRLSetIsUpdatedIfNewer) {
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest, CRLSetIsUpdatedIfNewer) {
   scoped_refptr<net::X509Certificate> test_root(net::ImportCertFromFile(
       net::GetTestCertsDirectory(), "root_ca_cert.pem"));
   ASSERT_TRUE(test_root);
-  net::ScopedTestRoot scoped_test_root(test_root.get());
+  net::ScopedTestRoot scoped_test_root(test_root);
   scoped_refptr<net::X509Certificate> ok_cert(
       net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem"));
   ASSERT_TRUE(ok_cert);
@@ -676,6 +1206,7 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest, CRLSetIsUpdatedIfNewer) {
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -718,11 +1249,11 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest, CRLSetIsUpdatedIfNewer) {
 
 // Verifies that attempting to send an older CRLSet (by sequence number)
 // does not apply to existing or new contexts.
-TEST_F(CertVerifierServiceFactoryCRLSetTest, CRLSetDoesNotDowngrade) {
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest, CRLSetDoesNotDowngrade) {
   scoped_refptr<net::X509Certificate> test_root(net::ImportCertFromFile(
       net::GetTestCertsDirectory(), "root_ca_cert.pem"));
   ASSERT_TRUE(test_root);
-  net::ScopedTestRoot scoped_test_root(test_root.get());
+  net::ScopedTestRoot scoped_test_root(test_root);
   scoped_refptr<net::X509Certificate> ok_cert(
       net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem"));
   ASSERT_TRUE(ok_cert);
@@ -740,6 +1271,7 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest, CRLSetDoesNotDowngrade) {
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -780,12 +1312,14 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest, CRLSetDoesNotDowngrade) {
   // Create a new CertVerifierService and ensure the latest CRLSet is still
   // applied.
   mojo::Remote<mojom::CertVerifierService> cv_service_remote2;
+  mojo::Remote<mojom::CertVerifierServiceUpdater> cv_service_updater_remote2;
   DummyCVServiceClient cv_service_client2;
   mojom::CertVerifierCreationParamsPtr cv_creation_params2 =
       mojom::CertVerifierCreationParams::New();
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote2.BindNewPipeAndPassReceiver(),
+      cv_service_updater_remote2.BindNewPipeAndPassReceiver(),
       cv_service_client2.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params2));
 
@@ -800,11 +1334,11 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest, CRLSetDoesNotDowngrade) {
 
 // Verifies that attempting to send an invalid CRLSet does not affect existing
 // or new contexts.
-TEST_F(CertVerifierServiceFactoryCRLSetTest, BadCRLSetIgnored) {
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest, BadCRLSetIgnored) {
   scoped_refptr<net::X509Certificate> test_root(net::ImportCertFromFile(
       net::GetTestCertsDirectory(), "root_ca_cert.pem"));
   ASSERT_TRUE(test_root);
-  net::ScopedTestRoot scoped_test_root(test_root.get());
+  net::ScopedTestRoot scoped_test_root(test_root);
   scoped_refptr<net::X509Certificate> ok_cert(
       net::ImportCertFromFile(net::GetTestCertsDirectory(), "ok_cert.pem"));
   ASSERT_TRUE(ok_cert);
@@ -822,6 +1356,7 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest, BadCRLSetIgnored) {
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
       cv_service_client.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params));
 
@@ -850,9 +1385,8 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest, BadCRLSetIgnored) {
     std::string crl_set_bytes(1000, '\xff');
 
     base::RunLoop update_run_loop;
-    cv_service_factory_impl.UpdateCRLSet(
-        base::as_bytes(base::make_span(crl_set_bytes)),
-        update_run_loop.QuitClosure());
+    cv_service_factory_impl.UpdateCRLSet(base::as_byte_span(crl_set_bytes),
+                                         update_run_loop.QuitClosure());
     update_run_loop.Run();
   }
 
@@ -869,12 +1403,14 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest, BadCRLSetIgnored) {
   // Create a new CertVerifierService and ensure the latest valid CRLSet is
   // still applied.
   mojo::Remote<mojom::CertVerifierService> cv_service_remote2;
+  mojo::Remote<mojom::CertVerifierServiceUpdater> cv_service_updater_remote2;
   DummyCVServiceClient cv_service_client2;
   mojom::CertVerifierCreationParamsPtr cv_creation_params2 =
       mojom::CertVerifierCreationParams::New();
 
   cv_service_factory_remote->GetNewCertVerifier(
       cv_service_remote2.BindNewPipeAndPassReceiver(),
+      cv_service_updater_remote2.BindNewPipeAndPassReceiver(),
       cv_service_client2.client_.BindNewPipeAndPassRemote(),
       std::move(cv_creation_params2));
 
@@ -885,6 +1421,639 @@ TEST_F(CertVerifierServiceFactoryCRLSetTest, BadCRLSetIgnored) {
     EXPECT_THAT(net_error, IsError(net::ERR_CERT_REVOKED));
     EXPECT_TRUE(result.cert_status & net::CERT_STATUS_REVOKED);
   }
+}
+
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest,
+       GetNewCertVerifierWithAdditionalCerts) {
+  auto [leaf1, intermediate1, root1] = net::CertBuilder::CreateSimpleChain3();
+  auto [leaf2, intermediate2, root2] = net::CertBuilder::CreateSimpleChain3();
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  EnableChromeRootStoreIfOptional(&cv_service_factory_impl);
+
+  mojo::Remote<mojom::CertVerifierService> cv_service_remote;
+  mojo::Remote<mojom::CertVerifierServiceUpdater> cv_service_updater_remote;
+  DummyCVServiceClient cv_service_client;
+  mojom::CertVerifierCreationParamsPtr cv_creation_params =
+      mojom::CertVerifierCreationParams::New();
+  // Initial creation params supply `root1` as an additional trust anchor and
+  // `intermediate1` as an untrusted cert.
+  cv_creation_params->initial_additional_certificates =
+      mojom::AdditionalCertificates::New();
+  base::span<const uint8_t> root1_bytes = net::x509_util::CryptoBufferAsSpan(
+      root1->GetX509Certificate()->cert_buffer());
+  cv_creation_params->initial_additional_certificates->trust_anchors.push_back(
+      std::vector(root1_bytes.begin(), root1_bytes.end()));
+
+  base::span<const uint8_t> intermediate1_bytes =
+      net::x509_util::CryptoBufferAsSpan(
+          intermediate1->GetX509Certificate()->cert_buffer());
+  cv_creation_params->initial_additional_certificates->all_certificates
+      .push_back(
+          std::vector(intermediate1_bytes.begin(), intermediate1_bytes.end()));
+
+  // Create the cert verifier. It should start with the additional trust
+  // anchors from the creation params already trusted.
+  cv_service_factory_remote->GetNewCertVerifier(
+      cv_service_remote.BindNewPipeAndPassReceiver(),
+      cv_service_updater_remote.BindNewPipeAndPassReceiver(),
+      cv_service_client.client_.BindNewPipeAndPassRemote(),
+      std::move(cv_creation_params));
+
+  // `leaf1` should be trusted and `leaf2` should not be trusted.
+  {
+    auto [net_error, result] = Verify(
+        cv_service_remote, leaf1->GetX509Certificate(), "www.example.com");
+    EXPECT_THAT(net_error, IsError(net::OK));
+  }
+  {
+    auto [net_error, result] = Verify(
+        cv_service_remote, leaf2->GetX509Certificate(), "www.example.com");
+    EXPECT_THAT(net_error, IsError(net::ERR_CERT_AUTHORITY_INVALID));
+  }
+
+  EXPECT_EQ(cv_service_client.changed_count_, 0u);
+
+  // Supply a new set of additional certificates with `root2` trusted this time.
+  auto new_additional_certificates = mojom::AdditionalCertificates::New();
+  base::span<const uint8_t> root2_bytes = net::x509_util::CryptoBufferAsSpan(
+      root2->GetX509Certificate()->cert_buffer());
+  new_additional_certificates->trust_anchors.push_back(
+      std::vector<uint8_t>(root2_bytes.begin(), root2_bytes.end()));
+
+  base::span<const uint8_t> intermediate2_bytes =
+      net::x509_util::CryptoBufferAsSpan(
+          intermediate2->GetX509Certificate()->cert_buffer());
+  new_additional_certificates->all_certificates.push_back(std::vector<uint8_t>(
+      intermediate2_bytes.begin(), intermediate2_bytes.end()));
+  cv_service_updater_remote->UpdateAdditionalCertificates(
+      std::move(new_additional_certificates));
+
+  // Client should have received notification of the update.
+  EXPECT_NO_FATAL_FAILURE(cv_service_client.WaitForCertVerifierChange(1u));
+
+  // Now `leaf1` should not be trusted and `leaf2` should be trusted.
+  {
+    auto [net_error, result] = Verify(
+        cv_service_remote, leaf1->GetX509Certificate(), "www.example.com");
+    EXPECT_THAT(net_error, IsError(net::ERR_CERT_AUTHORITY_INVALID));
+  }
+  {
+    auto [net_error, result] = Verify(
+        cv_service_remote, leaf2->GetX509Certificate(), "www.example.com");
+    EXPECT_THAT(net_error, IsError(net::OK));
+  }
+}
+
+// Tests that UpdateNetworkTime being called causes new cert verifiers to use
+// the time tracker time for verification.
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest,
+       UpdateNetworkTimeNewVerifier) {
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+  base::Time now = base::Time::Now();
+  base::TimeTicks ticks_now = base::TimeTicks::Now();
+  //  Configure the leaf certificate so it is no longer valid according to the
+  //  system time.
+  leaf->SetValidity(now - base::Days(3), now - base::Days(1));
+  leaf->SetSubjectAltName("host.test");
+  net::ScopedTestRoot scoped_test_root(root->GetX509Certificate());
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+  EnableChromeRootStoreIfOptional(&cv_service_factory_impl);
+
+  // Update the time tracker so the current time is within the certificate
+  // validity range.
+  cv_service_factory_impl.UpdateNetworkTime(now, ticks_now,
+                                            now - base::Days(2),
+                                            kNetworkTimeUncertainty);
+
+  mojo::Remote<mojom::CertVerifierService> cv_service_remote;
+  DummyCVServiceClient cv_service_client;
+  mojom::CertVerifierCreationParamsPtr cv_creation_params =
+      mojom::CertVerifierCreationParams::New();
+
+  // Create the cert verifier. It should start with the time tracker set to the
+  // time passed to UpdateNetworkTime.
+  cv_service_factory_remote->GetNewCertVerifier(
+      cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
+      cv_service_client.client_.BindNewPipeAndPassRemote(),
+      std::move(cv_creation_params));
+
+  auto [net_error, result] =
+      Verify(cv_service_remote, leaf->GetX509Certificate(), "host.test");
+  EXPECT_THAT(net_error, IsError(net::OK));
+  EXPECT_FALSE(net::IsCertStatusError(result.cert_status));
+
+  // Update happened before the CertVerifier was created, no change observers
+  // should have been notified.
+  EXPECT_EQ(cv_service_client.changed_count_, 0u);
+}
+
+// Tests that UpdateNetworkTime being called causes existing cert verifiers to
+// use the time tracker time for verification.
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest,
+       UpdateNetworkTimeExistingVerifier) {
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+  base::Time now = base::Time::Now();
+  base::TimeTicks ticks_now = base::TimeTicks::Now();
+  //  Configure the leaf certificate so it is no longer valid according to the
+  //  system time.
+  leaf->SetValidity(now - base::Days(3), now - base::Days(1));
+  leaf->SetSubjectAltName("host.test");
+  net::ScopedTestRoot scoped_test_root(root->GetX509Certificate());
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+  EnableChromeRootStoreIfOptional(&cv_service_factory_impl);
+
+  mojo::Remote<mojom::CertVerifierService> cv_service_remote;
+  DummyCVServiceClient cv_service_client;
+  mojom::CertVerifierCreationParamsPtr cv_creation_params =
+      mojom::CertVerifierCreationParams::New();
+
+  // Create the cert verifier. Request should fail since time hasn't been
+  // updated yet.
+  cv_service_factory_remote->GetNewCertVerifier(
+      cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
+      cv_service_client.client_.BindNewPipeAndPassRemote(),
+      std::move(cv_creation_params));
+  {
+    auto [net_error, result] =
+        Verify(cv_service_remote, leaf->GetX509Certificate(), "host.test");
+    EXPECT_THAT(net_error, IsError(net::ERR_CERT_DATE_INVALID));
+    EXPECT_TRUE(net::IsCertStatusError(result.cert_status));
+  }
+
+  // No updates should have happened yet.
+  EXPECT_EQ(cv_service_client.changed_count_, 0u);
+
+  // Update the time tracker so the current time is within the certificate
+  // validity range.
+  cv_service_factory_impl.UpdateNetworkTime(now, ticks_now,
+                                            now - base::Days(2),
+                                            kNetworkTimeUncertainty);
+
+  // Update should have been notified.
+  EXPECT_NO_FATAL_FAILURE(cv_service_client.WaitForCertVerifierChange(1u));
+
+  // Try request again and it should succeed.
+  {
+    auto [net_error, result] =
+        Verify(cv_service_remote, leaf->GetX509Certificate(), "host.test");
+    EXPECT_THAT(net_error, IsError(net::OK));
+    EXPECT_FALSE(net::IsCertStatusError(result.cert_status));
+  }
+}
+
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+namespace {
+std::string GetNonCompiledSignerSetVersion() {
+  std::string compiled_version =
+      net::ChromeRootStoreSignerSet::CreateFromCompiled().version();
+  if (compiled_version == "2.0.0") {
+    return "3.0.0";
+  }
+  return "2.0.0";
+}
+}  // namespace
+
+TEST(CertVerifierServiceFactoryTest, UpdateSignerSetChecksVersion) {
+  base::test::TaskEnvironment task_environment;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(net::features::kVerifyMTCs);
+
+  // Generate test cert and initialize a RootStore.
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+  chrome_root_store::RootStore root_store_proto;
+  root_store_proto.set_version_major(net::CompiledChromeRootStoreVersion() + 1);
+  chrome_root_store::TrustAnchor* anchor = root_store_proto.add_trust_anchors();
+  anchor->set_der(root->GetDER());
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  int64_t compiled_seconds = net::CompiledSignerSetTimestampSeconds();
+
+  // 1. Update with timestamp <= compiled-in should be ignored.
+  chrome_root_store::MtcConfig mtc_config_old;
+  chrome_root_store::SignerSet* signer_set_proto_old =
+      mtc_config_old.mutable_signer_set();
+  signer_set_proto_old->mutable_timestamp()->set_seconds(compiled_seconds - 10);
+  signer_set_proto_old->set_version("0.9.0");
+
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto),
+        mojo_base::ProtoWrapper(mtc_config_old), update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  chrome_root_store::MtcConfig mtc_config_equal;
+  chrome_root_store::SignerSet* signer_set_proto_equal =
+      mtc_config_equal.mutable_signer_set();
+  signer_set_proto_equal->mutable_timestamp()->set_seconds(compiled_seconds);
+  signer_set_proto_equal->set_version("0.9.0");
+
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto),
+        mojo_base::ProtoWrapper(mtc_config_equal),
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  // Verify they were ignored (should not be "0.9.0").
+  const net::CertVerifyProc::ImplParams& params1 =
+      cv_service_factory_impl.get_impl_params();
+  ASSERT_TRUE(params1.root_store_data);
+  ASSERT_TRUE(params1.root_store_data->signer_set().has_value());
+  EXPECT_NE(params1.root_store_data->signer_set()->version(), "0.9.0");
+
+  // 2. Update with timestamp > compiled-in should be applied.
+  chrome_root_store::MtcConfig mtc_config_new;
+  chrome_root_store::SignerSet* signer_set_proto_new =
+      mtc_config_new.mutable_signer_set();
+  signer_set_proto_new->mutable_timestamp()->set_seconds(compiled_seconds + 20);
+  signer_set_proto_new->set_version(GetNonCompiledSignerSetVersion());
+
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto),
+        mojo_base::ProtoWrapper(mtc_config_new), update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  // Verify it was applied.
+  const net::CertVerifyProc::ImplParams& params2 =
+      cv_service_factory_impl.get_impl_params();
+  ASSERT_TRUE(params2.root_store_data);
+  ASSERT_TRUE(params2.root_store_data->signer_set().has_value());
+  EXPECT_EQ(params2.root_store_data->signer_set()->version(),
+            GetNonCompiledSignerSetVersion());
+
+  // 3. Update with timestamp > compiled-in but < currently active should be
+  // applied (since we allow downgrades).
+  chrome_root_store::MtcConfig mtc_config_mid;
+  chrome_root_store::SignerSet* signer_set_proto_mid =
+      mtc_config_mid.mutable_signer_set();
+  signer_set_proto_mid->mutable_timestamp()->set_seconds(compiled_seconds + 10);
+  signer_set_proto_mid->set_version("1.5.0");
+
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto),
+        mojo_base::ProtoWrapper(mtc_config_mid), update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  // Verify it was applied (downgraded to 1.5.0).
+  const net::CertVerifyProc::ImplParams& params3 =
+      cv_service_factory_impl.get_impl_params();
+  ASSERT_TRUE(params3.root_store_data);
+  ASSERT_TRUE(params3.root_store_data->signer_set().has_value());
+  EXPECT_EQ(params3.root_store_data->signer_set()->version(), "1.5.0");
+}
+
+TEST(CertVerifierServiceFactoryTest, ParseChromeRootStoreProto) {
+  base::test::TaskEnvironment task_environment;
+
+  int64_t compiled_version = net::CompiledChromeRootStoreVersion();
+
+  // Check we don't overwrite a newer compiled-in version.
+  chrome_root_store::RootStore root_store_old;
+  root_store_old.set_version_major(compiled_version);
+  EXPECT_FALSE(CertVerifierServiceFactoryImpl::ParseChromeRootStoreProto(
+                   mojo_base::ProtoWrapper(root_store_old))
+                   .has_value());
+
+  // Passing an invalid proto should return nullopt.
+  chrome_root_store::SignerSet signer_set_proto;
+  EXPECT_FALSE(CertVerifierServiceFactoryImpl::ParseChromeRootStoreProto(
+                   mojo_base::ProtoWrapper(signer_set_proto))
+                   .has_value());
+
+  chrome_root_store::RootStore root_store_new;
+  root_store_new.set_version_major(compiled_version + 1);
+  // Add a dummy anchor so it's not considered empty.
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+  chrome_root_store::TrustAnchor* anchor = root_store_new.add_trust_anchors();
+  anchor->set_der(root->GetDER());
+
+  auto parsed = CertVerifierServiceFactoryImpl::ParseChromeRootStoreProto(
+      mojo_base::ProtoWrapper(root_store_new));
+  ASSERT_TRUE(parsed.has_value());
+  EXPECT_EQ(parsed->version(), compiled_version + 1);
+}
+
+TEST(CertVerifierServiceFactoryTest, ParseMtcConfigProto) {
+  base::test::TaskEnvironment task_environment;
+
+  int64_t compiled_seconds = net::CompiledSignerSetTimestampSeconds();
+
+  chrome_root_store::MtcConfig mtc_config_proto;
+  chrome_root_store::SignerSet* signer_set_proto =
+      mtc_config_proto.mutable_signer_set();
+  signer_set_proto->mutable_timestamp()->set_seconds(compiled_seconds + 10);
+  signer_set_proto->set_version(GetNonCompiledSignerSetVersion());
+
+  // Test with disabled VerifyMTCs feature
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(net::features::kVerifyMTCs);
+    EXPECT_FALSE(CertVerifierServiceFactoryImpl::ParseMtcConfigProto(
+                     mojo_base::ProtoWrapper(mtc_config_proto))
+                     .has_value());
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeature(net::features::kVerifyMTCs);
+
+    // Empty input
+    EXPECT_FALSE(
+        CertVerifierServiceFactoryImpl::ParseMtcConfigProto(std::nullopt)
+            .has_value());
+
+    // Passing an invalid proto should return nullopt.
+    chrome_root_store::RootStore root_store_proto;
+    EXPECT_FALSE(CertVerifierServiceFactoryImpl::ParseMtcConfigProto(
+                     mojo_base::ProtoWrapper(root_store_proto))
+                     .has_value());
+
+    auto parsed = CertVerifierServiceFactoryImpl::ParseMtcConfigProto(
+        mojo_base::ProtoWrapper(mtc_config_proto));
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->signer_set().version(), GetNonCompiledSignerSetVersion());
+  }
+}
+
+TEST(CertVerifierServiceFactoryTest, UpdateSignerSetWithOldRootStore) {
+  base::test::TaskEnvironment task_environment;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(net::features::kVerifyMTCs);
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  int64_t compiled_signer_seconds = net::CompiledSignerSetTimestampSeconds();
+  int64_t compiled_crs_version = net::CompiledChromeRootStoreVersion();
+
+  // Create a RootStore with version <= compiled-in.
+  chrome_root_store::RootStore root_store_proto_old;
+  root_store_proto_old.set_version_major(compiled_crs_version);
+  // And a SignerSet with timestamp > compiled-in.
+  chrome_root_store::MtcConfig mtc_config_proto_new;
+  chrome_root_store::SignerSet* signer_set_proto_new =
+      mtc_config_proto_new.mutable_signer_set();
+  signer_set_proto_new->mutable_timestamp()->set_seconds(
+      compiled_signer_seconds + 10);
+  signer_set_proto_new->set_version(GetNonCompiledSignerSetVersion());
+
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto_old),
+        mojo_base::ProtoWrapper(mtc_config_proto_new),
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  // Verify that the update succeeded and we have root_store_data.
+  const net::CertVerifyProc::ImplParams& params =
+      cv_service_factory_impl.get_impl_params();
+  ASSERT_TRUE(params.root_store_data);
+  // The RootStore version should be the compiled-in version.
+  EXPECT_EQ(params.root_store_data->version(), compiled_crs_version);
+  // The SignerSet should be the new one
+  ASSERT_TRUE(params.root_store_data->signer_set().has_value());
+  EXPECT_EQ(params.root_store_data->signer_set()->version(),
+            GetNonCompiledSignerSetVersion());
+}
+
+TEST(CertVerifierServiceFactoryTest, UpdateRootStoreWithOldSignerSet) {
+  base::test::TaskEnvironment task_environment;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(net::features::kVerifyMTCs);
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  int64_t compiled_signer_seconds = net::CompiledSignerSetTimestampSeconds();
+  int64_t compiled_crs_version = net::CompiledChromeRootStoreVersion();
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+
+  // Create a RootStore with version > compiled-in.
+  chrome_root_store::RootStore root_store_proto_new;
+  root_store_proto_new.set_version_major(compiled_crs_version + 10);
+  chrome_root_store::TrustAnchor* anchor =
+      root_store_proto_new.add_trust_anchors();
+  anchor->set_der(root->GetDER());
+
+  // And a SignerSet with timestamp <= compiled-in.
+  chrome_root_store::MtcConfig mtc_config_proto_old;
+  chrome_root_store::SignerSet* signer_set_proto_old =
+      mtc_config_proto_old.mutable_signer_set();
+  signer_set_proto_old->mutable_timestamp()->set_seconds(
+      compiled_signer_seconds - 10);
+  signer_set_proto_old->set_version(GetNonCompiledSignerSetVersion());
+
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto_new),
+        mojo_base::ProtoWrapper(mtc_config_proto_old),
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  const net::CertVerifyProc::ImplParams& params =
+      cv_service_factory_impl.get_impl_params();
+  ASSERT_TRUE(params.root_store_data);
+  // The RootStore version should be the new version.
+  EXPECT_EQ(params.root_store_data->version(), compiled_crs_version + 10);
+  // The signer set should still be the compiled in version
+  ASSERT_TRUE(params.root_store_data->signer_set().has_value());
+  EXPECT_EQ(params.root_store_data->signer_set()
+                ->timestamp()
+                .InSecondsFSinceUnixEpoch(),
+            compiled_signer_seconds);
+}
+TEST(CertVerifierServiceFactoryTest, UpdateMtcConfigDisableFlag) {
+  base::test::TaskEnvironment task_environment;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(net::features::kVerifyMTCs);
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+
+  int64_t compiled_signer_seconds = net::CompiledSignerSetTimestampSeconds();
+  int64_t compiled_crs_version = net::CompiledChromeRootStoreVersion();
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+
+  chrome_root_store::RootStore root_store_proto;
+  root_store_proto.set_version_major(compiled_crs_version + 10);
+  chrome_root_store::TrustAnchor* anchor = root_store_proto.add_trust_anchors();
+  anchor->set_der(root->GetDER());
+
+  // Initial update without any MtcConfig, to initialize the root store and
+  // verify the initial state of the disable flag.
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto), std::nullopt,
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  const net::CertVerifyProc::ImplParams& initial_params =
+      cv_service_factory_impl.get_impl_params();
+  ASSERT_TRUE(initial_params.root_store_data);
+  EXPECT_FALSE(
+      initial_params.root_store_data->disable_mtc_mirroring_requirements());
+
+  // Update with an MtcConfig that doesn't have a SignerSet, but has the
+  // disable flag set to true.
+  chrome_root_store::MtcConfig mtc_config_no_signer_set;
+  mtc_config_no_signer_set.set_disable_mtc_mirroring_requirements(true);
+
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto),
+        mojo_base::ProtoWrapper(mtc_config_no_signer_set),
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  const net::CertVerifyProc::ImplParams& params1 =
+      cv_service_factory_impl.get_impl_params();
+  ASSERT_TRUE(params1.root_store_data);
+  EXPECT_TRUE(params1.root_store_data->disable_mtc_mirroring_requirements());
+  // The signer set should still be the compiled in version.
+  ASSERT_TRUE(params1.root_store_data->signer_set().has_value());
+  EXPECT_EQ(params1.root_store_data->signer_set()
+                ->timestamp()
+                .InSecondsFSinceUnixEpoch(),
+            compiled_signer_seconds);
+
+  // Update with an MtcConfig that turns the flag back off.
+  chrome_root_store::MtcConfig mtc_config_disable_off;
+  mtc_config_disable_off.set_disable_mtc_mirroring_requirements(false);
+
+  {
+    base::RunLoop update_run_loop;
+    cv_service_factory_impl.UpdateChromeRootStore(
+        mojo_base::ProtoWrapper(root_store_proto),
+        mojo_base::ProtoWrapper(mtc_config_disable_off),
+        update_run_loop.QuitClosure());
+    update_run_loop.Run();
+  }
+
+  const net::CertVerifyProc::ImplParams& params2 =
+      cv_service_factory_impl.get_impl_params();
+  ASSERT_TRUE(params2.root_store_data);
+  EXPECT_FALSE(params2.root_store_data->disable_mtc_mirroring_requirements());
+  // The signer set should still be the compiled in version.
+  ASSERT_TRUE(params2.root_store_data->signer_set().has_value());
+  EXPECT_EQ(params2.root_store_data->signer_set()
+                ->timestamp()
+                .InSecondsFSinceUnixEpoch(),
+            compiled_signer_seconds);
+}
+#endif  // BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest,
+       UpdateNetworkTime_Applied) {
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+  base::Time now = base::Time::Now();
+  base::TimeTicks ticks_now = base::TimeTicks::Now();
+  // Configure the leaf certificate so it is no longer valid according to the
+  // system time.
+  leaf->SetValidity(now - base::Days(3), now - base::Days(1));
+  leaf->SetSubjectAltName("host.test");
+  net::ScopedTestRoot scoped_test_root(root->GetX509Certificate());
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+  EnableChromeRootStoreIfOptional(&cv_service_factory_impl);
+
+  // Update the time tracker with uncertainty exactly at the threshold (45s).
+  // This should be applied.
+  cv_service_factory_impl.UpdateNetworkTime(now, ticks_now, now - base::Days(2),
+                                            base::Seconds(45));
+
+  mojo::Remote<mojom::CertVerifierService> cv_service_remote;
+  DummyCVServiceClient cv_service_client;
+  mojom::CertVerifierCreationParamsPtr cv_creation_params =
+      mojom::CertVerifierCreationParams::New();
+
+  cv_service_factory_remote->GetNewCertVerifier(
+      cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
+      cv_service_client.client_.BindNewPipeAndPassRemote(),
+      std::move(cv_creation_params));
+
+  auto [net_error, result] =
+      Verify(cv_service_remote, leaf->GetX509Certificate(), "host.test");
+  EXPECT_THAT(net_error, IsError(net::OK));
+  EXPECT_FALSE(net::IsCertStatusError(result.cert_status));
+}
+
+TEST_F(CertVerifierServiceFactoryBuiltinVerifierTest,
+       UpdateNetworkTime_Ignored) {
+  auto [leaf, root] = net::CertBuilder::CreateSimpleChain2();
+  base::Time now = base::Time::Now();
+  base::TimeTicks ticks_now = base::TimeTicks::Now();
+  // Configure the leaf certificate so it is no longer valid according to the
+  // system time.
+  leaf->SetValidity(now - base::Days(3), now - base::Days(1));
+  leaf->SetSubjectAltName("host.test");
+  net::ScopedTestRoot scoped_test_root(root->GetX509Certificate());
+
+  mojo::Remote<mojom::CertVerifierServiceFactory> cv_service_factory_remote;
+  CertVerifierServiceFactoryImpl cv_service_factory_impl(
+      cv_service_factory_remote.BindNewPipeAndPassReceiver());
+  EnableChromeRootStoreIfOptional(&cv_service_factory_impl);
+
+  // Update the time tracker with uncertainty just above the threshold (46s).
+  // This should be ignored.
+  cv_service_factory_impl.UpdateNetworkTime(now, ticks_now, now - base::Days(2),
+                                            base::Seconds(46));
+
+  mojo::Remote<mojom::CertVerifierService> cv_service_remote;
+  DummyCVServiceClient cv_service_client;
+  mojom::CertVerifierCreationParamsPtr cv_creation_params =
+      mojom::CertVerifierCreationParams::New();
+
+  cv_service_factory_remote->GetNewCertVerifier(
+      cv_service_remote.BindNewPipeAndPassReceiver(),
+      /*updater=*/mojo::NullReceiver(),
+      cv_service_client.client_.BindNewPipeAndPassRemote(),
+      std::move(cv_creation_params));
+
+  auto [net_error, result] =
+      Verify(cv_service_remote, leaf->GetX509Certificate(), "host.test");
+  // Should fail because the network time update was ignored, so it used
+  // system time (which is expired).
+  EXPECT_THAT(net_error, IsError(net::ERR_CERT_DATE_INVALID));
+  EXPECT_TRUE(net::IsCertStatusError(result.cert_status));
 }
 
 }  // namespace cert_verifier

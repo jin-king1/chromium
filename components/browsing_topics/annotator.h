@@ -5,17 +5,12 @@
 #ifndef COMPONENTS_BROWSING_TOPICS_ANNOTATOR_H_
 #define COMPONENTS_BROWSING_TOPICS_ANNOTATOR_H_
 
+#include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
-#include "base/files/file_path.h"
 #include "base/functional/callback.h"
-#include "base/memory/weak_ptr.h"
-#include "base/sequence_checker.h"
-#include "base/task/sequenced_task_runner.h"
-#include "components/optimization_guide/core/bert_model_handler.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "components/optimization_guide/core/inference/bert_model_handler.h"
 
 namespace browsing_topics {
 
@@ -51,7 +46,7 @@ class Annotator {
   virtual void NotifyWhenModelAvailable(base::OnceClosure callback) = 0;
 
   // Returns the model info if the model file is available.
-  virtual absl::optional<optimization_guide::ModelInfo>
+  virtual std::optional<optimization_guide::ModelInfo>
   GetBrowsingTopicsModelInfo() const = 0;
 };
 

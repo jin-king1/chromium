@@ -4,35 +4,31 @@
 
 #include "device/fido/mac/make_credential_operation.h"
 
-#include <string>
-
 #import <Foundation/Foundation.h>
 
-#include "base/containers/contains.h"
+#include <algorithm>
+#include <string>
+
+#include "base/apple/foundation_util.h"
+#include "base/apple/osstatus_logging.h"
+#include "base/apple/scoped_cftyperef.h"
 #include "base/functional/bind.h"
-#include "base/mac/foundation_util.h"
-#include "base/mac/mac_logging.h"
-#include "base/mac/scoped_cftyperef.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "components/device_event_log/device_event_log.h"
 #include "device/fido/attestation_statement_formats.h"
 #include "device/fido/attested_credential_data.h"
 #include "device/fido/authenticator_data.h"
-#include "device/fido/features.h"
-#include "device/fido/fido_constants.h"
 #include "device/fido/fido_parsing_utils.h"
-#include "device/fido/fido_transport_protocol.h"
 #include "device/fido/mac/credential_metadata.h"
 #include "device/fido/mac/credential_store.h"
 #include "device/fido/mac/util.h"
+#include "device/fido/public/features.h"
+#include "device/fido/public/fido_constants.h"
+#include "device/fido/public/fido_transport_protocol.h"
 #include "device/fido/public_key.h"
 #include "device/fido/strings/grit/fido_strings.h"
 #include "ui/base/l10n/l10n_util.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace device::fido::mac {
 
@@ -47,21 +43,19 @@ MakeCredentialOperation::MakeCredentialOperation(
 MakeCredentialOperation::~MakeCredentialOperation() = default;
 
 void MakeCredentialOperation::Run() {
-  if (!base::Contains(
+  if (!std::ranges::contains(
           request_.public_key_credential_params.public_key_credential_params(),
           static_cast<int>(CoseAlgorithmIdentifier::kEs256),
           &PublicKeyCredentialParams::CredentialInfo::algorithm)) {
     FIDO_LOG(ERROR) << "No supported algorithm found";
-    std::move(callback_).Run(
-        CtapDeviceResponseCode::kCtap2ErrUnsupportedAlgorithm, absl::nullopt);
+    std::move(callback_).Run(MakeCredentialStatus::kNoCommonAlgorithms,
+                             std::nullopt);
     return;
   }
 
-  const bool require_uv =
-      !base::FeatureList::IsEnabled(
-          kWebAuthnMacPlatformAuthenticatorOptionalUv) ||
-      DeviceHasBiometricsAvailable() ||
-      request_.user_verification == UserVerificationRequirement::kRequired;
+  const bool require_uv = ProfileAuthenticatorWillDoUserVerification(
+      request_.user_verification,
+      device::fido::mac::DeviceHasBiometricsAvailable());
   if (require_uv) {
     touch_id_context_->PromptTouchId(
         l10n_util::GetStringFUTF16(IDS_WEBAUTHN_TOUCH_ID_PROMPT_REASON,
@@ -76,8 +70,8 @@ void MakeCredentialOperation::Run() {
 
 void MakeCredentialOperation::PromptTouchIdDone(bool success) {
   if (!success) {
-    std::move(callback_).Run(CtapDeviceResponseCode::kCtap2ErrOperationDenied,
-                             absl::nullopt);
+    std::move(callback_).Run(MakeCredentialStatus::kUserConsentDenied,
+                             std::nullopt);
     return;
   }
 
@@ -92,18 +86,19 @@ void MakeCredentialOperation::PromptTouchIdDone(bool success) {
 
 void MakeCredentialOperation::CreateCredential(bool has_uv) {
   if (!request_.exclude_list.empty()) {
-    absl::optional<std::list<Credential>> credentials =
+    std::optional<std::list<Credential>> credentials =
         credential_store_->FindCredentialsFromCredentialDescriptorList(
             request_.rp.id, request_.exclude_list);
     if (!credentials) {
       FIDO_LOG(ERROR) << "Failed to check for excluded credentials";
-      std::move(callback_).Run(CtapDeviceResponseCode::kCtap2ErrOther,
-                               absl::nullopt);
+      std::move(callback_).Run(
+          MakeCredentialStatus::kAuthenticatorResponseInvalid, std::nullopt);
       return;
     }
     if (!credentials->empty()) {
       std::move(callback_).Run(
-          CtapDeviceResponseCode::kCtap2ErrCredentialExcluded, absl::nullopt);
+          MakeCredentialStatus::kUserConsentButCredentialExcluded,
+          std::nullopt);
       return;
     }
   }
@@ -112,8 +107,8 @@ void MakeCredentialOperation::CreateCredential(bool has_uv) {
   if (!credential_store_->DeleteCredentialsForUserId(request_.rp.id,
                                                      request_.user.id)) {
     FIDO_LOG(ERROR) << "DeleteCredentialsForUserId() failed";
-    std::move(callback_).Run(CtapDeviceResponseCode::kCtap2ErrOther,
-                             absl::nullopt);
+    std::move(callback_).Run(
+        MakeCredentialStatus::kAuthenticatorResponseInvalid, std::nullopt);
     return;
   }
 
@@ -121,37 +116,38 @@ void MakeCredentialOperation::CreateCredential(bool has_uv) {
   //
   // New credentials are always discoverable. But older non-discoverable
   // credentials may exist.
-  absl::optional<std::pair<Credential, base::ScopedCFTypeRef<SecKeyRef>>>
+  std::optional<std::pair<Credential, base::apple::ScopedCFTypeRef<SecKeyRef>>>
       credential_result = credential_store_->CreateCredential(
           request_.rp.id, request_.user, TouchIdCredentialStore::kDiscoverable);
   if (!credential_result) {
     FIDO_LOG(ERROR) << "CreateCredential() failed";
-    std::move(callback_).Run(CtapDeviceResponseCode::kCtap2ErrOther,
-                             absl::nullopt);
+    std::move(callback_).Run(
+        MakeCredentialStatus::kAuthenticatorResponseInvalid, std::nullopt);
     return;
   }
   auto [credential, sec_key_ref] = std::move(*credential_result);
 
   // Create attestation object. There is no separate attestation key pair, so
   // we perform self-attestation.
-  absl::optional<AttestedCredentialData> attested_credential_data =
+  std::optional<AttestedCredentialData> attested_credential_data =
       MakeAttestedCredentialData(credential.credential_id,
-                                 SecKeyRefToECPublicKey(sec_key_ref));
+                                 SecKeyRefToECPublicKey(sec_key_ref.get()));
   if (!attested_credential_data) {
     FIDO_LOG(ERROR) << "MakeAttestedCredentialData failed";
-    std::move(callback_).Run(CtapDeviceResponseCode::kCtap2ErrOther,
-                             absl::nullopt);
+    std::move(callback_).Run(
+        MakeCredentialStatus::kAuthenticatorResponseInvalid, std::nullopt);
     return;
   }
   AuthenticatorData authenticator_data = MakeAuthenticatorData(
       credential.metadata.sign_counter_type, request_.rp.id,
       std::move(*attested_credential_data), has_uv);
-  absl::optional<std::vector<uint8_t>> signature = GenerateSignature(
-      authenticator_data, request_.client_data_hash, credential.private_key);
+  std::optional<std::vector<uint8_t>> signature =
+      GenerateSignature(authenticator_data, request_.client_data_hash,
+                        credential.private_key.get());
   if (!signature) {
     FIDO_LOG(ERROR) << "MakeSignature failed";
-    std::move(callback_).Run(CtapDeviceResponseCode::kCtap2ErrOther,
-                             absl::nullopt);
+    std::move(callback_).Run(
+        MakeCredentialStatus::kAuthenticatorResponseInvalid, std::nullopt);
     return;
   }
   AuthenticatorMakeCredentialResponse response(
@@ -165,8 +161,7 @@ void MakeCredentialOperation::CreateCredential(bool has_uv) {
   response.is_resident_key = true;
   response.transports.emplace();
   response.transports->insert(FidoTransportProtocol::kInternal);
-  std::move(callback_).Run(CtapDeviceResponseCode::kSuccess,
-                           std::move(response));
+  std::move(callback_).Run(MakeCredentialStatus::kSuccess, std::move(response));
 }
 
 }  // namespace device::fido::mac

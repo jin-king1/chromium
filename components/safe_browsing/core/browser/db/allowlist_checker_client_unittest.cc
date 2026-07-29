@@ -31,7 +31,6 @@ class MockSafeBrowsingDatabaseManager : public TestSafeBrowsingDatabaseManager {
  public:
   MockSafeBrowsingDatabaseManager()
       : TestSafeBrowsingDatabaseManager(
-            base::SequencedTaskRunner::GetCurrentDefault(),
             base::SequencedTaskRunner::GetCurrentDefault()) {}
 
   MockSafeBrowsingDatabaseManager(const MockSafeBrowsingDatabaseManager&) =
@@ -45,7 +44,7 @@ class MockSafeBrowsingDatabaseManager : public TestSafeBrowsingDatabaseManager {
                AsyncMatch(const GURL&, SafeBrowsingDatabaseManager::Client*));
 
  protected:
-  ~MockSafeBrowsingDatabaseManager() override {}
+  ~MockSafeBrowsingDatabaseManager() override = default;
 };
 }  // namespace
 
@@ -84,6 +83,8 @@ TEST_F(AllowlistCheckerClientTest, TestCsdListMatch) {
   histogram_tester.ExpectUniqueSample(
       "SafeBrowsing.ClientSidePhishingDetection.AllowlistMatchResult",
       /*sample=*/AsyncMatch::MATCH, /*expected_bucket_count=*/1);
+  histogram_tester.ExpectTotalCount(
+      "SafeBrowsing.ClientSidePhishingDetection.AllowlistCheckDuration", 1);
 }
 
 TEST_F(AllowlistCheckerClientTest, TestCsdListNoMatch) {
@@ -97,6 +98,8 @@ TEST_F(AllowlistCheckerClientTest, TestCsdListNoMatch) {
   histogram_tester.ExpectUniqueSample(
       "SafeBrowsing.ClientSidePhishingDetection.AllowlistMatchResult",
       /*sample=*/AsyncMatch::NO_MATCH, /*expected_bucket_count=*/1);
+  histogram_tester.ExpectTotalCount(
+      "SafeBrowsing.ClientSidePhishingDetection.AllowlistCheckDuration", 1);
 }
 
 TEST_F(AllowlistCheckerClientTest, TestCsdListAsyncNoMatch) {
@@ -116,6 +119,12 @@ TEST_F(AllowlistCheckerClientTest, TestCsdListAsyncNoMatch) {
   EXPECT_CALL(callback, Run(false /* did_match_allowlist */));
   // The self-owned client deletes itself here.
   client->OnCheckAllowlistUrlResult(false);
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.ClientSidePhishingDetection.AllowlistAsyncMatchResult",
+      /*sample=*/AllowlistCheckerClient::AllowlistAsyncMatchResult::kNoMatch,
+      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectTotalCount(
+      "SafeBrowsing.ClientSidePhishingDetection.AllowlistCheckDuration", 1);
 }
 
 TEST_F(AllowlistCheckerClientTest, TestCsdListAsyncTimeout) {
@@ -136,6 +145,12 @@ TEST_F(AllowlistCheckerClientTest, TestCsdListAsyncTimeout) {
 
   EXPECT_CALL(callback, Run(true /* did_match_allowlist */));
   task_environment_.FastForwardBy(base::Seconds(5));
+  histogram_tester.ExpectUniqueSample(
+      "SafeBrowsing.ClientSidePhishingDetection.AllowlistAsyncMatchResult",
+      /*sample=*/AllowlistCheckerClient::AllowlistAsyncMatchResult::kTimeout,
+      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectTotalCount(
+      "SafeBrowsing.ClientSidePhishingDetection.AllowlistCheckDuration", 1);
 }
 
 }  // namespace safe_browsing

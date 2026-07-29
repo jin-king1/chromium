@@ -12,33 +12,60 @@
 namespace blink {
 
 namespace {
-bool is_cross_origin_isolated = false;
 bool is_isolated_context = false;
+bool is_web_security_disabled = false;
 
 #if DCHECK_IS_ON()
-bool is_cross_origin_isolated_set = false;
 bool is_isolated_context_set = false;
+bool is_web_security_disabled_set = false;
 #endif
 }  // namespace
 
 Agent::Agent(v8::Isolate* isolate,
              const base::UnguessableToken& cluster_id,
-             std::unique_ptr<v8::MicrotaskQueue> microtask_queue)
-    : Agent(isolate, cluster_id, std::move(microtask_queue), false, true) {}
+             AgentType agent_type,
+#ifdef V8_CPPGC_MICROTASK_QUEUE
+             v8::MicrotaskQueue* microtask_queue
+#else
+             std::unique_ptr<v8::MicrotaskQueue> microtask_queue
+#endif
+             )
+    : Agent(isolate,
+            cluster_id,
+#ifdef V8_CPPGC_MICROTASK_QUEUE
+            microtask_queue
+#else
+            std::move(microtask_queue)
+#endif
+            ,
+            AgentClusterKey::CreateSiteKeyed(NullUrl()),
+            agent_type) {
+}
 
 Agent::Agent(v8::Isolate* isolate,
              const base::UnguessableToken& cluster_id,
+#ifdef V8_CPPGC_MICROTASK_QUEUE
+             v8::MicrotaskQueue* microtask_queue,
+#else
              std::unique_ptr<v8::MicrotaskQueue> microtask_queue,
-             bool is_origin_agent_cluster,
-             bool origin_agent_cluster_left_as_default)
-    : rejected_promises_(RejectedPromises::Create()),
-      event_loop_(base::AdoptRef(
-          new scheduler::EventLoop(this, isolate, std::move(microtask_queue)))),
+#endif
+             const AgentClusterKey& agent_cluster_key,
+             AgentType agent_type)
+    : isolate_(isolate),
+      rejected_promises_(RejectedPromises::Create()),
+      event_loop_(base::AdoptRef(new scheduler::EventLoop(this,
+                                                          isolate,
+#ifdef V8_CPPGC_MICROTASK_QUEUE
+                                                          microtask_queue
+#else
+                                                          std::move(
+                                                              microtask_queue)
+#endif
+                                                          ))),
       cluster_id_(cluster_id),
-      origin_keyed_because_of_inheritance_(false),
-      is_origin_agent_cluster_(is_origin_agent_cluster),
-      origin_agent_cluster_left_as_default_(
-          origin_agent_cluster_left_as_default) {}
+      agent_cluster_key_(agent_cluster_key),
+      agent_type_(agent_type) {
+}
 
 Agent::~Agent() = default;
 
@@ -54,24 +81,48 @@ void Agent::DetachContext(ExecutionContext* context) {
   event_loop_->DetachScheduler(context->GetScheduler());
 }
 
-// static
-bool Agent::IsCrossOriginIsolated() {
-  return is_cross_origin_isolated;
+bool Agent::IsCrossOriginIsolated() const {
+  switch (agent_type_) {
+    case AgentType::kDocument:
+      return agent_cluster_key_.GetCrossOriginIsolationKey() &&
+             agent_cluster_key_.GetCrossOriginIsolationKey()->mode ==
+                 mojom::blink::CrossOriginIsolationMode::kConcrete;
+    case AgentType::kNonCrossOriginIsolatedWorker:
+      return false;
+    case AgentType::kCrossOriginIsolatedWorker:
+      return true;
+    default:
+  }
+  NOTREACHED();
 }
 
 // static
-void Agent::SetIsCrossOriginIsolated(bool value) {
+bool Agent::IsWebSecurityDisabled() {
+  return is_web_security_disabled;
+}
+
+// static
+void Agent::SetIsWebSecurityDisabled(bool value) {
 #if DCHECK_IS_ON()
-  if (is_cross_origin_isolated_set)
-    DCHECK_EQ(is_cross_origin_isolated, value);
-  is_cross_origin_isolated_set = true;
+  if (is_web_security_disabled_set) {
+    DCHECK_EQ(is_web_security_disabled, value);
+  }
+  is_web_security_disabled_set = true;
 #endif
-  is_cross_origin_isolated = value;
+  is_web_security_disabled = value;
 }
 
 // static
 bool Agent::IsIsolatedContext() {
   return is_isolated_context;
+}
+
+// static
+void Agent::ResetIsIsolatedContextForTest() {
+#if DCHECK_IS_ON()
+  is_isolated_context_set = false;
+#endif
+  is_isolated_context = false;
 }
 
 // static
@@ -84,31 +135,12 @@ void Agent::SetIsIsolatedContext(bool value) {
   is_isolated_context = value;
 }
 
-bool Agent::IsOriginKeyed() const {
-  return IsCrossOriginIsolated() || IsOriginKeyedForInheritance();
-}
-
-bool Agent::IsOriginKeyedForInheritance() const {
-  return is_origin_agent_cluster_ || origin_keyed_because_of_inheritance_;
-}
-
-bool Agent::IsOriginOrSiteKeyedBasedOnDefault() const {
-  return origin_agent_cluster_left_as_default_;
-}
-
-void Agent::ForceOriginKeyedBecauseOfInheritance() {
-  origin_keyed_because_of_inheritance_ = true;
-}
-
 bool Agent::IsWindowAgent() const {
   return false;
 }
 
 void Agent::PerformMicrotaskCheckpoint() {
   event_loop_->PerformMicrotaskCheckpoint();
-  if (!event_loop_->RejectsPromisesOnEachCompletion()) {
-    rejected_promises_->ProcessQueue();
-  }
 }
 
 void Agent::Dispose() {

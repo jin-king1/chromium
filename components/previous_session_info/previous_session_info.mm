@@ -10,6 +10,7 @@
 
 #import "base/ios/ios_util.h"
 #import "base/metrics/field_trial.h"
+#include "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/system/sys_info.h"
 #import "base/time/time.h"
@@ -17,10 +18,6 @@
 #import "components/previous_session_info/previous_session_info_private.h"
 #import "components/variations/variations_crash_keys.h"
 #import "components/version_info/version_info.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 using previous_session_info_constants::DeviceBatteryState;
 using previous_session_info_constants::DeviceThermalState;
@@ -115,7 +112,7 @@ class FieldTrialListObserverBridge : public base::FieldTrialList::Observer {
       delete;
 
   // base::FieldTrialList::Observer:
-  void OnFieldTrialGroupFinalized(const std::string& trial_name,
+  void OnFieldTrialGroupFinalized(const base::FieldTrial& trial,
                                   const std::string& group_name) override {
     dispatch_async(dispatch_get_main_queue(), ^{
       variations::ExperimentListInfo info = variations::GetExperimentListInfo();
@@ -144,15 +141,17 @@ NSString* const kDidSeeMemoryWarningShortlyBeforeTerminating =
 NSString* const kOSStartTime = @"OSStartTime";
 NSString* const kPreviousSessionInfoRestoringSession =
     @"PreviousSessionInfoRestoringSession";
-NSString* const kPreviousSessionInfoConnectedSceneSessionIDs =
-    @"PreviousSessionInfoConnectedSceneSessionIDs";
 NSString* const kPreviousSessionInfoParamsPrefix =
     @"PreviousSessionInfoParams.";
 NSString* const kPreviousSessionInfoMemoryFootprint =
     @"PreviousSessionInfoMemoryFootprint";
 NSString* const kPreviousSessionInfoTabCount = @"PreviousSessionInfoTabCount";
+NSString* const kPreviousSessionInfoInactiveTabCount =
+    @"PreviousSessionInfoInactiveTabCount";
 NSString* const kPreviousSessionInfoOTRTabCount =
     @"PreviousSessionInfoOTRTabCount";
+NSString* const kPreviousSessionInfoWarmStartCount =
+    @"PreviousSessionInfoWarmStartCount";
 }  // namespace previous_session_info_constants
 
 @interface PreviousSessionInfo () {
@@ -183,13 +182,14 @@ NSString* const kPreviousSessionInfoOTRTabCount =
 @property(nonatomic, strong) NSDate* sessionStartTime;
 @property(nonatomic, strong) NSDate* sessionEndTime;
 @property(nonatomic, assign) BOOL terminatedDuringSessionRestoration;
-@property(nonatomic, strong) NSMutableSet<NSString*>* connectedSceneSessionsIDs;
 @property(atomic, copy) NSDictionary<NSString*, NSString*>* reportParameters;
 @property(nonatomic, assign) NSInteger memoryFootprint;
 @property(nonatomic, assign) BOOL applicationWillTerminateWasReceived;
 @property(nonatomic, assign) NSInteger tabCount;
+@property(nonatomic, assign) NSInteger inactiveTabCount;
 @property(nonatomic, assign) NSInteger OTRTabCount;
 @property(atomic, strong) NSString* breadcrumbs;
+@property(nonatomic, assign) NSInteger warmStartCount;
 
 @end
 
@@ -246,12 +246,6 @@ static PreviousSessionInfo* gSharedInstance = nil;
     gSharedInstance.isFirstSessionAfterUpgrade =
         ![lastRanVersion isEqualToString:currentVersion];
 
-    gSharedInstance.connectedSceneSessionsIDs = [NSMutableSet
-        setWithArray:[defaults
-                         stringArrayForKey:
-                             previous_session_info_constants::
-                                 kPreviousSessionInfoConnectedSceneSessionIDs]];
-
     NSTimeInterval lastSystemStartTime =
         [defaults doubleForKey:previous_session_info_constants::kOSStartTime];
 
@@ -263,7 +257,7 @@ static PreviousSessionInfo* gSharedInstance = nil;
         lastSystemStartTime;
 
     NSString* lastRanLanguage = [defaults stringForKey:kLastRanLanguage];
-    NSString* currentLanguage = [[NSLocale preferredLanguages] objectAtIndex:0];
+    NSString* currentLanguage = [[NSLocale preferredLanguages] firstObject];
     gSharedInstance.isFirstSessionAfterLanguageChange =
         ![lastRanLanguage isEqualToString:currentLanguage];
 
@@ -281,9 +275,6 @@ static PreviousSessionInfo* gSharedInstance = nil;
       }
     }
     gSharedInstance.reportParameters = reportParameters;
-    // TODO(crbug.com/1360033) Remove old deprecated params key, remove this
-    // after a few milestones.
-    [defaults removeObjectForKey:@"PreviousSessionInfoParams"];
 
     gSharedInstance.memoryFootprint =
         [defaults integerForKey:previous_session_info_constants::
@@ -294,9 +285,15 @@ static PreviousSessionInfo* gSharedInstance = nil;
     gSharedInstance.tabCount =
         [defaults integerForKey:previous_session_info_constants::
                                     kPreviousSessionInfoTabCount];
+    gSharedInstance.inactiveTabCount =
+        [defaults integerForKey:previous_session_info_constants::
+                                    kPreviousSessionInfoInactiveTabCount];
     gSharedInstance.OTRTabCount =
         [defaults integerForKey:previous_session_info_constants::
                                     kPreviousSessionInfoOTRTabCount];
+    gSharedInstance.warmStartCount =
+        [defaults integerForKey:previous_session_info_constants::
+                                    kPreviousSessionInfoWarmStartCount];
   }
   return gSharedInstance;
 }
@@ -326,8 +323,8 @@ static PreviousSessionInfo* gSharedInstance = nil;
   [defaults setObject:currentOSVersion forKey:kPreviousSessionInfoOSVersion];
 
   // Set the current language.
-  NSString* currentLanguage = [[NSLocale preferredLanguages] objectAtIndex:0];
-  [defaults setObject:currentLanguage forKey:kLastRanLanguage];
+  NSString* currentLanguage = [[NSLocale preferredLanguages] firstObject];
+  [defaults setObject:(currentLanguage ?: @"") forKey:kLastRanLanguage];
 
   // Clear the memory warning flag.
   [defaults
@@ -336,6 +333,8 @@ static PreviousSessionInfo* gSharedInstance = nil;
 
   [[NSUserDefaults standardUserDefaults]
       removeObjectForKey:kPreviousSessionInfoAppWillTerminate];
+  [[NSUserDefaults standardUserDefaults]
+      removeObjectForKey:kPreviousSessionInfoAvailableDeviceStorage];
 
   [defaults setObject:[NSDate date] forKey:kPreviousSessionInfoStartTime];
 
@@ -441,17 +440,6 @@ static PreviousSessionInfo* gSharedInstance = nil;
 
 - (UIApplicationState*)applicationState {
   return _applicationState.get();
-}
-
-- (void)updateAvailableDeviceStorage:(NSInteger)availableStorage {
-  if (!self.recordingCurrentSession)
-    return;
-
-  [[NSUserDefaults standardUserDefaults]
-      setInteger:availableStorage
-          forKey:kPreviousSessionInfoAvailableDeviceStorage];
-
-  [self updateSessionEndTime];
 }
 
 - (void)updateSessionEndTime {
@@ -566,27 +554,23 @@ static PreviousSessionInfo* gSharedInstance = nil;
   [defaults synchronize];
 }
 
-- (void)synchronizeSceneSessionIDs {
-  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
-  [defaults setObject:[self.connectedSceneSessionsIDs allObjects]
-               forKey:previous_session_info_constants::
-                          kPreviousSessionInfoConnectedSceneSessionIDs];
+- (void)incrementWarmStartCount {
+  NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+  NSInteger warmStartCount =
+      [defaults integerForKey:previous_session_info_constants::
+                                  kPreviousSessionInfoWarmStartCount];
+  [defaults setInteger:warmStartCount + 1
+                forKey:previous_session_info_constants::
+                           kPreviousSessionInfoWarmStartCount];
   [defaults synchronize];
 }
 
-- (void)addSceneSessionID:(NSString*)sessionID {
-  [self.connectedSceneSessionsIDs addObject:sessionID];
-  [self synchronizeSceneSessionIDs];
-}
-
-- (void)removeSceneSessionID:(NSString*)sessionID {
-  [self.connectedSceneSessionsIDs removeObject:sessionID];
-  [self synchronizeSceneSessionIDs];
-}
-
-- (void)resetConnectedSceneSessionIDs {
-  self.connectedSceneSessionsIDs = [[NSMutableSet alloc] init];
-  [self synchronizeSceneSessionIDs];
+- (void)resetWarmStartCount {
+  [NSUserDefaults.standardUserDefaults
+      setInteger:0
+          forKey:previous_session_info_constants::
+                     kPreviousSessionInfoWarmStartCount];
+  [NSUserDefaults.standardUserDefaults synchronize];
 }
 
 - (base::ScopedClosureRunner)startSessionRestoration {
@@ -621,6 +605,14 @@ static PreviousSessionInfo* gSharedInstance = nil;
   [NSUserDefaults.standardUserDefaults
       setInteger:count
           forKey:previous_session_info_constants::kPreviousSessionInfoTabCount];
+  [NSUserDefaults.standardUserDefaults synchronize];
+}
+
+- (void)updateCurrentSessionInactiveTabCount:(NSInteger)count {
+  [NSUserDefaults.standardUserDefaults
+      setInteger:count
+          forKey:previous_session_info_constants::
+                     kPreviousSessionInfoInactiveTabCount];
   [NSUserDefaults.standardUserDefaults synchronize];
 }
 

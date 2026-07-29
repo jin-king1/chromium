@@ -4,17 +4,21 @@
 
 #include "media/filters/mac/audio_toolbox_audio_decoder.h"
 
+#include <algorithm>
+#include <optional>
+
+#include "base/apple/osstatus_logging.h"
 #include "base/auto_reset.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
-#include "base/mac/mac_logging.h"
-#include "base/ranges/algorithm.h"
-#include "base/sys_byteorder.h"
+#include "base/memory/raw_ptr.h"
 #include "base/task/bind_post_task.h"
 #include "media/base/audio_buffer.h"
+#include "media/base/audio_bus.h"
 #include "media/base/audio_codecs.h"
 #include "media/base/audio_discard_helper.h"
 #include "media/base/channel_layout.h"
+#include "media/base/limiting_audio_queue.h"
 #include "media/base/limits.h"
 #include "media/base/mac/channel_layout_util_mac.h"
 #include "media/base/media_log.h"
@@ -36,74 +40,13 @@ bool CanUseAudioToolbox(const AudioDecoderConfig& config) {
     return true;
   }
 #endif
-  // We only use AudioToolbox for decoding xHE-AAC content and that's only
-  // available on macOS 10.15 or higher.
-  if (__builtin_available(macOS 10.15, *))
-    return config.profile() == AudioCodecProfile::kXHE_AAC;
-  return false;
-}
-
-// Descriptors use a variable length size entry. We've fixed the size to
-// 4 bytes to make inline construction simple. The lowest 7 bits encode
-// the actual value, an MSB==1 indicates there's another byte to decode,
-// and an MSB==0 indicates there are no more bytes to decode.
-void EncodeDescriptorSize(size_t size, uint8_t* output) {
-  DCHECK_LT(size, (1u << (4u * 7u)));
-  for (int i = 3; i > 0; i--)
-    output[3 - i] = (size >> (7 * i)) | 0x80;
-  output[3] = size & 0x7F;
-}
-
-std::vector<uint8_t> GenerateEsdsMagicCookie(
-    const std::vector<uint8_t>& aac_extra_data) {
-  // See media/formats/mp4/es_descriptor.h
-#pragma pack(push, 1)
-  struct Descriptor {
-    uint8_t tag;
-    uint8_t size[4];  // Note: Size is variable length, with a 1 in the MSB
-                      // signaling another byte remains. Clamping to 4 here
-                      // just makes it easier to construct the ESDS in place.
-  };
-  struct DecoderConfigDescriptor : Descriptor {
-    uint8_t aot;
-    uint8_t flags;
-    uint8_t unused[11];
-    Descriptor extra_data;
-  };
-  struct ESDescriptor : Descriptor {
-    uint16_t id;
-    uint8_t flags;
-    DecoderConfigDescriptor decoder_config;
-  };
-#pragma pack(pop)
-
-  std::vector<uint8_t> esds_data(sizeof(ESDescriptor) + aac_extra_data.size());
-  auto* esds = reinterpret_cast<ESDescriptor*>(esds_data.data());
-
-  esds->tag = mp4::kESDescrTag;
-  EncodeDescriptorSize(
-      sizeof(ESDescriptor) - sizeof(Descriptor) + aac_extra_data.size(),
-      esds->size);
-
-  esds->decoder_config.tag = mp4::kDecoderConfigDescrTag;
-  EncodeDescriptorSize(sizeof(DecoderConfigDescriptor) - sizeof(Descriptor) +
-                           aac_extra_data.size(),
-                       esds->decoder_config.size);
-  esds->decoder_config.aot = mp4::kISO_14496_3;  // AAC.
-  esds->decoder_config.flags = 0x15;             // AudioStream
-
-  esds->decoder_config.extra_data.tag = mp4::kDecoderSpecificInfoTag;
-  EncodeDescriptorSize(aac_extra_data.size(),
-                       esds->decoder_config.extra_data.size);
-
-  base::ranges::copy(aac_extra_data, esds_data.begin() + sizeof(ESDescriptor));
-
-  DCHECK(mp4::ESDescriptor().Parse(esds_data));
-  return esds_data;
+  // We use AudioToolbox for decoding xHE-AAC content and that's available on
+  // macOS 10.15 or higher.
+  return config.profile() == AudioCodecProfile::kXHE_AAC;
 }
 
 struct InputData {
-  DecoderBuffer* buffer = nullptr;
+  raw_ptr<DecoderBuffer> buffer = nullptr;
   AudioStreamPacketDescription packet = {};
 };
 
@@ -124,11 +67,11 @@ OSStatus ProvideInputCallback(AudioConverterRef decoder,
 
   *num_packets = buffer_list->mNumberBuffers = 1;
   buffer_list->mBuffers[0].mNumberChannels = 0;
-  buffer_list->mBuffers[0].mDataByteSize = input_data->buffer->data_size();
+  buffer_list->mBuffers[0].mDataByteSize = input_data->buffer->size();
 
   // No const version of this API unfortunately, so we need const_cast().
   buffer_list->mBuffers[0].mData =
-      const_cast<uint8_t*>(input_data->buffer->data());
+      const_cast<uint8_t*>(base::span(*input_data->buffer).data());
 
   if (packets)
     *packets = &input_data->packet;
@@ -146,7 +89,6 @@ AudioConverterRef
 AudioToolboxAudioDecoder::ScopedAudioConverterRefTraits::Retain(
     AudioConverterRef converter) {
   NOTREACHED() << "Only compatible with ASSUME policy";
-  return converter;
 }
 
 // static
@@ -189,14 +131,18 @@ void AudioToolboxAudioDecoder::Initialize(const AudioDecoderConfig& config,
   decoder_.reset();
 
   output_cb_ = output_cb;
+  const bool success = CreateDecoder(config);
+  if (!success) {
+    decoder_.reset();
+  }
   base::BindPostTaskToCurrentDefault(std::move(init_cb))
-      .Run(CreateDecoder(config)
-               ? DecoderStatus::Codes::kOk
-               : DecoderStatus::Codes::kFailedToCreateDecoder);
+      .Run(success ? DecoderStatus::Codes::kOk
+                   : DecoderStatus::Codes::kFailedToCreateDecoder);
 }
 
 void AudioToolboxAudioDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
                                       DecodeCB decode_cb) {
+  CHECK(decoder_);
   DecodeCB decode_cb_bound =
       base::BindPostTaskToCurrentDefault(std::move(decode_cb));
 
@@ -208,9 +154,7 @@ void AudioToolboxAudioDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
     return;
   }
 
-  if (!buffer->end_of_stream() && buffer->decrypt_config() &&
-      buffer->decrypt_config()->encryption_scheme() !=
-          EncryptionScheme::kUnencrypted) {
+  if (!buffer->end_of_stream() && buffer->is_encrypted()) {
     DLOG(ERROR) << "Encrypted buffer not supported";
     std::move(decode_cb_bound)
         .Run(DecoderStatus::Codes::kUnsupportedEncryptionMode);
@@ -219,17 +163,44 @@ void AudioToolboxAudioDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
 
   InputData input_data;
   input_data.buffer = buffer.get();
-  if (!buffer->end_of_stream())
-    input_data.packet.mDataByteSize = buffer->data_size();
+
+  if (!buffer->end_of_stream()) {
+    if (buffer->size() == 0) {
+      OnOutputReady(AudioDiscardHelper::TimeInfo::FromBuffer(*buffer), nullptr);
+      std::move(decode_cb_bound).Run(OkStatus());
+      return;
+    }
+    last_input_timestamp_ = buffer->timestamp();
+    input_data.packet.mDataByteSize = buffer->size();
+  }
 
   // Must be filled in each time in case AudioConverterFillComplexBuffer()
   // modified it during a previous call.
   output_buffer_list_->mNumberBuffers = output_bus_->channels();
+
+  // SAFETY: In `CreateDecoder` , we allocate memory for `output_buffer_list_`
+  // of `sizeof(AudioBufferList) + output_bus_->channels() *
+  // sizeof(AudioBuffer)`.
+  //
+  // From
+  // https://developer.apple.com/documentation/coreaudiotypes/audiobufferlist we
+  // learn that the structure of `AudioBufferList` is:
+  //
+  // ```
+  // struct AudioBufferList {
+  //   UInt32 mNumberBuffers;
+  //   AudioBuffer mBuffers[1];  // this is a variable length array of
+  //                             // mNumberBuffers elements
+  // };
+  // ```
+  //
+  // So the size of `output_buffer_list_` is sufficient.
+  auto buffer_span = UNSAFE_BUFFERS(base::span(
+      output_buffer_list_->mBuffers, output_buffer_list_->mNumberBuffers));
   for (int i = 0; i < output_bus_->channels(); ++i) {
-    output_buffer_list_->mBuffers[i].mNumberChannels = 1;
-    output_buffer_list_->mBuffers[i].mDataByteSize =
-        output_bus_->frames() * sizeof(float);
-    output_buffer_list_->mBuffers[i].mData = output_bus_->channel(i);
+    buffer_span[i].mNumberChannels = 1;
+    buffer_span[i].mDataByteSize = output_bus_->frames() * sizeof(float);
+    buffer_span[i].mData = output_bus_->channel(i).data();
   }
 
   // Decodes |num_frames| of encoded data into |output_bus_| by calling the
@@ -237,10 +208,14 @@ void AudioToolboxAudioDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
   // |input_data|. See media::AudioConverter for a similar mechanism.
   UInt32 num_frames = output_bus_->frames();
   auto result = AudioConverterFillComplexBuffer(
-      decoder_, ProvideInputCallback, &input_data, &num_frames,
+      decoder_.get(), ProvideInputCallback, &input_data, &num_frames,
       output_buffer_list_.get(), nullptr);
 
   if (result == kNoMoreDataError && !num_frames) {
+    if (buffer->end_of_stream()) {
+      limiter_queue_->Flush();
+    }
+
     std::move(decode_cb_bound).Run(OkStatus());
     return;
   }
@@ -253,28 +228,35 @@ void AudioToolboxAudioDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
     return;
   }
 
-  auto output_buffer =
-      AudioBuffer::CopyFrom(channel_layout_, sample_rate_, buffer->timestamp(),
-                            output_bus_.get(), pool_);
-
-  if (num_frames != static_cast<UInt32>(output_bus_->frames()))
-    output_buffer->TrimEnd(output_bus_->frames() - num_frames);
-  if (discard_helper_->ProcessBuffers(buffer->time_info(),
-                                      output_buffer.get())) {
-    base::BindPostTaskToCurrentDefault(output_cb_)
-        .Run(std::move(output_buffer));
+  base::TimeDelta timestamp;
+  AudioDiscardHelper::TimeInfo time_info;
+  if (buffer->end_of_stream()) {
+    timestamp = last_input_timestamp_ == kNoTimestamp ? base::TimeDelta()
+                                                      : last_input_timestamp_;
+    time_info = AudioDiscardHelper::TimeInfo{timestamp, base::TimeDelta(),
+                                             std::nullopt};
+  } else {
+    timestamp = buffer->timestamp();
+    time_info = AudioDiscardHelper::TimeInfo::FromBuffer(*buffer);
   }
+
+  limiter_queue_->Push(*output_bus_, num_frames, timestamp,
+                       base::BindOnce(&AudioToolboxAudioDecoder::OnOutputReady,
+                                      base::Unretained(this), time_info));
 
   std::move(decode_cb_bound).Run(OkStatus());
 }
 
 void AudioToolboxAudioDecoder::Reset(base::OnceClosure reset_cb) {
+  CHECK(decoder_);
   // This could fail, but ResetCB has no error reporting mechanism, so just let
   // a subsequent decode call fail.
-  const auto result = AudioConverterReset(decoder_);
+  const auto result = AudioConverterReset(decoder_.get());
   OSSTATUS_DLOG_IF(WARNING, result != noErr, result)
       << "AudioConverterReset() failed";
   discard_helper_->Reset(discard_helper_->decoder_delay());
+  limiter_queue_->Clear();
+  last_input_timestamp_ = kNoTimestamp;
   base::BindPostTaskToCurrentDefault(std::move(reset_cb)).Run();
 }
 
@@ -293,7 +275,7 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
       // Input is xHE-AAC / USAC.
       CHECK_EQ(config.profile(), AudioCodecProfile::kXHE_AAC);
       input_format.mFormatID = kAudioFormatMPEGD_USAC;
-      magic_cookie = GenerateEsdsMagicCookie(config.aac_extra_data());
+      magic_cookie = mp4::ESDescriptor::CreateEsds(config.extra_data());
 
       // Have macOS fill in the rest of the input_format for us.
       UInt32 format_size = sizeof(input_format);
@@ -328,43 +310,46 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
 #endif
     default:
       NOTREACHED() << "Unsupported codec: " << config.codec();
+  }
+
+  // Output is float planar. The output format has some peculiarities in how
+  // `mFramesPerPacket` is calculated, so scope it to AudioConverterNew().
+  {
+    AudioStreamBasicDescription output_format = {};
+    output_format.mFormatID = kAudioFormatLinearPCM;
+    output_format.mFormatFlags =
+        kLinearPCMFormatFlagIsFloat | kLinearPCMFormatFlagIsNonInterleaved;
+    output_format.mFramesPerPacket = 1;
+    output_format.mBitsPerChannel = 32;
+
+    // We don't want any channel or sample rate conversion.
+    output_format.mSampleRate = input_format.mSampleRate;
+    output_format.mChannelsPerFrame = input_format.mChannelsPerFrame;
+
+    // Note: This is important to get right or AudioConverterNew will balk. For
+    // interleaved data, this value should be multiplied by the channel count.
+    output_format.mBytesPerPacket = output_format.mBytesPerFrame =
+        output_format.mBitsPerChannel / 8;
+
+    // Create the decoder.
+    auto result = AudioConverterNew(&input_format, &output_format,
+                                    decoder_.InitializeInto());
+    if (result != noErr) {
+      OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
+          << "AudioConverterNew() failed";
       return false;
+    }
   }
 
-  // Output is float planar.
-  AudioStreamBasicDescription output_format = {};
-  output_format.mFormatID = kAudioFormatLinearPCM;
-  output_format.mFormatFlags =
-      kLinearPCMFormatFlagIsFloat | kLinearPCMFormatFlagIsNonInterleaved;
-  output_format.mFramesPerPacket = 1;
-  output_format.mBitsPerChannel = 32;
-
-  // We don't want any channel or sample rate conversion.
-  sample_rate_ = output_format.mSampleRate = input_format.mSampleRate;
-  channel_count_ = output_format.mChannelsPerFrame =
-      input_format.mChannelsPerFrame;
-
-  // Note: This is important to get right or AudioConverterNew will balk. For
-  // interleaved data, this value should be multiplied by the channel count.
-  output_format.mBytesPerPacket = output_format.mBytesPerFrame =
-      output_format.mBitsPerChannel / 8;
-
-  // Create the decoder.
-  auto result = AudioConverterNew(&input_format, &output_format,
-                                  decoder_.InitializeInto());
-  if (result != noErr) {
-    OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
-        << "AudioConverterNew() failed";
-    return false;
-  }
-
-  if (channel_count_ > kMaxConcurrentChannels) {
-    channel_layout_ = CHANNEL_LAYOUT_DISCRETE;
+  auto channel_layout = CHANNEL_LAYOUT_UNSUPPORTED;
+  if (static_cast<int>(input_format.mChannelsPerFrame) >
+      GetConcurrentMaxChannels()) {
+    channel_layout = CHANNEL_LAYOUT_DISCRETE;
   } else {
     // Get the decoder's output channel layout.
     UInt32 size;
-    result = AudioConverterGetPropertyInfo(
-        decoder_, kAudioConverterOutputChannelLayout, &size, NULL);
+    auto result = AudioConverterGetPropertyInfo(
+        decoder_.get(), kAudioConverterOutputChannelLayout, &size, nullptr);
     if (result != noErr) {
       OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
           << "AudioConverterGetPropertyInfo() failed";
@@ -372,9 +357,9 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
     }
 
     ScopedAudioChannelLayout output_layout(size);
-    result =
-        AudioConverterGetProperty(decoder_, kAudioConverterOutputChannelLayout,
-                                  &size, output_layout.layout());
+    result = AudioConverterGetProperty(decoder_.get(),
+                                       kAudioConverterOutputChannelLayout,
+                                       &size, output_layout.layout());
     if (result != noErr) {
       OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
           << "AudioConverterGetProperty() failed";
@@ -387,26 +372,41 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
     // converter thinks the audio is a 7.1_WIDE one, and we set output layout
     // to 7.1, this always lead to a loss of left and right channels.
     if (!AudioChannelLayoutToChannelLayout(*output_layout.layout(),
-                                           &channel_layout_)) {
+                                           &channel_layout)) {
       // If we couldn't find a matched layout, use the guess result and hope
       // for the best.
-      channel_layout_ = GuessChannelLayout(channel_count_);
+      channel_layout = GuessChannelLayout(input_format.mChannelsPerFrame);
+    }
+
+    // Testing shows channel count mismatches between the magic cookie and the
+    // `input_format` throw an error during AudioConverter creation, but enforce
+    // this invariant here to be sure we don't create the wrong output bus.
+    //
+    // Even if the channel count was less than GetConcurrentMaxChannels(), the
+    // layout may be set to discrete by GuessChannelLayout() above.
+    if (channel_layout != CHANNEL_LAYOUT_DISCRETE) {
+      CHECK_EQ(ChannelLayoutToChannelCount(channel_layout),
+               static_cast<int>(input_format.mChannelsPerFrame));
     }
   }
 
-  if (channel_count_ != static_cast<UInt32>(config.channels()) ||
-      channel_layout_ != config.channel_layout()) {
+  if (channel_layout != config.channel_layout()) {
     MEDIA_LOG(INFO, media_log_)
-        << "Audio config updated: channels: " << channel_count_
-        << ", channel layout: " << ChannelLayoutToString(channel_layout_);
+        << "Audio config updated: channels: " << input_format.mChannelsPerFrame
+        << ", channel layout: " << ChannelLayoutToString(channel_layout);
   }
 
   // Next, convert back this layout to an audio channel layout with the same
   // channel order description. This let decoder output correct orders.
-  auto ordered_layout =
-      ChannelLayoutToAudioChannelLayout(channel_layout_, channel_count_);
-  result = AudioConverterSetProperty(
-      decoder_, kAudioConverterOutputChannelLayout,
+  auto ordered_layout = ChannelLayoutToAudioChannelLayout(
+      ChannelLayoutConfig(channel_layout, input_format.mChannelsPerFrame));
+  if (!ordered_layout) {
+    MEDIA_LOG(ERROR, media_log_) << "Failed to create audio channel layout.";
+    return false;
+  }
+
+  auto result = AudioConverterSetProperty(
+      decoder_.get(), kAudioConverterOutputChannelLayout,
       ordered_layout->layout_size(), ordered_layout->layout());
   if (result != noErr) {
     OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
@@ -417,8 +417,8 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
   if (config.codec() == AudioCodec::kAAC) {
     // Instill the magic!
     result = AudioConverterSetProperty(
-        decoder_, kAudioConverterDecompressionMagicCookie, magic_cookie.size(),
-        magic_cookie.data());
+        decoder_.get(), kAudioConverterDecompressionMagicCookie,
+        magic_cookie.size(), magic_cookie.data());
     if (result != noErr) {
       OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
           << "AudioConverterSetProperty() failed";
@@ -430,7 +430,7 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
     // so limit this to xHE-AAC only.
     const Float32 kDefaultLoudness = -16.0;
     result = AudioConverterSetProperty(
-        decoder_, kAudioCodecPropertyProgramTargetLevel,
+        decoder_.get(), kAudioCodecPropertyProgramTargetLevel,
         sizeof(kDefaultLoudness), &kDefaultLoudness);
     if (result != noErr) {
       OSSTATUS_MEDIA_LOG(ERROR, result, media_log_)
@@ -442,7 +442,7 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
     // appear to be a key name available for this yet.
     // Values: 0=none, night=1, noisy=2, limited=3
     const UInt32 kDefaultEffectType = 3;
-    result = AudioConverterSetProperty(decoder_, 0x64726370 /* "drcp" */,
+    result = AudioConverterSetProperty(decoder_.get(), 0x64726370 /* "drcp" */,
                                        sizeof(kDefaultEffectType),
                                        &kDefaultEffectType);
     if (result != noErr) {
@@ -453,12 +453,16 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
   }
 
   discard_helper_ = std::make_unique<AudioDiscardHelper>(
-      sample_rate_, config.codec_delay(), false);
+      input_format.mSampleRate, config.codec_delay(), false);
   discard_helper_->Reset(config.codec_delay());
 
   // Create staging structures we'll give to macOS for writing data into.
   output_bus_ = AudioBus::Create(input_format.mChannelsPerFrame,
                                  input_format.mFramesPerPacket);
+
+  limiter_queue_ = std::make_unique<LimitingAudioQueue>(
+      channel_layout, input_format.mSampleRate, input_format.mChannelsPerFrame,
+      input_format.mFramesPerPacket);
 
   // AudioBufferList is a strange variable length structure that by default only
   // includes one buffer slot, so we need to construct our own multichannel one.
@@ -470,6 +474,15 @@ bool AudioToolboxAudioDecoder::CreateDecoder(const AudioDecoderConfig& config) {
       calloc(1, sizeof(AudioBufferList) +
                     output_bus_->channels() * sizeof(AudioBuffer))));
   return true;
+}
+
+void AudioToolboxAudioDecoder::OnOutputReady(
+    AudioDiscardHelper::TimeInfo time_info,
+    scoped_refptr<AudioBuffer> output_buffer) {
+  if (discard_helper_->ProcessBuffers(time_info, output_buffer.get())) {
+    base::BindPostTaskToCurrentDefault(output_cb_)
+        .Run(std::move(output_buffer));
+  }
 }
 
 }  // namespace media

@@ -8,7 +8,7 @@
 #import <UIKit/UIKit.h>
 #include <stddef.h>
 
-#include "base/mac/scoped_cftyperef.h"
+#include "base/apple/scoped_cftyperef.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/base/resource/resource_scale_factor.h"
@@ -22,22 +22,22 @@ UIImage* UIImageWithSizeAndScale(CGFloat width, CGFloat height, CGFloat scale) {
 
   // Create a UIImage directly from a CGImage in order to control the exact
   // pixel size of the underlying image.
-  base::ScopedCFTypeRef<CGColorSpaceRef> color_space(
+  base::apple::ScopedCFTypeRef<CGColorSpaceRef> color_space(
       CGColorSpaceCreateDeviceRGB());
-  base::ScopedCFTypeRef<CGContextRef> context(CGBitmapContextCreate(
-      NULL, target_size.width, target_size.height, 8, target_size.width * 4,
-      color_space,
-      kCGImageAlphaPremultipliedFirst |
-          static_cast<CGImageAlphaInfo>(kCGBitmapByteOrder32Host)));
+  base::apple::ScopedCFTypeRef<CGContextRef> context(CGBitmapContextCreate(
+      nullptr, target_size.width, target_size.height, 8, target_size.width * 4,
+      color_space.get(),
+      static_cast<CGBitmapInfo>(kCGImageAlphaPremultipliedFirst) |
+          kCGImageByteOrder32Host));
 
   CGRect target_rect = CGRectMake(0, 0,
                                   target_size.width, target_size.height);
-  CGContextSetFillColorWithColor(context, [[UIColor redColor] CGColor]);
-  CGContextFillRect(context, target_rect);
+  CGContextSetFillColorWithColor(context.get(), [[UIColor redColor] CGColor]);
+  CGContextFillRect(context.get(), target_rect);
 
-  base::ScopedCFTypeRef<CGImageRef> cg_image(
-      CGBitmapContextCreateImage(context));
-  return [UIImage imageWithCGImage:cg_image
+  base::apple::ScopedCFTypeRef<CGImageRef> cg_image(
+      CGBitmapContextCreateImage(context.get()));
+  return [UIImage imageWithCGImage:cg_image.get()
                              scale:scale
                        orientation:UIImageOrientationUp];
 }
@@ -56,27 +56,28 @@ class ImageIOSTest : public testing::Test {
 TEST_F(ImageIOSTest, ImageConversionWithUnsupportedScaleFactor) {
   const CGFloat kWidth = 200;
   const CGFloat kHeight = 100;
-  const ui::ResourceScaleFactor kTestScales[3] = {
-      ui::k100Percent, ui::k200Percent, ui::k300Percent};
+  const ui::ResourceScaleFactor kTestScales[] = {
+      ui::k100Percent,
+      ui::k200Percent,
+      ui::k300Percent,
+  };
 
-  for (size_t i = 0; i < std::size(kTestScales); ++i) {
-    for (size_t j = 0; j < std::size(kTestScales); ++j) {
-      const CGFloat source_scale = kTestScales[i];
-      const ui::ResourceScaleFactor supported_scale = kTestScales[j];
-
+  for (ui::ResourceScaleFactor source_scale : kTestScales) {
+    for (ui::ResourceScaleFactor supported_scale : kTestScales) {
       // Set the supported scale for testing.
       ui::test::ScopedSetSupportedResourceScaleFactors scoped_scale_factors(
           {supported_scale});
 
       // Create an UIImage with the appropriate source_scale.
-      UIImage* ui_image =
-          UIImageWithSizeAndScale(kWidth, kHeight, source_scale);
+      UIImage* ui_image = UIImageWithSizeAndScale(
+          kWidth, kHeight, ui::GetScaleForResourceScaleFactor(source_scale));
       ASSERT_EQ(kWidth, ui_image.size.width);
       ASSERT_EQ(kHeight, ui_image.size.height);
-      ASSERT_EQ(source_scale, ui_image.scale);
+      ASSERT_EQ(ui::GetScaleForResourceScaleFactor(source_scale),
+                ui_image.scale);
 
       // Convert to SkBitmap and test its size.
-      gfx::Image to_skbitmap([ui_image retain]);
+      gfx::Image to_skbitmap(ui_image);
       const SkBitmap* bitmap = to_skbitmap.ToSkBitmap();
       ASSERT_TRUE(bitmap != NULL);
       EXPECT_EQ(kWidth * ui::GetScaleForResourceScaleFactor(supported_scale),
@@ -85,7 +86,7 @@ TEST_F(ImageIOSTest, ImageConversionWithUnsupportedScaleFactor) {
                 bitmap->height());
 
       // Convert to ImageSkia and test its size.
-      gfx::Image to_imageskia([ui_image retain]);
+      gfx::Image to_imageskia(ui_image);
       const gfx::ImageSkia* imageskia = to_imageskia.ToImageSkia();
       EXPECT_EQ(kWidth, imageskia->width());
       EXPECT_EQ(kHeight, imageskia->height());

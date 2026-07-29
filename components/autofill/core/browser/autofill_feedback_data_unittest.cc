@@ -5,34 +5,40 @@
 #include "components/autofill/core/browser/autofill_feedback_data.h"
 
 #include "base/json/json_reader.h"
-#include "base/test/scoped_feature_list.h"
+#include "base/test/gmock_expected_support.h"
 #include "base/test/task_environment.h"
 #include "base/values.h"
-#include "components/autofill/core/browser/autofill_test_utils.h"
-#include "components/autofill/core/browser/test_autofill_client.h"
-#include "components/autofill/core/browser/test_autofill_clock.h"
-#include "components/autofill/core/browser/test_autofill_driver.h"
-#include "components/autofill/core/browser/test_browser_autofill_manager.h"
+#include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
+#include "components/autofill/core/browser/foundations/test_autofill_client.h"
+#include "components/autofill/core/browser/foundations/test_autofill_driver.h"
+#include "components/autofill/core/browser/foundations/test_browser_autofill_manager.h"
+#include "components/autofill/core/browser/foundations/with_test_autofill_client_driver_manager.h"
+#include "components/autofill/core/browser/test_utils/autofill_form_test_utils.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/common/autofill_test_utils.h"
 #include "components/autofill/core/common/form_data.h"
+#include "components/autofill/core/common/form_data_test_api.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace autofill {
 namespace {
 
-const char kExpectedFeedbackDataJSON[] = R"({
+using test::CreateTestFormField;
+
+constexpr char kExpectedFeedbackDataJSON[] = R"({
    "formStructures": [ {
-      "formSignature": "4232380759432074174",
-      "hostFrame": "00000000000000000000000000000000",
+      "formSignature": "15183533776559422799",
+      "hostFrame": "AAAAAAAAAAAAAAABBBBBBBBBBBBBBBBC",
       "idAttribute": "",
-      "mainFrameUrl": "https://myform_root.com",
+      "mainFrameUrl": "https://example.test",
       "nameAttribute": "",
       "rendererId": "11",
-      "sourceUrl": "https://myform.com",
+      "sourceUrl": "https://example.com",
       "fields": [ {
          "autocompleteAttribute": "cc-given-name",
-         "fieldSignature": "3879476562",
-         "fieldType": "HTML_TYPE_CREDIT_CARD_NAME_FIRST",
+         "fieldSignature": "1969735877",
+         "fieldTypes": [ "NAME_FIRST" ],
          "heuristicType": "CREDIT_CARD_NAME_FIRST",
          "hostFormSignature": "0",
          "htmlType": "HTML_TYPE_CREDIT_CARD_NAME_FIRST",
@@ -40,20 +46,20 @@ const char kExpectedFeedbackDataJSON[] = R"({
          "isEmpty": true,
          "isFocusable": true,
          "isVisible": true,
-         "labelAttribute": "First Name on Card",
+         "labelAttribute": "Credit card first name",
          "parseableNameAttribute": "",
          "placeholderAttribute": "",
          "rank": "0",
          "rankInHostForm": "0",
          "rankInHostFormSignatureGroup": "0",
          "rankInSignatureGroup": "0",
-         "section": "firstnameoncard_0_11",
+         "section": "cc_name_first_0_11",
          "serverType": "NO_SERVER_DATA",
          "serverTypeIsOverride": false
       }, {
          "autocompleteAttribute": "cc-family-name",
-         "fieldSignature": "3213606822",
-         "fieldType": "HTML_TYPE_CREDIT_CARD_NAME_LAST",
+         "fieldSignature": "3826793033",
+         "fieldTypes": [ "NAME_LAST" ],
          "heuristicType": "CREDIT_CARD_NAME_LAST",
          "hostFormSignature": "0",
          "htmlType": "HTML_TYPE_CREDIT_CARD_NAME_LAST",
@@ -61,182 +67,167 @@ const char kExpectedFeedbackDataJSON[] = R"({
          "isEmpty": true,
          "isFocusable": true,
          "isVisible": true,
-         "labelAttribute": "Last Name on Card",
+         "labelAttribute": "Credit card last name",
          "parseableNameAttribute": "",
          "placeholderAttribute": "",
          "rank": "1",
          "rankInHostForm": "1",
          "rankInHostFormSignatureGroup": "0",
          "rankInSignatureGroup": "0",
-         "section": "firstnameoncard_0_11",
+         "section": "cc_name_first_0_11",
          "serverType": "NO_SERVER_DATA",
          "serverTypeIsOverride": false
       }, {
-         "autocompleteAttribute": "cc-family-name",
+         "autocompleteAttribute": "",
          "fieldSignature": "1029417091",
-         "fieldType": "HTML_TYPE_CREDIT_CARD_NAME_LAST",
+         "fieldTypes": [ "EMAIL_ADDRESS" ],
          "heuristicType": "EMAIL_ADDRESS",
          "hostFormSignature": "0",
-         "htmlType": "HTML_TYPE_CREDIT_CARD_NAME_LAST",
+         "htmlType": "HTML_TYPE_UNSPECIFIED",
          "idAttribute": "",
          "isEmpty": true,
          "isFocusable": true,
          "isVisible": true,
-         "labelAttribute": "Email",
+         "labelAttribute": "E-mail address",
          "parseableNameAttribute": "",
          "placeholderAttribute": "",
          "rank": "2",
          "rankInHostForm": "2",
          "rankInHostFormSignatureGroup": "0",
          "rankInSignatureGroup": "0",
-         "section": "firstnameoncard_0_11",
+         "section": "cc_name_first_0_11",
          "serverType": "NO_SERVER_DATA",
          "serverTypeIsOverride": false
       } ]
    } ]
 })";
 
-void CreateFeedbackTestFormData(FormData* form) {
-  form->unique_renderer_id = test::MakeFormRendererId();
-  form->name = u"MyForm";
-  form->url = GURL("https://myform.com/form.html");
-  form->action = GURL("https://myform.com/submit.html");
-  form->main_frame_origin =
-      url::Origin::Create(GURL("https://myform_root.com/form.html"));
-
-  FormFieldData field;
-  test::CreateTestFormField("First Name on Card", "firstnameoncard", "", "text",
-                            "cc-given-name", &field);
-  form->fields.push_back(field);
-  test::CreateTestFormField("Last Name on Card", "lastnameoncard", "", "text",
-                            "cc-family-name", &field);
-  form->fields.push_back(field);
-  test::CreateTestFormField("Email", "email", "", "email", &field);
-  form->fields.push_back(field);
+FormData CreateFeedbackTestFormData() {
+  return test::GetFormData({
+      .fields = {{.role = FieldType::CREDIT_CARD_NAME_FIRST,
+                  .autocomplete_attribute = "cc-given-name",
+                  .form_control_type = FormControlType::kInputText},
+                 {.role = FieldType::CREDIT_CARD_NAME_LAST,
+                  .autocomplete_attribute = "cc-family-name",
+                  .form_control_type = FormControlType::kInputText},
+                 {.role = FieldType::EMAIL_ADDRESS,
+                  .form_control_type = FormControlType::kInputEmail}},
+  });
 }
-}  // namespace
 
-class AutofillFeedbackDataUnitTest : public testing::Test {
+class AutofillFeedbackDataUnitTest
+    : public testing::Test,
+      public WithTestAutofillClientDriverManager<> {
  protected:
-  AutofillFeedbackDataUnitTest() {
-    feature_.InitWithFeatures(
-        /*enabled_features=*/{features::kAutofillFeedback},
-        /*disabled_features=*/{});
-  }
   void SetUp() override {
-    autofill_driver_ = std::make_unique<TestAutofillDriver>();
-    browser_autofill_manager_ = std::make_unique<TestBrowserAutofillManager>(
-        autofill_driver_.get(), &autofill_client_);
+    InitAutofillClient();
+    CreateAutofillDriver();
   }
 
-  base::test::TaskEnvironment task_environment_;
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   test::AutofillUnitTestEnvironment autofill_test_environment_;
-  TestAutofillClient autofill_client_;
-  std::unique_ptr<TestAutofillDriver> autofill_driver_;
-  std::unique_ptr<TestBrowserAutofillManager> browser_autofill_manager_;
-  base::test::ScopedFeatureList feature_;
 };
 
 TEST_F(AutofillFeedbackDataUnitTest, CreatesCompleteReport) {
-  FormData form;
-  CreateFeedbackTestFormData(&form);
-  browser_autofill_manager_->OnFormsSeen(
-      /*updated_forms=*/{form},
-      /*removed_forms=*/{});
+  FormData form = CreateFeedbackTestFormData();
+  autofill_manager().OnFormsSeen(/*updated_forms=*/{form},
+                                 /*removed_forms=*/{},
+                                 AutofillManagerTestApi::pass_key());
 
-  base::Value::Dict autofill_feedback_data =
-      data_logs::FetchAutofillFeedbackData(browser_autofill_manager_.get());
+  base::DictValue autofill_feedback_data =
+      data_logs::FetchAutofillFeedbackData(&autofill_manager());
 
-  auto expected_data = base::JSONReader::ReadAndReturnValueWithError(
-      kExpectedFeedbackDataJSON,
-      base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS);
-  ASSERT_TRUE(expected_data.has_value()) << expected_data.error().message;
-  ASSERT_TRUE(expected_data->is_dict());
-  EXPECT_EQ(autofill_feedback_data, expected_data->GetDict());
+  ASSERT_OK_AND_ASSIGN(
+      auto expected_data,
+      base::JSONReader::ReadAndReturnValueWithError(
+          kExpectedFeedbackDataJSON,
+          base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS));
+  ASSERT_TRUE(expected_data.is_dict());
+  EXPECT_EQ(autofill_feedback_data, expected_data.GetDict());
 }
 
 TEST_F(AutofillFeedbackDataUnitTest, IncludesLastAutofillEventLogEntry) {
-  FormData form;
-  CreateFeedbackTestFormData(&form);
-  FormFieldData field = form.fields[0];
-  browser_autofill_manager_->OnFormsSeen(
-      /*updated_forms=*/{form},
-      /*removed_forms=*/{});
+  FormData form = CreateFeedbackTestFormData();
+  FormFieldData field = form.fields()[0];
+  autofill_manager().OnFormsSeen(/*updated_forms=*/{form},
+                                 /*removed_forms=*/{},
+                                 AutofillManagerTestApi::pass_key());
 
   // Simulates an autofill event.
-  browser_autofill_manager_->OnSingleFieldSuggestionSelected(
-      u"TestValue", POPUP_ITEM_ID_IBAN_ENTRY, form, field);
+  Suggestion suggestion(u"TestValue", SuggestionType::kIbanEntry);
+  autofill_manager().OnSingleFieldSuggestionSelected(
+      suggestion, form.global_id(), field.global_id());
 
-  auto expected_data = base::JSONReader::ReadAndReturnValueWithError(
-      kExpectedFeedbackDataJSON,
-      base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS);
-  ASSERT_TRUE(expected_data.has_value()) << expected_data.error().message;
-  ASSERT_TRUE(expected_data->is_dict());
+  ASSERT_OK_AND_ASSIGN(
+      auto expected_data,
+      base::JSONReader::ReadAndReturnValueWithError(
+          kExpectedFeedbackDataJSON,
+          base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS));
+  ASSERT_TRUE(expected_data.is_dict());
 
   // Update the expected data with a last_autofill_event entry.
-  base::Value::Dict last_autofill_event;
+  base::DictValue last_autofill_event;
   last_autofill_event.Set("associatedCountry", "");
-  last_autofill_event.Set("type", "SingleFieldFormFillerIban");
-  expected_data->GetDict().Set("lastAutofillEvent",
-                               std::move(last_autofill_event));
+  last_autofill_event.Set("type", "SingleFieldFillerIban");
+  expected_data.GetDict().Set("lastAutofillEvent",
+                              std::move(last_autofill_event));
 
-  EXPECT_EQ(
-      data_logs::FetchAutofillFeedbackData(browser_autofill_manager_.get()),
-      expected_data->GetDict());
+  EXPECT_EQ(data_logs::FetchAutofillFeedbackData(&autofill_manager()),
+            expected_data.GetDict());
 }
 
 TEST_F(AutofillFeedbackDataUnitTest,
        NotIncludeLastAutofillEventIfExceedTimeLimit) {
-  TestAutofillClock clock(AutofillClock::Now());
-  FormData form;
-  CreateFeedbackTestFormData(&form);
-  FormFieldData field = form.fields[0];
-  browser_autofill_manager_->OnFormsSeen(
-      /*updated_forms=*/{form},
-      /*removed_forms=*/{});
+  FormData form = CreateFeedbackTestFormData();
+  const FormFieldData& field = form.fields()[0];
+  autofill_manager().OnFormsSeen(/*updated_forms=*/{form},
+                                 /*removed_forms=*/{},
+                                 AutofillManagerTestApi::pass_key());
 
   // Simulates an autofill event.
-  browser_autofill_manager_->OnSingleFieldSuggestionSelected(
-      u"TestValue", POPUP_ITEM_ID_IBAN_ENTRY, form, field);
+  Suggestion suggestion(u"TestValue", SuggestionType::kIbanEntry);
+  autofill_manager().OnSingleFieldSuggestionSelected(
+      suggestion, form.global_id(), field.global_id());
 
   // Advance the clock 4 minutes should disregard the last autofill event log.
-  clock.Advance(base::Minutes(4));
+  task_environment_.FastForwardBy(base::Minutes(4));
 
   // Expected data does not contain the last_autofill_event entry.
-  auto expected_data = base::JSONReader::ReadAndReturnValueWithError(
-      kExpectedFeedbackDataJSON,
-      base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS);
-  ASSERT_TRUE(expected_data.has_value()) << expected_data.error().message;
-  ASSERT_TRUE(expected_data->is_dict());
+  ASSERT_OK_AND_ASSIGN(
+      auto expected_data,
+      base::JSONReader::ReadAndReturnValueWithError(
+          kExpectedFeedbackDataJSON,
+          base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS));
+  ASSERT_TRUE(expected_data.is_dict());
 
-  EXPECT_EQ(
-      data_logs::FetchAutofillFeedbackData(browser_autofill_manager_.get()),
-      expected_data->GetDict());
+  EXPECT_EQ(data_logs::FetchAutofillFeedbackData(&autofill_manager()),
+            expected_data.GetDict());
 }
 
 TEST_F(AutofillFeedbackDataUnitTest, IncludesExtraLogs) {
-  FormData form;
-  CreateFeedbackTestFormData(&form);
-  browser_autofill_manager_->OnFormsSeen(
-      /*updated_forms=*/{form},
-      /*removed_forms=*/{});
+  FormData form = CreateFeedbackTestFormData();
+  autofill_manager().OnFormsSeen(/*updated_forms=*/{form},
+                                 /*removed_forms=*/{},
+                                 AutofillManagerTestApi::pass_key());
 
-  base::Value::Dict extra_logs;
+  base::DictValue extra_logs;
   extra_logs.Set("triggerFormSignature", "123");
   extra_logs.Set("triggerFieldSignature", "456");
 
-  base::Value::Dict autofill_feedback_data =
-      data_logs::FetchAutofillFeedbackData(browser_autofill_manager_.get(),
-                                           extra_logs.Clone());
+  base::DictValue autofill_feedback_data = data_logs::FetchAutofillFeedbackData(
+      &autofill_manager(), extra_logs.Clone());
 
-  auto expected_data = base::JSONReader::ReadAndReturnValueWithError(
-      kExpectedFeedbackDataJSON,
-      base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS);
-  ASSERT_TRUE(expected_data.has_value()) << expected_data.error().message;
-  ASSERT_TRUE(expected_data->is_dict());
+  ASSERT_OK_AND_ASSIGN(
+      auto expected_data,
+      base::JSONReader::ReadAndReturnValueWithError(
+          kExpectedFeedbackDataJSON,
+          base::JSONParserOptions::JSON_ALLOW_TRAILING_COMMAS));
+  ASSERT_TRUE(expected_data.is_dict());
   // Include extra logs in the expected report.
-  expected_data->GetDict().Merge(std::move(extra_logs));
-  EXPECT_EQ(autofill_feedback_data, expected_data->GetDict());
+  expected_data.GetDict().Merge(std::move(extra_logs));
+  EXPECT_EQ(autofill_feedback_data, expected_data.GetDict());
 }
 
+}  // namespace
 }  // namespace autofill

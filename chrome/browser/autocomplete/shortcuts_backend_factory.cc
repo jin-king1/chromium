@@ -15,7 +15,7 @@
 #include "components/prefs/pref_service.h"
 #include "extensions/buildflags/buildflags.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 #include "chrome/browser/autocomplete/shortcuts_extensions_manager.h"
 
 namespace {
@@ -39,7 +39,8 @@ scoped_refptr<ShortcutsBackend> ShortcutsBackendFactory::GetForProfileIfExists(
 
 // static
 ShortcutsBackendFactory* ShortcutsBackendFactory::GetInstance() {
-  return base::Singleton<ShortcutsBackendFactory>::get();
+  static base::NoDestructor<ShortcutsBackendFactory> instance;
+  return instance.get();
 }
 
 // static
@@ -61,15 +62,18 @@ ShortcutsBackendFactory::ShortcutsBackendFactory()
           "ShortcutsBackend",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOriginalOnly)
-              // TODO(crbug.com/1418376): Check if this service is needed in
+              // TODO(crbug.com/40257657): Check if this service is needed in
               // Guest mode.
               .WithGuest(ProfileSelection::kOriginalOnly)
+              // TODO(crbug.com/41488885): Check if this service is needed for
+              // Ash Internals.
+              .WithAshInternals(ProfileSelection::kOriginalOnly)
               .Build()) {
   DependsOn(HistoryServiceFactory::GetInstance());
   DependsOn(TemplateURLServiceFactory::GetInstance());
 }
 
-ShortcutsBackendFactory::~ShortcutsBackendFactory() {}
+ShortcutsBackendFactory::~ShortcutsBackendFactory() = default;
 
 scoped_refptr<RefcountedKeyedService>
 ShortcutsBackendFactory::BuildServiceInstanceFor(
@@ -83,7 +87,7 @@ bool ShortcutsBackendFactory::ServiceIsNULLWhileTesting() const {
 
 void ShortcutsBackendFactory::BrowserContextShutdown(
     content::BrowserContext* context) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   context->RemoveUserData(kShortcutsExtensionsManagerKey);
 #endif
 
@@ -100,7 +104,7 @@ scoped_refptr<ShortcutsBackend> ShortcutsBackendFactory::CreateShortcutsBackend(
       HistoryServiceFactory::GetForProfile(profile,
                                            ServiceAccessType::EXPLICIT_ACCESS),
       profile->GetPath().Append(kShortcutsDatabaseName), suppress_db));
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   auto extensions_manager =
       std::make_unique<ShortcutsExtensionsManager>(profile);
   profile->SetUserData(kShortcutsExtensionsManagerKey,

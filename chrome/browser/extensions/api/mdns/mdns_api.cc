@@ -7,7 +7,10 @@
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
 #include "base/lazy_instance.h"
+#include "base/logging.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/values.h"
 #include "chrome/browser/extensions/extension_service.h"
@@ -15,11 +18,14 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
-#include "extensions/browser/api/async_api_function.h"
 #include "extensions/browser/extension_function.h"
 #include "extensions/browser/extension_host.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/buildflags/buildflags.h"
+#include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/event_dispatcher.mojom.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -35,11 +41,7 @@ MDnsAPI::MDnsAPI(content::BrowserContext* context)
   event_router->RegisterObserver(this, mdns::OnServiceList::kEventName);
 }
 
-MDnsAPI::~MDnsAPI() {
-  if (dns_sd_registry_) {
-    dns_sd_registry_->RemoveObserver(this);
-  }
-}
+MDnsAPI::~MDnsAPI() = default;
 
 // static
 MDnsAPI* MDnsAPI::Get(content::BrowserContext* context) {
@@ -52,6 +54,12 @@ static base::LazyInstance<BrowserContextKeyedAPIFactory<MDnsAPI>>::
 // static
 BrowserContextKeyedAPIFactory<MDnsAPI>* MDnsAPI::GetFactoryInstance() {
   return g_mdns_api_factory.Pointer();
+}
+
+void MDnsAPI::Shutdown() {
+  if (dns_sd_registry_) {
+    dns_sd_registry_->RemoveObserver(this);
+  }
 }
 
 void MDnsAPI::SetDnsSdRegistryForTesting(DnsSdRegistry* dns_sd_registry) {
@@ -181,7 +189,7 @@ const extensions::EventListenerMap::ListenerList& MDnsAPI::GetEventListeners() {
       .GetEventListenersByName(mdns::OnServiceList::kEventName);
 }
 
-bool MDnsAPI::IsMDnsAllowed(const std::string& extension_id) const {
+bool MDnsAPI::IsMDnsAllowed(const ExtensionId& extension_id) const {
   const extensions::Extension* extension =
       ExtensionRegistry::Get(browser_context_)
           ->enabled_extensions()
@@ -191,10 +199,10 @@ bool MDnsAPI::IsMDnsAllowed(const std::string& extension_id) const {
 
 void MDnsAPI::GetValidOnServiceListListeners(
     const std::string& service_type_filter,
-    std::set<std::string>* extension_ids,
+    std::set<ExtensionId>* extension_ids,
     ServiceTypeCounts* service_type_counts) {
   for (const auto& listener : GetEventListeners()) {
-    const base::Value::Dict* filter = listener->filter();
+    const base::DictValue* filter = listener->filter();
 
     const std::string* service_type =
         filter->FindString(kEventFilterServiceTypeKey);
@@ -227,7 +235,7 @@ void MDnsAPI::WriteToConsole(const std::string& service_type,
                              const std::string& message) {
   // Get all the extensions with an onServiceList listener for a particular
   // service type.
-  std::set<std::string> extension_ids;
+  std::set<ExtensionId> extension_ids;
   ServiceTypeCounts counts;
   GetValidOnServiceListListeners(service_type, &extension_ids,
                                  nullptr /* service_type_counts */);
@@ -238,19 +246,19 @@ void MDnsAPI::WriteToConsole(const std::string& service_type,
   // TODO(devlin): It's a little weird to log to the background pages,
   // especially when it might be dormant. We should probably just log to a place
   // like the ErrorConsole instead.
-  for (const std::string& extension_id : extension_ids) {
+  for (const ExtensionId& extension_id : extension_ids) {
     extensions::ExtensionHost* host =
         extensions::ProcessManager::Get(browser_context_)
             ->GetBackgroundHostForExtension(extension_id);
-    content::RenderFrameHost* rfh =
+    content::RenderFrameHost* render_frame_host =
         host ? host->host_contents()->GetPrimaryMainFrame() : nullptr;
-    if (rfh) {
-      rfh->AddMessageToConsole(level, logged_message);
+    if (render_frame_host) {
+      render_frame_host->AddMessageToConsole(level, logged_message);
     }
   }
 }
 
-AsyncApiFunction::ResponseAction MdnsForceDiscoveryFunction::Run() {
+ExtensionFunction::ResponseAction MdnsForceDiscoveryFunction::Run() {
   MDnsAPI* api = MDnsAPI::Get(browser_context());
   if (!api) {
     return RespondNow(Error("Unknown error."));

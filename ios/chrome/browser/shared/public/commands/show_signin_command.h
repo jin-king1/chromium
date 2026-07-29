@@ -7,33 +7,44 @@
 
 #import <Foundation/Foundation.h>
 
-#include "components/signin/public/base/signin_metrics.h"
+#import "base/ios/block_types.h"
+#import "components/signin/public/base/signin_deep_link_payload.h"
+#import "components/signin/public/base/signin_metrics.h"
+#import "ios/chrome/browser/authentication/ui_bundled/change_profile_continuation_provider.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_context_style.h"
 
 @protocol SystemIdentity;
 
-typedef void (^ShowSigninCommandCompletionCallback)(BOOL succeeded);
-
-typedef NS_ENUM(NSInteger, AuthenticationOperation) {
-  // Operation to start a re-authenticate operation. The user is presented with
-  // the SSOAuth re-authenticate web page.
-  AuthenticationOperationReauthenticate,
-  // Operation to start a sign-in and sync operation. The user is presented with
-  // the sign-in page with the user consent.
-  AuthenticationOperationSigninAndSync,
+enum class AuthenticationOperation {
+  // Operation to sign-in again with the previously signed-in account. The user
+  // is presented with the SSOAuth dialog. This command can only be used if
+  // there is no primary account.
+  // This is the only command whose view may be dismissed without the
+  // signin-completion being called, up to iOS18. See crbug.com/395959814.
+  kResignin,
   // Operation to start a sign-in only operation. The user is presented with
   // the consistency web sign-in dialog.
-  AuthenticationOperationSigninOnly,
-  // Operation to add a secondary account. The user is presented with the
-  // SSOAUth sin-in page.
-  AuthenticationOperationAddAccount,
-  // Operation to start a forced sign-in operation. The user is presented with
-  // the sign-in page with information about the policy and cannot dimiss it.
-  AuthenticationOperationForcedSigninAndSync,
-  // Operation to start a sign-in and sync operation. The user is presented with
-  // the sign-in page with the user consent. The views are the newer FRE style
-  // views with the first being a screen that asks the user if they want to
-  // sign in and the second being the "tangible sync" screen.
-  AuthenticationOperationSigninAndSyncWithTwoScreens,
+  kSigninOnly,
+  // Operation to trigger sign-in only operation, without presenting UI if an
+  // identity is selected in `-ShowSigninCommand.identity`. Otherwise,
+  // a dialog to choose an identity is presented and the user is signed in as
+  // soon as the identity is selected.
+  kInstantSignin,
+  // Operation to trigger sign-in and then history sync.
+  // If there is at least one identity on the device, the user is presented with
+  // the sign-in bottom sheet to sign-in.
+  // If there is no identity on the device, the user is presented the SSO add
+  // account dialog to sign-in.
+  // Once signed in, the history sync opt-in is displayed.
+  kSheetSigninAndHistorySync,
+  // Operation to trigger the history sync.
+  // The user must already be signed in but with the history sync turned off.
+  // It is a CHECK failure if history_sync::GetSkipReason does not return
+  // `history_sync::HistorySyncSkipReason::kNone`.
+  kHistorySync,
+  // Operation to trigger the deep link sign-in flow.
+  kDeepLinkSignin,
 };
 
 // A command to perform a sign in operation.
@@ -43,30 +54,106 @@ typedef NS_ENUM(NSInteger, AuthenticationOperation) {
 - (instancetype)init NS_UNAVAILABLE;
 
 // Initializes a command to perform the specified operation with a
-// SigninInteractionController and invoke a possibly-nil callback when finished.
+// SigninCoordinator.
+// In case of profile change, invoke `prepareChangeProfile` before the switch
+// and `provider`’s provided method after. In any other case, invoke
+// `completion` if its non-nil.
+- (instancetype)initWithOperation:(AuthenticationOperation)operation
+                             identity:(id<SystemIdentity>)identity
+                   targetAccountEmail:(NSString*)targetAccountEmail
+                          accessPoint:(signin_metrics::AccessPoint)accessPoint
+                          promoAction:(signin_metrics::PromoAction)promoAction
+                           completion:
+                               (SigninCoordinatorCompletionCallback)completion
+                 prepareChangeProfile:(ProceduralBlock)prepareChangeProfile
+    changeProfileContinuationProvider:
+        (const ChangeProfileContinuationProvider&)provider
+                   externalEntryPoint:
+                       (signin::ExternalEntryPoint)externalEntryPoint
+    NS_DESIGNATED_INITIALIZER;
+
+// Initializes a command to perform, without pre-profile-switch.
+- (instancetype)initWithOperation:(AuthenticationOperation)operation
+                             identity:(id<SystemIdentity>)identity
+                          accessPoint:(signin_metrics::AccessPoint)accessPoint
+                          promoAction:(signin_metrics::PromoAction)promoAction
+                           completion:
+                               (SigninCoordinatorCompletionCallback)completion
+    changeProfileContinuationProvider:
+        (const ChangeProfileContinuationProvider&)provider;
+
+// Initializes a ShowSigninCommand with the continuation set to do nothing.
 - (instancetype)initWithOperation:(AuthenticationOperation)operation
                          identity:(id<SystemIdentity>)identity
                       accessPoint:(signin_metrics::AccessPoint)accessPoint
                       promoAction:(signin_metrics::PromoAction)promoAction
-                         callback:(ShowSigninCommandCompletionCallback)callback
-    NS_DESIGNATED_INITIALIZER;
+                       completion:
+                           (SigninCoordinatorCompletionCallback)completion;
 
-// Initializes a ShowSigninCommand with `identity` and `callback` set to nil.
+// Initializes a ShowSigninCommand with `identity` and `completion` set to nil.
+- (instancetype)initWithOperation:(AuthenticationOperation)operation
+                          accessPoint:(signin_metrics::AccessPoint)accessPoint
+                          promoAction:(signin_metrics::PromoAction)promoAction
+    changeProfileContinuationProvider:
+        (const ChangeProfileContinuationProvider&)provider;
+
+// Initializes a ShowSigninCommand with `identity` and `completion` set to nil.
 - (instancetype)initWithOperation:(AuthenticationOperation)operation
                       accessPoint:(signin_metrics::AccessPoint)accessPoint
                       promoAction:(signin_metrics::PromoAction)promoAction;
 
 // Initializes a ShowSigninCommand with PROMO_ACTION_NO_SIGNIN_PROMO and a nil
-// callback.
+// completion.
 - (instancetype)initWithOperation:(AuthenticationOperation)operation
                       accessPoint:(signin_metrics::AccessPoint)accessPoint;
+// Initializes a ShowSigninCommand with PROMO_ACTION_NO_SIGNIN_PROMO and a nil
+// completion.
 
-// The callback to be invoked after the operation is complete.
-@property(copy, nonatomic, readonly)
-    ShowSigninCommandCompletionCallback callback;
+- (instancetype)initWithOperation:(AuthenticationOperation)operation
+                          accessPoint:(signin_metrics::AccessPoint)accessPoint
+    changeProfileContinuationProvider:
+        (const ChangeProfileContinuationProvider&)provider;
+
+// Initializes a ShowSigninCommand for deep link sign-in operation.
+- (instancetype)initWithOperation:(AuthenticationOperation)operation
+               targetAccountEmail:(NSString*)targetAccountEmail
+                      accessPoint:(signin_metrics::AccessPoint)accessPoint
+                      promoAction:(signin_metrics::PromoAction)promoAction
+               externalEntryPoint:
+                   (signin::ExternalEntryPoint)externalEntryPoint;
+
+// Replaces `self.completion` by a function calling both `self.completion` and
+// `completion`.
+- (void)addSigninCompletion:(SigninCoordinatorCompletionCallback)completion;
+
+// Whether the history opt in sync should always be shown when the user hasn't
+// approved it before. Default: YES
+@property(nonatomic, assign) BOOL optionalHistorySync;
+
+// Whether the sign-in promo should be displayed in a fullscreen modal.
+// Default: NO.
+@property(nonatomic, assign) BOOL fullScreenPromo;
+
+// The completion to be invoked after the operation is complete.
+@property(nonatomic, copy, readonly)
+    SigninCoordinatorCompletionCallback completion;
 
 // The operation to perform during the sign-in flow.
 @property(nonatomic, readonly) AuthenticationOperation operation;
+
+// Prefilled email for the sign-in flow (e.g. for deep link flow). This is
+// distinct from the `identity` parameter: if the account is not yet present on
+// the device, `identity` will be nil, but `targetAccountEmail` is still used to
+// prefill the sign-in/add-account flow.
+@property(nonatomic, copy, readonly) NSString* targetAccountEmail;
+
+// The external entry point for the deep link sign-in flow.
+@property(nonatomic, assign, readonly)
+    signin::ExternalEntryPoint externalEntryPoint;
+
+// Customize content on sign-in and history sync screens.
+// Default: `kDefault`.
+@property(nonatomic, assign) SigninContextStyle contextStyle;
 
 // Chrome identity is only used for the AuthenticationOperationSigninAndSync
 // operation (should be nil otherwise). If the identity is non-nil, the
@@ -80,6 +167,23 @@ typedef NS_ENUM(NSInteger, AuthenticationOperation) {
 
 // The user action from the sign-in promo to trigger the sign-in operation.
 @property(nonatomic, readonly) signin_metrics::PromoAction promoAction;
+
+// A block called if the successful authentication flow would cause a profile
+// switch in order to get the user to decide whether they want this switch to
+// occur or not.
+@property(nonatomic, copy)
+    SigninChangeProfileConfirmationBlock confirmChangeProfile;
+
+// A block to execute before the change of profile.
+@property(nonatomic, readonly) ProceduralBlock prepareChangeProfile;
+
+// The action to execute after a change of profile. Can be accessed only once.
+@property(nonatomic, readonly)
+    const ChangeProfileContinuationProvider& changeProfileContinuationProvider;
+
+// Whether the identity snackbar must be displayed after a successful
+// HistorySyncSigninCoordinator. Default value: false.
+@property(nonatomic, assign) BOOL showSnackbar;
 
 @end
 

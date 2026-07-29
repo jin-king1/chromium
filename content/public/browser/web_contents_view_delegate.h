@@ -13,10 +13,11 @@
 #endif
 #endif
 
+#include <optional>
+
 #include "base/functional/callback_forward.h"
 #include "content/common/content_export.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 #if defined(__OBJC__)
 #if BUILDFLAG(IS_MAC)
@@ -25,6 +26,7 @@
 #endif
 
 namespace content {
+class NavigationHandle;
 class RenderFrameHost;
 class RenderWidgetHost;
 class WebDragDestDelegate;
@@ -35,11 +37,11 @@ struct DropData;
 // WebContentsView implementation.
 class CONTENT_EXPORT WebContentsViewDelegate {
  public:
-  // Callback used with OnPerformDrop() method that is called once
-  // OnPerformDrop() completes. Returns an updated DropData or nothing if the
-  // drop operation should be aborted.
+  // Callback used with OnPerformingDrop() method that is called once
+  // OnPerformingDrop() completes. Returns an updated DropData or nothing if
+  // the drop operation should be aborted.
   using DropCompletionCallback =
-      base::OnceCallback<void(absl::optional<DropData>)>;
+      base::OnceCallback<void(std::optional<DropData>)>;
 
   virtual ~WebContentsViewDelegate();
 
@@ -65,6 +67,9 @@ class CONTENT_EXPORT WebContentsViewDelegate {
   // item (after first opening the context menu using the ShowContextMenu
   // method).
   virtual void ExecuteCommandForTesting(int command_id, int event_flags);
+
+  // Returns true if a context menu is currently being shown.
+  virtual bool IsContextMenuShowingForTesting();
 
   // Store the current focused view and start tracking it.
   virtual void StoreFocus();
@@ -97,8 +102,16 @@ class CONTENT_EXPORT WebContentsViewDelegate {
 
   // Performs the actions needed for a drop and then calls the completion
   // callback once done.
-  virtual void OnPerformDrop(const DropData& drop_data,
-                             DropCompletionCallback callback);
+  virtual void OnPerformingDrop(const DropData& drop_data,
+                                DropCompletionCallback callback);
+
+  // Notifies the delegate that the drag operation has ended.
+  virtual void WebContentsDragEnded();
+
+#if BUILDFLAG(IS_ANDROID)
+  virtual bool ShouldShowBlurTransitionAnimation(
+      NavigationHandle* navigation_handle);
+#endif
 };
 
 }  // namespace content

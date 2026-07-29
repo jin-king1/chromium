@@ -12,8 +12,10 @@
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_tree_owner.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/window_util.h"
@@ -22,8 +24,9 @@ namespace ash {
 namespace {
 
 void EnsureAllChildrenAreVisible(ui::Layer* layer) {
-  for (auto* child : layer->children())
+  for (ui::Layer* child : layer->children()) {
     EnsureAllChildrenAreVisible(child);
+  }
 
   layer->SetVisible(true);
   layer->SetOpacity(1);
@@ -32,8 +35,11 @@ void EnsureAllChildrenAreVisible(ui::Layer* layer) {
 }  // namespace
 
 WindowMirrorView::WindowMirrorView(aura::Window* source,
-                                   bool show_non_client_view)
-    : source_(source), show_non_client_view_(show_non_client_view) {
+                                   bool show_non_client_view,
+                                   bool sync_bounds)
+    : source_(source),
+      show_non_client_view_(show_non_client_view),
+      sync_bounds_(sync_bounds) {
   source_->AddObserver(this);
   DCHECK(source);
 }
@@ -61,12 +67,13 @@ void WindowMirrorView::OnWindowDestroying(aura::Window* window) {
   }
 }
 
-gfx::Size WindowMirrorView::CalculatePreferredSize() const {
+gfx::Size WindowMirrorView::CalculatePreferredSize(
+    const views::SizeBounds& available_size) const {
   return show_non_client_view_ ? source_->bounds().size()
                                : GetClientAreaBounds().size();
 }
 
-void WindowMirrorView::Layout() {
+void WindowMirrorView::Layout(PassKey) {
   // If |layer_owner_| hasn't been initialized (|this| isn't on screen), no-op.
   if (!layer_owner_ || !source_)
     return;
@@ -92,6 +99,7 @@ void WindowMirrorView::Layout() {
   // Reposition such that the client area is the only part visible.
   transform.Translate(-client_area_bounds.x(), -client_area_bounds.y());
   GetMirrorLayer()->SetTransform(transform);
+  GetMirrorLayer()->SetClipRect(client_area_bounds);
 }
 
 bool WindowMirrorView::GetNeedsNotificationWhenVisibleBoundsChange() const {
@@ -127,15 +135,13 @@ ui::Layer* WindowMirrorView::GetMirrorLayerForTesting() {
 }
 
 void WindowMirrorView::InitLayerOwner() {
-  layer_owner_ = wm::MirrorLayers(source_, /*sync_bounds=*/false);
+  layer_owner_ = wm::MirrorLayers(source_, sync_bounds_);
   layer_owner_->root()->SetOpacity(1.f);
 
   SetPaintToLayer();
 
   ui::Layer* mirror_layer = GetMirrorLayer();
   layer()->Add(mirror_layer);
-  // This causes us to clip the non-client areas of the window.
-  layer()->SetMasksToBounds(true);
 
   // Some extra work is needed when the source window is minimized, tucked
   // offscreen or is on an inactive desk.
@@ -144,7 +150,7 @@ void WindowMirrorView::InitLayerOwner() {
     EnsureAllChildrenAreVisible(mirror_layer);
   }
 
-  Layout();
+  DeprecatedLayoutImmediately();
 }
 
 ui::Layer* WindowMirrorView::GetMirrorLayer() {
@@ -167,5 +173,8 @@ gfx::Rect WindowMirrorView::GetClientAreaBounds() const {
   views::View* client_view = widget->client_view();
   return client_view->ConvertRectToWidget(client_view->GetLocalBounds());
 }
+
+BEGIN_METADATA(WindowMirrorView)
+END_METADATA
 
 }  // namespace ash

@@ -138,6 +138,16 @@ class MockProtoStorage
               (override));
   MOCK_METHOD(
       void,
+      UpdateEntries,
+      ((std::unique_ptr<std::vector<
+            std::pair<std::string, commerce::CommerceSubscriptionProto>>>
+            entries_to_update),
+       std::unique_ptr<std::vector<std::string>> keys_to_remove,
+       SessionProtoStorage<
+           commerce::CommerceSubscriptionProto>::OperationCallback callback),
+      (override));
+  MOCK_METHOD(
+      void,
       DeleteAllContent,
       (SessionProtoStorage<
           commerce::CommerceSubscriptionProto>::OperationCallback callback),
@@ -209,6 +219,17 @@ class MockProtoStorage
                     OperationCallback callback) {
               std::move(callback).Run(succeeded);
             });
+    ON_CALL(*this, UpdateEntries)
+        .WillByDefault(
+            [succeeded](
+                std::unique_ptr<std::vector<std::pair<
+                    std::string, commerce::CommerceSubscriptionProto>>>
+                    entries_to_update,
+                std::unique_ptr<std::vector<std::string>> keys_to_remove,
+                SessionProtoStorage<commerce::CommerceSubscriptionProto>::
+                    OperationCallback callback) {
+              std::move(callback).Run(succeeded);
+            });
     ON_CALL(*this, DeleteAllContent)
         .WillByDefault(
             [succeeded](SessionProtoStorage<
@@ -264,7 +285,7 @@ TEST_F(SubscriptionsStorageTest, TestGetUniqueNonExistingSubscriptions) {
       base::BindOnce(
           [](base::RunLoop* run_loop,
              std::unique_ptr<std::vector<CommerceSubscription>> subscriptions) {
-            ASSERT_EQ(1, static_cast<int>(subscriptions->size()));
+            ASSERT_EQ(1u, subscriptions->size());
             auto subscription = (*subscriptions)[0];
             ASSERT_EQ(SubscriptionType::kPriceTrack, subscription.type);
             ASSERT_EQ(IdentifierType::kProductClusterId, subscription.id_type);
@@ -289,7 +310,7 @@ TEST_F(SubscriptionsStorageTest, TestGetUniqueExistingSubscriptions) {
       base::BindOnce(
           [](base::RunLoop* run_loop,
              std::unique_ptr<std::vector<CommerceSubscription>> subscriptions) {
-            ASSERT_EQ(1, static_cast<int>(subscriptions->size()));
+            ASSERT_EQ(1u, subscriptions->size());
             auto subscription = (*subscriptions)[0];
             ASSERT_EQ(SubscriptionType::kPriceTrack, subscription.type);
             ASSERT_EQ(IdentifierType::kProductClusterId, subscription.id_type);
@@ -341,10 +362,7 @@ TEST_F(SubscriptionsStorageTest, TestUpdateStorage) {
   proto_db_->MockOperationResult(true);
 
   EXPECT_CALL(*proto_db_, LoadContentWithPrefix("PRICE_TRACK", _));
-  EXPECT_CALL(*proto_db_, DeleteOneEntry(kKey3, _)).Times(1);
-  EXPECT_CALL(*proto_db_, InsertContent(kKey1, _, _)).Times(1);
-  EXPECT_CALL(*proto_db_, DeleteOneEntry(kKey2, _)).Times(0);
-  EXPECT_CALL(*proto_db_, InsertContent(kKey2, _, _)).Times(0);
+  EXPECT_CALL(*proto_db_, UpdateEntries(_, _, _)).Times(1);
 
   base::RunLoop run_loop;
   storage_->UpdateStorage(
@@ -385,10 +403,7 @@ TEST_F(SubscriptionsStorageTest,
   proto_db_->MockOperationResult(true);
 
   EXPECT_CALL(*proto_db_, LoadContentWithPrefix("PRICE_TRACK", _));
-  EXPECT_CALL(*proto_db_, DeleteOneEntry(kKey3, _)).Times(1);
-  EXPECT_CALL(*proto_db_, InsertContent(kKey1, _, _)).Times(1);
-  EXPECT_CALL(*proto_db_, DeleteOneEntry(kKey2, _)).Times(1);
-  EXPECT_CALL(*proto_db_, InsertContent(kKey2, _, _)).Times(1);
+  EXPECT_CALL(*proto_db_, UpdateEntries(_, _, _)).Times(1);
 
   base::RunLoop run_loop;
   storage_->UpdateStorage(
@@ -418,9 +433,7 @@ TEST_F(SubscriptionsStorageTest, TestUpdateStorage_LoadFailed) {
   {
     InSequence s;
     EXPECT_CALL(*proto_db_, LoadContentWithPrefix("PRICE_TRACK", _));
-    EXPECT_CALL(*proto_db_, DeleteOneEntry).Times(0);
-    EXPECT_CALL(*proto_db_, InsertContent(kKey2, _, _));
-    EXPECT_CALL(*proto_db_, InsertContent(kKey1, _, _));
+    EXPECT_CALL(*proto_db_, UpdateEntries(_, _, _)).Times(1);
   }
 
   base::RunLoop run_loop;
@@ -451,8 +464,7 @@ TEST_F(SubscriptionsStorageTest, TestUpdateStorage_OperationFailed) {
   {
     InSequence s;
     EXPECT_CALL(*proto_db_, LoadContentWithPrefix("PRICE_TRACK", _));
-    EXPECT_CALL(*proto_db_, DeleteOneEntry(kKey3, _));
-    EXPECT_CALL(*proto_db_, InsertContent(kKey1, _, _));
+    EXPECT_CALL(*proto_db_, UpdateEntries(_, _, _));
   }
 
   base::RunLoop run_loop;
@@ -481,10 +493,7 @@ TEST_F(SubscriptionsStorageTest, UpdateStorageAndNotifyModifiedSubscriptions) {
   proto_db_->MockOperationResult(true);
 
   EXPECT_CALL(*proto_db_, LoadContentWithPrefix("PRICE_TRACK", _));
-  EXPECT_CALL(*proto_db_, DeleteOneEntry(kKey3, _)).Times(1);
-  EXPECT_CALL(*proto_db_, InsertContent(kKey1, _, _)).Times(1);
-  EXPECT_CALL(*proto_db_, DeleteOneEntry(kKey2, _)).Times(0);
-  EXPECT_CALL(*proto_db_, InsertContent(kKey2, _, _)).Times(0);
+  EXPECT_CALL(*proto_db_, UpdateEntries(_, _, _)).Times(1);
 
   base::RunLoop run_loop;
   storage_->UpdateStorageAndNotifyModifiedSubscriptions(
@@ -494,9 +503,9 @@ TEST_F(SubscriptionsStorageTest, UpdateStorageAndNotifyModifiedSubscriptions) {
              std::vector<CommerceSubscription> added_subs,
              std::vector<CommerceSubscription> removed_subs) {
             ASSERT_EQ(SubscriptionsRequestStatus::kSuccess, status);
-            ASSERT_EQ(1, (int)added_subs.size());
+            ASSERT_EQ(1u, added_subs.size());
             ASSERT_EQ(kMockId1, added_subs[0].id);
-            ASSERT_EQ(1, (int)removed_subs.size());
+            ASSERT_EQ(1u, removed_subs.size());
             ASSERT_EQ(kMockId3, removed_subs[0].id);
             run_loop->Quit();
           },

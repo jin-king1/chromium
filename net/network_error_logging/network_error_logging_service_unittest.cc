@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "net/network_error_logging/network_error_logging_service.h"
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -10,6 +12,7 @@
 #include "base/functional/callback.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/scoped_mock_clock_override.h"
 #include "base/test/simple_test_clock.h"
 #include "base/test/values_test_util.h"
 #include "base/time/time.h"
@@ -17,9 +20,9 @@
 #include "net/base/features.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_anonymization_key.h"
 #include "net/base/schemeful_site.h"
 #include "net/network_error_logging/mock_persistent_nel_store.h"
-#include "net/network_error_logging/network_error_logging_service.h"
 #include "net/reporting/reporting_test_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -27,6 +30,9 @@
 
 namespace net {
 namespace {
+
+using base::test::IsSupersetOfValue;
+using testing::Pointee;
 
 // The tests are parametrized on a boolean value which represents whether or not
 // to use a MockPersistentNelStore.
@@ -43,7 +49,7 @@ class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
 
   NetworkErrorLoggingServiceTest() {
     feature_list_.InitAndEnableFeature(
-        features::kPartitionNelAndReportingByNetworkIsolationKey);
+        features::kPartitionConnectionsByNetworkIsolationKey);
 
     if (GetParam()) {
       store_ = std::make_unique<MockPersistentNelStore>();
@@ -118,7 +124,7 @@ class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
   // These methods are design so that using them together will create unique
   // Origin, NetworkAnonymizationKey pairs, but they do return repeated values
   // when called separately, so they can be used to ensure that reports are
-  // keyed on both NIK and Origin.
+  // keyed on both NAK and Origin.
   url::Origin MakeOrigin(size_t index) {
     GURL url(base::StringPrintf("https://example%zd.com/", index / 2));
     return url::Origin::Create(url);
@@ -194,6 +200,9 @@ class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
       "{\"report_to\":\"group\",\"max_age\":86400,\"success_fraction\":1.0}";
   const std::string kHeaderIncludeSubdomains_ =
       "{\"report_to\":\"group\",\"max_age\":86400,\"include_subdomains\":true}";
+  const std::string kHeaderIncludeSubdomainsAndSuccess_ =
+      "{\"report_to\":\"group\",\"max_age\":86400,\"include_subdomains\":true,"
+      "\"success_fraction\":1.0}";
   const std::string kHeaderMaxAge0_ = "{\"max_age\":0}";
   const std::string kHeaderTooLong_ =
       "{\"report_to\":\"group\",\"max_age\":86400,\"junk\":\"" +
@@ -209,19 +218,11 @@ class NetworkErrorLoggingServiceTest : public ::testing::TestWithParam<bool> {
 
   const GURL kReferrer_ = GURL("https://referrer.com/");
 
-  // |store_| needs to outlive |service_|.
+  // `store_` and `reporting_service_` need to outlive `service_`.
   std::unique_ptr<MockPersistentNelStore> store_;
-  std::unique_ptr<NetworkErrorLoggingService> service_;
   std::unique_ptr<TestReportingService> reporting_service_;
+  std::unique_ptr<NetworkErrorLoggingService> service_;
 };
-
-void ExpectDictDoubleValue(double expected_value,
-                           const base::Value::Dict& value,
-                           const std::string& key) {
-  absl::optional<double> double_value = value.FindDouble(key);
-  ASSERT_TRUE(double_value) << key;
-  EXPECT_DOUBLE_EQ(expected_value, *double_value) << key;
-}
 
 TEST_P(NetworkErrorLoggingServiceTest, CreateService) {
   // Service is created by default in the test fixture..
@@ -251,18 +252,18 @@ TEST_P(NetworkErrorLoggingServiceTest, NoPolicy) {
   EXPECT_TRUE(reports().empty());
 }
 
-TEST_P(NetworkErrorLoggingServiceTest, PolicyKeyMatchesNikAndOrigin) {
+TEST_P(NetworkErrorLoggingServiceTest, PolicyKeyMatchesNakAndOrigin) {
   service()->OnHeader(kNak_, kOrigin_, kServerIP_, kHeader_);
 
   // Make the rest of the test run synchronously.
   FinishLoading(true /* load_success */);
 
-  // Wrong NIK and origin.
+  // Wrong NAK and origin.
   service()->OnRequest(MakeRequestDetails(kOtherNak_, kUrlDifferentHost_,
                                           ERR_CONNECTION_REFUSED));
   EXPECT_TRUE(reports().empty());
 
-  // Wrong NIK.
+  // Wrong NAK.
   service()->OnRequest(
       MakeRequestDetails(kOtherNak_, kUrl_, ERR_CONNECTION_REFUSED));
   EXPECT_TRUE(reports().empty());
@@ -284,23 +285,23 @@ TEST_P(NetworkErrorLoggingServiceTest, PolicyKeyMatchesNikAndOrigin) {
 }
 
 TEST_P(NetworkErrorLoggingServiceTest,
-       PolicyKeyMatchesNikAndOriginIncludeSubdomains) {
+       PolicyKeyMatchesNakAndOriginIncludeSubdomains) {
   service()->OnHeader(kNak_, kOrigin_, kServerIP_, kHeaderIncludeSubdomains_);
 
   // Make the rest of the test run synchronously.
   FinishLoading(true /* load_success */);
 
-  // Wrong NIK and origin.
+  // Wrong NAK and origin.
   service()->OnRequest(MakeRequestDetails(kOtherNak_, kUrlDifferentHost_,
                                           ERR_CONNECTION_REFUSED));
   EXPECT_TRUE(reports().empty());
 
-  // Wrong NIK (same origin).
+  // Wrong NAK (same origin).
   service()->OnRequest(
       MakeRequestDetails(kOtherNak_, kUrl_, ERR_CONNECTION_REFUSED));
   EXPECT_TRUE(reports().empty());
 
-  // Wrong NIK (subdomain).
+  // Wrong NAK (subdomain).
   service()->OnRequest(
       MakeRequestDetails(kOtherNak_, kUrlSubdomain_, ERR_CONNECTION_REFUSED));
   EXPECT_TRUE(reports().empty());
@@ -310,7 +311,11 @@ TEST_P(NetworkErrorLoggingServiceTest,
       MakeRequestDetails(kNak_, kUrlDifferentHost_, ERR_CONNECTION_REFUSED));
   EXPECT_TRUE(reports().empty());
 
-  // Correct key (same origin).
+  // Correct key, successful request (same origin).
+  service()->OnRequest(MakeRequestDetails(kNak_, kUrl_, OK));
+  EXPECT_TRUE(reports().empty());
+
+  // Correct key, non-DNS error (same origin).
   service()->OnRequest(
       MakeRequestDetails(kNak_, kUrl_, ERR_CONNECTION_REFUSED));
   EXPECT_EQ(1u, reports().size());
@@ -320,7 +325,64 @@ TEST_P(NetworkErrorLoggingServiceTest,
   EXPECT_EQ(kGroup_, reports()[0].group);
   EXPECT_EQ(kType_, reports()[0].type);
 
-  // Correct key (subdomain).
+  // Correct key, successful request (subdomain).
+  service()->OnRequest(MakeRequestDetails(kNak_, kUrlSubdomain_, OK));
+  EXPECT_EQ(1u, reports().size());
+
+  // Correct key, non-DNS error (subdomain).
+  service()->OnRequest(
+      MakeRequestDetails(kNak_, kUrlSubdomain_, ERR_CONNECTION_REFUSED));
+  EXPECT_EQ(1u, reports().size());
+
+  // Correct key, DNS error (subdomain).
+  service()->OnRequest(
+      MakeRequestDetails(kNak_, kUrlSubdomain_, ERR_NAME_NOT_RESOLVED));
+  EXPECT_EQ(2u, reports().size());
+  EXPECT_EQ(kUrlSubdomain_, reports()[1].url);
+  EXPECT_EQ(kNak_, reports()[1].network_anonymization_key);
+  EXPECT_EQ(kUserAgent_, reports()[1].user_agent);
+  EXPECT_EQ(kGroup_, reports()[1].group);
+  EXPECT_EQ(kType_, reports()[1].type);
+}
+
+TEST_P(NetworkErrorLoggingServiceTest,
+       PolicyKeyMatchesNakAndOriginIncludeSubdomainsAndSuccess) {
+  service()->OnHeader(kNak_, kOrigin_, kServerIP_,
+                      kHeaderIncludeSubdomainsAndSuccess_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
+
+  // Wrong NAK and origin.
+  service()->OnRequest(MakeRequestDetails(kOtherNak_, kUrlDifferentHost_,
+                                          ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Wrong NAK (same origin).
+  service()->OnRequest(
+      MakeRequestDetails(kOtherNak_, kUrl_, ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Wrong NAK (subdomain).
+  service()->OnRequest(
+      MakeRequestDetails(kOtherNak_, kUrlSubdomain_, ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Wrong origin.
+  service()->OnRequest(
+      MakeRequestDetails(kNak_, kUrlDifferentHost_, ERR_CONNECTION_REFUSED));
+  EXPECT_TRUE(reports().empty());
+
+  // Correct key, successful request (same origin).
+  service()->OnRequest(MakeRequestDetails(kNak_, kUrl_, OK));
+  EXPECT_EQ(1u, reports().size());
+  EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNak_, reports()[0].network_anonymization_key);
+  EXPECT_EQ(kUserAgent_, reports()[0].user_agent);
+  EXPECT_EQ(kGroup_, reports()[0].group);
+  EXPECT_EQ(kType_, reports()[0].type);
+
+  // Correct key, non-DNS error (same origin).
   service()->OnRequest(
       MakeRequestDetails(kNak_, kUrl_, ERR_CONNECTION_REFUSED));
   EXPECT_EQ(2u, reports().size());
@@ -329,12 +391,31 @@ TEST_P(NetworkErrorLoggingServiceTest,
   EXPECT_EQ(kUserAgent_, reports()[1].user_agent);
   EXPECT_EQ(kGroup_, reports()[1].group);
   EXPECT_EQ(kType_, reports()[1].type);
+
+  // Correct key (subdomain).
+  service()->OnRequest(
+      MakeRequestDetails(kNak_, kUrlSubdomain_, ERR_NAME_NOT_RESOLVED));
+  EXPECT_EQ(3u, reports().size());
+  EXPECT_EQ(kUrlSubdomain_, reports()[2].url);
+  EXPECT_EQ(kNak_, reports()[2].network_anonymization_key);
+  EXPECT_EQ(kUserAgent_, reports()[2].user_agent);
+  EXPECT_EQ(kGroup_, reports()[2].group);
+  EXPECT_EQ(kType_, reports()[2].type);
+
+  // Correct key, successful request (subdomain).
+  service()->OnRequest(MakeRequestDetails(kNak_, kUrlSubdomain_, OK));
+  EXPECT_EQ(3u, reports().size());
+
+  // Correct key, successful request on mismatched IP (subdomain).
+  service()->OnRequest(MakeRequestDetails(kNak_, kUrlSubdomain_, OK, "GET", 200,
+                                          kOtherServerIP_));
+  ASSERT_EQ(3u, reports().size());
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, NetworkAnonymizationKeyDisabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(
-      features::kPartitionNelAndReportingByNetworkIsolationKey);
+      features::kPartitionConnectionsByNetworkIsolationKey);
 
   // Need to re-create the service, since it caches the feature value on
   // creation.
@@ -347,7 +428,7 @@ TEST_P(NetworkErrorLoggingServiceTest, NetworkAnonymizationKeyDisabled) {
   // Make the rest of the test run synchronously.
   FinishLoading(true /* load_success */);
 
-  // Wrong NIK, but a report should be generated anyways.
+  // Wrong NAK, but a report should be generated anyways.
   service()->OnRequest(
       MakeRequestDetails(kOtherNak_, kUrl_, ERR_CONNECTION_REFUSED));
   EXPECT_EQ(1u, reports().size());
@@ -428,30 +509,21 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessReportQueued) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
   // TODO(juliatuttle): Extract these constants.
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("GET", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictIntegerValue(0, body_dict,
-                               NetworkErrorLoggingService::kStatusCodeKey);
-  base::ExpectDictIntegerValue(1000, body_dict,
-                               NetworkErrorLoggingService::kElapsedTimeKey);
-  base::ExpectDictStringValue("application", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("ok", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 0)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 1000)
+              .Set(NetworkErrorLoggingService::kPhaseKey, "application")
+              .Set(NetworkErrorLoggingService::kTypeKey, "ok"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, FailureReportQueued) {
@@ -473,30 +545,21 @@ TEST_P(NetworkErrorLoggingServiceTest, FailureReportQueued) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
   // TODO(juliatuttle): Extract these constants.
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("GET", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictIntegerValue(0, body_dict,
-                               NetworkErrorLoggingService::kStatusCodeKey);
-  base::ExpectDictIntegerValue(1000, body_dict,
-                               NetworkErrorLoggingService::kElapsedTimeKey);
-  base::ExpectDictStringValue("connection", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("tcp.refused", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 0)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 1000)
+              .Set(NetworkErrorLoggingService::kPhaseKey, "connection")
+              .Set(NetworkErrorLoggingService::kTypeKey, "tcp.refused"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, UnknownFailureReportQueued) {
@@ -512,14 +575,11 @@ TEST_P(NetworkErrorLoggingServiceTest, UnknownFailureReportQueued) {
   service()->OnRequest(MakeRequestDetails(kNak_, kUrl_, ERR_FILE_NO_SPACE));
 
   ASSERT_EQ(1u, reports().size());
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-  base::ExpectDictStringValue("application", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("unknown", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+  EXPECT_THAT(reports()[0].body,
+              Pointee(IsSupersetOfValue(
+                  base::DictValue()
+                      .Set(NetworkErrorLoggingService::kPhaseKey, "application")
+                      .Set(NetworkErrorLoggingService::kTypeKey, "unknown"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, UnknownCertFailureReportQueued) {
@@ -537,14 +597,11 @@ TEST_P(NetworkErrorLoggingServiceTest, UnknownCertFailureReportQueued) {
       MakeRequestDetails(kNak_, kUrl_, ERR_CERT_NON_UNIQUE_NAME));
 
   ASSERT_EQ(1u, reports().size());
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-  base::ExpectDictStringValue("connection", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("unknown", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+  EXPECT_THAT(reports()[0].body,
+              Pointee(IsSupersetOfValue(
+                  base::DictValue()
+                      .Set(NetworkErrorLoggingService::kPhaseKey, "connection")
+                      .Set(NetworkErrorLoggingService::kTypeKey, "unknown"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, HttpErrorReportQueued) {
@@ -565,30 +622,21 @@ TEST_P(NetworkErrorLoggingServiceTest, HttpErrorReportQueued) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
   // TODO(juliatuttle): Extract these constants.
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("GET", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictIntegerValue(504, body_dict,
-                               NetworkErrorLoggingService::kStatusCodeKey);
-  base::ExpectDictIntegerValue(1000, body_dict,
-                               NetworkErrorLoggingService::kElapsedTimeKey);
-  base::ExpectDictStringValue("application", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("http.error", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 504)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 1000)
+              .Set(NetworkErrorLoggingService::kPhaseKey, "application")
+              .Set(NetworkErrorLoggingService::kTypeKey, "http.error"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, SuccessReportDowngraded) {
@@ -607,29 +655,21 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessReportDowngraded) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kOtherServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("GET", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictIntegerValue(0, body_dict,
-                               NetworkErrorLoggingService::kStatusCodeKey);
-  base::ExpectDictIntegerValue(0, body_dict,
-                               NetworkErrorLoggingService::kElapsedTimeKey);
-  base::ExpectDictStringValue("dns", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("dns.address_changed", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kOtherServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 0)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 0)
+              .Set(NetworkErrorLoggingService::kPhaseKey, "dns")
+              .Set(NetworkErrorLoggingService::kTypeKey,
+                   "dns.address_changed"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, FailureReportDowngraded) {
@@ -648,29 +688,83 @@ TEST_P(NetworkErrorLoggingServiceTest, FailureReportDowngraded) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kOtherServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 0)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 0)
+              .Set(NetworkErrorLoggingService::kPhaseKey, "dns")
+              .Set(NetworkErrorLoggingService::kTypeKey,
+                   "dns.address_changed"))));
+}
 
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kOtherServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("GET", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictIntegerValue(0, body_dict,
-                               NetworkErrorLoggingService::kStatusCodeKey);
-  base::ExpectDictIntegerValue(0, body_dict,
-                               NetworkErrorLoggingService::kElapsedTimeKey);
-  base::ExpectDictStringValue("dns", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("dns.address_changed", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+TEST_P(NetworkErrorLoggingServiceTest, FailureReportDowngradedOtherServerIp) {
+  service()->OnHeader(kNak_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(/*load_success=*/true);
+
+  // `server_ip` matches the policy's address, but the request also contacted
+  // a different address. The report should still be downgraded.
+  NetworkErrorLoggingService::RequestDetails details = MakeRequestDetails(
+      kNak_, kUrl_, ERR_CONNECTION_REFUSED, "GET", 0, kServerIP_);
+  details.other_server_ips = {kOtherServerIP_};
+  service()->OnRequest(std::move(details));
+
+  ASSERT_EQ(1u, reports().size());
+  EXPECT_EQ(kUrl_, reports()[0].url);
+  EXPECT_EQ(kNak_, reports()[0].network_anonymization_key);
+  EXPECT_EQ(kGroup_, reports()[0].group);
+  EXPECT_EQ(kType_, reports()[0].type);
+  EXPECT_EQ(0, reports()[0].depth);
+
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 0)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 0)
+              .Set(NetworkErrorLoggingService::kPhaseKey, "dns")
+              .Set(NetworkErrorLoggingService::kTypeKey,
+                   "dns.address_changed"))));
+}
+
+TEST_P(NetworkErrorLoggingServiceTest,
+       FailureReportNotDowngradedSameOtherServerIp) {
+  service()->OnHeader(kNak_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
+
+  // Make the rest of the test run synchronously.
+  FinishLoading(/*load_success=*/true);
+
+  // `server_ip` matches the policy's address, and the only other contacted
+  // address is the same. The report should not be downgraded.
+  NetworkErrorLoggingService::RequestDetails details = MakeRequestDetails(
+      kNak_, kUrl_, ERR_CONNECTION_REFUSED, "GET", 0, kServerIP_);
+  details.other_server_ips = {kServerIP_};
+  service()->OnRequest(std::move(details));
+
+  ASSERT_EQ(1u, reports().size());
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 0)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 1000)
+              .Set(NetworkErrorLoggingService::kPhaseKey, "connection")
+              .Set(NetworkErrorLoggingService::kTypeKey, "tcp.refused"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, HttpErrorReportDowngraded) {
@@ -689,29 +783,21 @@ TEST_P(NetworkErrorLoggingServiceTest, HttpErrorReportDowngraded) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kOtherServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("GET", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictIntegerValue(0, body_dict,
-                               NetworkErrorLoggingService::kStatusCodeKey);
-  base::ExpectDictIntegerValue(0, body_dict,
-                               NetworkErrorLoggingService::kElapsedTimeKey);
-  base::ExpectDictStringValue("dns", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("dns.address_changed", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kOtherServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 0)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 0)
+              .Set(NetworkErrorLoggingService::kPhaseKey, "dns")
+              .Set(NetworkErrorLoggingService::kTypeKey,
+                   "dns.address_changed"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, DNSFailureReportNotDowngraded) {
@@ -730,29 +816,21 @@ TEST_P(NetworkErrorLoggingServiceTest, DNSFailureReportNotDowngraded) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kOtherServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("GET", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictIntegerValue(0, body_dict,
-                               NetworkErrorLoggingService::kStatusCodeKey);
-  base::ExpectDictIntegerValue(1000, body_dict,
-                               NetworkErrorLoggingService::kElapsedTimeKey);
-  base::ExpectDictStringValue("dns", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("dns.name_not_resolved", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kOtherServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 0)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 1000)
+              .Set(NetworkErrorLoggingService::kPhaseKey, "dns")
+              .Set(NetworkErrorLoggingService::kTypeKey,
+                   "dns.name_not_resolved"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, SuccessPOSTReportQueued) {
@@ -770,25 +848,18 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessPOSTReportQueued) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("POST", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictStringValue("application", body_dict,
-                              NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("ok", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "")
+              .Set(NetworkErrorLoggingService::kMethodKey, "POST")
+              .Set(NetworkErrorLoggingService::kPhaseKey, "application")
+              .Set(NetworkErrorLoggingService::kTypeKey, "ok"))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, MaxAge0) {
@@ -852,12 +923,11 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessFractionHalf) {
   EXPECT_GT(kReportCount, reports().size());
 
   for (const auto& report : reports()) {
-    const base::Value::Dict* body_dict = report.body->GetIfDict();
-    ASSERT_TRUE(body_dict);
     // Our header includes a different value for failure_fraction, so that this
     // check verifies that we copy the correct fraction into sampling_fraction.
-    ExpectDictDoubleValue(0.5, *body_dict,
-                          NetworkErrorLoggingService::kSamplingFractionKey);
+    EXPECT_THAT(report.body,
+                Pointee(IsSupersetOfValue(base::DictValue().Set(
+                    NetworkErrorLoggingService::kSamplingFractionKey, 0.5))));
   }
 }
 
@@ -908,10 +978,9 @@ TEST_P(NetworkErrorLoggingServiceTest, FailureFractionHalf) {
   EXPECT_GT(kReportCount, reports().size());
 
   for (const auto& report : reports()) {
-    const base::Value::Dict* body_dict = report.body->GetIfDict();
-    ASSERT_TRUE(body_dict);
-    ExpectDictDoubleValue(0.5, *body_dict,
-                          NetworkErrorLoggingService::kSamplingFractionKey);
+    EXPECT_THAT(report.body,
+                Pointee(IsSupersetOfValue(base::DictValue().Set(
+                    NetworkErrorLoggingService::kSamplingFractionKey, 0.5))));
   }
 }
 
@@ -1117,14 +1186,10 @@ TEST_P(NetworkErrorLoggingServiceTest, StatusAsValue) {
   // this test.
   base::SimpleTestClock clock;
   service()->SetClockForTesting(&clock);
-  // The clock is initialized to the "zero" or origin point of the Time class.
-  // This sets the clock's Time to the equivalent of the "zero" or origin point
-  // of the TimeTicks class, so that the serialized value produced by
-  // NetLog::TimeToString is consistent across restarts.
-  base::TimeDelta delta_from_origin =
-      base::Time::UnixEpoch().since_origin() -
-      base::TimeTicks::UnixEpoch().since_origin();
-  clock.Advance(delta_from_origin);
+  // Leave the clock at the origin point of base::Time. NetLog::TimeToString
+  // serializes a base::Time relative to the current clocks, so the
+  // ScopedMockClockOverride installed below makes the serialized expiry equal
+  // to its offset from the origin point (i.e. the policy max_age).
 
   service()->OnHeader(kNak_, kOrigin_, kServerIP_, kHeaderSuccessFraction1_);
 
@@ -1146,6 +1211,7 @@ TEST_P(NetworkErrorLoggingServiceTest, StatusAsValue) {
       kNak_, url::Origin::Create(GURL("https://invalid-types.example.com")),
       kServerIP_, kHeaderWrongTypes);
 
+  base::ScopedMockClockOverride mock_clock;
   base::Value actual = service()->StatusAsValue();
   base::Value expected = base::test::ParseJson(R"json(
       {
@@ -1252,42 +1318,29 @@ TEST_P(NetworkErrorLoggingServiceTest, SuccessReportQueued_SignedExchange) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
-
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("http/1.1", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("GET", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictIntegerValue(200, body_dict,
-                               NetworkErrorLoggingService::kStatusCodeKey);
-  base::ExpectDictIntegerValue(1234, body_dict,
-                               NetworkErrorLoggingService::kElapsedTimeKey);
-  base::ExpectDictStringValue(
-      NetworkErrorLoggingService::kSignedExchangePhaseValue, body_dict,
-      NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("ok", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
-
-  const base::Value::Dict* sxg_body =
-      body_dict.FindDict(NetworkErrorLoggingService::kSignedExchangeBodyKey);
-  ASSERT_TRUE(sxg_body);
-
-  base::ExpectDictStringValue(kUrl_.spec(), *sxg_body,
-                              NetworkErrorLoggingService::kOuterUrlKey);
-  base::ExpectDictStringValue(kInnerUrl_.spec(), *sxg_body,
-                              NetworkErrorLoggingService::kInnerUrlKey);
-  base::ExpectStringValue(
-      kCertUrl_.spec(),
-      sxg_body->Find(NetworkErrorLoggingService::kCertUrlKey)->GetList()[0]);
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "http/1.1")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 200)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 1234)
+              .Set(NetworkErrorLoggingService::kPhaseKey,
+                   NetworkErrorLoggingService::kSignedExchangePhaseValue)
+              .Set(NetworkErrorLoggingService::kTypeKey, "ok")
+              .Set(NetworkErrorLoggingService::kSignedExchangeBodyKey,
+                   base::DictValue()
+                       .Set(NetworkErrorLoggingService::kOuterUrlKey,
+                            kUrl_.spec())
+                       .Set(NetworkErrorLoggingService::kInnerUrlKey,
+                            kInnerUrl_.spec())
+                       .Set(NetworkErrorLoggingService::kCertUrlKey,
+                            base::ListValue().Append(kCertUrl_.spec()))))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, FailureReportQueued_SignedExchange) {
@@ -1306,42 +1359,55 @@ TEST_P(NetworkErrorLoggingServiceTest, FailureReportQueued_SignedExchange) {
   EXPECT_EQ(kType_, reports()[0].type);
   EXPECT_EQ(0, reports()[0].depth);
 
-  const base::Value* body = reports()[0].body.get();
-  ASSERT_TRUE(body);
-  ASSERT_TRUE(body->is_dict());
-  const base::Value::Dict& body_dict = body->GetDict();
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kReferrerKey, kReferrer_.spec())
+              .Set(NetworkErrorLoggingService::kSamplingFractionKey, 1.0)
+              .Set(NetworkErrorLoggingService::kServerIpKey,
+                   kServerIP_.ToString())
+              .Set(NetworkErrorLoggingService::kProtocolKey, "http/1.1")
+              .Set(NetworkErrorLoggingService::kMethodKey, "GET")
+              .Set(NetworkErrorLoggingService::kStatusCodeKey, 200)
+              .Set(NetworkErrorLoggingService::kElapsedTimeKey, 1234)
+              .Set(NetworkErrorLoggingService::kPhaseKey,
+                   NetworkErrorLoggingService::kSignedExchangePhaseValue)
+              .Set(NetworkErrorLoggingService::kTypeKey, "sxg.failed")
+              .Set(NetworkErrorLoggingService::kSignedExchangeBodyKey,
+                   base::DictValue()
+                       .Set(NetworkErrorLoggingService::kOuterUrlKey,
+                            kUrl_.spec())
+                       .Set(NetworkErrorLoggingService::kInnerUrlKey,
+                            kInnerUrl_.spec())
+                       .Set(NetworkErrorLoggingService::kCertUrlKey,
+                            base::ListValue().Append(kCertUrl_.spec()))))));
+}
 
-  base::ExpectDictStringValue(kReferrer_.spec(), body_dict,
-                              NetworkErrorLoggingService::kReferrerKey);
-  ExpectDictDoubleValue(1.0, body_dict,
-                        NetworkErrorLoggingService::kSamplingFractionKey);
-  base::ExpectDictStringValue(kServerIP_.ToString(), body_dict,
-                              NetworkErrorLoggingService::kServerIpKey);
-  base::ExpectDictStringValue("http/1.1", body_dict,
-                              NetworkErrorLoggingService::kProtocolKey);
-  base::ExpectDictStringValue("GET", body_dict,
-                              NetworkErrorLoggingService::kMethodKey);
-  base::ExpectDictIntegerValue(200, body_dict,
-                               NetworkErrorLoggingService::kStatusCodeKey);
-  base::ExpectDictIntegerValue(1234, body_dict,
-                               NetworkErrorLoggingService::kElapsedTimeKey);
-  base::ExpectDictStringValue(
-      NetworkErrorLoggingService::kSignedExchangePhaseValue, body_dict,
-      NetworkErrorLoggingService::kPhaseKey);
-  base::ExpectDictStringValue("sxg.failed", body_dict,
-                              NetworkErrorLoggingService::kTypeKey);
+TEST_P(NetworkErrorLoggingServiceTest,
+       SignedExchangeFragmentAndCredentialsStrippedFromReportBody) {
+  service()->OnHeader(kNak_, kOrigin_, kServerIP_, kHeader_);
 
-  const base::Value::Dict* sxg_body =
-      body_dict.FindDict(NetworkErrorLoggingService::kSignedExchangeBodyKey);
-  ASSERT_TRUE(sxg_body);
+  // Make the rest of the test run synchronously.
+  FinishLoading(true /* load_success */);
 
-  base::ExpectDictStringValue(kUrl_.spec(), *sxg_body,
-                              NetworkErrorLoggingService::kOuterUrlKey);
-  base::ExpectDictStringValue(kInnerUrl_.spec(), *sxg_body,
-                              NetworkErrorLoggingService::kInnerUrlKey);
-  base::ExpectStringValue(
-      kCertUrl_.spec(),
-      sxg_body->Find(NetworkErrorLoggingService::kCertUrlKey)->GetList()[0]);
+  const GURL outer_url("https://example.com/path#fragment");
+  const GURL inner_url("https://user:pass@example.net/path#fragment");
+  const GURL cert_url("https://example.com/cert_path#fragment");
+
+  service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
+      kNak_, false, "sxg.failed", outer_url, inner_url, cert_url, kServerIP_));
+  ASSERT_EQ(1u, reports().size());
+
+  EXPECT_THAT(
+      reports()[0].body,
+      Pointee(IsSupersetOfValue(base::DictValue().Set(
+          NetworkErrorLoggingService::kSignedExchangeBodyKey,
+          base::DictValue()
+              .Set(NetworkErrorLoggingService::kOuterUrlKey, kUrl_.spec())
+              .Set(NetworkErrorLoggingService::kInnerUrlKey, kInnerUrl_.spec())
+              .Set(NetworkErrorLoggingService::kCertUrlKey,
+                   base::ListValue().Append(kCertUrl_.spec()))))));
 }
 
 TEST_P(NetworkErrorLoggingServiceTest, MismatchingSubdomain_SignedExchange) {
@@ -1372,7 +1438,7 @@ TEST_P(NetworkErrorLoggingServiceTest,
        SignedExchangeNetworkAnonymizationKeyDisabled) {
   base::test::ScopedFeatureList feature_list;
   feature_list.InitAndDisableFeature(
-      features::kPartitionNelAndReportingByNetworkIsolationKey);
+      features::kPartitionConnectionsByNetworkIsolationKey);
 
   // Need to re-create the service, since it caches the feature value on
   // creation.
@@ -1385,7 +1451,7 @@ TEST_P(NetworkErrorLoggingServiceTest,
   // Make the rest of the test run synchronously.
   FinishLoading(true /* load_success */);
 
-  // Wrong NIK, but a report should be generated anyways.
+  // Wrong NAK, but a report should be generated anyways.
   service()->QueueSignedExchangeReport(MakeSignedExchangeReportDetails(
       kOtherNak_, true, "ok", kUrl_, kInnerUrl_, kCertUrl_, kServerIP_));
 

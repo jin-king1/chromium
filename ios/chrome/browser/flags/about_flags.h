@@ -9,11 +9,12 @@
 #define IOS_CHROME_BROWSER_FLAGS_ABOUT_FLAGS_H_
 
 #include <stddef.h>
+
 #include <string>
 #include <vector>
 
 #include "base/values.h"
-#include "components/flags_ui/flags_state.h"
+#include "components/webui/flags/flags_state.h"
 
 namespace base {
 class CommandLine;
@@ -47,8 +48,8 @@ std::vector<std::string> RegisterAllFeatureVariationParameters(
 // to `unsupported_entries`.
 void GetFlagFeatureEntries(flags_ui::FlagsStorage* flags_storage,
                            flags_ui::FlagAccess access,
-                           base::Value::List& supported_entries,
-                           base::Value::List& unsupported_entries);
+                           base::ListValue& supported_entries,
+                           base::ListValue& unsupported_entries);
 
 // Enables or disables the feature with `internal_name` as id.
 void SetFeatureEntryEnabled(flags_ui::FlagsStorage* flags_storage,

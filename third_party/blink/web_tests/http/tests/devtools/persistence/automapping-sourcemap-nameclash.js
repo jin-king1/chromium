@@ -2,11 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+import {BindingsTestRunner} from 'bindings_test_runner';
+import * as Common from 'devtools/core/common/common.js';
+import * as TextUtils from 'devtools/core/text_utils/text_utils.js';
+import * as Workspace from 'devtools/models/workspace/workspace.js';
+import {SourcesTestRunner} from 'sources_test_runner';
+import {TestRunner} from 'test_runner';
+
 (async function() {
   TestRunner.addResult(
       `Verify that sourcemap sources are mapped event when sourcemap compiled url matches with one of the source urls.\n`);
-  await TestRunner.loadTestModule('bindings_test_runner');
-  await TestRunner.loadLegacyModule('sources'); await TestRunner.loadTestModule('sources_test_runner');
   await TestRunner.showPanel('sources');
   await TestRunner.addScriptTag('resources/sourcemap-name-clash/out.js');
 
@@ -16,8 +21,8 @@
 
   Promise
       .all([
-        getResourceContent('out.js', Common.resourceTypes.Script),
-        getResourceContent('out.js', Common.resourceTypes.SourceMapScript),
+        getResourceContent('out.js', Common.ResourceType.resourceTypes.Script),
+        getResourceContent('out.js', Common.ResourceType.resourceTypes.SourceMapScript),
       ])
       .then(onResourceContents);
 
@@ -31,7 +36,7 @@
   }
 
   function onFileSystemCreated() {
-    var automappingTest = new BindingsTestRunner.AutomappingTest(Workspace.workspace);
+    var automappingTest = new BindingsTestRunner.AutomappingTest(Workspace.Workspace.WorkspaceImpl.instance());
     automappingTest.waitUntilMappingIsStabilized().then(TestRunner.completeTest.bind(TestRunner));
   }
 
@@ -42,7 +47,7 @@
     return promise;
 
     function onSource(uiSourceCode) {
-      uiSourceCode.requestContent().then(({ content, error, isEncoded }) => fulfill(content));
+      uiSourceCode.requestContentData().then(TextUtils.ContentData.ContentData.asDeferredContent).then(({ content, error, isEncoded }) => fulfill(content));
     }
   }
 })();

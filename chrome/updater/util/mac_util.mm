@@ -5,15 +5,21 @@
 #import "chrome/updater/util/mac_util.h"
 
 #import <CoreFoundation/CoreFoundation.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "base/apple/bridging.h"
+#include "base/apple/foundation_util.h"
 #include "base/command_line.h"
 #include "base/files/file.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/files/scoped_temp_dir.h"
 #include "base/logging.h"
-#include "base/mac/foundation_util.h"
 #include "base/mac/mac_util.h"
 #include "base/process/launch.h"
 #include "base/strings/strcat.h"
@@ -22,28 +28,72 @@
 #include "base/threading/scoped_blocking_call.h"
 #include "base/version.h"
 #include "chrome/updater/constants.h"
+#include "chrome/updater/mac/setup/keystone.h"
+#include "chrome/updater/registration_data.h"
 #include "chrome/updater/updater_branding.h"
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/updater_version.h"
+#include "chrome/updater/util/path_util.h"
 #include "chrome/updater/util/posix_util.h"
 #include "chrome/updater/util/util.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace updater {
 namespace {
 
-constexpr base::FilePath::CharType kZipExePath[] =
-    FILE_PATH_LITERAL("/usr/bin/unzip");
+constexpr base::FilePath::CharType kGkToolPath[] =
+    FILE_PATH_LITERAL("/usr/bin/gktool");
 
 base::FilePath ExecutableFolderPath() {
   return base::FilePath(
              base::StrCat({PRODUCT_FULLNAME_STRING, kExecutableSuffix, ".app"}))
       .Append(FILE_PATH_LITERAL("Contents"))
       .Append(FILE_PATH_LITERAL("MacOS"));
+}
+
+// On supported versions of macOS, scan the specified bundle with Gatekeeper
+// so it won't pop up a user-visible "Verifying..." box for the duration of
+// the scan when an executable in the bundle is later launched for the first
+// time. On unsupported macOS versions, this does nothing and returns 0.
+//
+// On supported macOS versions, this returns the return code from `gktool`.
+// If attempting to launch `gktool` fails, this returns -1.
+int PrewarmGatekeeperIfSupported(const base::FilePath& bundle_path) {
+  // gktool is only available on macOS 14 and later.
+  if (@available(macOS 14, *)) {
+    base::FilePath tool_path(kGkToolPath);
+    base::CommandLine command(tool_path);
+    command.AppendArg("scan");
+    command.AppendArg(bundle_path.value());
+
+    std::string output;
+    int exit_code = -1;
+    if (!base::GetAppOutputWithExitCode(command, &output, &exit_code)) {
+      VLOG(0) << "Something went wrong trying to run gktool from "
+              << kGkToolPath;
+      return -1;
+    }
+
+    VLOG_IF(0, exit_code) << "gktool returned " << exit_code;
+    VLOG_IF(0, exit_code) << "gktool output: " << output;
+
+    return exit_code;
+  }
+  return 0;
+}
+
+}  // namespace
+
+bool RemoveQuarantineAttributes(const base::FilePath& path) {
+  bool success = base::mac::RemoveQuarantineAttribute(path);
+  base::FileEnumerator file_enumerator(
+      base::FilePath(path), true,
+      base::FileEnumerator::FILES | base::FileEnumerator::DIRECTORIES |
+          base::FileEnumerator::SHOW_SYM_LINKS);
+  for (base::FilePath name = file_enumerator.Next(); !name.empty();
+       name = file_enumerator.Next()) {
+    success = base::mac::RemoveQuarantineAttribute(name) && success;
+  }
+  return success;
 }
 
 std::string GetDomain(UpdaterScope scope) {
@@ -55,71 +105,61 @@ std::string GetDomain(UpdaterScope scope) {
   }
 }
 
-bool BootstrapPlist(UpdaterScope scope, const base::FilePath& path) {
-  std::string output;
-  int exit_code = 0;
-  base::CommandLine launchctl(base::FilePath("/bin/launchctl"));
-  launchctl.AppendArg("bootstrap");
-  launchctl.AppendArg(GetDomain(scope));
-  launchctl.AppendArgPath(path);
-  if (!base::GetAppOutputWithExitCode(launchctl, &output, &exit_code) ||
-      exit_code != 0) {
-    VLOG(1) << "launchctl bootstrap of " << path << " failed: " << exit_code
-            << ": " << output;
-    return false;
-  }
-  return true;
-}
-
-}  // namespace
-
-absl::optional<base::FilePath> GetLibraryFolderPath(UpdaterScope scope) {
-  switch (scope) {
-    case UpdaterScope::kUser:
-      return base::mac::GetUserLibraryPath();
-    case UpdaterScope::kSystem: {
-      base::FilePath local_library_path;
-      if (!base::mac::GetLocalDirectory(NSLibraryDirectory,
-                                        &local_library_path)) {
-        VLOG(1) << "Could not get local library path";
-        return absl::nullopt;
-      }
-      return local_library_path;
-    }
-  }
-}
-
-absl::optional<base::FilePath> GetApplicationSupportDirectory(
+std::optional<base::FilePath> GetApplicationSupportDirectory(
     UpdaterScope scope) {
   base::FilePath path;
   switch (scope) {
     case UpdaterScope::kUser:
-      if (base::mac::GetUserDirectory(NSApplicationSupportDirectory, &path))
+      if (base::apple::GetUserDirectory(NSApplicationSupportDirectory, &path)) {
         return path;
+      }
       break;
     case UpdaterScope::kSystem:
-      if (base::mac::GetLocalDirectory(NSApplicationSupportDirectory, &path))
+      if (base::apple::GetLocalDirectory(NSApplicationSupportDirectory,
+                                         &path)) {
         return path;
+      }
       break;
   }
 
   VLOG(1) << "Could not get applications support path";
-  return absl::nullopt;
+  return std::nullopt;
 }
 
-absl::optional<base::FilePath> GetKSAdminPath(UpdaterScope scope) {
-  const absl::optional<base::FilePath> keystone_folder_path =
+std::vector<base::FilePath> GetApplicationSupportDirectoriesForScope(
+    UpdaterScope scope) {
+  std::vector<base::FilePath> app_support_dirs;
+  std::optional<base::FilePath> application_support_dir =
+      GetApplicationSupportDirectory(scope);
+  if (application_support_dir) {
+    app_support_dirs.push_back(*application_support_dir);
+  }
+  if (IsSystemInstall(scope)) {
+    base::FilePath user_dir;
+    if (!base::apple::GetLocalDirectory(NSUserDirectory, &user_dir)) {
+      return {};
+    }
+    base::FileEnumerator(user_dir, /*recursive=*/false,
+                         base::FileEnumerator::FileType::DIRECTORIES)
+        .ForEach([&app_support_dirs](const base::FilePath& name) {
+          app_support_dirs.push_back(
+              name.Append("Library").Append("Application Support"));
+        });
+  }
+  return app_support_dirs;
+}
+
+std::optional<base::FilePath> GetKSAdminPath(UpdaterScope scope) {
+  const std::optional<base::FilePath> keystone_folder_path =
       GetKeystoneFolderPath(scope);
-  if (!keystone_folder_path || !base::PathExists(*keystone_folder_path))
-    return absl::nullopt;
-  base::FilePath ksadmin_path =
+  if (!keystone_folder_path) {
+    return std::nullopt;
+  }
+  return std::make_optional(
       keystone_folder_path->Append(FILE_PATH_LITERAL(KEYSTONE_NAME ".bundle"))
           .Append(FILE_PATH_LITERAL("Contents"))
           .Append(FILE_PATH_LITERAL("Helpers"))
-          .Append(FILE_PATH_LITERAL("ksadmin"));
-  if (!base::PathExists(ksadmin_path))
-    return absl::nullopt;
-  return absl::make_optional(ksadmin_path);
+          .Append(FILE_PATH_LITERAL("ksadmin")));
 }
 
 std::string GetWakeLaunchdName(UpdaterScope scope) {
@@ -128,7 +168,7 @@ std::string GetWakeLaunchdName(UpdaterScope scope) {
 }
 
 bool RemoveWakeJobFromLaunchd(UpdaterScope scope) {
-  const absl::optional<base::FilePath> path = GetWakeTaskPlistPath(scope);
+  const std::optional<base::FilePath> path = GetWakeTaskPlistPath(scope);
   if (!path) {
     return false;
   }
@@ -150,45 +190,22 @@ bool RemoveWakeJobFromLaunchd(UpdaterScope scope) {
   return base::DeleteFile(*path);
 }
 
-bool UnzipWithExe(const base::FilePath& src_path,
-                  const base::FilePath& dest_path) {
-  base::FilePath file_path(kZipExePath);
-  base::CommandLine command(file_path);
-  command.AppendArg(src_path.value());
-  command.AppendArg("-d");
-  command.AppendArg(dest_path.value());
-
-  std::string output;
-  int exit_code = 0;
-  if (!base::GetAppOutputWithExitCode(command, &output, &exit_code)) {
-    VLOG(0) << "Something went wrong while running the unzipping with "
-            << kZipExePath;
-    return false;
-  }
-
-  // Unzip utility having 0 is success and 1 is a warning.
-  if (exit_code > 1) {
-    VLOG(0) << "Output from unzipping: " << output;
-    VLOG(0) << "Exit code: " << exit_code;
-  }
-
-  return exit_code <= 1;
-}
-
-absl::optional<base::FilePath> GetExecutableFolderPathForVersion(
+std::optional<base::FilePath> GetExecutableFolderPathForVersion(
     UpdaterScope scope,
     const base::Version& version) {
-  absl::optional<base::FilePath> path =
+  std::optional<base::FilePath> path =
       GetVersionedInstallDirectory(scope, version);
-  if (!path)
-    return absl::nullopt;
+  if (!path) {
+    return std::nullopt;
+  }
   return path->Append(ExecutableFolderPath());
 }
 
-absl::optional<base::FilePath> GetUpdaterAppBundlePath(UpdaterScope scope) {
-  absl::optional<base::FilePath> path = GetVersionedInstallDirectory(scope);
-  if (!path)
-    return absl::nullopt;
+std::optional<base::FilePath> GetUpdaterAppBundlePath(UpdaterScope scope) {
+  std::optional<base::FilePath> path = GetVersionedInstallDirectory(scope);
+  if (!path) {
+    return std::nullopt;
+  }
   return path->Append(
       base::StrCat({PRODUCT_FULLNAME_STRING, kExecutableSuffix, ".app"}));
 }
@@ -198,163 +215,135 @@ base::FilePath GetExecutableRelativePath() {
       base::StrCat({PRODUCT_FULLNAME_STRING, kExecutableSuffix}));
 }
 
-absl::optional<base::FilePath> GetKeystoneFolderPath(UpdaterScope scope) {
-  absl::optional<base::FilePath> path = GetLibraryFolderPath(scope);
-  if (!path)
-    return absl::nullopt;
+std::optional<base::FilePath> GetKeystoneFolderPath(UpdaterScope scope) {
+  std::optional<base::FilePath> path = GetLibraryFolderPath(scope);
+  if (!path) {
+    return std::nullopt;
+  }
   return path->Append(FILE_PATH_LITERAL(COMPANY_SHORTNAME_STRING))
       .Append(FILE_PATH_LITERAL(KEYSTONE_NAME));
 }
 
-bool ConfirmFilePermissions(const base::FilePath& root_path,
-                            int kPermissionsMask) {
-  base::FileEnumerator file_enumerator(
-      root_path, false,
-      base::FileEnumerator::FILES | base::FileEnumerator::DIRECTORIES |
-          base::FileEnumerator::SHOW_SYM_LINKS);
-
-  for (base::FilePath path = file_enumerator.Next(); !path.empty();
-       path = file_enumerator.Next()) {
-    if (!SetPosixFilePermissions(path, kPermissionsMask)) {
-      VLOG(0) << "Couldn't set file permissions for for: " << path.value();
-      return false;
-    }
-
-    base::File::Info file_info;
-    if (!base::GetFileInfo(path, &file_info)) {
-      VLOG(0) << "Couldn't get file info for: " << path.value();
-      return false;
-    }
-
-    // If file path is real directory and not a link, recurse into it.
-    if (file_info.is_directory && !base::IsLink(path)) {
-      if (!ConfirmFilePermissions(path, kPermissionsMask))
+bool SetFilePermissionsRecursive(const base::FilePath& path) {
+  static constexpr mode_t executable_mode =
+      S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+  static constexpr mode_t normal_mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+  struct stat stat_buf;
+  if (lstat(path.value().c_str(), &stat_buf) != 0) {
+    VPLOG(2) << "Couldn't stat: " << path.value();
+    return false;
+  }
+  if (lchmod(path.value().c_str(),
+             (stat_buf.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH) ||
+              S_ISDIR(stat_buf.st_mode))
+                 ? executable_mode
+                 : normal_mode) != 0) {
+    VPLOG(2) << "Couldn't set file permissions for: " << path.value();
+    return S_ISLNK(stat_buf.st_mode);  // Tolerate failures on symbolic links.
+  }
+  if (S_ISDIR(stat_buf.st_mode)) {
+    base::FileEnumerator file_enumerator(path, false,
+                                         base::FileEnumerator::NAMES_ONLY);
+    for (base::FilePath child_path = file_enumerator.Next();
+         !child_path.empty(); child_path = file_enumerator.Next()) {
+      if (!SetFilePermissionsRecursive(child_path)) {
         return false;
+      }
     }
   }
-
   return true;
 }
 
-absl::optional<base::FilePath> GetInstallDirectory(UpdaterScope scope) {
-  absl::optional<base::FilePath> path = GetLibraryFolderPath(scope);
-  return path ? absl::optional<base::FilePath>(
-                    path->Append("Application Support")
-                        .Append(GetUpdaterFolderName()))
-              : absl::nullopt;
-}
-
-absl::optional<base::FilePath> GetUpdateServiceLauncherPath(
-    UpdaterScope scope) {
-  absl::optional<base::FilePath> install_dir = GetInstallDirectory(scope);
+std::optional<base::FilePath> GetUpdateServiceLauncherPath(UpdaterScope scope) {
+  std::optional<base::FilePath> install_dir = GetInstallDirectory(scope);
   return install_dir
-             ? absl::optional<base::FilePath>(
+             ? std::optional<base::FilePath>(
                    install_dir->Append("Current")
                        .Append(base::StrCat({PRODUCT_FULLNAME_STRING,
                                              kExecutableSuffix, ".app"}))
                        .Append("Contents")
                        .Append("Helpers")
                        .Append("launcher"))
-             : absl::nullopt;
+             : std::nullopt;
 }
 
-bool RemoveQuarantineAttributes(const base::FilePath& updater_bundle_path) {
-  bool success = base::mac::RemoveQuarantineAttribute(updater_bundle_path);
-  base::FileEnumerator file_enumerator(
-      base::FilePath(updater_bundle_path), true,
-      base::FileEnumerator::FILES | base::FileEnumerator::DIRECTORIES |
-          base::FileEnumerator::SHOW_SYM_LINKS);
-  for (base::FilePath name = file_enumerator.Next(); !name.empty();
-       name = file_enumerator.Next()) {
-    success = base::mac::RemoveQuarantineAttribute(name) && success;
-  }
-  return success;
+bool PrepareToRunBundle(const base::FilePath& bundle_path) {
+  // Do not return early. Cleaning up attributes and prewarming Gatekeeper
+  // avoids popups visible to the user, but we must continue to try to update
+  // even if these fail, so we should do as much of the prep as we can.
+  bool dequarantine_ok = RemoveQuarantineAttributes(bundle_path);
+  bool prewarm_ok = PrewarmGatekeeperIfSupported(bundle_path) == 0;
+  return prewarm_ok && dequarantine_ok;
 }
 
-absl::optional<base::FilePath> GetWakeTaskPlistPath(UpdaterScope scope) {
+std::optional<base::FilePath> GetWakeTaskPlistPath(UpdaterScope scope) {
   @autoreleasepool {
     NSArray* library_paths = NSSearchPathForDirectoriesInDomains(
         NSLibraryDirectory,
         IsSystemInstall(scope) ? NSLocalDomainMask : NSUserDomainMask, YES);
     if ([library_paths count] < 1) {
-      return absl::nullopt;
+      return std::nullopt;
     }
-    return base::mac::NSStringToFilePath(library_paths[0])
+    return base::apple::NSStringToFilePath(library_paths[0])
         .Append(IsSystemInstall(scope) ? "LaunchDaemons" : "LaunchAgents")
-        .AppendASCII(base::StrCat({GetWakeLaunchdName(scope), ".plist"}));
+        .Append(base::StrCat({GetWakeLaunchdName(scope), ".plist"}));
   }
 }
 
-bool EnsureWakeLaunchItemPresence(UpdaterScope scope, NSDictionary* contents) {
-  const absl::optional<base::FilePath> path = GetWakeTaskPlistPath(scope);
+std::optional<std::string> ReadValueFromPlist(const base::FilePath& path,
+                                              const std::string& key) {
+  if (key.empty() || path.empty()) {
+    return std::nullopt;
+  }
+  NSData* data;
+  {
+    base::ScopedBlockingCall scoped_blocking_call(
+        FROM_HERE, base::BlockingType::WILL_BLOCK);
+    data =
+        [NSData dataWithContentsOfFile:base::apple::FilePathToNSString(path)];
+  }
+  if ([data length] == 0) {
+    return std::nullopt;
+  }
+  NSDictionary* all_keys = base::apple::ObjCCastStrict<NSDictionary>(
+      [NSPropertyListSerialization propertyListWithData:data
+                                                options:NSPropertyListImmutable
+                                                 format:nil
+                                                  error:nil]);
+  if (all_keys == nil) {
+    return std::nullopt;
+  }
+  CFStringRef value = base::apple::GetValueFromDictionary<CFStringRef>(
+      base::apple::NSToCFPtrCast(all_keys),
+      base::SysUTF8ToCFStringRef(key).get());
+  if (value == nullptr) {
+    return std::nullopt;
+  }
+  return base::SysCFStringRefToUTF8(value);
+}
+
+bool MigrateLegacyUpdaters(
+    UpdaterScope scope,
+    base::RepeatingCallback<void(const RegistrationRequest&)>
+        register_callback) {
+  return MigrateKeystoneApps(GetKeystoneFolderPath(scope).value(),
+                             register_callback);
+}
+
+std::optional<base::FilePath> GetBundledEnterpriseCompanionExecutablePath(
+    UpdaterScope scope) {
+  std::optional<base::FilePath> path = GetUpdaterAppBundlePath(scope);
   if (!path) {
-    VLOG(1) << "Failed to find wake plist path.";
-    return false;
+    return std::nullopt;
   }
-  const bool previousPlistExists = base::PathExists(*path);
-  if (!base::CreateDirectory(path->DirName())) {
-    VLOG(1) << "Failed to create " << path->DirName();
-    return false;
-  }
-  @autoreleasepool {
-    NSURL* const url = base::mac::FilePathToNSURL(*path);
-
-    // If the file is unchanged, avoid a spammy notification by not touching it.
-    if (previousPlistExists &&
-        [contents isEqualToDictionary:[NSDictionary
-                                          dictionaryWithContentsOfURL:url]]) {
-      VLOG(2) << "Skipping unnecessary update to " << path;
-      return true;
-    }
-
-    // Save a backup of the previous plist.
-    base::ScopedTempDir backup_dir;
-    if (previousPlistExists &&
-        (!backup_dir.CreateUniqueTempDir() ||
-         !base::CopyFile(*path, backup_dir.GetPath().Append("backup_plist")))) {
-      VLOG(1) << "Failed to back up previous plist.";
-      return false;
-    }
-
-    // Bootout the old plist.
-    {
-      std::string output;
-      int exit_code = 0;
-      base::CommandLine launchctl(base::FilePath("/bin/launchctl"));
-      launchctl.AppendArg("bootout");
-      launchctl.AppendArg(GetDomain(scope));
-      launchctl.AppendArgPath(*path);
-      if (!base::GetAppOutputWithExitCode(launchctl, &output, &exit_code)) {
-        VLOG(1) << "Failed to launch launchctl.";
-      } else if (exit_code != 0) {
-        // This is expected in cases where there the service doesn't exist.
-        // Unfortunately, in the user case, bootout returns 5 both for does-not-
-        // exist errors and other errors.
-        VLOG(2) << "launchctl bootout exited: " << exit_code
-                << ", stdout: " << output;
-      }
-    }
-
-    // Overwrite the plist.
-    if (![contents writeToURL:url atomically:YES]) {
-      VLOG(1) << "Failed to write " << url;
-      return false;
-    }
-
-    // Bootstrap the new plist.
-    if (!BootstrapPlist(scope, *path)) {
-      // The plist has already been replaced! If launchctl doesn't like it,
-      // this installation is now broken. Try to recover by restoring and
-      // bootstrapping the backup.
-      if (previousPlistExists &&
-          (!base::Move(backup_dir.GetPath().Append("backup_plist"), *path) ||
-           !BootstrapPlist(scope, *path))) {
-        VLOG(1) << "Failed to restore backup plist.";
-      }
-      return false;
-    }
-    return true;
-  }
+  return path->Append(FILE_PATH_LITERAL("Contents"))
+      .Append(FILE_PATH_LITERAL("Helpers"))
+      .Append(base::StrCat({BROWSER_NAME_STRING, "EnterpriseCompanion",
+                            kExecutableSuffix, ".app"}))
+      .Append(FILE_PATH_LITERAL("Contents"))
+      .Append(FILE_PATH_LITERAL("MacOS"))
+      .Append(base::StrCat(
+          {BROWSER_NAME_STRING, "EnterpriseCompanion", kExecutableSuffix}));
 }
 
 }  // namespace updater

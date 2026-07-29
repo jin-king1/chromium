@@ -62,9 +62,10 @@ def get_files_to_compare(build_dir, recursive=False):
 
 
 def get_files_to_compare_using_isolate(build_dir):
-  # First, find all .runtime_deps files in build_dir.
-  # TODO(crbug.com/1066213): This misses some files.
-  runtime_deps_files = glob.glob(os.path.join(build_dir, '*.runtime_deps'))
+  # First, find all .runtime_deps files under build_dir.
+  runtime_deps_files = glob.glob(os.path.join(build_dir, '**',
+                                              '*.runtime_deps'),
+                                 recursive=True)
 
   # Then, extract their contents.
   ret_files = set()
@@ -195,6 +196,8 @@ def compare_files(first_filepath, second_filepath):
   Returns None if the files are equal, a string otherwise.
   """
   if not os.path.exists(first_filepath):
+    if not os.path.exists(second_filepath):
+      return 'missing'
     return 'file does not exist %s' % first_filepath
   if not os.path.exists(second_filepath):
     return 'file does not exist %s' % second_filepath
@@ -286,7 +289,8 @@ def compare_deps(first_dir, second_dir, ninja_path, targets):
       result = compare_files(first_file, second_file)
       if result:
         print('  %-*s: %s' % (max_filepath_len, d, result))
-        diffs.add(d)
+        if result != 'missing':
+          diffs.add(d)
   return list(diffs)
 
 
@@ -307,8 +311,15 @@ def compare_build_artifacts(first_dir, second_dir, ninja_path, target_platform,
   with open(os.path.join(BASE_DIR, 'deterministic_build_ignorelist.pyl')) as f:
     raw_ignorelist = ast.literal_eval(f.read())
     ignorelist_list = raw_ignorelist[target_platform]
-    if re.search(r'\bis_component_build\s*=\s*true\b',
-                 open(os.path.join(first_dir, 'args.gn')).read()):
+    with open(os.path.join(first_dir, 'gn_logs.txt')) as f:
+      gn_logs = f.read()
+
+    m = re.search(r'\bis_component_build\s*=\s*(\w+)', gn_logs)
+    if not m:
+      raise Exception('is_component_build not found in gn_logs.txt')
+    is_component = m.group(1) == 'true'
+
+    if is_component:
       ignorelist_list += raw_ignorelist.get(target_platform + '_component', [])
     ignorelist = frozenset(ignorelist_list)
 
@@ -337,6 +348,7 @@ def compare_build_artifacts(first_dir, second_dir, ninja_path, target_platform,
   print()
   print('Differences of files in build directories:')
   equals = []
+  missings = []
   expected_diffs = []
   unexpected_diffs = []
   unexpected_equals = []
@@ -359,6 +371,8 @@ def compare_build_artifacts(first_dir, second_dir, ninja_path, target_platform,
       equals.append(f)
       if f in ignorelist:
         unexpected_equals.append(f)
+    elif result == 'missing':
+      missings.append(f)
     else:
       if f in ignorelist:
         expected_diffs.append(f)
@@ -371,6 +385,7 @@ def compare_build_artifacts(first_dir, second_dir, ninja_path, target_platform,
   unexpected_diffs.sort()
 
   print('Equals:           %d' % len(equals))
+  print('Missings:         %d' % len(missings))
   print('Expected diffs:   %d' % len(expected_diffs))
   print('Unexpected diffs: %d' % len(unexpected_diffs))
   if unexpected_diffs:

@@ -4,6 +4,7 @@
 
 package org.chromium.chrome.browser.share.long_screenshots;
 
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -23,8 +24,10 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
@@ -37,7 +40,6 @@ import org.chromium.chrome.browser.share.long_screenshots.bitmap_generation.Long
 import org.chromium.chrome.browser.share.long_screenshots.bitmap_generation.LongScreenshotsEntry.EntryListener;
 import org.chromium.chrome.browser.share.long_screenshots.bitmap_generation.LongScreenshotsEntry.EntryStatus;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.content_public.browser.test.util.TestThreadUtils;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 
 /** Tests for the LongScreenshotsMediator. */
@@ -46,11 +48,10 @@ import org.chromium.ui.test.util.BlankUiTestActivity;
 @Batch(Batch.PER_CLASS)
 public class LongScreenshotsMediatorTest {
     /** Some screenshot dimension that's supposed to be reasonable. */
-    private static final int NOMINAL_SCREENSHOT_DIMENSION = 1000;
     /**
-     * The largest screen dimension that will be accepted by Android in a View.
-     * This is evidently due to an Android total bytes limit of 100M bytes.
-     * Anything the size of a 5000x5000 will scale.
+     * The largest screen dimension that will be accepted by Android in a View. This is evidently
+     * due to an Android total bytes limit of 100M bytes. Anything the size of a 5000x5000 will
+     * scale.
      */
     private static final int MAX_ALLOWABLE_SCREENSHOT_DIMENSION = 4999;
 
@@ -58,33 +59,27 @@ public class LongScreenshotsMediatorTest {
     private Bitmap mBitmap;
     private LongScreenshotsMediator mMediator;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
     @Rule
     public BaseActivityTestRule<BlankUiTestActivity> mActivityTestRule =
             new BaseActivityTestRule<>(BlankUiTestActivity.class);
 
-    @Mock
-    private View mView;
+    @Mock private View mView;
 
-    @Mock
-    private EntryManager mManager;
+    @Mock private EntryManager mManager;
 
-    @Mock
-    private LongScreenshotsEntry mLongScreenshotsEntry;
+    @Mock private LongScreenshotsEntry mLongScreenshotsEntry;
 
-    @Captor
-    private ArgumentCaptor<BitmapGeneratorObserver> mBitmapGeneratorObserverCaptor;
-    @Captor
-    private ArgumentCaptor<Bitmap> mBitmapCaptor;
+    @Captor private ArgumentCaptor<BitmapGeneratorObserver> mBitmapGeneratorObserverCaptor;
+    @Captor private ArgumentCaptor<Bitmap> mBitmapCaptor;
 
-    @Captor
-    private ArgumentCaptor<LongScreenshotsEntry.EntryListener> mEntryListenerCaptor;
+    @Captor private ArgumentCaptor<LongScreenshotsEntry.EntryListener> mEntryListenerCaptor;
 
     @Before
     public void setUp() {
         mActivityTestRule.launchActivity(null);
         mActivity = mActivityTestRule.getActivity();
-
-        MockitoAnnotations.initMocks(this);
 
         mBitmap = Bitmap.createBitmap(800, 600, Bitmap.Config.ARGB_8888);
 
@@ -96,13 +91,14 @@ public class LongScreenshotsMediatorTest {
     @MediumTest
     public void testAreaSelectionDone() {
         // Boilerplate
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            mMediator.showAreaSelectionDialog(mBitmap);
-            Assert.assertTrue(mMediator.getDialog().isShowing());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mMediator.showAreaSelectionDialog(mBitmap);
+                    Assert.assertTrue(mMediator.getDialog().isShowing());
 
-            // Test Done function
-            mMediator.areaSelectionDone(mView);
-        });
+                    // Test Done function
+                    mMediator.areaSelectionDone(mView);
+                });
 
         Assert.assertFalse(mMediator.getDialog().isShowing());
     }
@@ -111,13 +107,14 @@ public class LongScreenshotsMediatorTest {
     @MediumTest
     public void testAreaSelectionClose() {
         // Boilerplate
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            mMediator.showAreaSelectionDialog(mBitmap);
-            Assert.assertTrue(mMediator.getDialog().isShowing());
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    mMediator.showAreaSelectionDialog(mBitmap);
+                    Assert.assertTrue(mMediator.getDialog().isShowing());
 
-            // Test Close function
-            mMediator.areaSelectionClose(mView);
-        });
+                    // Test Close function
+                    mMediator.areaSelectionClose(mView);
+                });
 
         Assert.assertFalse(mMediator.getDialog().isShowing());
     }
@@ -155,18 +152,19 @@ public class LongScreenshotsMediatorTest {
         verify(mLongScreenshotsEntry).setListener(mEntryListenerCaptor.capture());
         EntryListener entryListener = mEntryListenerCaptor.getValue();
         // Now we can call the onResult method of the EntryListener.
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            // This should trigger showAreaSelectionDialog to show the generated bitmap.
-            entryListener.onResult(EntryStatus.BITMAP_GENERATED);
-            Assert.assertTrue(mMediator.getDialog().isShowing());
-        });
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    // This should trigger showAreaSelectionDialog to show the generated bitmap.
+                    entryListener.onResult(EntryStatus.BITMAP_GENERATED);
+                    Assert.assertTrue(mMediator.getDialog().isShowing());
+                });
 
         Assert.assertFalse(mMediator.getDidScaleForTesting());
     }
 
     @Test
     @MediumTest
-    @DisabledTest(message = "https://crbug.com/1275758")
+    @DisabledTest(message = "https://crbug.com/40207207")
     public void testOnCompositorReady_VeryLargeBitmap_Scales() {
         // Very large size should trigger scaling.
         int bitmapDimension = 1 + MAX_ALLOWABLE_SCREENSHOT_DIMENSION;
@@ -186,18 +184,19 @@ public class LongScreenshotsMediatorTest {
         verify(mLongScreenshotsEntry).setListener(mEntryListenerCaptor.capture());
         EntryListener entryListener = mEntryListenerCaptor.getValue();
         // Now we can call the onResult method of the EntryListener.
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            // This should trigger showAreaSelectionDialog to show the scaled bitmap.
-            entryListener.onResult(EntryStatus.BITMAP_GENERATED);
-            Assert.assertTrue(mMediator.getDialog().isShowing());
-        });
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    // This should trigger showAreaSelectionDialog to show the scaled bitmap.
+                    entryListener.onResult(EntryStatus.BITMAP_GENERATED);
+                    Assert.assertTrue(mMediator.getDialog().isShowing());
+                });
 
         Assert.assertTrue(mMediator.getDidScaleForTesting());
     }
 
     /**
-     * Use this manual test to investigate Android limit changes.
-     * A better option is to look at Android Android RecordingCanvas#getPanelFrameSize if possible.
+     * Use this manual test to investigate Android limit changes. A better option is to look at
+     * Android Android RecordingCanvas#getPanelFrameSize if possible.
      */
     @Test
     @MediumTest
@@ -226,21 +225,65 @@ public class LongScreenshotsMediatorTest {
         EntryListener entryListener = mEntryListenerCaptor.getValue();
 
         // Now we can call the onResult method of the EntryListener.
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            // This should trigger showAreaSelectionDialog to show the scaled bitmap.
-            entryListener.onResult(EntryStatus.BITMAP_GENERATED);
-        });
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    // This should trigger showAreaSelectionDialog to show the scaled bitmap.
+                    entryListener.onResult(EntryStatus.BITMAP_GENERATED);
+                });
 
         // When the dialog is shown an exception should be thrown due to Canvas size limits.
-        Exception exception = Assert.assertThrows(RuntimeException.class, () -> {
-            TestThreadUtils.runOnUiThreadBlocking(
-                    () -> { Assert.assertTrue(mMediator.getDialog().isShowing()); });
-        });
+        Exception exception =
+                Assert.assertThrows(
+                        RuntimeException.class,
+                        () ->
+                                ThreadUtils.runOnUiThreadBlocking(
+                                        () -> {
+                                            Assert.assertTrue(mMediator.getDialog().isShowing());
+                                        }));
         String expectedMessage = "trying to draw too large";
         String actualMessage = exception.getMessage();
-        Assert.assertTrue("Check that the screen is on and not locked when running the test! "
+        Assert.assertTrue(
+                "Check that the screen is on and not locked when running the test! "
                         + "Expected Canvas error: Android limits may have changed "
                         + "on this platform.",
                 actualMessage.contains(expectedMessage));
+    }
+
+    @Test
+    @MediumTest
+    public void testGetScreenshot_NullFullBitmap() {
+        Assert.assertNull(mMediator.getScreenshot());
+    }
+
+    @Test
+    @MediumTest
+    public void testOnStatusChange_FailureCallsDoneCallback() {
+        Runnable doneCallback = mock(Runnable.class);
+        mMediator.capture(doneCallback);
+
+        verify(mManager).addBitmapGeneratorObserver(mBitmapGeneratorObserverCaptor.capture());
+        BitmapGeneratorObserver generatorObserver = mBitmapGeneratorObserverCaptor.getValue();
+
+        generatorObserver.onStatusChange(EntryStatus.GENERATION_ERROR);
+        verify(doneCallback).run();
+    }
+
+    @Test
+    @MediumTest
+    public void testOnEntry_FailureCallsDoneCallback() {
+        Runnable doneCallback = mock(Runnable.class);
+        mMediator.capture(doneCallback);
+
+        verify(mManager).addBitmapGeneratorObserver(mBitmapGeneratorObserverCaptor.capture());
+        BitmapGeneratorObserver generatorObserver = mBitmapGeneratorObserverCaptor.getValue();
+
+        when(mManager.generateFullpageEntry()).thenReturn(mLongScreenshotsEntry);
+        generatorObserver.onCompositorReady(new Size(100, 100), new Point(0, 0));
+
+        verify(mLongScreenshotsEntry).setListener(mEntryListenerCaptor.capture());
+        EntryListener entryListener = mEntryListenerCaptor.getValue();
+
+        entryListener.onResult(EntryStatus.GENERATION_ERROR);
+        verify(doneCallback).run();
     }
 }

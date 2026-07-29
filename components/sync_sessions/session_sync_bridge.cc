@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <set>
 #include <utility>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
@@ -18,6 +19,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "components/sync/base/client_tag_hash.h"
+#include "components/sync/base/deletion_origin.h"
 #include "components/sync/base/time.h"
 #include "components/sync/model/data_type_activation_request.h"
 #include "components/sync/model/entity_change.h"
@@ -25,6 +27,8 @@
 #include "components/sync/model/metadata_batch.h"
 #include "components/sync/model/mutable_data_batch.h"
 #include "components/sync/protocol/session_specifics.pb.h"
+#include "components/sync_sessions/features.h"
+#include "components/sync_sessions/session_sync_prefs.h"
 #include "components/sync_sessions/sync_sessions_client.h"
 #include "components/sync_sessions/synced_window_delegate.h"
 #include "components/sync_sessions/synced_window_delegates_getter.h"
@@ -37,7 +41,7 @@ using syncer::MetadataChangeList;
 
 // Default time without activity after which a session is considered stale and
 // becomes a candidate for garbage collection.
-const base::TimeDelta kStaleSessionThreshold = base::Days(14);
+const base::TimeDelta kStaleSessionThreshold = base::Days(28);
 
 std::unique_ptr<syncer::EntityData> MoveToEntityData(
     const std::string& client_name,
@@ -52,7 +56,7 @@ class LocalSessionWriteBatch : public LocalSessionEventHandlerImpl::WriteBatch {
  public:
   LocalSessionWriteBatch(const SessionStore::SessionInfo& session_info,
                          std::unique_ptr<SessionStore::WriteBatch> batch,
-                         syncer::ModelTypeChangeProcessor* processor)
+                         syncer::DataTypeLocalChangeProcessor* processor)
       : session_info_(session_info),
         batch_(std::move(batch)),
         processor_(processor) {
@@ -65,9 +69,12 @@ class LocalSessionWriteBatch : public LocalSessionEventHandlerImpl::WriteBatch {
 
   // WriteBatch implementation.
   void Delete(int tab_node_id) override {
-    const std::string storage_key =
+    const std::vector<std::string> storage_keys =
         batch_->DeleteLocalTabWithoutUpdatingTracker(tab_node_id);
-    processor_->Delete(storage_key, batch_->GetMetadataChangeList());
+    for (const std::string& storage_key : storage_keys) {
+      processor_->Delete(storage_key, syncer::DeletionOrigin::Unspecified(),
+                         batch_->GetMetadataChangeList());
+    }
   }
 
   void Put(std::unique_ptr<sync_pb::SessionSpecifics> specifics) override {
@@ -89,7 +96,7 @@ class LocalSessionWriteBatch : public LocalSessionEventHandlerImpl::WriteBatch {
  private:
   const SessionStore::SessionInfo session_info_;
   std::unique_ptr<SessionStore::WriteBatch> batch_;
-  const raw_ptr<syncer::ModelTypeChangeProcessor> processor_;
+  const raw_ptr<syncer::DataTypeLocalChangeProcessor> processor_;
 };
 
 }  // namespace
@@ -97,8 +104,8 @@ class LocalSessionWriteBatch : public LocalSessionEventHandlerImpl::WriteBatch {
 SessionSyncBridge::SessionSyncBridge(
     const base::RepeatingClosure& notify_foreign_session_updated_cb,
     SyncSessionsClient* sessions_client,
-    std::unique_ptr<syncer::ModelTypeChangeProcessor> change_processor)
-    : ModelTypeSyncBridge(std::move(change_processor)),
+    std::unique_ptr<syncer::DataTypeLocalChangeProcessor> change_processor)
+    : DataTypeSyncBridge(std::move(change_processor)),
       notify_foreign_session_updated_cb_(notify_foreign_session_updated_cb),
       sessions_client_(sessions_client),
       local_session_event_router_(
@@ -124,24 +131,73 @@ OpenTabsUIDelegate* SessionSyncBridge::GetOpenTabsUIDelegate() {
   return syncing_->open_tabs_ui_delegate.get();
 }
 
-std::unique_ptr<MetadataChangeList>
-SessionSyncBridge::CreateMetadataChangeList() {
-  return std::make_unique<syncer::InMemoryMetadataChangeList>();
+bool SessionSyncBridge::IsLocalDataOutOfSyncForTest() const {
+  return sessions_client_ &&
+         sessions_client_->GetSessionSyncPrefs()->GetLocalDataOutOfSync();
 }
 
-absl::optional<syncer::ModelError> SessionSyncBridge::MergeFullSyncData(
+void SessionSyncBridge::AddTabScreenshot(SessionID tab_id,
+                                         std::string&& screenshot_data,
+                                         const GURL& url) {
+  CHECK(base::FeatureList::IsEnabled(kSyncTabScreenshots));
+  if (!syncing_) {
+    return;
+  }
+
+  const int tab_node_id = store_->tracker()->LookupTabNodeFromTabId(
+      store_->local_session_info().session_tag, tab_id);
+  if (tab_node_id == TabNodePool::kInvalidTabNodeID) {
+    return;
+  }
+
+  std::unique_ptr<SessionStore::WriteBatch> batch =
+      CreateSessionStoreWriteBatch();
+
+  const base::Time now = base::Time::Now();
+
+  sync_pb::SessionSpecifics specifics;
+  specifics.set_session_tag(store_->local_session_info().session_tag);
+  specifics.set_tab_node_id(tab_node_id);
+  specifics.mutable_tab_screenshot()->set_screenshot_data(
+      std::move(screenshot_data));
+  specifics.mutable_tab_screenshot()->set_url(url.spec());
+  specifics.mutable_tab_screenshot()->set_timestamp_unix_epoch_millis(
+      now.InMillisecondsSinceUnixEpoch());
+
+  const std::string storage_key = batch->PutAndUpdateTracker(specifics, now);
+
+  change_processor()->Put(
+      storage_key,
+      MoveToEntityData(store_->local_session_info().client_name, &specifics),
+      batch->GetMetadataChangeList());
+
+  SessionStore::WriteBatch::Commit(std::move(batch));
+}
+
+void SessionSyncBridge::ReadTabScreenshot(
+    const std::string& session_tag,
+    SessionID tab_id,
+    base::OnceCallback<void(std::optional<std::string>)> callback) {
+  if (!syncing_ || !store_) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+  store_->ReadTabScreenshot(session_tag, tab_id, std::move(callback));
+}
+
+std::optional<syncer::ModelError> SessionSyncBridge::MergeFullSyncData(
     std::unique_ptr<MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList entity_data) {
   DCHECK(!syncing_);
   DCHECK(change_processor()->IsTrackingMetadata());
 
-  StartLocalSessionEventHandler();
+  StartLocalSessionEventHandler(/*is_new_session=*/true);
 
   return ApplyIncrementalSyncChanges(std::move(metadata_change_list),
                                      std::move(entity_data));
 }
 
-void SessionSyncBridge::StartLocalSessionEventHandler() {
+void SessionSyncBridge::StartLocalSessionEventHandler(bool is_new_session) {
   // We should be ready to propagate local state to sync.
   DCHECK(change_processor()->IsTrackingMetadata());
   DCHECK(!syncing_);
@@ -153,7 +209,8 @@ void SessionSyncBridge::StartLocalSessionEventHandler() {
   // store.
   syncing_->local_session_event_handler =
       std::make_unique<LocalSessionEventHandlerImpl>(
-          /*delegate=*/this, sessions_client_, store_->mutable_tracker());
+          /*delegate=*/this, sessions_client_, store_->mutable_tracker(),
+          is_new_session);
 
   syncing_->open_tabs_ui_delegate = std::make_unique<OpenTabsUIDelegateImpl>(
       sessions_client_, store_->tracker(),
@@ -173,12 +230,13 @@ void SessionSyncBridge::StartLocalSessionEventHandler() {
   notify_foreign_session_updated_cb_.Run();
 }
 
-absl::optional<syncer::ModelError>
+std::optional<syncer::ModelError>
 SessionSyncBridge::ApplyIncrementalSyncChanges(
     std::unique_ptr<MetadataChangeList> metadata_change_list,
     syncer::EntityChangeList entity_changes) {
   DCHECK(change_processor()->IsTrackingMetadata());
   DCHECK(syncing_);
+  DCHECK(sessions_client_);
 
   // Merging sessions is simple: remote entities are expected to be foreign
   // sessions (identified by the session tag)  and hence must simply be
@@ -186,6 +244,7 @@ SessionSyncBridge::ApplyIncrementalSyncChanges(
   // information is ignored (local wins).
   std::unique_ptr<SessionStore::WriteBatch> batch =
       CreateSessionStoreWriteBatch();
+
   for (const std::unique_ptr<syncer::EntityChange>& change : entity_changes) {
     switch (change->type()) {
       case syncer::EntityChange::ACTION_DELETE:
@@ -197,7 +256,10 @@ SessionSyncBridge::ApplyIncrementalSyncChanges(
           // error or a clock is inaccurate). Just ignore the deletion for now.
           DLOG(WARNING) << "Local session data deleted. Ignoring until next "
                         << "local navigation event.";
-          syncing_->local_data_out_of_sync = true;
+          sessions_client_->GetSessionSyncPrefs()->SetLocalDataOutOfSync(true);
+          static_cast<syncer::InMemoryMetadataChangeList*>(
+              metadata_change_list.get())
+              ->DropMetadataChangeForStorageKey(change->storage_key());
         } else {
           // Deleting an entity (if it's a header entity) may cascade other
           // deletions, so let's assume that whoever initiated remote deletions
@@ -220,7 +282,7 @@ SessionSyncBridge::ApplyIncrementalSyncChanges(
           // info if encryption was turned on. In that case, the data is still
           // the same, so we can ignore.
           DLOG(WARNING) << "Dropping modification to local session.";
-          syncing_->local_data_out_of_sync = true;
+          sessions_client_->GetSessionSyncPrefs()->SetLocalDataOutOfSync(true);
           continue;
         }
 
@@ -239,8 +301,7 @@ SessionSyncBridge::ApplyIncrementalSyncChanges(
     }
   }
 
-  static_cast<syncer::InMemoryMetadataChangeList*>(metadata_change_list.get())
-      ->TransferChangesTo(batch->GetMetadataChangeList());
+  metadata_change_list->TransferChangesTo(batch->GetMetadataChangeList());
 
   DoGarbageCollection(batch.get());
 
@@ -250,22 +311,22 @@ SessionSyncBridge::ApplyIncrementalSyncChanges(
     notify_foreign_session_updated_cb_.Run();
   }
 
-  return absl::nullopt;
+  return std::nullopt;
 }
 
-void SessionSyncBridge::GetData(StorageKeyList storage_keys,
-                                DataCallback callback) {
+std::unique_ptr<syncer::DataBatch> SessionSyncBridge::GetDataForCommit(
+    StorageKeyList storage_keys) {
   DCHECK(syncing_);
-  std::move(callback).Run(store_->GetSessionDataForKeys(storage_keys));
+  return store_->GetSessionDataForKeys(storage_keys);
 }
 
-void SessionSyncBridge::GetAllDataForDebugging(DataCallback callback) {
+std::unique_ptr<syncer::DataBatch> SessionSyncBridge::GetAllDataForDebugging() {
   DCHECK(syncing_);
-  std::move(callback).Run(store_->GetAllSessionData());
+  return store_->GetAllSessionData();
 }
 
 std::string SessionSyncBridge::GetClientTag(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   if (!SessionStore::AreValidSpecifics(entity_data.specifics.session())) {
     return std::string();
   }
@@ -273,11 +334,19 @@ std::string SessionSyncBridge::GetClientTag(
 }
 
 std::string SessionSyncBridge::GetStorageKey(
-    const syncer::EntityData& entity_data) {
+    const syncer::EntityData& entity_data) const {
   if (!SessionStore::AreValidSpecifics(entity_data.specifics.session())) {
     return std::string();
   }
   return SessionStore::GetStorageKey(entity_data.specifics.session());
+}
+
+sync_pb::EntitySpecifics
+SessionSyncBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
+    const sync_pb::EntitySpecifics& entity_specifics) const {
+  // Clears all fields by default to avoid the memory and I/O overhead of an
+  // additional copy of the data.
+  return sync_pb::EntitySpecifics();
 }
 
 bool SessionSyncBridge::IsEntityDataValid(
@@ -290,7 +359,12 @@ void SessionSyncBridge::ApplyDisableSyncChanges(
   DCHECK(store_);
 
   local_session_event_router_->Stop();
-  store_->DeleteAllDataAndMetadata();
+
+  syncing_.reset();
+
+  recreate_empty_store_callback_ = SessionStore::DeleteAllDataAndMetadata(
+      std::move(delete_metadata_change_list), std::move(store_));
+  CHECK(recreate_empty_store_callback_);
 
   // Ensure that we clear on-demand favicons that were downloaded using user
   // synced history data, especially by HistoryUiFaviconRequestHandler. We do
@@ -298,13 +372,14 @@ void SessionSyncBridge::ApplyDisableSyncChanges(
   // checked inside that layer to allow downloads (sessions sync enabled).
   sessions_client_->ClearAllOnDemandFavicons();
 
-  syncing_.reset();
+  notify_foreign_session_updated_cb_.Run();
 }
 
 void SessionSyncBridge::OnSyncPaused() {
   DCHECK(store_);
   local_session_event_router_->Stop();
   syncing_.reset();
+  notify_foreign_session_updated_cb_.Run();
 }
 
 std::unique_ptr<LocalSessionEventHandlerImpl::WriteBatch>
@@ -314,9 +389,9 @@ SessionSyncBridge::CreateLocalSessionWriteBatch() {
   // If a remote client mangled with our local session (typically deleted
   // entities due to garbage collection), we resubmit all local entities at this
   // point (i.e. local changes observed).
-  if (syncing_->local_data_out_of_sync) {
-    syncing_->local_data_out_of_sync = false;
-    // We use PostTask() to avoid interferring with the ongoing handling of
+  if (sessions_client_->GetSessionSyncPrefs()->GetLocalDataOutOfSync()) {
+    sessions_client_->GetSessionSyncPrefs()->SetLocalDataOutOfSync(false);
+    // We use PostTask() to avoid interfering with the ongoing handling of
     // local changes that triggered this function.
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(&SessionSyncBridge::ResubmitLocalSession,
@@ -343,25 +418,44 @@ void SessionSyncBridge::OnSyncStarting(
     const syncer::DataTypeActivationRequest& request) {
   DCHECK(!syncing_);
 
-  // |store_| may be already initialized if sync was previously started and
-  // then stopped.
-  if (store_) {
-    // If initial sync was already done, MergeFullSyncData() will never be
-    // called so we need to start syncing local changes.
-    if (change_processor()->IsTrackingMetadata()) {
-      StartLocalSessionEventHandler();
-    }
-    return;
-  }
+  // There are a few different scenarios to consider here:
+  // 1. This is browser startup, and sessions sync was previously enabled. The
+  //    store hasn't been created yet, and data will be read from it.
+  // 2. The user just enabled sessions sync.
+  //    a) Sessions sync wasn't previously enabled in this browser run, and the
+  //       store has not been created yet (and it should be empty).
+  //    b) Sessions sync was previously enabled, but has since been turned off.
+  //       The store was previously created, but has since been cleared and
+  //       destroyed.
+  // 3. Sessions sync was previously enabled, but then paused. The store still
+  //    exists and should be reused. Initial sync may or may not have been
+  //    finished previously.
 
-  // Open the store and read state from disk if it exists.
-  SessionStore::Open(request.cache_guid, sessions_client_,
-                     base::BindOnce(&SessionSyncBridge::OnStoreInitialized,
-                                    weak_ptr_factory_.GetWeakPtr()));
+  if (store_) {
+    CHECK(!recreate_empty_store_callback_);
+    // Case 3: Store still exists.
+    if (change_processor()->IsTrackingMetadata()) {
+      // Initial sync has been finished previously; restart the event handler
+      // immediately.
+      StartLocalSessionEventHandler(/*is_new_session=*/false);
+    }
+    // Else: Initial sync has *not* been finished before, so MergeFullSyncData()
+    // will be called later and start the event handler.
+  } else if (recreate_empty_store_callback_) {
+    // Case 2b: Recreate an empty store.
+    store_ = std::move(recreate_empty_store_callback_)
+                 .Run(request.cache_guid, sessions_client_);
+    CHECK(store_);
+  } else {
+    // Cases 1 and 2a: Open the store and read state from disk if it exists.
+    SessionStore::Open(request.cache_guid, sessions_client_,
+                       base::BindOnce(&SessionSyncBridge::OnStoreInitialized,
+                                      weak_ptr_factory_.GetWeakPtr()));
+  }
 }
 
 void SessionSyncBridge::OnStoreInitialized(
-    const absl::optional<syncer::ModelError>& error,
+    const std::optional<syncer::ModelError>& error,
     std::unique_ptr<SessionStore> store,
     std::unique_ptr<syncer::MetadataBatch> metadata_batch) {
   DCHECK(!syncing_);
@@ -381,7 +475,7 @@ void SessionSyncBridge::OnStoreInitialized(
   // If initial sync was already done, MergeFullSyncData() will never be called
   // so we need to start syncing local changes.
   if (change_processor()->IsTrackingMetadata()) {
-    StartLocalSessionEventHandler();
+    StartLocalSessionEventHandler(/*is_new_session=*/false);
   }
 }
 
@@ -402,7 +496,7 @@ void SessionSyncBridge::DoGarbageCollection(SessionStore::WriteBatch* batch) {
 
   // Iterate through all the sessions and delete any with age older than
   // |kStaleSessionThreshold|.
-  for (const auto* session :
+  for (const sync_sessions::SyncedSession* session :
        store_->tracker()->LookupAllForeignSessions(SyncedSessionTracker::RAW)) {
     const base::TimeDelta session_age =
         base::Time::Now() - session->GetModifiedTime();
@@ -433,6 +527,7 @@ void SessionSyncBridge::DeleteForeignSessionWithBatch(
   for (const std::string& deleted_storage_key :
        batch->DeleteForeignEntityAndUpdateTracker(header_storage_key)) {
     change_processor()->Delete(deleted_storage_key,
+                               syncer::DeletionOrigin::Unspecified(),
                                batch->GetMetadataChangeList());
   }
 

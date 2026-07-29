@@ -6,34 +6,60 @@
 
 #include <jni.h>
 
+#include "base/compiler_specific.h"
 #include "base/feature_list.h"
+
+// Must come after all headers that specialize FromJniType() / ToJniType().
 #include "components/android_autofill/browser/jni_headers_features/AndroidAutofillFeatures_jni.h"
 
 namespace autofill::features {
 
 namespace {
 
-const base::Feature* kFeaturesExposedToJava[] = {
-    &kAndroidAutofillViewStructureWithFormHierarchyLayer,
-};
+const base::Feature* const kFeaturesExposedToJava[] = {
+    &kAndroidAutofillLazyFrameworkWrapper,
+    &kAndroidAutofillImprovedVisibilityDetection,
+    &kAndroidAutofillFieldsUpdatedOnSelect,
+    &kAndroidAutofillSupportForHttpAuthOrigin};
 
 }  // namespace
 
-// Adds an additional hierarchy layer for forms into the `ViewStructure` that
-// is passed to Android's `AutofillManager`.
-// If the feature is disabled, AutofillProvider.java returns a `ViewStructure`
-// of depth 1: All form field elements are represented as child nodes of the
-// filled `ViewStructure`.
-// If the feature is enabled, there is an additional hierarchy level:
-// * The child nodes of the filled `ViewStructure` correspond to forms.
-// * The child nodes of nodes representing forms correspond to form field
-//   elements of the respective form.
-BASE_FEATURE(kAndroidAutofillViewStructureWithFormHierarchyLayer,
-             "AndroidAutofillViewStructureWithFormHierarchyLayer",
+// If enabled, the AutofillManagerWrapper class will not be initialized when the
+// AutofillProvider Java class is initialized. Some apps do not use Autofill at
+// all, yet they incur the latency cost of initializing the wrapper. This
+// experiment tests whether lazily initializing the wrapper will cause any
+// issues.
+BASE_FEATURE(kAndroidAutofillLazyFrameworkWrapper,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-static jlong JNI_AndroidAutofillFeatures_GetFeature(JNIEnv* env, jint ordinal) {
-  return reinterpret_cast<jlong>(kFeaturesExposedToJava[ordinal]);
+// If enabled, an additional custom "visible" attribute in each node's HtmlInfo
+// is set and sent to the framework.
+BASE_FEATURE(kAndroidAutofillImprovedVisibilityDetection,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, the native autofill provider is updated when the web contents
+// change.
+BASE_FEATURE(kAndroidAutofillUpdateContextForWebContents,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, fields are updated whenever a user interacts with a <select>.
+// TODO(crbug.com/502346855): Remove in M152 or later.
+BASE_FEATURE(kAndroidAutofillFieldsUpdatedOnSelect,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// LINT.IfChange
+// If enabled, the origin of the challenger is passed to the HttpAuth dialog for
+// autofill purposes. Remove in or after M153.
+BASE_FEATURE(kAndroidAutofillSupportForHttpAuthOrigin,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+// LINT.ThenChange(//chrome/android/DEPS)
+
+static int64_t JNI_AndroidAutofillFeatures_GetFeature(JNIEnv* env,
+                                                      int32_t ordinal) {
+  return reinterpret_cast<int64_t>(
+      UNSAFE_TODO(kFeaturesExposedToJava[ordinal]));
 }
 
 }  // namespace autofill::features
+
+DEFINE_JNI(AndroidAutofillFeatures)

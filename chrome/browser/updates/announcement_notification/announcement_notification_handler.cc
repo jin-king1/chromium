@@ -8,8 +8,8 @@
 #include "chrome/browser/notifications/notification_display_service.h"  // nogncheck
 #include "chrome/browser/notifications/notification_display_service_factory.h"  // nogncheck
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/updates/announcement_notification/announcement_notification_delegate.h"
 
 namespace {
@@ -40,8 +40,8 @@ void AnnouncementNotificationHandler::OnClick(
     Profile* profile,
     const GURL& origin,
     const std::string& notification_id,
-    const absl::optional<int>& action_index,
-    const absl::optional<std::u16string>& reply,
+    const std::optional<int>& action_index,
+    const std::optional<std::u16string>& reply,
     base::OnceClosure completed_closure) {
   int button_index = action_index.has_value() ? action_index.value() : -1;
 
@@ -69,6 +69,6 @@ void AnnouncementNotificationHandler::OpenAnnouncement(Profile* profile) {
   GURL url = AnnouncementNotificationService::GetAnnouncementURL();
   NavigateParams params(profile, url, ui::PAGE_TRANSITION_LINK);
   params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-  params.window_action = NavigateParams::SHOW_WINDOW;
+  params.window_action = NavigateParams::WindowAction::kShowWindow;
   Navigate(&params);
 }

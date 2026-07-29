@@ -2,23 +2,25 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {BookmarksApiProxyImpl, getDisplayedList, SelectFolderAction, StartSearchAction, Store} from 'chrome://bookmarks/bookmarks.js';
+import type {BookmarksAppElement, SelectFolderAction, StartSearchAction} from 'chrome://bookmarks/bookmarks.js';
+import {BookmarksApiProxyImpl, BookmarksRouter, CrRouter, getDisplayedList, Store} from 'chrome://bookmarks/bookmarks.js';
 import {assertDeepEquals, assertEquals} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
+import {microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestBookmarksApiProxy} from './test_bookmarks_api_proxy.js';
 import {TestStore} from './test_store.js';
-import {createFolder, createItem, getAllFoldersOpenState, replaceBody, testTree} from './test_util.js';
+import {createFolder, createItem, getAllFoldersOpenState, testTree} from './test_util.js';
 
 suite('<bookmarks-router>', function() {
   let store: TestStore;
 
   function navigateTo(route: string) {
     window.history.replaceState({}, '', route);
-    window.dispatchEvent(new CustomEvent('location-changed'));
+    window.dispatchEvent(new CustomEvent('popstate'));
   }
 
   setup(function() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const nodes = testTree(createFolder('1', [createFolder('2', [])]));
     store = new TestStore({
       nodes: nodes,
@@ -26,13 +28,14 @@ suite('<bookmarks-router>', function() {
       selectedFolder: '1',
       search: {
         term: '',
+        inProgress: false,
+        results: [],
       },
     });
     store.replaceSingleton();
 
-    const router = document.createElement('bookmarks-router');
-    replaceBody(router);
-    return flushTasks();
+    const router = new BookmarksRouter();
+    router.initialize();
   });
 
   test('search updates from route', function() {
@@ -52,12 +55,12 @@ suite('<bookmarks-router>', function() {
   test('route updates from ID', async function() {
     store.data.selectedFolder = '2';
     store.notifyObservers();
-
-    await flushTasks();
+    await microtasksFinished();
     assertEquals('chrome://bookmarks/?id=2', window.location.href);
+
     store.data.selectedFolder = '1';
     store.notifyObservers();
-    await flushTasks();
+    await microtasksFinished();
     // Selecting Bookmarks bar clears route.
     assertEquals('chrome://bookmarks/', window.location.href);
   });
@@ -65,14 +68,14 @@ suite('<bookmarks-router>', function() {
   test('route updates from search', async function() {
     store.data.search.term = 'bloop';
     store.notifyObservers();
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals('chrome://bookmarks/?q=bloop', window.location.href);
 
     // Ensure that the route doesn't change when the search finishes.
     store.data.selectedFolder = '';
     store.notifyObservers();
-    await flushTasks();
+    await microtasksFinished();
     assertEquals('chrome://bookmarks/?q=bloop', window.location.href);
   });
 
@@ -85,12 +88,85 @@ suite('<bookmarks-router>', function() {
   });
 });
 
+suite('<bookmarks-router-account-and-local>', function() {
+  let store: TestStore;
+
+  function navigateTo(route: string) {
+    window.history.replaceState({}, '', route);
+    window.dispatchEvent(new CustomEvent('popstate'));
+  }
+
+  setup(function() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    const nodes = testTree(
+        createFolder('1', [createItem('11', {syncing: true})], {
+          syncing: true,
+          folderType: chrome.bookmarks.FolderType.BOOKMARKS_BAR,
+        }),
+        createFolder('2', [createItem('21', {syncing: false})], {
+          syncing: false,
+          folderType: chrome.bookmarks.FolderType.BOOKMARKS_BAR,
+        }));
+    store = new TestStore({
+      nodes: nodes,
+      folderOpenState: getAllFoldersOpenState(nodes),
+      selectedFolder: 'account_heading',
+      search: {
+        term: '',
+        inProgress: false,
+        results: [],
+      },
+    });
+    store.replaceSingleton();
+
+    const router = new BookmarksRouter();
+    router.initialize();
+  });
+
+  test('selected folder updates from route', function() {
+    navigateTo('/?id=local_heading');
+    const action = store.lastAction as SelectFolderAction;
+    assertEquals('select-folder', action.name);
+    assertEquals('local_heading', action.id);
+  });
+
+  test('route updates from ID', async function() {
+    store.data.selectedFolder = '2';
+    store.notifyObservers();
+    await microtasksFinished();
+    assertEquals('chrome://bookmarks/?id=2', window.location.href);
+
+    store.data.selectedFolder = 'account_heading';
+    store.notifyObservers();
+    await microtasksFinished();
+    // Selecting account bookmarks root clears route.
+    assertEquals('chrome://bookmarks/', window.location.href);
+  });
+
+  test('account bookmarks root selected with empty route', function() {
+    navigateTo('/?id=2');
+    navigateTo('/');
+    const action = store.lastAction as SelectFolderAction;
+    assertEquals('select-folder', action.name);
+    assertEquals('account_heading', action.id);
+  });
+});
+
 suite('URL preload', function() {
   let testBookmarksApiProxy: TestBookmarksApiProxy;
+  let app: BookmarksAppElement;
 
   setup(function() {
     testBookmarksApiProxy = new TestBookmarksApiProxy();
     BookmarksApiProxyImpl.setInstance(testBookmarksApiProxy);
+  });
+
+  teardown(function() {
+    // Teardown the element to ensure it is disconnected from the DOM, which
+    // removes event listeners from the active BookmarksApiProxy instance.
+    // This prevents the element from trying to remove listeners from a swapped
+    // proxy instance in subsequent test setups.
+    app.remove();
   });
 
   /**
@@ -101,6 +177,7 @@ suite('URL preload', function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     Store.setInstance(new Store());
     window.history.replaceState({}, '', url);
+    CrRouter.resetForTesting();
 
     testBookmarksApiProxy.setGetTree([
       createFolder(
@@ -110,7 +187,10 @@ suite('URL preload', function() {
                 '1',
                 [
                   createFolder('11', []),
-                ]),
+                ],
+                {
+                  folderType: chrome.bookmarks.FolderType.BOOKMARKS_BAR,
+                }),
             createFolder(
                 '2',
                 [
@@ -119,9 +199,9 @@ suite('URL preload', function() {
           ]),
     ]);
 
-    const app = document.createElement('bookmarks-app');
+    app = document.createElement('bookmarks-app');
     document.body.appendChild(app);
-    return flushTasks();
+    return microtasksFinished();
   }
 
   test('loading a search URL performs a search', async function() {
@@ -144,8 +224,7 @@ suite('URL preload', function() {
         await setupWithUrl('/?id=42');
         const state = Store.getInstance().data;
         assertEquals('1', state.selectedFolder);
-        return Promise.resolve().then(function() {
-          assertEquals('chrome://bookmarks/', window.location.href);
-        });
+        await microtasksFinished();
+        assertEquals('chrome://bookmarks/', window.location.href);
       });
 });

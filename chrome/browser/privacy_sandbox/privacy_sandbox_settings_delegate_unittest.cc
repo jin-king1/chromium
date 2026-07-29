@@ -3,23 +3,46 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_settings_delegate.h"
+
+#include <stddef.h>
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "base/strings/to_string.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
+#include "build/buildflag.h"
+#include "chrome/browser/content_settings/cookie_settings_factory.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/supervised_user/supervised_user_test_util.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
+#include "components/content_settings/core/browser/cookie_settings.h"
+#include "components/content_settings/core/common/content_settings.h"
+#include "components/content_settings/core/common/pref_names.h"
+#include "components/metrics/metrics_pref_names.h"
+#include "components/prefs/pref_service.h"
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "components/privacy_sandbox/privacy_sandbox_prefs.h"
 #include "components/signin/public/identity_manager/account_capabilities_test_mutator.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_task_environment.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/android/webapps/webapp_registry.h"
+#endif
 
 namespace {
 
 constexpr char kTestEmail[] = "test@test.com";
-
-}
 
 class PrivacySandboxSettingsDelegateTest : public testing::Test {
  public:
@@ -28,8 +51,8 @@ class PrivacySandboxSettingsDelegateTest : public testing::Test {
         CreateProfileForIdentityTestEnvironment();
     adapter_ =
         std::make_unique<IdentityTestEnvironmentProfileAdaptor>(profile_.get());
-    delegate_ =
-        std::make_unique<PrivacySandboxSettingsDelegate>(profile_.get());
+    delegate_ = std::make_unique<PrivacySandboxSettingsDelegate>(
+        profile_.get(), GetSingletonPrivacySandboxCountries());
   }
 
  protected:
@@ -38,7 +61,7 @@ class PrivacySandboxSettingsDelegateTest : public testing::Test {
     auto account_info = identity_test_env()
                             ->identity_manager()
                             ->FindExtendedAccountInfoByEmailAddress(kTestEmail);
-    AccountCapabilitiesTestMutator mutator(&account_info.capabilities);
+    AccountCapabilitiesTestMutator mutator(&account_info);
     mutator.set_can_run_chrome_privacy_sandbox_trials(enabled);
     signin::UpdateAccountInfoForAccount(identity_test_env()->identity_manager(),
                                         account_info);
@@ -48,7 +71,7 @@ class PrivacySandboxSettingsDelegateTest : public testing::Test {
     auto account_info = identity_test_env()
                             ->identity_manager()
                             ->FindExtendedAccountInfoByEmailAddress(kTestEmail);
-    AccountCapabilitiesTestMutator mutator(&account_info.capabilities);
+    AccountCapabilitiesTestMutator mutator(&account_info);
     mutator
         .set_is_subject_to_chrome_privacy_sandbox_restricted_measurement_notice(
             enabled);
@@ -87,27 +110,28 @@ TEST_F(PrivacySandboxSettingsDelegateTest,
   // When the capability is restricted, the delegate should return as such.
   SetPrivacySandboxAccountCapability(kTestEmail, false);
   EXPECT_TRUE(delegate()->IsPrivacySandboxRestricted());
-  // Even when the capability is unrestricted, the sandbox should remain
-  // restricted.
-  // TODO (crbug.com/1428546): Adjust when we have a graduation flow.
+  // Even when the capability is currently unrestricted, the sandbox should
+  // remain restricted. The capability should be reported as currently
+  // unrestricted.
+  // TODO (crbug.com/40262264): Adjust when we have a graduation flow.
   SetPrivacySandboxAccountCapability(kTestEmail, true);
   EXPECT_TRUE(delegate()->IsPrivacySandboxRestricted());
+  EXPECT_TRUE(delegate()->IsPrivacySandboxCurrentlyUnrestricted());
 }
 
 TEST_F(PrivacySandboxSettingsDelegateTest,
        CapabilityRestrictionForSignedOutUser) {
-  feature_list()->InitAndEnableFeature(
-      privacy_sandbox::kPrivacySandboxSettings3);
   // If the user is not signed in to Chrome then we don't use any age signal and
   // don't restrict the feature.
   EXPECT_FALSE(delegate()->IsPrivacySandboxRestricted());
+  EXPECT_FALSE(delegate()->IsPrivacySandboxCurrentlyUnrestricted());
 }
 
 TEST_F(PrivacySandboxSettingsDelegateTest,
        RestrictedNoticeRequiredForSignedInUser) {
   feature_list()->InitAndEnableFeatureWithParameters(
       privacy_sandbox::kPrivacySandboxSettings4,
-      {{privacy_sandbox::kPrivacySandboxSettings4RestrictedNotice.name,
+      {{privacy_sandbox::kPrivacySandboxSettings4RestrictedNoticeName,
         "true"}});
   // Sign the user in.
   identity_test_env()->MakePrimaryAccountAvailable(
@@ -129,10 +153,34 @@ TEST_F(PrivacySandboxSettingsDelegateTest,
 }
 
 TEST_F(PrivacySandboxSettingsDelegateTest,
+       RestrictedNoticeRequiredWithoutAccountToken) {
+  feature_list()->InitAndEnableFeatureWithParameters(
+      privacy_sandbox::kPrivacySandboxSettings4,
+      {{privacy_sandbox::kPrivacySandboxSettings4RestrictedNoticeName,
+        "true"}});
+  // Sign the user in.
+  identity_test_env()->MakePrimaryAccountAvailable(
+      kTestEmail, signin::ConsentLevel::kSignin);
+
+  // Initially the account capability will be in an unknown state
+  EXPECT_FALSE(delegate()->IsSubjectToM1NoticeRestricted());
+
+  // Enable the account capability
+  SetRestrictedNoticeCapability(kTestEmail, true);
+
+  // Remove the refresh token for the account
+  signin::RemoveRefreshTokenForPrimaryAccount(
+      identity_test_env()->identity_manager());
+
+  // Capability is fetched even if the token is not available
+  EXPECT_TRUE(delegate()->IsSubjectToM1NoticeRestricted());
+}
+
+TEST_F(PrivacySandboxSettingsDelegateTest,
        RestrictedNoticeRequiredForSignedOutUser) {
   feature_list()->InitAndEnableFeatureWithParameters(
       privacy_sandbox::kPrivacySandboxSettings4,
-      {{privacy_sandbox::kPrivacySandboxSettings4RestrictedNotice.name,
+      {{privacy_sandbox::kPrivacySandboxSettings4RestrictedNoticeName,
         "true"}});
   // If the user is not signed in to Chrome then we don't use any age signal and
   // don't restrict the feature.
@@ -143,7 +191,7 @@ TEST_F(PrivacySandboxSettingsDelegateTest,
        RestrictedNoticeRequiredFeatureDisabled) {
   feature_list()->InitAndEnableFeatureWithParameters(
       privacy_sandbox::kPrivacySandboxSettings4,
-      {{privacy_sandbox::kPrivacySandboxSettings4RestrictedNotice.name,
+      {{privacy_sandbox::kPrivacySandboxSettings4RestrictedNoticeName,
         "false"}});
   identity_test_env()->MakePrimaryAccountAvailable(
       kTestEmail, signin::ConsentLevel::kSignin);
@@ -151,37 +199,6 @@ TEST_F(PrivacySandboxSettingsDelegateTest,
   // Even if the user is signed in to Chrome, the feature being disabled means
   // no notice should be shown.
   EXPECT_FALSE(delegate()->IsSubjectToM1NoticeRestricted());
-}
-
-TEST_F(PrivacySandboxSettingsDelegateTest,
-       UnrestrictedPref_UserSignedInWithAccountCapability) {
-  identity_test_env()->MakePrimaryAccountAvailable(
-      kTestEmail, signin::ConsentLevel::kSignin);
-  SetPrivacySandboxAccountCapability(kTestEmail, true);
-
-  // Calls to IsPrivacySandboxRestricted should set the unrestricted pref
-  EXPECT_FALSE(prefs()->GetBoolean(prefs::kPrivacySandboxM1Unrestricted));
-  delegate()->IsPrivacySandboxRestricted();
-  EXPECT_TRUE(prefs()->GetBoolean(prefs::kPrivacySandboxM1Unrestricted));
-}
-
-TEST_F(PrivacySandboxSettingsDelegateTest,
-       UnrestrictedPref_UserSignedInWithoutAccountCapability) {
-  identity_test_env()->MakePrimaryAccountAvailable(
-      kTestEmail, signin::ConsentLevel::kSignin);
-  SetPrivacySandboxAccountCapability(kTestEmail, false);
-
-  // Calls to IsPrivacySandboxRestricted should NOT set the unrestricted pref
-  EXPECT_FALSE(prefs()->GetBoolean(prefs::kPrivacySandboxM1Unrestricted));
-  delegate()->IsPrivacySandboxRestricted();
-  EXPECT_FALSE(prefs()->GetBoolean(prefs::kPrivacySandboxM1Unrestricted));
-}
-
-TEST_F(PrivacySandboxSettingsDelegateTest, UnrestrictedPref_UserNotSignedIn) {
-  // Calls to IsPrivacySandboxRestricted should NOT set the unrestricted pref
-  EXPECT_FALSE(prefs()->GetBoolean(prefs::kPrivacySandboxM1Unrestricted));
-  delegate()->IsPrivacySandboxRestricted();
-  EXPECT_FALSE(prefs()->GetBoolean(prefs::kPrivacySandboxM1Unrestricted));
 }
 
 TEST_F(PrivacySandboxSettingsDelegateTest,
@@ -198,14 +215,6 @@ TEST_F(PrivacySandboxSettingsDelegateTest,
   feature_list()->InitAndEnableFeatureWithParameters(
       privacy_sandbox::kPrivacySandboxSettings4,
       {{privacy_sandbox::kPrivacySandboxSettings4NoticeRequired.name, "true"}});
-
-  EXPECT_TRUE(delegate()->HasAppropriateTopicsConsent());
-
-  feature_list()->Reset();
-  feature_list()->InitAndEnableFeatureWithParameters(
-      privacy_sandbox::kPrivacySandboxSettings3,
-      {{privacy_sandbox::kPrivacySandboxSettings3ConsentRequired.name,
-        "true"}});
 
   EXPECT_TRUE(delegate()->HasAppropriateTopicsConsent());
 }
@@ -227,12 +236,4 @@ TEST_F(PrivacySandboxSettingsDelegateTest,
   EXPECT_FALSE(delegate()->HasAppropriateTopicsConsent());
 }
 
-TEST_F(PrivacySandboxSettingsDelegateTest,
-       CapabilityRestrictionWhenForcedRestictedUser) {
-  feature_list()->InitAndEnableFeatureWithParameters(
-      privacy_sandbox::kPrivacySandboxSettings4,
-      {{privacy_sandbox::kPrivacySandboxSettings4ForceRestrictedUserForTesting
-            .name,
-        "true"}});
-  EXPECT_TRUE(delegate()->IsPrivacySandboxRestricted());
-}
+}  // namespace

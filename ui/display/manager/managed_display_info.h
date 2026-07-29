@@ -12,7 +12,6 @@
 #include <vector>
 
 #include "base/files/file_path.h"
-#include "build/chromeos_buildflags.h"
 #include "ui/display/display.h"
 #include "ui/display/manager/display_manager_export.h"
 #include "ui/display/types/display_constants.h"
@@ -21,6 +20,11 @@
 #include "ui/gfx/geometry/rounded_corners_f.h"
 
 namespace display {
+
+// A map between display mode size and zoom factor, used to preserve
+// the zoom factor when the user changes the display mode.
+using DisplaySizeToZoomFactorMap =
+    std::map</*size_as_string=*/std::string, /*zoom_factor=*/float>;
 
 // A class that represents the display's mode info.
 class DISPLAY_MANAGER_EXPORT ManagedDisplayMode {
@@ -68,11 +72,6 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayMode {
   bool native_ = false;         // True if mode is native mode of the display.
   float device_scale_factor_ = 1.0f;  // The device scale factor of the mode.
 };
-
-inline bool operator!=(const ManagedDisplayMode& lhs,
-                       const ManagedDisplayMode& rhs) {
-  return !(lhs == rhs);
-}
 
 // ManagedDisplayInfo contains metadata for each display. This is used to create
 // |Display| as well as to maintain extra infomation to manage displays in ash
@@ -145,6 +144,7 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   ~ManagedDisplayInfo();
 
   int64_t id() const { return id_; }
+  void set_display_id(int64_t id) { id_ = id; }
 
   int64_t port_display_id() const { return port_display_id_; }
   void set_port_display_id(int64_t id) { port_display_id_ = id; }
@@ -164,12 +164,21 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
 
   // True if the display EDID has the overscan flag. This does not create the
   // actual overscan automatically, but used in the message.
+  void set_has_overscan(bool has_overscan) { has_overscan_ = has_overscan; }
   bool has_overscan() const { return has_overscan_; }
 
   void set_touch_support(Display::TouchSupport support) {
     touch_support_ = support;
   }
   Display::TouchSupport touch_support() const { return touch_support_; }
+
+  void set_connection_type(DisplayConnectionType type) {
+    connection_type_ = type;
+  }
+  DisplayConnectionType connection_type() const { return connection_type_; }
+
+  void set_physical_size(const gfx::Size& size) { physical_size_ = size; }
+  const gfx::Size& physical_size() const { return physical_size_; }
 
   // Gets/Sets the device scale factor of the display.
   // TODO(oshima): Rename this to |default_device_scale_factor|.
@@ -178,6 +187,12 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
 
   float zoom_factor() const { return zoom_factor_; }
   void set_zoom_factor(float zoom_factor) { zoom_factor_ = zoom_factor; }
+
+  const DisplaySizeToZoomFactorMap& zoom_factor_map() const {
+    return zoom_factor_map_;
+  }
+
+  void AddZoomFactorForSize(const std::string& size, float zoom_factor);
 
   float refresh_rate() const { return refresh_rate_; }
   void set_refresh_rate(float refresh_rate) { refresh_rate_ = refresh_rate; }
@@ -226,6 +241,9 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
     return active_rotation_source_;
   }
 
+  bool detected() const { return detected_; }
+  void set_detected(bool detected) { detected_ = detected; }
+
   // Returns the rotation set by a given |source|.
   Display::Rotation GetRotation(Display::RotationSource source) const;
 
@@ -233,6 +251,10 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   // display that chrome sees. This is |device_scale_factor| x |zoom_factor_|.
   // TODO(oshima): Rename to |GetDeviceScaleFactor()|.
   float GetEffectiveDeviceScaleFactor() const;
+
+  // Updates the zoom factor so that the effective dpi matches to the
+  // recommended default dpi.
+  void UpdateZoomFactorToMatchTargetDPI();
 
   // Copy the display info except for fields that can be modified by a user
   // (|rotation_|). |rotation_| is copied when the |another_info| isn't native
@@ -251,11 +273,9 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   void SetOverscanInsets(const gfx::Insets& insets_in_dip);
   gfx::Insets GetOverscanInsetsInPixel() const;
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Snapshot ColorSpace is only valid for Ash Chrome.
   void SetSnapshotColorSpace(const gfx::ColorSpace& snapshot_color);
   gfx::ColorSpace GetSnapshotColorSpace() const;
-#endif
 
   // Sets/Gets the flag to clear overscan insets.
   bool clear_overscan_insets() const { return clear_overscan_insets_; }
@@ -329,10 +349,8 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
     variable_refresh_rate_state_ = variable_refresh_rate_state;
   }
 
-  const absl::optional<uint16_t>& vsync_rate_min() const {
-    return vsync_rate_min_;
-  }
-  void set_vsync_rate_min(const absl::optional<uint16_t>& vsync_rate_min) {
+  const std::optional<float>& vsync_rate_min() const { return vsync_rate_min_; }
+  void set_vsync_rate_min(const std::optional<float>& vsync_rate_min) {
     vsync_rate_min_ = vsync_rate_min;
   }
 
@@ -380,6 +398,8 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   std::map<Display::RotationSource, Display::Rotation> rotations_;
   Display::RotationSource active_rotation_source_;
   Display::TouchSupport touch_support_;
+  DisplayConnectionType connection_type_ = DISPLAY_CONNECTION_TYPE_UNKNOWN;
+  gfx::Size physical_size_;
 
   // This specifies the device's pixel density. (For example, a display whose
   // DPI is higher than the threshold is considered to have device_scale_factor
@@ -405,6 +425,9 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   // for a display.
   float zoom_factor_;
 
+  // A map between display resolution and the zoom level applied.
+  DisplaySizeToZoomFactorMap zoom_factor_map_;
+
   // The value of the current display mode refresh rate.
   float refresh_rate_;
 
@@ -427,6 +450,11 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   // to distinguish the empty overscan insets from native display info.
   bool clear_overscan_insets_;
 
+  // True if the display is detected by the system. The system will keep at
+  // least one display available even if all displays are disconnected, and this
+  // field is set to false in such a case.
+  bool detected_ = true;
+
   // The list of modes supported by this display.
   ManagedDisplayModeList display_modes_;
 
@@ -436,10 +464,8 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   // Colorimetry information of the Display.
   gfx::DisplayColorSpaces display_color_spaces_;
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
   // Color Space information as generated from the display EDID.
   gfx::ColorSpace snapshot_color_space_;
-#endif
 
   // Bit depth of every channel, extracted from its EDID, usually 8, but can be
   // 0 if EDID says so or if the EDID (retrieval) was faulty.
@@ -453,27 +479,17 @@ class DISPLAY_MANAGER_EXPORT ManagedDisplayInfo {
   DrmFormatsAndModifiers drm_formats_and_modifiers_;
 
   VariableRefreshRateState variable_refresh_rate_state_;
-  absl::optional<uint16_t> vsync_rate_min_;
+  std::optional<float> vsync_rate_min_;
 
   // If you add a new member, you need to update Copy().
 };
 
-// Creates a managed display info for testing purposes only.
+// Creates a managed display info. Note that if a valid |bounds| is not
+// supplied, the returned ManagedDisplayInfo never called UpdateDisplaySize(),
+// which means that transformations, such as rotation, are not properly applied.
 ManagedDisplayInfo DISPLAY_MANAGER_EXPORT
-CreateDisplayInfo(int64_t id, const gfx::Rect& bounds);
-
-// Resets the synthesized display id for testing. This
-// is necessary to avoid overflowing the output index.
-void DISPLAY_MANAGER_EXPORT ResetDisplayIdForTest();
-
-// Generates a fake, synthesized display ID that will be used when the
-// |kInvalidDisplayId| is passed to |ManagedDisplayInfo| constructor.
-int64_t DISPLAY_MANAGER_EXPORT GetNextSynthesizedDisplayId(int64_t id);
-
-// Generates the next fake connector index for displays who's ID was generated
-// by hashing their EDIDs.
-int64_t DISPLAY_MANAGER_EXPORT GetNextSynthesizedEdidDisplayConnectorIndex();
+CreateDisplayInfo(int64_t id, const gfx::Rect& bounds = gfx::Rect());
 
 }  // namespace display
 
-#endif  //  UI_DISPLAY_MANAGER_MANAGED_DISPLAY_INFO_H_
+#endif  // UI_DISPLAY_MANAGER_MANAGED_DISPLAY_INFO_H_

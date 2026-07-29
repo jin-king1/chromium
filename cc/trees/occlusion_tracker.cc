@@ -59,23 +59,26 @@ void OcclusionTracker::EnterLayer(
     const EffectTreeLayerListIterator::Position& iterator) {
   RenderSurfaceImpl* render_target = iterator.target_render_surface;
 
-  if (iterator.state == EffectTreeLayerListIterator::State::LAYER)
+  if (iterator.state == EffectTreeLayerListIterator::State::kLayer) {
     EnterRenderTarget(render_target);
-  else if (iterator.state == EffectTreeLayerListIterator::State::TARGET_SURFACE)
+  } else if (iterator.state ==
+             EffectTreeLayerListIterator::State::kTargetSurface) {
     FinishedRenderTarget(render_target);
+  }
 }
 
 void OcclusionTracker::LeaveLayer(
     const EffectTreeLayerListIterator::Position& iterator) {
   RenderSurfaceImpl* render_target = iterator.target_render_surface;
 
-  if (iterator.state == EffectTreeLayerListIterator::State::LAYER)
+  if (iterator.state == EffectTreeLayerListIterator::State::kLayer) {
     MarkOccludedBehindLayer(iterator.current_layer);
-  // TODO(danakj): This should be done when entering the contributing surface,
-  // but in a way that the surface's own occlusion won't occlude itself.
-  else if (iterator.state ==
-           EffectTreeLayerListIterator::State::CONTRIBUTING_SURFACE)
+  } else if (iterator.state ==
+             EffectTreeLayerListIterator::State::kContributingSurface) {
+    // TODO(danakj): This should be done when entering the contributing surface,
+    // but in a way that the surface's own occlusion won't occlude itself.
     LeaveToRenderTarget(render_target);
+  }
 }
 
 static gfx::Rect ScreenSpaceClipRectInTargetSurface(
@@ -202,7 +205,8 @@ void OcclusionTracker::FinishedRenderTarget(
       !IsOccludingBlendMode(finished_target_surface->BlendMode()) ||
       target_is_only_for_copy_request_or_force_render_surface ||
       finished_target_surface->Filters().HasFilterThatAffectsOpacity() ||
-      finished_target_surface->GetViewTransitionElementId().valid()) {
+      finished_target_surface->OwningEffectNode()
+          ->view_transition_element_resource_id.IsValid()) {
     stack_.back().occlusion_from_outside_target.Clear();
     stack_.back().occlusion_from_inside_target.Clear();
   }
@@ -354,12 +358,13 @@ void OcclusionTracker::MarkOccludedBehindLayer(const LayerImpl* layer) {
   // surface, then the layer should not occlude. An example of this would
   // otherwise be wrong is that this layer is a non-render-surface mask layer
   // with kDstIn blend mode.
-  const auto* effect_node =
+  const auto& effect_node =
       layer->layer_tree_impl()->property_trees()->effect_tree().Node(
           layer->effect_tree_index());
-  if (!effect_node->HasRenderSurface() &&
-      !IsOccludingBlendMode(effect_node->blend_mode))
+  if (!effect_node.HasRenderSurface() &&
+      !IsOccludingBlendMode(effect_node.blend_mode)) {
     return;
+  }
 
   DCHECK(layer->visible_layer_rect().Contains(opaque_layer_region.bounds()));
 

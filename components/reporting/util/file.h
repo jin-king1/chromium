@@ -9,12 +9,15 @@
 
 #include <string>
 
-#include "base/files/file_enumerator.h"
-#include "base/files/file_util.h"
+#include "base/files/file_path.h"
 #include "base/functional/callback.h"
 #include "base/strings/strcat.h"
 #include "components/reporting/util/status.h"
 #include "components/reporting/util/statusor.h"
+
+namespace base {
+class FileEnumerator;
+}
 
 namespace reporting {
 
@@ -50,11 +53,11 @@ StatusOr<std::string> MaybeReadFile(const base::FilePath& file_path,
 
 // Appends |data| with a new line to |file_path|.
 Status AppendLine(const base::FilePath& file_path,
-                  const base::StringPiece& data);
+                  const std::string_view& data);
 
 // Overwrites or creates a new file at |file_path| with the contents |data|.
 Status MaybeWriteFile(const base::FilePath& file_path,
-                      const base::StringPiece& data);
+                      const std::string_view& data);
 
 // Removes the first |pos| bytes from a file at |file_path| and also removes
 // the rest of the line which the byte at position |pos| was on.

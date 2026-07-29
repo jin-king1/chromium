@@ -11,6 +11,8 @@
 // numeric values should never be reused.
 // Be sure to keep in sync with AdaptiveToolbarButtonVariant in enums.xml.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.chrome.browser.toolbar.adaptive
+//
+// LINT.IfChange(AdaptiveToolbarButtonVariant)
 enum class AdaptiveToolbarButtonVariant {
   // Button type is unknown. Used as default in backend logic.
   kUnknown = 0,
@@ -33,7 +35,25 @@ enum class AdaptiveToolbarButtonVariant {
   kTranslate = 8,
   // Add to bookmarks action.
   kAddToBookmarks = 9,
-  kMaxValue = kAddToBookmarks,
+  // ReadAloud action.
+  kReadAloud = 10,
+  // Value for testing.
+  kTestButton = 11,
+  // Price Insights action.
+  kPriceInsights = 12,
+  // Page Summary button.
+  kPageSummary [[deprecated]] = 13,
+  // Discounts action.
+  kDiscounts = 14,
+  // Open In Browser action.
+  kOpenInBrowser = 15,
+  // Tab grouping action.
+  kTabGrouping = 16,
+  // Glic button.
+  kGlic = 17,
+
+  kMaxValue = kGlic,
 };
+// LINT.ThenChange(/tools/metrics/histograms/enums.xml:AdaptiveToolbarButtonVariant)
 
 #endif  // CHROME_BROWSER_UI_ANDROID_TOOLBAR_ADAPTIVE_TOOLBAR_ENUMS_H_

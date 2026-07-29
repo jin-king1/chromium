@@ -10,9 +10,7 @@
 
 namespace blink {
 
-InspectorIOAgent::InspectorIOAgent(v8::Isolate* isolate,
-                                   v8_inspector::V8InspectorSession* session)
-    : isolate_(isolate), v8_session_(session) {}
+InspectorIOAgent::InspectorIOAgent(v8::Isolate* isolate) : isolate_(isolate) {}
 
 InspectorIOAgent::~InspectorIOAgent() = default;
 
@@ -22,21 +20,16 @@ protocol::Response InspectorIOAgent::resolveBlob(const String& object_id,
   v8::Local<v8::Value> value;
   v8::Local<v8::Context> context;
   std::unique_ptr<v8_inspector::StringBuffer> error;
-  if (!v8_session_->unwrapObject(&error, ToV8InspectorStringView(object_id),
+  if (!V8Session()->unwrapObject(&error, ToV8InspectorStringView(object_id),
                                  &value, &context, nullptr)) {
     return protocol::Response::ServerError(
         ToCoreString(std::move(error)).Utf8());
   }
 
-  if (!V8Blob::HasInstance(value, isolate_)) {
-    return protocol::Response::ServerError(
-        "Object id doesn't reference a Blob");
-  }
-
-  Blob* blob = V8Blob::ToImpl(v8::Local<v8::Object>::Cast(value));
+  Blob* blob = V8Blob::ToWrappable(isolate_, value);
   if (!blob) {
     return protocol::Response::ServerError(
-        "Couldn't convert object with given objectId to Blob");
+        "Object id doesn't reference a Blob");
   }
 
   *uuid = blob->Uuid();

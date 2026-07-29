@@ -3,33 +3,35 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import os
 import csv
-import tempfile
-from typing import List
+import os
 import shutil
+import tempfile
+from typing import Dict, List
 import unittest
 
 from file_reading import enumerate_all_argument_combinations
-from file_reading import expand_tests_from_action_parameter_wildcards
 from file_reading import enumerate_markdown_file_lines_to_table_rows
-from file_reading import human_friendly_name_to_canonical_action_name
+from file_reading import expand_tests_from_action_parameter_wildcards
+from file_reading import generate_test_id_from_test_steps
 from file_reading import get_and_maybe_delete_tests_in_browsertest
+from file_reading import human_friendly_name_to_canonical_action_name
 from file_reading import read_actions_file
 from file_reading import read_enums_file
 from file_reading import read_platform_supported_actions
-from file_reading import resolve_bash_style_replacement
 from file_reading import read_unprocessed_coverage_tests_file
+from file_reading import resolve_bash_style_replacement
 from models import ActionsByName
 from models import ArgEnum
 from models import CoverageTest
+from models import TestIdTestNameTuple
 from models import TestPlatform
 
 TEST_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                              "test_data")
 
 
-class TestAnalysisTest(unittest.TestCase):
+class FileReadingTest(unittest.TestCase):
     def test_markdown_file_mapping(self):
         test_input = [
             "Test", "# Hello", "| #test |", "| ------- | Value |",
@@ -40,9 +42,10 @@ class TestAnalysisTest(unittest.TestCase):
         self.assertEqual(expected, output)
 
     def test_argument_combinations(self):
-        argument_types: List[ArgEnum] = []
-        argument_types.append(ArgEnum("T1", ["T1V1", "T1V2"], None))
-        argument_types.append(ArgEnum("T2", ["T2V1", "T2V2"], None))
+        argument_types: List[ArgEnum] = [
+            ArgEnum("T1", ["T1V1", "T1V2"], None),
+            ArgEnum("T2", ["T2V1", "T2V2"], None),
+        ]
 
         combinations = enumerate_all_argument_combinations(argument_types)
 
@@ -125,7 +128,7 @@ class TestAnalysisTest(unittest.TestCase):
         with open(actions_filename, "r", encoding="utf-8") as f, \
                 open(supported_actions_filename, "r", encoding="utf-8") \
                     as supported_actions, \
-                open (enums_filename, "r", encoding="utf-8") as enums:
+                open(enums_filename, "r", encoding="utf-8") as enums:
             supported_actions = read_platform_supported_actions(
                 csv.reader(supported_actions, delimiter=','))
             actions_tsv = f.readlines()
@@ -144,7 +147,7 @@ class TestAnalysisTest(unittest.TestCase):
             # Check parameterized action state.
             self.assertIn('changes_Chicken', actions)
             self.assertIn('changes_Dog', actions)
-            self.assertTrue('checks' in actions)
+            self.assertIn('checks', actions)
             checks_output_actions = actions['checks'].output_actions
             self.assertEqual(len(checks_output_actions), 2)
             self.assertCountEqual(
@@ -159,7 +162,7 @@ class TestAnalysisTest(unittest.TestCase):
 
         actions: ActionsByName = {}
         action_base_name_to_default_param = {}
-        with open(actions_filename) as f, \
+        with open(actions_filename, "r", encoding="utf-8") as f, \
                 open(supported_actions_filename, "r", encoding="utf-8") \
                     as supported_actions, \
                 open(enums_filename, "r", encoding="utf-8") as enums:
@@ -173,46 +176,107 @@ class TestAnalysisTest(unittest.TestCase):
         coverage_filename = os.path.join(TEST_DATA_DIR,
                                          "test_unprocessed_coverage.md")
         coverage_tests: List[CoverageTest] = []
-        with open(coverage_filename) as f:
+        with open(coverage_filename, "r", encoding="utf-8") as f:
             coverage_tsv = f.readlines()
             coverage_tests = read_unprocessed_coverage_tests_file(
                 coverage_tsv, actions, enums,
                 action_base_name_to_default_param)
-
         self.assertEqual(6, len(coverage_tests))
 
     def test_browsertest_detection(self):
         browsertest_filename = os.path.join(TEST_DATA_DIR, "tests_default.cc")
         tests_and_platforms = get_and_maybe_delete_tests_in_browsertest(
             browsertest_filename)
-        self.assertListEqual(list(tests_and_platforms.keys()),
-                             ["3Chicken_1Chicken_2ChickenGreen"])
-        tests_and_platforms = tests_and_platforms[
-            "3Chicken_1Chicken_2ChickenGreen"]
+        expected_key = TestIdTestNameTuple(
+            "state_change_a_Chicken_check_a_Chicken_check_b_Chicken_Green",
+            "3Chicken_1Chicken_2ChickenGreen")
+        self.assertListEqual(list(tests_and_platforms.keys()), [expected_key])
+        tests_and_platforms = tests_and_platforms[expected_key]
         self.assertEqual(
             {TestPlatform.LINUX, TestPlatform.CHROME_OS, TestPlatform.MAC},
             tests_and_platforms)
 
     def test_browertest_in_place_deletion(self):
         input_file = os.path.join(TEST_DATA_DIR, "tests_for_deletion.cc")
-        after_deletion_file = os.path.join(TEST_DATA_DIR, "tests_default.cc")
+        after_deletion_file = os.path.join(TEST_DATA_DIR,
+                                           "tests_after_in_place_deletion.cc")
         with tempfile.TemporaryDirectory(dir=TEST_DATA_DIR) as tmpdirname:
             output_file = os.path.join(tmpdirname, "output.cc")
             shutil.copyfile(input_file, output_file)
             tests_and_platforms = get_and_maybe_delete_tests_in_browsertest(
-                output_file, {"3Chicken_1Chicken_2ChickenGreen"},
+                output_file, {
+                    TestIdTestNameTuple(
+                        "state_change_a_Chicken_check_a_Chicken_check_b_Chicken_Green",
+                        "StateChangeAChicken")
+                },
                 delete_in_place=True)
 
-            with open(output_file, 'r') as f, open(after_deletion_file,
-                                                   'r') as f2:
-                self.assertTrue(f.read(), f2.read())
+            with open(output_file, 'r', encoding="utf-8") as f, \
+                    open(after_deletion_file, 'r', encoding="utf-8") as f2:
+                self.assertEqual(f.read(), f2.read())
 
-            tests_and_platforms = tests_and_platforms[
-                "3Chicken_1Chicken_2ChickenGreen"]
+            tests_and_platforms = tests_and_platforms[TestIdTestNameTuple(
+                "state_change_a_Chicken_check_a_Chicken_check_b_Chicken_Green",
+                "3Chicken_1Chicken_2ChickenGreen")]
             self.assertEqual(
                 {TestPlatform.LINUX, TestPlatform.CHROME_OS, TestPlatform.MAC},
                 tests_and_platforms)
 
+    def test_browsertest_in_place_deletion_keeps_matching_test_name(self):
+        """Tests that a test whose test_id changed but test_name stayed the
+        same is kept (not deleted) so it can be updated in place later."""
+        input_file = os.path.join(
+            TEST_DATA_DIR, "tests_change_for_replacing_test_same_test_name.cc")
+        with tempfile.TemporaryDirectory(dir=TEST_DATA_DIR) as tmpdirname:
+            output_file = os.path.join(tmpdirname, "output.cc")
+            shutil.copyfile(input_file, output_file)
+
+            tests_and_platforms = get_and_maybe_delete_tests_in_browsertest(
+                output_file, {
+                    TestIdTestNameTuple(
+                        "state_change_a_Chicken_state_change_a_Dog_check_a_Dog",
+                        "StateChangeAChicken_StateChangeADog"),
+                    TestIdTestNameTuple(
+                        "state_change_a_Chicken_state_change_a_Dog_state_change_a_Chicken",
+                        "StateChangeAChicken_StateChangeADog_StateChangeAChicken"
+                    ),
+                },
+                delete_in_place=True)
+
+            with open(output_file, "r", encoding="utf-8") as f, open(
+                    input_file, "r", encoding="utf-8") as expected_file:
+                self.assertEqual(expected_file.read(), f.read())
+            self.assertIn(
+                TestIdTestNameTuple(
+                    "state_change_a_Chicken_state_change_a_Dog_check_a_Dog_state_change_a_Chicken",
+                    "StateChangeAChicken_StateChangeADog_StateChangeAChicken"),
+                tests_and_platforms)
+
+    def test_browsertest_in_place_deletion_normalizes_blank_lines(self):
+        """Tests that consecutive blank lines left by deleted tests are
+        collapsed to a single blank line."""
+        input_file = os.path.join(TEST_DATA_DIR,
+                                  "tests_for_blank_line_normalization.cc")
+        expected_file = os.path.join(
+            TEST_DATA_DIR, "expected_test_txt",
+            "tests_after_blank_line_normalization.cc")
+        with tempfile.TemporaryDirectory(dir=TEST_DATA_DIR) as tmpdirname:
+            output_file = os.path.join(tmpdirname, "output.cc")
+            shutil.copyfile(input_file, output_file)
+
+            get_and_maybe_delete_tests_in_browsertest(output_file, {
+                TestIdTestNameTuple("state_change_a_Chicken",
+                                    "StateChangeAChicken"),
+                TestIdTestNameTuple("state_change_b_Chicken_Green",
+                                    "StateChangeBChickenGreen"),
+            },
+                                                      delete_in_place=True)
+
+            with open(output_file, "r",
+                      encoding="utf-8") as f, open(expected_file,
+                                                   "r",
+                                                   encoding="utf-8") as f2:
+                self.assertEqual(f.read(), f2.read())
 
     def test_action_param_expansion(self):
         enum_map: Dict[str, ArgEnum] = {
@@ -233,6 +297,18 @@ class TestAnalysisTest(unittest.TestCase):
                     ['Action1(Value1)', 'Action2(Value2, Value2)'],
                     ['Action1(Value2)', 'Action2(Value2, Value2)']]
         self.assertCountEqual(combinations, expected)
+
+    def test_generate_test_id_from_test_steps(self):
+        test_steps = [
+            "helper_.StateChangeA(Animal::kChicken);",
+            "helper_.CheckB(Animal::kChicken, Color::kGreen);",
+            "helper_.StateChangeB();"
+        ]
+        test_id = generate_test_id_from_test_steps(test_steps)
+        expected_test_id = (
+            "state_change_a_Chicken_check_b_Chicken_Green_state_change_b"
+        )
+        self.assertEqual(test_id, expected_test_id)
 
 
 if __name__ == '__main__':

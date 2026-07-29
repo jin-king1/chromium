@@ -1,4 +1,4 @@
-(async function(testRunner) {
+(async function(/** @type {import('test_runner').TestRunner} */ testRunner) {
   var {page, session, dp} = await testRunner.startBlank(
       `Tests the we properly report url fragment in network requests`);
 
@@ -6,7 +6,7 @@
   dp.Page.enable();
 
   async function dumpEventsAndContinue() {
-    const requestInterceptedPromise = dp.Network.onceRequestIntercepted();
+    const requestInterceptedPromise = dp.Fetch.onceRequestPaused();
     const requestWillBeSentPromise = dp.Network.onceRequestWillBeSent();
     const interceptedRequestParams =  (await requestInterceptedPromise).params;
     const interceptedRequest = interceptedRequestParams.request;
@@ -14,10 +14,10 @@
 
     testRunner.log(`Request will be sent: ${sentRequest.url} fragment: ${sentRequest.urlFragment}`);
     testRunner.log(`Intercepted URL: ${interceptedRequest.url} fragment: ${interceptedRequest.urlFragment}`);
-    dp.Network.continueInterceptedRequest({interceptionId: interceptedRequestParams.interceptionId});
+    dp.Fetch.continueRequest({requestId: interceptedRequestParams.requestId});
   }
 
-  await dp.Network.setRequestInterception({patterns: [{}]});
+  await dp.Fetch.enable({patterns: [{}]});
   const navigatePromise = dp.Page.navigate({url: 'http://127.0.0.1:8000/devtools/network/resources/empty.html#ref'});
   await dumpEventsAndContinue();
   await navigatePromise;

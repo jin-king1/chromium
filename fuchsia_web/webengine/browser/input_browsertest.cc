@@ -7,9 +7,11 @@
 #include <lib/async/default.h>
 
 #include <memory>
+#include <string_view>
 
 #include "base/fuchsia/scoped_service_binding.h"
 #include "base/fuchsia/test_component_context_for_process.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -23,6 +25,7 @@
 #include "fuchsia_web/webengine/test/test_data.h"
 #include "fuchsia_web/webengine/test/web_engine_browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/ozone/public/ozone_platform.h"
 
 using fuchsia_input::Key;
 using fuchsia_ui_input3::KeyEvent;
@@ -94,9 +97,9 @@ KeyEvent CreateKeyEvent(Key key,
                         event_type, options);
 }
 
-base::Value::List FuchsiaModifiersToWebModifiers(
+base::ListValue FuchsiaModifiersToWebModifiers(
     const std::vector<fuchsia_ui_input3::Modifiers> fuchsia_modifiers) {
-  base::Value::List web_modifiers;
+  base::ListValue web_modifiers;
   for (const auto modifier : fuchsia_modifiers) {
     if (modifier == fuchsia_ui_input3::Modifiers::kAlt) {
       web_modifiers.Append("Alt");
@@ -121,11 +124,11 @@ base::Value::List FuchsiaModifiersToWebModifiers(
   return web_modifiers;
 }
 
-base::Value ExpectedKeyValue(base::StringPiece code,
-                             base::StringPiece key,
-                             base::StringPiece type,
+base::Value ExpectedKeyValue(std::string_view code,
+                             std::string_view key,
+                             std::string_view type,
                              KeyEventOptions options = {}) {
-  base::Value::Dict expected;
+  base::DictValue expected;
   expected.Set("code", code);
   expected.Set("key", key);
   expected.Set("type", type);
@@ -193,6 +196,10 @@ class KeyboardInputTest : public WebEngineBrowserTest {
   }
 
   void SetUp() override {
+    if (ui::OzonePlatform::GetPlatformNameForTest() == "headless") {
+      GTEST_SKIP() << "Keyboard inputs are ignored in headless mode.";
+    }
+
     scoped_feature_list_.InitWithFeatures({features::kKeyboardInput}, {});
     WebEngineBrowserTest::SetUp();
   }
@@ -242,30 +249,30 @@ class KeyboardInputTest : public WebEngineBrowserTest {
     command_line->AppendSwitch("allow-pre-commit-input");
   }
 
-  void ExpectKeyEventsEqual(base::Value::List expected) {
+  void ExpectKeyEventsEqual(base::ListValue expected) {
     frame_for_test_.navigation_listener().RunUntilTitleEquals(
         base::NumberToString(expected.size()));
 
-    absl::optional<base::Value> actual =
+    std::optional<base::Value> actual =
         ExecuteJavaScript(frame_for_test_.ptr().get(), kKeyDicts);
     EXPECT_EQ(*actual, base::Value(std::move(expected)));
   }
 
   template <typename... Args>
   void ExpectKeyEventsEqual(Args... events) {
-    base::Value::List expected =
+    base::ListValue expected =
         content::ListValueOf(std::forward<Args>(events)...).TakeList();
     ExpectKeyEventsEqual(std::move(expected));
   }
 
   // Used to publish fake services.
-  absl::optional<base::TestComponentContextForProcess> component_context_;
+  std::optional<base::TestComponentContextForProcess> component_context_;
 
   FrameForTest frame_for_test_;
   ScenicTestHelper scenic_test_helper_;
-  absl::optional<FakeKeyboard> keyboard_service_;
+  std::optional<FakeKeyboard> keyboard_service_;
   base::test::ScopedFeatureList scoped_feature_list_;
-  absl::optional<
+  std::optional<
       NeverConnectedChecker<fuchsia_input_virtualkeyboard::ControllerCreator>>
       virtual_keyboard_checker_;
 };
@@ -448,7 +455,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardInputTest, AllSupportedWebModifierKeys) {
         Key::kM, 'm', KeyEventType::kPressed, {.modifiers = {modifier}}));
   }
 
-  base::Value::List expected_events;
+  base::ListValue expected_events;
   for (const auto& modifier : kAllSupportedModifiers) {
     expected_events.Append(
         ExpectedKeyValue("KeyM", "m", kKeyDown, {.modifiers = {modifier}}));
@@ -476,7 +483,7 @@ IN_PROC_BROWSER_TEST_F(KeyboardInputTest, AllUnsupportedWebModifierKeys) {
         Key::kM, 'm', KeyEventType::kPressed, {.modifiers = {modifier}}));
   }
 
-  base::Value::List expected_events;
+  base::ListValue expected_events;
   for (size_t i = 0; i < kAllUnsupportedModifiers.size(); ++i) {
     expected_events.Append(ExpectedKeyValue("KeyM", "m", kKeyDown, {}));
     expected_events.Append(ExpectedKeyValue("KeyM", "m", kKeyPress, {}));
@@ -587,7 +594,7 @@ class KeyboardInputTestWithoutKeyboardFeature : public KeyboardInputTest {
     keyboard_input_checker_.emplace(component_context_->additional_services());
   }
 
-  absl::optional<NeverConnectedChecker<fuchsia_ui_input3::Keyboard>>
+  std::optional<NeverConnectedChecker<fuchsia_ui_input3::Keyboard>>
       keyboard_input_checker_;
 };
 

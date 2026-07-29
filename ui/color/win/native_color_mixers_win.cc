@@ -2,43 +2,67 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ui/color/win/native_color_mixers_win.h"
+
 #include <windows.h>
 
+#include <optional>
+
 #include "base/command_line.h"
+#include "base/containers/flat_map.h"
+#include "skia/ext/skia_utils_win.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_mixer.h"
 #include "ui/color/color_provider.h"
-#include "ui/color/color_provider_manager.h"
+#include "ui/color/color_provider_key.h"
+#include "ui/color/color_provider_utils.h"
 #include "ui/color/color_recipe.h"
 #include "ui/color/color_transform.h"
 #include "ui/color/win/accent_color_observer.h"
 #include "ui/gfx/color_palette.h"
-#include "ui/gfx/color_utils.h"
-#include "ui/native_theme/native_theme_features.h"
 
 namespace ui {
+
+base::flat_map<ColorId, SkColor> GetCurrentSysColors() {
+  const auto get_sys_color = [](int color) {
+    return skia::COLORREFToSkColor(GetSysColor(color));
+  };
+  return {{kColorNativeBtnFace, get_sys_color(COLOR_BTNFACE)},
+          {kColorNativeBtnHighlight, get_sys_color(COLOR_BTNHIGHLIGHT)},
+          {kColorNativeBtnShadow, get_sys_color(COLOR_BTNSHADOW)},
+          {kColorNativeBtnText, get_sys_color(COLOR_BTNTEXT)},
+          {kColorNativeGrayText, get_sys_color(COLOR_GRAYTEXT)},
+          {kColorNativeHighlight, get_sys_color(COLOR_HIGHLIGHT)},
+          {kColorNativeHighlightText, get_sys_color(COLOR_HIGHLIGHTTEXT)},
+          {kColorNativeHotlight, get_sys_color(COLOR_HOTLIGHT)},
+          {kColorNativeMenuHilight, get_sys_color(COLOR_MENUHILIGHT)},
+          {kColorNativeScrollbar, get_sys_color(COLOR_SCROLLBAR)},
+          {kColorNativeWindow, get_sys_color(COLOR_WINDOW)},
+          {kColorNativeWindowText, get_sys_color(COLOR_WINDOWTEXT)}};
+}
 
 // Maps the base set of sys color ids to appropriate platform defined high
 // contrast colors.
 void AddHighContrastSysColors(ColorMixer& mixer) {
   // Primary.
-  mixer[kColorSysPrimary] = {kColorNativeWindow};
-  mixer[kColorSysOnPrimary] = {kColorNativeWindowText};
+  mixer[kColorSysPrimary] = {kColorNativeHighlight};
+  mixer[kColorSysOnPrimary] = {kColorNativeHighlightText};
   mixer[kColorSysPrimaryContainer] = {kColorNativeBtnFace};
   mixer[kColorSysOnPrimaryContainer] = {kColorNativeBtnText};
   // Secondary.
-  mixer[kColorSysSecondary] = {kColorNativeWindow};
-  mixer[kColorSysOnSecondary] = {kColorNativeWindowText};
+  mixer[kColorSysSecondary] = {kColorNativeHighlight};
+  mixer[kColorSysOnSecondary] = {kColorNativeHighlightText};
   mixer[kColorSysSecondaryContainer] = {kColorNativeBtnFace};
   mixer[kColorSysOnSecondaryContainer] = {kColorNativeBtnText};
   // Tertiary.
-  mixer[kColorSysTertiary] = {kColorNativeWindow};
-  mixer[kColorSysOnTertiary] = {kColorNativeWindowText};
+  mixer[kColorSysTertiary] = {kColorNativeHighlight};
+  mixer[kColorSysOnTertiary] = {kColorNativeHighlightText};
   mixer[kColorSysTertiaryContainer] = {kColorNativeBtnFace};
   mixer[kColorSysOnTertiaryContainer] = {kColorNativeBtnText};
   // Error.
-  mixer[kColorSysError] = {kColorNativeWindow};
-  mixer[kColorSysOnError] = {kColorNativeWindowText};
+  mixer[kColorSysError] = {kColorNativeHighlight};
+  mixer[kColorSysOnError] = {kColorNativeHighlightText};
   mixer[kColorSysErrorContainer] = {kColorNativeBtnFace};
   mixer[kColorSysOnErrorContainer] = {kColorNativeBtnText};
   // Neutral.
@@ -48,6 +72,7 @@ void AddHighContrastSysColors(ColorMixer& mixer) {
   mixer[kColorSysSurfaceVariant] = {kColorNativeBtnFace};
   // Inverse.
   mixer[kColorSysInversePrimary] = {kColorNativeWindow};
+  mixer[kColorSysInverseSurface] = {kColorNativeWindow};
   mixer[kColorSysInverseOnSurface] = {kColorNativeWindowText};
   // Surfaces.
   mixer[kColorSysSurface] = {kColorNativeWindow};
@@ -62,7 +87,7 @@ void AddHighContrastSysColors(ColorMixer& mixer) {
   mixer[kColorSysOnSurfacePrimary] = {kColorNativeWindowText};
   mixer[kColorSysOnSurfacePrimaryInactive] = {kColorNativeWindowText};
   mixer[kColorSysTonalContainer] = {kColorNativeBtnFace};
-  mixer[kColorSysOnTonalContainer] = {kColorNativeBtnFace};
+  mixer[kColorSysOnTonalContainer] = {kColorNativeBtnText};
   mixer[kColorSysTonalOutline] = {kColorNativeBtnText};
   mixer[kColorSysNeutralOutline] = {kColorNativeBtnText};
   mixer[kColorSysNeutralContainer] = {kColorNativeBtnFace};
@@ -71,8 +96,6 @@ void AddHighContrastSysColors(ColorMixer& mixer) {
   mixer[kColorSysBase] = {kColorNativeBtnFace};
   mixer[kColorSysBaseContainer] = {kColorNativeBtnFace};
   mixer[kColorSysBaseContainerElevated] = {kColorNativeBtnFace};
-  mixer[kColorSysOnBaseSecondary] = {kColorNativeWindowText};
-  mixer[kColorSysOnBaseDivider] = {kColorNativeBtnText};
   mixer[kColorSysHeader] = {kColorNativeWindow};
   mixer[kColorSysHeaderInactive] = {kColorNativeWindow};
   mixer[kColorSysHeaderContainer] = {kColorNativeBtnFace};
@@ -91,114 +114,33 @@ void AddHighContrastSysColors(ColorMixer& mixer) {
 }
 
 void AddNativeCoreColorMixer(ColorProvider* provider,
-                             const ColorProviderManager::Key& key) {
+                             const ColorProviderKey& key) {
   ColorMixer& mixer = provider->AddMixer();
 
-  // TODO(pkasting): Not clear whether this is really the set of interest.
-  // Maybe there's some way to query colors used by UxTheme.dll, or maybe we
-  // should be hardcoding a list of colors for system light/dark modes based on
-  // reverse-engineering current Windows behavior.  Or maybe the union of all
-  // these.
-  mixer[kColorNative3dDkShadow] = {
-      color_utils::GetSysSkColor(COLOR_3DDKSHADOW)};
-  mixer[kColorNative3dLight] = {color_utils::GetSysSkColor(COLOR_3DLIGHT)};
-  mixer[kColorNativeActiveBorder] = {
-      color_utils::GetSysSkColor(COLOR_ACTIVEBORDER)};
-  mixer[kColorNativeActiveCaption] = {
-      color_utils::GetSysSkColor(COLOR_ACTIVECAPTION)};
-  mixer[kColorNativeAppWorkspace] = {
-      color_utils::GetSysSkColor(COLOR_APPWORKSPACE)};
-  mixer[kColorNativeBackground] = {
-      color_utils::GetSysSkColor(COLOR_BACKGROUND)};
-  mixer[kColorNativeBtnFace] = {color_utils::GetSysSkColor(COLOR_BTNFACE)};
-  mixer[kColorNativeBtnHighlight] = {
-      color_utils::GetSysSkColor(COLOR_BTNHIGHLIGHT)};
-  mixer[kColorNativeBtnShadow] = {color_utils::GetSysSkColor(COLOR_BTNSHADOW)};
-  mixer[kColorNativeBtnText] = {color_utils::GetSysSkColor(COLOR_BTNTEXT)};
-  mixer[kColorNativeCaptionText] = {
-      color_utils::GetSysSkColor(COLOR_CAPTIONTEXT)};
-  mixer[kColorNativeGradientActiveCaption] = {
-      color_utils::GetSysSkColor(COLOR_GRADIENTACTIVECAPTION)};
-  mixer[kColorNativeGradientInactiveCaption] = {
-      color_utils::GetSysSkColor(COLOR_GRADIENTINACTIVECAPTION)};
-  mixer[kColorNativeGrayText] = {color_utils::GetSysSkColor(COLOR_GRAYTEXT)};
-  mixer[kColorNativeHighlight] = {color_utils::GetSysSkColor(COLOR_HIGHLIGHT)};
-  mixer[kColorNativeHighlightText] = {
-      color_utils::GetSysSkColor(COLOR_HIGHLIGHTTEXT)};
-  mixer[kColorNativeHotlight] = {color_utils::GetSysSkColor(COLOR_HOTLIGHT)};
-  mixer[kColorNativeInactiveBorder] = {
-      color_utils::GetSysSkColor(COLOR_INACTIVEBORDER)};
-  mixer[kColorNativeInactiveCaption] = {
-      color_utils::GetSysSkColor(COLOR_INACTIVECAPTION)};
-  mixer[kColorNativeInactiveCaptionText] = {
-      color_utils::GetSysSkColor(COLOR_INACTIVECAPTIONTEXT)};
-  mixer[kColorNativeInfoBk] = {color_utils::GetSysSkColor(COLOR_INFOBK)};
-  mixer[kColorNativeInfoText] = {color_utils::GetSysSkColor(COLOR_INFOTEXT)};
-  mixer[kColorNativeMenu] = {color_utils::GetSysSkColor(COLOR_MENU)};
-  mixer[kColorNativeMenuBar] = {color_utils::GetSysSkColor(COLOR_MENUBAR)};
-  mixer[kColorNativeMenuHilight] = {
-      color_utils::GetSysSkColor(COLOR_MENUHILIGHT)};
-  mixer[kColorNativeMenuText] = {color_utils::GetSysSkColor(COLOR_MENUTEXT)};
-  mixer[kColorNativeScrollbar] = {color_utils::GetSysSkColor(COLOR_SCROLLBAR)};
-  mixer[kColorNativeWindow] = {color_utils::GetSysSkColor(COLOR_WINDOW)};
-  mixer[kColorNativeWindowFrame] = {
-      color_utils::GetSysSkColor(COLOR_WINDOWFRAME)};
-  mixer[kColorNativeWindowText] = {
-      color_utils::GetSysSkColor(COLOR_WINDOWTEXT)};
+  for (const auto& entry : GetCurrentSysColors()) {
+    mixer[entry.first] = {entry.second};
+  }
 
-  // Use the system accent color as the Chrome accent color, if present.
-  if (const auto accent_color = AccentColorObserver::Get()->accent_color();
-      accent_color.has_value()) {
+  // Use the system accent color as the Chrome accent color, if present and only
+  // if dwm colors are enabled.
+  if (const std::optional<SkColor> accent_color =
+          AccentColorObserver::Get()->accent_color()) {
     mixer[kColorAccent] = PickGoogleColor(accent_color.value());
   }
 
-  if (key.contrast_mode == ColorProviderManager::ContrastMode::kHigh) {
+  if (key.contrast_mode == ColorProviderKey::ContrastMode::kHigh) {
     AddHighContrastSysColors(mixer);
   }
 }
 
 void AddNativeUiColorMixer(ColorProvider* provider,
-                           const ColorProviderManager::Key& key) {
-  if (key.contrast_mode == ColorProviderManager::ContrastMode::kNormal &&
-      !IsFluentScrollbarEnabled())
+                           const ColorProviderKey& key) {
+  if (key.contrast_mode == ColorProviderKey::ContrastMode::kNormal) {
     return;
+  }
 
   ColorMixer& mixer = provider->AddMixer();
 
-  // Override scrollbar colors for the Fluent scrollbar.
-  // TODO(crbug.com/1378337): Implement high contrast mode for the Fluent
-  // scrollbar. Currently, normal and high contrast modes are the same.
-  if (IsFluentScrollbarEnabled()) {
-    const bool dark_mode =
-        key.color_mode == ColorProviderManager::ColorMode::kDark;
-
-    mixer[kColorScrollbarArrowForeground] = {
-        dark_mode ? SkColorSetA(SK_ColorWHITE, 0x8B)
-                  : SkColorSetA(SK_ColorBLACK, 0x72)};
-    mixer[kColorScrollbarArrowForegroundPressed] = {
-        dark_mode ? SkColorSetA(SK_ColorWHITE, 0xC8)
-                  : SkColorSetA(SK_ColorBLACK, 0x9B)};
-    mixer[kColorScrollbarCorner] = {dark_mode
-                                        ? SkColorSetRGB(0x2C, 0x2C, 0x2C)
-                                        : SkColorSetRGB(0xFC, 0xFC, 0xFC)};
-    mixer[kColorScrollbarArrowBackgroundHovered] = {kColorScrollbarCorner};
-    mixer[kColorScrollbarArrowBackgroundPressed] = {
-        kColorScrollbarArrowBackgroundHovered};
-    mixer[kColorScrollbarThumb] = {kColorScrollbarArrowForeground};
-    mixer[kColorScrollbarThumbHovered] = {
-        kColorScrollbarArrowForegroundPressed};
-    mixer[kColorScrollbarThumbInactive] = {kColorScrollbarThumb};
-    mixer[kColorScrollbarThumbPressed] = {kColorScrollbarThumbHovered};
-    mixer[kColorScrollbarTrack] = {kColorScrollbarCorner};
-  }
-
-  if (key.contrast_mode == ColorProviderManager::ContrastMode::kNormal)
-    return;
-
-  mixer[kColorRadioButtonForegroundChecked] = {
-      key.color_mode == ColorProviderManager::ColorMode::kDark
-          ? gfx::kGoogleBlue100
-          : gfx::kGoogleBlue900};
   mixer[kColorNotificationInputPlaceholderForeground] =
       SetAlpha(kColorNotificationInputForeground, gfx::kGoogleGreyAlpha700);
   mixer[kColorSliderTrack] = AlphaBlend(
@@ -207,8 +149,8 @@ void AddNativeUiColorMixer(ColorProvider* provider,
   // Window Background
   mixer[kColorBubbleFooterBackground] = {kColorNativeWindow};
   mixer[kColorButtonBackgroundProminentDisabled] = {kColorNativeWindow};
-  mixer[kColorFrameActive] = {ui::kColorNativeWindow};
-  mixer[kColorFrameInactive] = {ui::kColorNativeWindow};
+  mixer[kColorFrameActive] = {kColorNativeWindow};
+  mixer[kColorFrameInactive] = {kColorNativeWindow};
   mixer[kColorPrimaryBackground] = {kColorNativeWindow};
   mixer[kColorTooltipBackground] = {kColorNativeWindow};
 
@@ -216,6 +158,7 @@ void AddNativeUiColorMixer(ColorProvider* provider,
   mixer[kColorAlertLowSeverity] = {kColorNativeWindowText};
   mixer[kColorAlertMediumSeverityIcon] = {kColorNativeWindowText};
   mixer[kColorAlertMediumSeverityText] = {kColorNativeWindowText};
+  mixer[kColorIconHovered] = {kColorNativeHighlightText};
   mixer[kColorAlertHighSeverity] = {kColorNativeWindowText};
   mixer[kColorIcon] = {kColorNativeWindowText};
   mixer[kColorMidground] = {kColorNativeWindowText};
@@ -226,8 +169,7 @@ void AddNativeUiColorMixer(ColorProvider* provider,
   mixer[kColorTooltipForeground] = {kColorNativeWindowText};
 
   // Hyperlinks
-  mixer[kColorLinkForeground] = {kColorNativeHotlight};
-  mixer[kColorLinkForegroundPressed] = {kColorNativeHotlight};
+  mixer[kColorLinkForegroundDefault] = {kColorNativeHotlight};
   mixer[kColorMenuItemForegroundHighlighted] = {kColorNativeHotlight};
 
   // Gray/Disabled Text
@@ -257,6 +199,7 @@ void AddNativeUiColorMixer(ColorProvider* provider,
   mixer[kColorMenuItemForeground] = {kColorNativeBtnText};
   mixer[kColorMenuItemForegroundSecondary] = {kColorNativeBtnText};
   mixer[kColorMenuSeparator] = {kColorNativeBtnText};
+  mixer[kColorRadioButtonForegroundChecked] = {kColorNativeBtnText};
   mixer[kColorSeparator] = {kColorNativeBtnText};
   mixer[kColorSliderThumb] = {kColorNativeBtnText};
   mixer[kColorSliderThumbMinimal] = {kColorNativeBtnText};
@@ -269,27 +212,35 @@ void AddNativeUiColorMixer(ColorProvider* provider,
 
   // Highlight/Selected Background
   mixer[kColorAccent] = {kColorNativeHighlight};
+  mixer[kColorAppMenuRowBackgroundHovered] = {kColorMenuSelectionBackground};
   mixer[kColorButtonBackgroundProminent] = {kColorNativeHighlight};
   mixer[kColorButtonBorder] = {kColorNativeHighlight};
   mixer[kColorButtonBackgroundProminentFocused] = {kColorNativeHighlight};
   mixer[kColorHelpIconActive] = {kColorNativeHighlight};
   mixer[kColorItemSelectionBackground] = {kColorNativeHighlight};
+  mixer[kColorMenuButtonBackgroundSelected] = {kColorNativeHighlight};
   mixer[kColorMenuSelectionBackground] = {kColorNativeHighlight};
   mixer[kColorSubtleAccent] = {kColorNativeHighlight};
+  mixer[kColorTableBackgroundSelectedFocused] = {kColorNativeHighlight};
   mixer[kColorTextfieldSelectionBackground] = {kColorNativeHighlight};
   mixer[kColorTextSelectionBackground] = {kColorNativeHighlight};
+  mixer[kColorTreeNodeBackgroundSelectedFocused] = {kColorNativeHighlight};
 
   // Highlight/Selected Text Foreground
   mixer[kColorButtonForegroundProminent] = {kColorNativeHighlightText};
   mixer[kColorMenuItemForegroundSelected] = {kColorNativeHighlightText};
   mixer[kColorNotificationInputForeground] = {kColorNativeHighlightText};
   mixer[kColorTableForegroundSelectedFocused] = {kColorNativeHighlightText};
-  mixer[kColorTableForegroundSelectedUnfocused] = {kColorNativeHighlightText};
   mixer[kColorTextSelectionForeground] = {kColorNativeHighlightText};
   mixer[kColorTreeNodeForegroundSelectedFocused] = {kColorNativeHighlightText};
   mixer[kColorTreeNodeForegroundSelectedUnfocused] = {
       kColorNativeHighlightText};
   mixer[kColorButtonForegroundProminent] = {kColorNativeHighlightText};
+
+  // Toast
+  mixer[kColorToastBackgroundProminent] = {kColorNativeWindow};
+  mixer[kColorToastForeground] = {kColorNativeWindowText};
+  mixer[kColorToastButton] = {kColorNativeWindowText};
 }
 
 }  // namespace ui

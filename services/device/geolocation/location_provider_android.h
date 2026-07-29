@@ -8,7 +8,9 @@
 #include "base/compiler_specific.h"
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
+#include "base/time/time.h"
 #include "services/device/public/cpp/geolocation/location_provider.h"
+#include "services/device/public/mojom/geolocation_internals.mojom.h"
 #include "services/device/public/mojom/geoposition.mojom.h"
 
 namespace device {
@@ -23,6 +25,7 @@ class LocationProviderAndroid : public LocationProvider {
   void NotifyNewGeoposition(mojom::GeopositionResultPtr result);
 
   // LocationProvider implementation.
+  void FillDiagnostics(mojom::GeolocationDiagnostics& diagnostics) override;
   void SetUpdateCallback(
       const LocationProviderUpdateCallback& callback) override;
   void StartProvider(bool high_accuracy) override;
@@ -33,8 +36,13 @@ class LocationProviderAndroid : public LocationProvider {
  private:
   base::ThreadChecker thread_checker_;
 
+  mojom::GeolocationDiagnostics::ProviderState state_ =
+      mojom::GeolocationDiagnostics::ProviderState::kStopped;
   mojom::GeopositionResultPtr last_result_;
   LocationProviderUpdateCallback callback_;
+
+  base::TimeTicks start_time_;
+  bool position_received_ = false;
 
   base::WeakPtrFactory<LocationProviderAndroid> weak_ptr_factory_{this};
 };

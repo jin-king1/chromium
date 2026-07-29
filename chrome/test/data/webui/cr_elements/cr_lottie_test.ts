@@ -5,38 +5,26 @@
 // clang-format off
 import 'chrome://resources/cr_elements/cr_lottie/cr_lottie.js';
 
-import {CrLottieElement} from 'chrome://resources/cr_elements/cr_lottie/cr_lottie.js';
-import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {assertEquals, assertNotEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {MockController, MockMethod} from 'chrome://webui-test/mock_controller.js';
-import {eventToPromise} from 'chrome://webui-test/test_util.js';
+import type {CrLottieElement} from 'chrome://resources/cr_elements/cr_lottie/cr_lottie.js';
+import {assertDeepEquals, assertEquals, assertNotEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {MockMethod} from 'chrome://webui-test/mock_controller.js';
+import {MockController} from 'chrome://webui-test/mock_controller.js';
+import {eventToPromise, microtasksFinished} from 'chrome://webui-test/test_util.js';
 // clang-format on
 
 /** @fileoverview Suite of tests for cr-lottie. */
 suite('cr_lottie_test', function() {
   /**
-   * A data url that produces a sample solid green json lottie animation.
+   * A URL that produces a sample solid green json lottie animation.
    */
   const SAMPLE_LOTTIE_GREEN: string =
-      'data:application/json;base64,eyJ2IjoiNC42LjkiLCJmciI6NjAsImlwIjowLCJvc' +
-      'CI6MjAwLCJ3Ijo4MDAsImgiOjYwMCwiZGRkIjowLCJhc3NldHMiOltdLCJsYXllcnMiOlt' +
-      '7ImluZCI6MSwidHkiOjEsInNjIjoiIzAwZmYwMCIsImFvIjowLCJpcCI6MCwib3AiOjIwM' +
-      'Cwic3QiOjAsInNyIjoxLCJzdyI6ODAwLCJzaCI6NjAwLCJibSI6MCwia3MiOnsibyI6eyJ' +
-      'hIjowLCJrIjoxMDB9LCJyIjp7ImEiOjAsImsiOlswLDAsMF19LCJwIjp7ImEiOjAsImsiO' +
-      'lszMDAsMjAwLDBdfSwiYSI6eyJhIjowLCJrIjpbMzAwLDIwMCwwXX0sInMiOnsiYSI6MCw' +
-      'iayI6WzEwMCwxMDAsMTAwXX19fV19';
+      'chrome://webui-test/cr_elements/cr_lottie_green.json';
 
   /**
-   * A data url that produces a sample solid blue json lottie animation.
+   * A URL that produces a sample solid blue json lottie animation.
    */
   const SAMPLE_LOTTIE_BLUE: string =
-      'data:application/json;base64,eyJhc3NldHMiOltdLCJkZGQiOjAsImZyIjo2MCwia' +
-      'CI6NjAwLCJpcCI6MCwibGF5ZXJzIjpbeyJhbyI6MCwiYm0iOjAsImluZCI6MSwiaXAiOjA' +
-      'sImtzIjp7ImEiOnsiYSI6MCwiayI6WzMwMCwyMDAsMF19LCJvIjp7ImEiOjAsImsiOjEwM' +
-      'H0sInAiOnsiYSI6MCwiayI6WzMwMCwyMDAsMF19LCJyIjp7ImEiOjAsImsiOlswLDAsMF1' +
-      '9LCJzIjp7ImEiOjAsImsiOlsxMDAsMTAwLDEwMF19fSwib3AiOjIwMCwic2MiOiIjMDAwM' +
-      'GZmIiwic2giOjYwMCwic3IiOjEsInN0IjowLCJzdyI6ODAwLCJ0eSI6MX1dLCJvcCI6MjA' +
-      'wLCJ2IjoiNC42LjkiLCJ3Ijo4MDB9';
+      'chrome://webui-test/cr_elements/cr_lottie_blue.json';
 
   /**
    * A green pixel as returned by samplePixel.
@@ -54,8 +42,8 @@ suite('cr_lottie_test', function() {
   let container: HTMLElement;
   let canvas: HTMLCanvasElement;
 
-  let waitForInitializeEvent: Promise<void>;
-  let waitForPlayingEvent: Promise<void>;
+  let waitForInitializeEvent: Promise<Event>;
+  let waitForPlayingEvent: Promise<Event>;
 
   const defaultWidth = 300;
   const defaultHeight = 200;
@@ -68,7 +56,7 @@ suite('cr_lottie_test', function() {
     mockController.reset();
   });
 
-  function createLottieElement(autoplay: boolean = true) {
+  function createLottieElement(autoplay: boolean) {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     crLottieElement = document.createElement('cr-lottie');
     crLottieElement.animationUrl = SAMPLE_LOTTIE_GREEN;
@@ -85,8 +73,6 @@ suite('cr_lottie_test', function() {
     container.appendChild(crLottieElement);
 
     canvas = crLottieElement.$.canvas;
-
-    flush();
   }
 
   /**
@@ -121,7 +107,7 @@ suite('cr_lottie_test', function() {
   /**
    * @return bool true if all elements in a and b are equal.
    */
-  function arrayEquals(a: any[], b: any[]) {
+  function arrayEquals(a: number[], b: number[]): boolean {
     if (a.length !== b.length) {
       return false;
     }
@@ -167,7 +153,8 @@ suite('cr_lottie_test', function() {
 
     // First resize event after loading the animation.
     const firstResizeEventAfterLoad =
-        eventToPromise('cr-lottie-resized', crLottieElement);
+        eventToPromise<CustomEvent<{height: number, width: number}>>(
+            'cr-lottie-resized', crLottieElement);
     const firstResizeEvent = await firstResizeEventAfterLoad;
     assertEquals(firstResizeEvent.detail.height, defaultHeight);
     assertEquals(firstResizeEvent.detail.width, defaultWidth);
@@ -178,7 +165,8 @@ suite('cr_lottie_test', function() {
     container.style.width = newWidth + 'px';
     container.style.height = newHeight + 'px';
     const resizeEventAfterExplicitResize =
-        eventToPromise('cr-lottie-resized', crLottieElement);
+        eventToPromise<CustomEvent<{height: number, width: number}>>(
+            'cr-lottie-resized', crLottieElement);
     const resizeEvent = await resizeEventAfterExplicitResize;
 
     assertEquals(resizeEvent.detail.height, newHeight);
@@ -195,7 +183,8 @@ suite('cr_lottie_test', function() {
     const newHeight = 300;
     const newWidth = 400;
     const waitForResizeEvent =
-        eventToPromise('cr-lottie-resized', crLottieElement);
+        eventToPromise<CustomEvent<{height: number, width: number}>>(
+            'cr-lottie-resized', crLottieElement);
     // Update size of parent div container to see if the canvas is resized.
     container.style.width = newWidth + 'px';
     container.style.height = newHeight + 'px';
@@ -269,6 +258,45 @@ suite('cr_lottie_test', function() {
     await waitForPauseEvent;
   });
 
+  test('TestPlaySegments', async () => {
+    createLottieElement(/*autoplay=*/ false);
+    await waitForInitializeEvent;
+
+    const waitForPlaying =
+        eventToPromise<CustomEvent<{segments: [number, number] | null}>>(
+            'cr-lottie-playing', crLottieElement);
+    crLottieElement.playSegments([0, 10]);
+
+    const event = await waitForPlaying;
+    assertDeepEquals([0, 10], event.detail.segments);
+  });
+
+  test('TestPlaySegmentsBeforeInit', async () => {
+    createLottieElement(/*autoplay=*/ false);
+    assertFalse(crLottieElement.autoplay);
+
+    const waitForPlaying =
+        eventToPromise<CustomEvent<{segments: [number, number] | null}>>(
+            'cr-lottie-playing', crLottieElement);
+    crLottieElement.playSegments([0, 10]);
+
+    await waitForInitializeEvent;
+    const event = await waitForPlaying;
+    assertDeepEquals([0, 10], event.detail.segments);
+  });
+
+  test('TestCompleteEvent', async () => {
+    createLottieElement(/*autoplay=*/ true);
+    crLottieElement.singleLoop = true;
+
+    const waitForCompleteEvent =
+        eventToPromise('cr-lottie-completed', crLottieElement);
+
+    await waitForInitializeEvent;
+    await waitForPlayingEvent;
+    await waitForCompleteEvent;
+  });
+
   test('TestRenderFrame', async function() {
     createLottieElement(/*autoplay=*/ true);
     await waitForInitializeEvent;
@@ -302,17 +330,21 @@ suite('cr_lottie_test', function() {
 
     assertFalse(canvas.hidden);
     crLottieElement.hidden = true;
+    await microtasksFinished();
     assertTrue(canvas.hidden);
   });
 
-  test('TestDetachBeforeImageLoaded', async () => {
+  test('TestDetachBeforeImageLoaded', () => {
     const mockXhr = {
       onreadystatechange: () => {},
     } as unknown as XMLHttpRequest;
 
-    mockXhr.open = mockController.createFunctionMock(mockXhr, 'open') as any;
-    mockXhr.send = mockController.createFunctionMock(mockXhr, 'send') as any;
-    mockXhr.abort = mockController.createFunctionMock(mockXhr, 'abort') as any;
+    mockXhr.open = mockController.createFunctionMock(mockXhr, 'open') as
+        unknown as XMLHttpRequest['open'];
+    mockXhr.send = mockController.createFunctionMock(mockXhr, 'send') as
+        unknown as XMLHttpRequest['send'];
+    mockXhr.abort = mockController.createFunctionMock(mockXhr, 'abort') as
+        unknown as XMLHttpRequest['abort'];
 
     const mockXhrConstructor =
         mockController.createFunctionMock(window, 'XMLHttpRequest');
@@ -339,9 +371,12 @@ suite('cr_lottie_test', function() {
       onreadystatechange: () => {},
     } as unknown as XMLHttpRequest;
 
-    mockXhr.open = mockController.createFunctionMock(mockXhr, 'open') as any;
-    mockXhr.send = mockController.createFunctionMock(mockXhr, 'send') as any;
-    mockXhr.abort = mockController.createFunctionMock(mockXhr, 'abort') as any;
+    mockXhr.open = mockController.createFunctionMock(mockXhr, 'open') as
+        unknown as XMLHttpRequest['open'];
+    mockXhr.send = mockController.createFunctionMock(mockXhr, 'send') as
+        unknown as XMLHttpRequest['send'];
+    mockXhr.abort = mockController.createFunctionMock(mockXhr, 'abort') as
+        unknown as XMLHttpRequest['abort'];
 
     const mockXhrConstructor =
         mockController.createFunctionMock(window, 'XMLHttpRequest');
@@ -366,6 +401,7 @@ suite('cr_lottie_test', function() {
     // Attempting to load a new image should abort the first request and start a
     // new one.
     crLottieElement.animationUrl = SAMPLE_LOTTIE_BLUE;
+    await microtasksFinished();
 
     mockController.verifyMocks();
   });

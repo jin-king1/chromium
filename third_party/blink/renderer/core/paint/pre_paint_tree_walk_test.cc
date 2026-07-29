@@ -3,18 +3,25 @@
 // found in the LICENSE file.
 
 #include "third_party/blink/renderer/core/paint/pre_paint_tree_walk.h"
-#include "base/test/scoped_feature_list.h"
+
 #include "cc/base/features.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_tree_as_text.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/paint/object_paint_properties.h"
 #include "third_party/blink/renderer/core/paint/paint_controller_paint_test.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/core/paint/paint_property_tree_printer.h"
+#include "third_party/blink/renderer/core/paint/timing/container_timing.h"
+#include "third_party/blink/renderer/core/paint/timing/container_timing_paint_attribution_tracker.h"
 #include "third_party/blink/renderer/core/testing/core_unit_test_helper.h"
+#include "third_party/blink/renderer/core/timing/soft_navigation_context.h"
+#include "third_party/blink/renderer/core/timing/soft_navigation_heuristics.h"
+#include "third_party/blink/renderer/core/timing/soft_navigation_heuristics_test_util.h"
+#include "third_party/blink/renderer/core/timing/soft_navigation_paint_attribution_tracker.h"
 #include "third_party/blink/renderer/platform/graphics/paint/geometry_mapper.h"
 #include "third_party/blink/renderer/platform/graphics/paint/scroll_paint_property_node.h"
 #include "third_party/blink/renderer/platform/graphics/paint/transform_paint_property_node.h"
@@ -63,7 +70,8 @@ TEST_P(PrePaintTreeWalkTest, PropertyTreesRebuiltWithBorderInvalidation) {
     <div id='transformed'></div>
   )HTML");
 
-  auto* transformed_element = GetDocument().getElementById("transformed");
+  auto* transformed_element =
+      GetDocument().getElementById(AtomicString("transformed"));
   const auto* transformed_properties =
       transformed_element->GetLayoutObject()->FirstFragment().PaintProperties();
   EXPECT_EQ(gfx::Vector2dF(100, 100),
@@ -74,7 +82,8 @@ TEST_P(PrePaintTreeWalkTest, PropertyTreesRebuiltWithBorderInvalidation) {
   EXPECT_EQ(nullptr, transformed_properties->Transform());
 
   // Cause a paint invalidation.
-  transformed_element->setAttribute(html_names::kClassAttr, "border");
+  transformed_element->setAttribute(html_names::kClassAttr,
+                                    AtomicString("border"));
   UpdateAllLifecyclePhasesForTest();
 
   // Should have changed back.
@@ -87,7 +96,7 @@ TEST_P(PrePaintTreeWalkTest, PropertyTreesRebuiltWithFrameScroll) {
   EXPECT_TRUE(FrameScrollTranslation()->IsIdentity());
 
   // Cause a scroll invalidation and ensure the translation is updated.
-  GetDocument().domWindow()->scrollTo(0, 100);
+  GetDocument().domWindow()->scrollToForTesting(0, 100);
   UpdateAllLifecyclePhasesForTest();
 
   EXPECT_EQ(gfx::Vector2dF(0, -100),
@@ -104,14 +113,16 @@ TEST_P(PrePaintTreeWalkTest, PropertyTreesRebuiltWithCSSTransformInvalidation) {
     <div id='transformed' class='transformA'></div>
   )HTML");
 
-  auto* transformed_element = GetDocument().getElementById("transformed");
+  auto* transformed_element =
+      GetDocument().getElementById(AtomicString("transformed"));
   const auto* transformed_properties =
       transformed_element->GetLayoutObject()->FirstFragment().PaintProperties();
   EXPECT_EQ(gfx::Vector2dF(100, 100),
             transformed_properties->Transform()->Get2dTranslation());
 
   // Invalidate the CSS transform property.
-  transformed_element->setAttribute(html_names::kClassAttr, "transformB");
+  transformed_element->setAttribute(html_names::kClassAttr,
+                                    AtomicString("transformB"));
   UpdateAllLifecyclePhasesForTest();
 
   // The transform should have changed.
@@ -128,13 +139,15 @@ TEST_P(PrePaintTreeWalkTest, PropertyTreesRebuiltWithOpacityInvalidation) {
     <div id='transparent' class='opacityA'></div>
   )HTML");
 
-  auto* transparent_element = GetDocument().getElementById("transparent");
+  auto* transparent_element =
+      GetDocument().getElementById(AtomicString("transparent"));
   const auto* transparent_properties =
       transparent_element->GetLayoutObject()->FirstFragment().PaintProperties();
   EXPECT_EQ(0.9f, transparent_properties->Effect()->Opacity());
 
   // Invalidate the opacity property.
-  transparent_element->setAttribute(html_names::kClassAttr, "opacityB");
+  transparent_element->setAttribute(html_names::kClassAttr,
+                                    AtomicString("opacityB"));
   UpdateAllLifecyclePhasesForTest();
 
   // The opacity should have changed.
@@ -154,12 +167,12 @@ TEST_P(PrePaintTreeWalkTest, ClearSubsequenceCachingClipChange) {
     </div>
   )HTML");
 
-  auto* parent = GetDocument().getElementById("parent");
+  auto* parent = GetDocument().getElementById(AtomicString("parent"));
   auto* child_paint_layer = GetPaintLayerByElementId("child");
   EXPECT_FALSE(child_paint_layer->SelfNeedsRepaint());
   EXPECT_FALSE(child_paint_layer->NeedsPaintPhaseFloat());
 
-  parent->setAttribute(html_names::kClassAttr, "clip");
+  parent->setAttribute(html_names::kClassAttr, AtomicString("clip"));
   UpdateAllLifecyclePhasesExceptPaint();
 
   EXPECT_TRUE(child_paint_layer->SelfNeedsRepaint());
@@ -178,12 +191,12 @@ TEST_P(PrePaintTreeWalkTest, ClearSubsequenceCachingClipChange2DTransform) {
     </div>
   )HTML");
 
-  auto* parent = GetDocument().getElementById("parent");
+  auto* parent = GetDocument().getElementById(AtomicString("parent"));
   auto* child_paint_layer = GetPaintLayerByElementId("child");
   EXPECT_FALSE(child_paint_layer->SelfNeedsRepaint());
   EXPECT_FALSE(child_paint_layer->NeedsPaintPhaseFloat());
 
-  parent->setAttribute(html_names::kClassAttr, "clip");
+  parent->setAttribute(html_names::kClassAttr, AtomicString("clip"));
   UpdateAllLifecyclePhasesExceptPaint();
 
   EXPECT_TRUE(child_paint_layer->SelfNeedsRepaint());
@@ -203,14 +216,14 @@ TEST_P(PrePaintTreeWalkTest, ClearSubsequenceCachingClipChangePosAbs) {
     </div>
   )HTML");
 
-  auto* parent = GetDocument().getElementById("parent");
+  auto* parent = GetDocument().getElementById(AtomicString("parent"));
   auto* child_paint_layer = GetPaintLayerByElementId("child");
   EXPECT_FALSE(child_paint_layer->SelfNeedsRepaint());
   EXPECT_FALSE(child_paint_layer->NeedsPaintPhaseFloat());
 
   // This changes clips for absolute-positioned descendants of "child" but not
   // normal-position ones, which are already clipped to 50x50.
-  parent->setAttribute(html_names::kClassAttr, "clip");
+  parent->setAttribute(html_names::kClassAttr, AtomicString("clip"));
   UpdateAllLifecyclePhasesExceptPaint();
 
   EXPECT_TRUE(child_paint_layer->SelfNeedsRepaint());
@@ -230,14 +243,14 @@ TEST_P(PrePaintTreeWalkTest, ClearSubsequenceCachingClipChangePosFixed) {
     </div>
   )HTML");
 
-  auto* parent = GetDocument().getElementById("parent");
+  auto* parent = GetDocument().getElementById(AtomicString("parent"));
   auto* child_paint_layer = GetPaintLayerByElementId("child");
   EXPECT_FALSE(child_paint_layer->SelfNeedsRepaint());
   EXPECT_FALSE(child_paint_layer->NeedsPaintPhaseFloat());
 
   // This changes clips for absolute-positioned descendants of "child" but not
   // normal-position ones, which are already clipped to 50x50.
-  parent->setAttribute(html_names::kClassAttr, "clip");
+  parent->setAttribute(html_names::kClassAttr, AtomicString("clip"));
   UpdateAllLifecyclePhasesExceptPaint();
 
   EXPECT_TRUE(child_paint_layer->SelfNeedsRepaint());
@@ -261,8 +274,9 @@ TEST_P(PrePaintTreeWalkTest, ClipChangeRepaintsDescendants) {
     </div>
   )HTML");
 
-  GetDocument().getElementById("parent")->setAttribute(html_names::kStyleAttr,
-                                                       "height: 100px");
+  GetDocument()
+      .getElementById(AtomicString("parent"))
+      ->setAttribute(html_names::kStyleAttr, AtomicString("height: 100px"));
   UpdateAllLifecyclePhasesExceptPaint();
 
   auto* paint_layer = GetPaintLayerByElementId("greatgrandchild");
@@ -283,9 +297,10 @@ TEST_P(PrePaintTreeWalkTest, ClipChangeHasRadius) {
     <div id='target'></div>
   )HTML");
 
-  auto* target = GetDocument().getElementById("target");
+  auto* target = GetDocument().getElementById(AtomicString("target"));
   auto* target_object = To<LayoutBoxModelObject>(target->GetLayoutObject());
-  target->setAttribute(html_names::kStyleAttr, "border-radius: 5px");
+  target->setAttribute(html_names::kStyleAttr,
+                       AtomicString("border-radius: 5px"));
   UpdateAllLifecyclePhasesExceptPaint();
   EXPECT_TRUE(target_object->Layer()->SelfNeedsRepaint());
   // And should not trigger any assert failure.
@@ -328,7 +343,7 @@ TEST_P(PrePaintTreeWalkTest, InsideBlockingTouchEventHandlerUpdate) {
 
   PrePaintTreeWalkMockEventListener* callback =
       MakeGarbageCollected<PrePaintTreeWalkMockEventListener>();
-  auto* handler_element = GetDocument().getElementById("handler");
+  auto* handler_element = GetDocument().getElementById(AtomicString("handler"));
   handler_element->addEventListener(event_type_names::kTouchstart, callback);
 
   EXPECT_FALSE(ancestor.EffectiveAllowedTouchActionChanged());
@@ -377,8 +392,8 @@ TEST_P(PrePaintTreeWalkTest, EffectiveTouchActionStyleUpdate) {
   EXPECT_FALSE(descendant.DescendantEffectiveAllowedTouchActionChanged());
 
   GetDocument()
-      .getElementById("touchaction")
-      ->setAttribute(html_names::kClassAttr, "touchaction");
+      .getElementById(AtomicString("touchaction"))
+      ->setAttribute(html_names::kClassAttr, AtomicString("touchaction"));
   GetDocument().View()->UpdateLifecycleToLayoutClean(
       DocumentUpdateReason::kTest);
   EXPECT_FALSE(ancestor.EffectiveAllowedTouchActionChanged());
@@ -426,7 +441,7 @@ TEST_P(PrePaintTreeWalkTest, InsideBlockingWheelEventHandlerUpdate) {
 
   PrePaintTreeWalkMockEventListener* callback =
       MakeGarbageCollected<PrePaintTreeWalkMockEventListener>();
-  auto* handler_element = GetDocument().getElementById("handler");
+  auto* handler_element = GetDocument().getElementById(AtomicString("handler"));
   handler_element->addEventListener(event_type_names::kWheel, callback);
 
   EXPECT_FALSE(ancestor.BlockingWheelEventHandlerChanged());
@@ -463,14 +478,18 @@ TEST_P(PrePaintTreeWalkTest, CullRectUpdateOnSVGTransformChange) {
   EXPECT_EQ(gfx::Rect(0, 0, 200, 200),
             foreign.FirstFragment().GetCullRect().Rect());
 
-  GetDocument().getElementById("rect")->setAttribute(
-      html_names::kStyleAttr, "transform: translateX(20px)");
+  GetDocument()
+      .getElementById(AtomicString("rect"))
+      ->setAttribute(html_names::kStyleAttr,
+                     AtomicString("transform: translateX(20px)"));
   UpdateAllLifecyclePhasesExceptPaint();
   EXPECT_EQ(gfx::Rect(0, 0, 200, 200),
             foreign.FirstFragment().GetCullRect().Rect());
 
-  GetDocument().getElementById("g")->setAttribute(
-      html_names::kStyleAttr, "transform: translateY(20px)");
+  GetDocument()
+      .getElementById(AtomicString("g"))
+      ->setAttribute(html_names::kStyleAttr,
+                     AtomicString("transform: translateY(20px)"));
   UpdateAllLifecyclePhasesExceptPaint();
   EXPECT_EQ(gfx::Rect(0, -20, 200, 200),
             foreign.FirstFragment().GetCullRect().Rect());
@@ -488,9 +507,228 @@ TEST_P(PrePaintTreeWalkTest, InlineOutlineWithContinuationPaintInvalidation) {
 
   // This test passes if the following doesn't crash.
   GetDocument()
-      .getElementById("child-span")
-      ->setAttribute(html_names::kStyleAttr, "color: blue");
+      .getElementById(AtomicString("child-span"))
+      ->setAttribute(html_names::kStyleAttr, AtomicString("color: blue"));
   UpdateAllLifecyclePhasesForTest();
+}
+
+TEST_P(PrePaintTreeWalkTest, ScrollTranslationNodeForNonZeroScrollPosition) {
+  SetBodyInnerHTML(R"HTML(
+    <div id="div" style="overflow:hidden;max-width:5ch;direction:rtl">
+      loremipsumdolorsitamet
+    </div>
+  )HTML");
+  UpdateAllLifecyclePhasesForTest();
+
+  auto* scroller = GetDocument().getElementById(AtomicString("div"));
+  auto* object = To<LayoutBoxModelObject>(scroller->GetLayoutObject());
+  auto* scrollable_area = object->GetScrollableArea();
+
+  ASSERT_EQ(ScrollOffset(), scrollable_area->GetScrollOffset());
+  ASSERT_NE(gfx::PointF(), scrollable_area->ScrollPosition());
+  EXPECT_TRUE(object->FirstFragment().PaintProperties()->ScrollTranslation());
+
+  // When the scroll is scrolled all the way to the end of content it should
+  // still get a scroll node.
+  scroller->scrollByForTesting(-10000, 0);
+  UpdateAllLifecyclePhasesForTest();
+  ASSERT_NE(ScrollOffset(), scrollable_area->GetScrollOffset());
+  ASSERT_EQ(gfx::PointF(), scrollable_area->ScrollPosition());
+  EXPECT_TRUE(object->FirstFragment().PaintProperties()->ScrollTranslation());
+}
+
+class SoftNavigationPrePaintTreeWalkTest : public RenderingTest {
+ public:
+  SoftNavigationPrePaintTreeWalkTest() = default;
+  ~SoftNavigationPrePaintTreeWalkTest() override = default;
+
+  SoftNavigationContext* CreateSoftNavigationContext() {
+    auto* initial_event_timing = CreatePerformanceEventTimingForTest(
+        event_type_names::kClick, base::TimeTicks::Now(), GetDocument().body(),
+        GetDocument().domWindow());
+    return MakeGarbageCollected<SoftNavigationContext>(
+        *GetDocument().domWindow(), initial_event_timing);
+  }
+
+ private:
+  void SetUp() override {
+    EnableCompositing();
+    RenderingTest::SetUp();
+  }
+};
+
+TEST_F(SoftNavigationPrePaintTreeWalkTest,
+       ShouldInheritSoftNavigationContextUpdate) {
+  SetBodyInnerHTML(R"HTML(
+    <div id='ancestor' style='width: 100px; height: 100px;'>
+      <div id='target' style='width: 100px; height: 100px;'>
+        <div id='descendant' style='width: 100px; height: 100px;'>
+          <div id='content' style='width: 100px; height: 100px;'>
+            Content
+          </div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  auto& ancestor = *GetLayoutObjectByElementId("ancestor");
+  auto& target = *GetLayoutObjectByElementId("target");
+  auto& descendant = *GetLayoutObjectByElementId("descendant");
+  auto& content = *GetLayoutObjectByElementId("content");
+
+  EXPECT_FALSE(ancestor.SoftNavigationContextChanged());
+  EXPECT_FALSE(target.SoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.SoftNavigationContextChanged());
+  EXPECT_FALSE(content.SoftNavigationContextChanged());
+
+  EXPECT_FALSE(ancestor.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(target.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(content.DescendantSoftNavigationContextChanged());
+
+  EXPECT_TRUE(ancestor.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(target.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(descendant.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(content.ShouldInheritSoftNavigationContext());
+
+  auto* context = CreateSoftNavigationContext();
+  SoftNavigationHeuristics* heuristics =
+      GetDocument().domWindow()->GetSoftNavigationHeuristics();
+  ASSERT_TRUE(heuristics);
+  SoftNavigationPaintAttributionTracker* tracker =
+      heuristics->GetPaintAttributionTracker();
+  ASSERT_TRUE(tracker);
+  tracker->MarkNodeAsDirectlyModified(target.GetNode(), context);
+
+  EXPECT_FALSE(ancestor.SoftNavigationContextChanged());
+  EXPECT_TRUE(target.SoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.SoftNavigationContextChanged());
+  EXPECT_FALSE(content.SoftNavigationContextChanged());
+
+  EXPECT_TRUE(ancestor.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(target.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(content.DescendantSoftNavigationContextChanged());
+
+  UpdateAllLifecyclePhasesForTest();
+  EXPECT_FALSE(ancestor.SoftNavigationContextChanged());
+  EXPECT_FALSE(target.SoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.SoftNavigationContextChanged());
+  EXPECT_FALSE(content.SoftNavigationContextChanged());
+
+  EXPECT_FALSE(ancestor.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(target.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(descendant.DescendantSoftNavigationContextChanged());
+  EXPECT_FALSE(content.DescendantSoftNavigationContextChanged());
+
+  EXPECT_TRUE(ancestor.ShouldInheritSoftNavigationContext());
+  EXPECT_FALSE(target.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(descendant.ShouldInheritSoftNavigationContext());
+  EXPECT_TRUE(content.ShouldInheritSoftNavigationContext());
+
+  EXPECT_TRUE(tracker->IsAttributable(content.GetNode(), context));
+}
+
+class ContainerTimingPrePaintTreeWalkTest : public RenderingTest {
+ public:
+  ContainerTimingPrePaintTreeWalkTest() = default;
+  ~ContainerTimingPrePaintTreeWalkTest() override = default;
+
+  ContainerTimingPaintAttributionTracker* GetTracker() {
+    return ContainerTiming::From(*GetDocument().domWindow())
+        .PaintAttributionTracker();
+  }
+
+ private:
+  void SetUp() override {
+    EnableCompositing();
+    RenderingTest::SetUp();
+  }
+
+  ScopedContainerTimingPrepaintTraversalForTest scoped_feature_{true};
+};
+
+// Mirrors ShouldInheritSoftNavigationContextUpdate: verifies the pre-paint walk
+// maintains the per-LayoutObject container-timing dirty bits and the
+// ShouldInheritContainerTimingRoot cache, and that adding a containertiming
+// attribute re-attributes the subtree through the real walk.
+TEST_F(ContainerTimingPrePaintTreeWalkTest,
+       ShouldInheritContainerTimingRootUpdate) {
+  SetBodyInnerHTML(R"HTML(
+    <div id='ancestor' style='width: 100px; height: 100px;'>
+      <div id='target' style='width: 100px; height: 100px;'>
+        <div id='descendant' style='width: 100px; height: 100px;'>
+          <div id='content' style='width: 100px; height: 100px;'>
+            Content
+          </div>
+        </div>
+      </div>
+    </div>
+  )HTML");
+
+  UpdateAllLifecyclePhasesForTest();
+  auto& ancestor = *GetLayoutObjectByElementId("ancestor");
+  auto& target = *GetLayoutObjectByElementId("target");
+  auto& descendant = *GetLayoutObjectByElementId("descendant");
+  auto& content = *GetLayoutObjectByElementId("content");
+
+  // A clean walk with no containertiming roots leaves every node clean and
+  // inheriting its (absent) ancestor root.
+  EXPECT_FALSE(ancestor.ContainerTimingChanged());
+  EXPECT_FALSE(target.ContainerTimingChanged());
+  EXPECT_FALSE(descendant.ContainerTimingChanged());
+  EXPECT_FALSE(content.ContainerTimingChanged());
+
+  EXPECT_FALSE(ancestor.DescendantContainerTimingChanged());
+  EXPECT_FALSE(target.DescendantContainerTimingChanged());
+  EXPECT_FALSE(descendant.DescendantContainerTimingChanged());
+  EXPECT_FALSE(content.DescendantContainerTimingChanged());
+
+  EXPECT_TRUE(ancestor.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(target.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(descendant.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(content.ShouldInheritContainerTimingRoot());
+
+  // Adding containertiming to #target dirties it and propagates the descendant
+  // bit up to its ancestors, without touching the subtree below.
+  auto* target_element = GetDocument().getElementById(AtomicString("target"));
+  target_element->setAttribute(html_names::kContainertimingAttr,
+                               AtomicString("target"));
+
+  EXPECT_FALSE(ancestor.ContainerTimingChanged());
+  EXPECT_TRUE(target.ContainerTimingChanged());
+  EXPECT_FALSE(descendant.ContainerTimingChanged());
+  EXPECT_FALSE(content.ContainerTimingChanged());
+
+  EXPECT_TRUE(ancestor.DescendantContainerTimingChanged());
+  EXPECT_FALSE(target.DescendantContainerTimingChanged());
+  EXPECT_FALSE(descendant.DescendantContainerTimingChanged());
+  EXPECT_FALSE(content.DescendantContainerTimingChanged());
+
+  // The walk consumes the dirty bits and caches the inheritance decision:
+  // #target becomes a root (does not inherit), its descendants inherit it.
+  UpdateAllLifecyclePhasesForTest();
+
+  EXPECT_FALSE(ancestor.ContainerTimingChanged());
+  EXPECT_FALSE(target.ContainerTimingChanged());
+  EXPECT_FALSE(descendant.ContainerTimingChanged());
+  EXPECT_FALSE(content.ContainerTimingChanged());
+
+  EXPECT_FALSE(ancestor.DescendantContainerTimingChanged());
+  EXPECT_FALSE(target.DescendantContainerTimingChanged());
+  EXPECT_FALSE(descendant.DescendantContainerTimingChanged());
+  EXPECT_FALSE(content.DescendantContainerTimingChanged());
+
+  EXPECT_TRUE(ancestor.ShouldInheritContainerTimingRoot());
+  EXPECT_FALSE(target.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(descendant.ShouldInheritContainerTimingRoot());
+  EXPECT_TRUE(content.ShouldInheritContainerTimingRoot());
+
+  // The tracker now attributes the text aggregation box (#content) to #target.
+  ContainerTimingPaintAttributionTracker* tracker = GetTracker();
+  ASSERT_TRUE(tracker);
+  EXPECT_EQ(tracker->GetContainerRootFor(content.GetNode()), target_element);
 }
 
 }  // namespace blink

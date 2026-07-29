@@ -47,9 +47,9 @@ constexpr auto kTypeEmmc =
 constexpr auto kTypeUfs =
     metrics::SystemProfileProto::Hardware::InternalStorageDevice::TYPE_UFS;
 constexpr auto kMojoPurpose =
-    ash::cros_healthd::mojom::StorageDevicePurpose::kSwapDevice;
+    ash::cros_healthd::mojom::StorageDevicePurpose::kBootDevice;
 constexpr auto kUmaPurpose =
-    metrics::SystemProfileProto::Hardware::InternalStorageDevice::PURPOSE_SWAP;
+    metrics::SystemProfileProto::Hardware::InternalStorageDevice::PURPOSE_BOOT;
 
 }  // namespace
 
@@ -67,7 +67,7 @@ class CrosHealthdMetricsProviderTest : public testing::Test {
     info->block_device_result = ash::cros_healthd::mojom::
         NonRemovableBlockDeviceResult::NewBlockDeviceInfo(std::move(devs));
     ash::cros_healthd::FakeCrosHealthd::Get()
-        ->SetProbeTelemetryInfoResponseForTesting(info);
+        ->SetProbeTelemetryInfoResponseForTesting(std::move(info));
   }
 
   ~CrosHealthdMetricsProviderTest() override {

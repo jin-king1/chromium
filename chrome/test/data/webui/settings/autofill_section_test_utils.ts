@@ -6,34 +6,14 @@
 import 'chrome://settings/settings.js';
 
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {AutofillManagerImpl, CountryDetailManager, SettingsAddressEditDialogElement, SettingsAddressRemoveConfirmationDialogElement, SettingsAutofillSectionElement} from 'chrome://settings/lazy_load.js';
+import type {SettingsAddressEditDialogElement, SettingsAddressRemoveConfirmationDialogElement, SettingsAutofillSectionElement} from 'chrome://settings/lazy_load.js';
+import {AutofillManagerImpl} from 'chrome://settings/lazy_load.js';
 import {assertFalse, assertGT, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise} from 'chrome://webui-test/test_util.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 
-import {createAddressEntry, TestAutofillManager} from './passwords_and_autofill_fake_data.js';
+import {createAddressEntry, TestAutofillManager} from './autofill_fake_data.js';
 // clang-format on
-
-/**
- * Test implementation.
- */
-export class CountryDetailManagerTestImpl implements CountryDetailManager {
-  getCountryList() {
-    return new Promise<chrome.autofillPrivate.CountryEntry[]>(function(
-        resolve) {
-      resolve([
-        {name: 'United States', countryCode: 'US'},  // Default test country.
-        {name: 'Israel', countryCode: 'IL'},
-        {name: 'United Kingdom', countryCode: 'GB'},
-      ]);
-    });
-  }
-
-  getAddressFormat(countryCode: string) {
-    return chrome.autofillPrivate.getAddressComponents(countryCode);
-  }
-}
-
 
 /**
  * Resolves the promise after the element fires the expected event. |causeEvent|
@@ -48,21 +28,35 @@ export function expectEvent(
 
 /**
  * Creates the autofill section for the given list.
+ *
+ * When @accountInfo is provided, it is set on the autofill manager. The value
+ * `null` removes the accountInfo on the autofill manager property. The value
+ * `undefined` doesn't set or change the accountInfo on the autofill manager
+ * property.
  */
 export async function createAutofillSection(
-    addresses: chrome.autofillPrivate.AddressEntry[], prefValues: any,
-    accountInfo?: chrome.autofillPrivate.AccountInfo):
-    Promise<SettingsAutofillSectionElement> {
+    addresses: chrome.autofillPrivate.AddressEntry[],
+    prefValues: Record<string, unknown>,
+    accountInfo?: chrome.autofillPrivate.AccountInfo|
+    null): Promise<SettingsAutofillSectionElement> {
   // Override the AutofillManagerImpl for testing.
   const autofillManager = new TestAutofillManager();
   autofillManager.data.addresses = addresses;
-  if (accountInfo) {
-    autofillManager.data.accountInfo = accountInfo;
+  if (accountInfo !== undefined) {
+    autofillManager.data.accountInfo = accountInfo ?? undefined;
   }
   AutofillManagerImpl.setInstance(autofillManager);
 
   const section = document.createElement('settings-autofill-section');
-  section.prefs = {autofill: prefValues};
+  section.prefs = {
+    autofill: {
+      email_verification_state: {
+        type: chrome.settingsPrivate.PrefType.DICTIONARY,
+        value: {},
+      },
+      ...prefValues,
+    },
+  };
   document.body.appendChild(section);
   await autofillManager.whenCalled('getAddressList');
 
@@ -73,19 +67,16 @@ export async function createAutofillSection(
  * Creates the Edit Address dialog and fulfills the promise when the dialog
  * has actually opened.
  */
-export function createAddressDialog(
+export async function createAddressDialog(
     address: chrome.autofillPrivate.AddressEntry,
     accountInfo?: chrome.autofillPrivate.AccountInfo):
     Promise<SettingsAddressEditDialogElement> {
-  return new Promise(function(resolve) {
-    const section = document.createElement('settings-address-edit-dialog');
-    section.address = address;
-    section.accountInfo = accountInfo;
-    document.body.appendChild(section);
-    eventToPromise('on-update-address-wrapper', section).then(function() {
-      resolve(section);
-    });
-  });
+  const section = document.createElement('settings-address-edit-dialog');
+  section.address = address;
+  section.accountInfo = accountInfo;
+  document.body.appendChild(section);
+  await eventToPromise('on-update-address-wrapper', section);
+  return section;
 }
 
 export async function openAddressDialog(
@@ -132,7 +123,14 @@ export async function initiateEditing(
 
   // Open menu and click the Edit button.
   menu.click();
-  section.$.menuEditAddress.click();
+  // Wait for the menu's items to render.
+  flush();
+
+  // Find and click the Edit button.
+  const editButton =
+      section.shadowRoot!.querySelector<HTMLElement>('#menuEditAddress');
+  assertTrue(!!editButton, 'Edit button not found');
+  editButton.click();
 
   flush();
 
@@ -171,7 +169,11 @@ export function initiateRemoving(
 
   // Open menu and click the Delete button.
   menu.click();
-  section.$.menuRemoveAddress.click();
+  flush();
+  const removeButton =
+      section.shadowRoot!.querySelector<HTMLElement>('#menuRemoveAddress');
+  assertTrue(!!removeButton, 'Remove button not found');
+  removeButton.click();
 
   flush();
 
@@ -192,6 +194,8 @@ export async function createRemoveAddressDialog(
     autofillManager: TestAutofillManager):
     Promise<SettingsAddressRemoveConfirmationDialogElement> {
   const address = createAddressEntry();
+  address.metadata!.recordType =
+      chrome.autofillPrivate.AddressRecordType.ACCOUNT;
 
   // Override the AutofillManagerImpl for testing.
   autofillManager.data.addresses = [address];
@@ -220,6 +224,12 @@ export async function deleteAddress(
   address.splice(index, 1);
   manager.data.addresses = address;
   manager.lastCallback.setPersonalDataManagerListener!
-      (address, [], [], manager.data.accountInfo);
+      (address, [], [], [], manager.data.accountInfo);
   await flushTasks();
+}
+
+export function getAddressFieldValue(
+    address: chrome.autofillPrivate.AddressEntry,
+    type: chrome.autofillPrivate.FieldType): string|undefined {
+  return address.fields.find(entry => entry.type === type)?.value;
 }

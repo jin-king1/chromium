@@ -2,9 +2,9 @@
 // Token for FrobulatePersistent
 $ORIGIN_TRIAL_TOKEN = "A7eQahvlWGVqTPZ/Rpyq3p+Lw+CZaKPs8POfJ7SURAykNb7kG6+xv4I3O4E03VALwnxZJy4aB83PX5q5yseoSQEAAABceyJvcmlnaW4iOiAiaHR0cHM6Ly8xMjcuMC4wLjE6ODQ0MyIsICJmZWF0dXJlIjogIkZyb2J1bGF0ZVBlcnNpc3RlbnQiLCAiZXhwaXJ5IjogMjAwMDAwMDAwMH0=";
 $headers = getallheaders();
-$trials = $headers['X-Web-Test-Enabled-Origin-Trials'];
+$trials = $headers['X-Web-Test-Enabled-Origin-Trials'] ?? null;
 
-$child = $_REQUEST['child'] == "true";
+$child = ($_REQUEST['child'] ?? null) == "true";
 
 if (!$child) {
 // Main page
@@ -38,13 +38,17 @@ if (!$child) {
 <script src="/resources/testharness.js"></script>
 <body>
 <script>
-    test(function() {
+    promise_test(async function() {
         // In the child, assert that the header is now applied without any
         // redirects
         assert_equals("<?php echo($trials)?>", "FrobulatePersistent");
 
-        this.add_cleanup(function() {
-            window.open("support/cleanup.https.html");
+        await new Promise(resolve => {
+            const cleanupWindow = window.open("support/cleanup.https.html");
+            cleanupWindow.onload = () => {
+                cleanupWindow.close();
+                resolve();
+            };
         });
     }, "PersistentInChild");
 </script>

@@ -4,9 +4,12 @@
 
 #include "third_party/blink/renderer/modules/breakout_box/media_stream_audio_track_underlying_sink.h"
 
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/test/gmock_callback_support.h"
+#include "base/test/scoped_feature_list.h"
+#include "media/base/limits.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/modules/mediastream/web_media_stream_audio_sink.h"
@@ -16,33 +19,29 @@
 #include "third_party/blink/renderer/bindings/core/v8/to_v8_traits.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/bindings/modules/v8/v8_audio_data.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_audio_data_init.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_audio_sample_format.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/messaging/message_channel.h"
 #include "third_party/blink/renderer/core/streams/writable_stream.h"
 #include "third_party/blink/renderer/core/streams/writable_stream_default_writer.h"
 #include "third_party/blink/renderer/core/streams/writable_stream_transferring_optimizer.h"
+#include "third_party/blink/renderer/core/timing/performance.h"
 #include "third_party/blink/renderer/core/workers/worker_thread_test_helper.h"
+#include "third_party/blink/renderer/modules/breakout_box/breakout_box_util.h"
+#include "third_party/blink/renderer/modules/breakout_box/media_stream_audio_track_underlying_source.h"
 #include "third_party/blink/renderer/modules/breakout_box/pushable_media_stream_audio_source.h"
 #include "third_party/blink/renderer/modules/mediastream/mock_media_stream_audio_sink.h"
+#include "third_party/blink/renderer/modules/webcodecs/audio_data.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
-#include "third_party/blink/renderer/platform/bindings/to_v8.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_audio_track.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_component_impl.h"
 #include "third_party/blink/renderer/platform/mediastream/media_stream_source.h"
+#include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
 
 using testing::_;
 using testing::StrictMock;
-
-namespace WTF {
-template <>
-struct CrossThreadCopier<
-    std::unique_ptr<blink::WritableStreamTransferringOptimizer>> {
-  STATIC_ONLY(CrossThreadCopier);
-  using Type = std::unique_ptr<blink::WritableStreamTransferringOptimizer>;
-  static Type Copy(Type pointer) { return pointer; }
-};
-}  // namespace WTF
 
 namespace blink {
 
@@ -68,7 +67,7 @@ class MediaStreamAudioTrackUnderlyingSinkTest : public testing::Test {
   MediaStreamAudioTrackUnderlyingSink* CreateUnderlyingSink(
       ScriptState* script_state) {
     return MakeGarbageCollected<MediaStreamAudioTrackUnderlyingSink>(
-        pushable_audio_source_->GetBroker());
+        script_state, pushable_audio_source_->GetBroker());
   }
 
   void CreateTrackAndConnectToSource() {
@@ -79,28 +78,109 @@ class MediaStreamAudioTrackUnderlyingSinkTest : public testing::Test {
   }
 
   ScriptValue CreateAudioData(ScriptState* script_state,
+                              base::TimeDelta timestamp,
                               AudioData** audio_data_out = nullptr) {
     const scoped_refptr<media::AudioBuffer> media_buffer =
         media::AudioBuffer::CreateEmptyBuffer(
             media::ChannelLayout::CHANNEL_LAYOUT_STEREO,
             /*channel_count=*/2,
             /*sample_rate=*/44100,
-            /*frame_count=*/500, base::TimeDelta());
+            /*frame_count=*/500, timestamp);
     AudioData* audio_data =
         MakeGarbageCollected<AudioData>(std::move(media_buffer));
     if (audio_data_out)
       *audio_data_out = audio_data;
-    return ScriptValue(
-        script_state->GetIsolate(),
-        ToV8Traits<AudioData>::ToV8(script_state, audio_data).ToLocalChecked());
+    return ScriptValue(script_state->GetIsolate(),
+                       ToV8Traits<AudioData>::ToV8(script_state, audio_data));
+  }
+
+  ScriptValue CreateAudioData(ScriptState* script_state,
+                              AudioData** audio_data_out = nullptr) {
+    return CreateAudioData(script_state, base::TimeDelta(), audio_data_out);
+  }
+
+  static ScriptValue CreateInvalidAudioData(ScriptState* script_state,
+                                            ExceptionState& exception_state) {
+    AudioDataInit* init = AudioDataInit::Create();
+    init->setFormat(V8AudioSampleFormat::Enum::kF32);
+    init->setSampleRate(31600.0f);
+    init->setNumberOfFrames(media::limits::kMaxSamplesPerPacket +
+                            1);  // Invalid frame count.
+    init->setNumberOfChannels(1u);
+    init->setTimestamp(1u);
+    init->setData(
+        MakeGarbageCollected<AllowSharedBufferSource>(DOMArrayBuffer::Create(
+            init->numberOfChannels() * init->numberOfFrames(), sizeof(float))));
+
+    AudioData* audio_data =
+        AudioData::Create(script_state, init, exception_state);
+    return ScriptValue(script_state->GetIsolate(),
+                       ToV8Traits<AudioData>::ToV8(script_state, audio_data));
+  }
+
+  void RunWriteToStreamTest(bool expose_page_relative_time) {
+    V8TestingScope v8_scope;
+    ScriptState* script_state = v8_scope.GetScriptState();
+    auto* underlying_sink = CreateUnderlyingSink(script_state);
+    auto* writable_stream = WritableStream::CreateWithCountQueueingStrategy(
+        script_state, underlying_sink, 1u);
+
+    CreateTrackAndConnectToSource();
+
+    Performance* performance =
+        GetPerformanceFromExecutionContext(v8_scope.GetExecutionContext());
+    ASSERT_TRUE(performance);
+    base::TimeTicks time_origin = performance->GetTimeOriginInternal();
+
+    base::TimeDelta js_timestamp = base::Milliseconds(100);
+    base::TimeTicks page_relative_capture_time = time_origin + js_timestamp;
+    base::TimeTicks non_page_relative_capture_time =
+        base::TimeTicks() + js_timestamp;
+
+    base::RunLoop write_loop;
+    StrictMock<MockMediaStreamAudioSink> mock_sink;
+    EXPECT_CALL(mock_sink, OnSetFormat(_)).Times(::testing::AnyNumber());
+
+    if (expose_page_relative_time) {
+      EXPECT_CALL(mock_sink, OnData(_, non_page_relative_capture_time))
+          .Times(0);
+      EXPECT_CALL(mock_sink, OnData(_, page_relative_capture_time))
+          .WillOnce(base::test::RunOnceClosure(write_loop.QuitClosure()));
+    } else {
+      EXPECT_CALL(mock_sink, OnData(_, non_page_relative_capture_time))
+          .WillOnce(base::test::RunOnceClosure(write_loop.QuitClosure()));
+      EXPECT_CALL(mock_sink, OnData(_, page_relative_capture_time)).Times(0);
+    }
+
+    WebMediaStreamAudioSink::AddToAudioTrack(
+        &mock_sink, WebMediaStreamTrack(media_stream_component_.Get()));
+
+    NonThrowableExceptionState exception_state;
+    auto* writer = writable_stream->getWriter(script_state, exception_state);
+
+    AudioData* audio_data = nullptr;
+    auto audio_data_chunk =
+        CreateAudioData(script_state, js_timestamp, &audio_data);
+    EXPECT_NE(audio_data, nullptr);
+
+    ScriptPromiseTester write_tester(
+        script_state,
+        writer->write(script_state, audio_data_chunk, exception_state));
+    write_tester.WaitUntilSettled();
+    write_loop.Run();
+
+    writer->releaseLock(script_state);
+    WebMediaStreamAudioSink::RemoveFromAudioTrack(
+        &mock_sink, WebMediaStreamTrack(media_stream_component_.Get()));
   }
 
  protected:
+  test::TaskEnvironment task_environment_;
   base::Thread testing_thread_;
   Persistent<MediaStreamSource> media_stream_source_;
   Persistent<MediaStreamComponent> media_stream_component_;
 
-  PushableMediaStreamAudioSource* pushable_audio_source_;
+  raw_ptr<PushableMediaStreamAudioSource> pushable_audio_source_;
 };
 
 TEST_F(MediaStreamAudioTrackUnderlyingSinkTest,
@@ -158,28 +238,36 @@ TEST_F(MediaStreamAudioTrackUnderlyingSinkTest, WriteInvalidDataFails) {
   V8TestingScope v8_scope;
   ScriptState* script_state = v8_scope.GetScriptState();
   auto* sink = CreateUnderlyingSink(script_state);
-  ScriptValue v8_integer = ScriptValue::From(script_state, 0);
+  ScriptValue v8_integer =
+      ScriptValue(script_state->GetIsolate(),
+                  v8::Integer::New(script_state->GetIsolate(), 0));
 
   // Writing something that is not an AudioData to the sink should fail.
-  DummyExceptionStateForTesting dummy_exception_state;
-  sink->write(script_state, v8_integer, nullptr, dummy_exception_state);
-  EXPECT_TRUE(dummy_exception_state.HadException());
+  {
+    DummyExceptionStateForTesting dummy_exception_state;
+    sink->write(script_state, v8_integer, nullptr, dummy_exception_state);
+    EXPECT_TRUE(dummy_exception_state.HadException());
+  }
 
   // Writing a null value to the sink should fail.
-  dummy_exception_state.ClearException();
-  EXPECT_FALSE(dummy_exception_state.HadException());
-  sink->write(script_state, ScriptValue::CreateNull(v8_scope.GetIsolate()),
-              nullptr, dummy_exception_state);
-  EXPECT_TRUE(dummy_exception_state.HadException());
+  {
+    DummyExceptionStateForTesting dummy_exception_state;
+    EXPECT_FALSE(dummy_exception_state.HadException());
+    sink->write(script_state, ScriptValue::CreateNull(v8_scope.GetIsolate()),
+                nullptr, dummy_exception_state);
+    EXPECT_TRUE(dummy_exception_state.HadException());
+  }
 
   // Writing a closed AudioData to the sink should fail.
-  dummy_exception_state.ClearException();
-  AudioData* audio_data = nullptr;
-  auto chunk = CreateAudioData(script_state, &audio_data);
-  audio_data->close();
-  EXPECT_FALSE(dummy_exception_state.HadException());
-  sink->write(script_state, chunk, nullptr, dummy_exception_state);
-  EXPECT_TRUE(dummy_exception_state.HadException());
+  {
+    DummyExceptionStateForTesting dummy_exception_state;
+    AudioData* audio_data = nullptr;
+    auto chunk = CreateAudioData(script_state, &audio_data);
+    audio_data->close();
+    EXPECT_FALSE(dummy_exception_state.HadException());
+    sink->write(script_state, chunk, nullptr, dummy_exception_state);
+    EXPECT_TRUE(dummy_exception_state.HadException());
+  }
 }
 
 TEST_F(MediaStreamAudioTrackUnderlyingSinkTest, WriteToAbortedSinkFails) {
@@ -201,6 +289,23 @@ TEST_F(MediaStreamAudioTrackUnderlyingSinkTest, WriteToAbortedSinkFails) {
   EXPECT_TRUE(dummy_exception_state.HadException());
   EXPECT_EQ(dummy_exception_state.Code(),
             static_cast<ExceptionCode>(DOMExceptionCode::kInvalidStateError));
+}
+
+TEST_F(MediaStreamAudioTrackUnderlyingSinkTest, WriteInvalidAudioDataFails) {
+  V8TestingScope v8_scope;
+  ScriptState* script_state = v8_scope.GetScriptState();
+  auto* sink = CreateUnderlyingSink(script_state);
+  CreateTrackAndConnectToSource();
+
+  DummyExceptionStateForTesting dummy_exception_state;
+  auto chunk = CreateInvalidAudioData(script_state, dummy_exception_state);
+  EXPECT_FALSE(dummy_exception_state.HadException());
+
+  sink->write(script_state, chunk, nullptr, dummy_exception_state);
+  EXPECT_TRUE(dummy_exception_state.HadException());
+  EXPECT_EQ(dummy_exception_state.Code(),
+            static_cast<ExceptionCode>(DOMExceptionCode::kOperationError));
+  EXPECT_EQ(dummy_exception_state.Message(), "Invalid audio data");
 }
 
 TEST_F(MediaStreamAudioTrackUnderlyingSinkTest, DeserializeWithOptimizer) {
@@ -285,6 +390,22 @@ TEST_F(MediaStreamAudioTrackUnderlyingSinkTest, TransferToWorkerWithOptimizer) {
   // Shut down the worker thread.
   worker_thread.Terminate();
   worker_thread.WaitForShutdownForTesting();
+}
+
+TEST_F(MediaStreamAudioTrackUnderlyingSinkTest,
+       WriteToStreamExposesPageRelativeCaptureTime) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      kBreakoutBoxExposePageRelativeAudioCaptureTime);
+  RunWriteToStreamTest(/*expose_page_relative_time=*/true);
+}
+
+TEST_F(MediaStreamAudioTrackUnderlyingSinkTest,
+       WriteToStreamExposesNonPageRelativeCaptureTime) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(
+      kBreakoutBoxExposePageRelativeAudioCaptureTime);
+  RunWriteToStreamTest(/*expose_page_relative_time=*/false);
 }
 
 }  // namespace blink

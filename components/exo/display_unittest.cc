@@ -3,10 +3,13 @@
 // found in the LICENSE file.
 
 #include "components/exo/display.h"
+
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/wm/desks/desks_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chromeos/ui/base/window_pin_type.h"
+#include "chromeos/ui/base/window_properties.h"
 #include "components/exo/buffer.h"
 #include "components/exo/client_controlled_shell_surface.h"
 #include "components/exo/data_device.h"
@@ -78,8 +81,13 @@ class DisplayTest : public test::ExoTestBase {
     WMHelper::GetInstance()->RegisterAppPropertyResolver(std::move(resolver));
   }
 
+  void TearDown() override {
+    resolver_ = nullptr;
+    test::ExoTestBase::TearDown();
+  }
+
  private:
-  raw_ptr<TestPropertyResolver, ExperimentalAsh> resolver_;
+  raw_ptr<TestPropertyResolver> resolver_;
 };
 
 TEST_F(DisplayTest, CreateSurface) {
@@ -119,12 +127,12 @@ TEST_F(DisplayTest, DISABLED_CreateLinuxDMABufBuffer) {
       ui::OzonePlatform::GetInstance()
           ->GetSurfaceFactoryOzone()
           ->CreateNativePixmap(gfx::kNullAcceleratedWidget, VK_NULL_HANDLE,
-                               buffer_size, gfx::BufferFormat::RGBA_8888,
+                               buffer_size, viz::SinglePlaneFormat::kRGBA_8888,
                                gfx::BufferUsage::GPU_READ);
   gfx::NativePixmapHandle native_pixmap_handle = pixmap->ExportHandle();
-  std::unique_ptr<Buffer> buffer1 =
-      display.CreateLinuxDMABufBuffer(buffer_size, gfx::BufferFormat::RGBA_8888,
-                                      std::move(native_pixmap_handle), false);
+  std::unique_ptr<Buffer> buffer1 = display.CreateLinuxDMABufBuffer(
+      buffer_size, viz::SinglePlaneFormat::kRGBA_8888,
+      std::move(native_pixmap_handle), false);
   EXPECT_TRUE(buffer1);
 
   // Create a handle without a file descriptor.
@@ -132,9 +140,9 @@ TEST_F(DisplayTest, DISABLED_CreateLinuxDMABufBuffer) {
   native_pixmap_handle.planes[0].fd.reset();
 
   // Creating a prime buffer using an invalid fd should fail.
-  std::unique_ptr<Buffer> buffer2 =
-      display.CreateLinuxDMABufBuffer(buffer_size, gfx::BufferFormat::RGBA_8888,
-                                      std::move(native_pixmap_handle), false);
+  std::unique_ptr<Buffer> buffer2 = display.CreateLinuxDMABufBuffer(
+      buffer_size, viz::SinglePlaneFormat::kRGBA_8888,
+      std::move(native_pixmap_handle), false);
   EXPECT_FALSE(buffer2);
 }
 
@@ -174,17 +182,14 @@ TEST_F(DisplayTest, CreateClientControlledShellSurface) {
   std::unique_ptr<ClientControlledShellSurface> shell_surface1 =
       display.CreateOrGetClientControlledShellSurface(
           surface1.get(), ash::kShellWindowId_SystemModalContainer,
-          /*default_device_scale_factor=*/2.0,
           /*default_scale_cancellation=*/true,
           /*supports_floated_state=*/true);
   ASSERT_TRUE(shell_surface1);
-  EXPECT_EQ(shell_surface1->scale(), 2.0);
 
   // Create a remote shell surface for surface2.
   std::unique_ptr<ShellSurfaceBase> shell_surface2 =
       display.CreateOrGetClientControlledShellSurface(
           surface2.get(), ash::desks_util::GetActiveDeskContainerId(),
-          /*default_device_scale_factor=*/1.0,
           /*default_scale_cancellation=*/true,
           /*supports_floated_state=*/true);
   EXPECT_TRUE(shell_surface2);
@@ -197,11 +202,17 @@ TEST_F(DisplayTest, GetClientControlledShellSurface) {
   // Create a external surface, bind with a window id.
   auto external_shell_surface = test::ShellSurfaceBuilder({20, 20})
                                     .SetOrigin({10, 10})
+                                    .DisableSupportsFloatedState()
                                     .BuildClientControlledShellSurface();
   auto* external_shell_surface_observer = external_shell_surface.get();
+  auto* external_window =
+      external_shell_surface->GetWidget()->GetNativeWindow();
 
   // Set external shell surface focus.
-  external_shell_surface->GetWidget()->GetNativeWindow()->Focus();
+  external_window->Focus();
+  // Floated state support is disabled.
+  ASSERT_FALSE(
+      external_window->GetProperty(chromeos::kSupportsFloatedStateKey));
 
   property_resolver()->PutClientControlledShellSurface(
       kSessionId, std::move(external_shell_surface));
@@ -215,14 +226,16 @@ TEST_F(DisplayTest, GetClientControlledShellSurface) {
   std::unique_ptr<ClientControlledShellSurface> shell_surface =
       display.CreateOrGetClientControlledShellSurface(
           surface_with_id.get(), ash::desks_util::GetActiveDeskContainerId(),
-          /*default_device_scale_factor=*/2.0,
           /*default_scale_cancellation=*/true,
           /*supports_floated_state=*/true);
   EXPECT_EQ(shell_surface.get(), external_shell_surface_observer);
   EXPECT_EQ(surface_with_id.get(), shell_surface->root_surface());
 
+  auto* const window = shell_surface->root_surface()->window();
   // Focus state transferred to new root surface.
-  EXPECT_TRUE(shell_surface->root_surface()->window()->HasFocus());
+  EXPECT_TRUE(window->HasFocus());
+  // Floated state support should be updated according to the new option.
+  EXPECT_TRUE(window->GetProperty(chromeos::kSupportsFloatedStateKey));
 }
 
 TEST_F(DisplayTest, CreateSubSurface) {
@@ -295,6 +308,9 @@ class TestDataDeviceDelegate : public DataDeviceDelegate {
   // Overriden from DataDeviceDelegate:
   void OnDataDeviceDestroying(DataDevice* data_device) override {}
   DataOffer* OnDataOffer() override { return nullptr; }
+  base::WeakPtr<DataDeviceDelegate> GetWeakPtr() override {
+    return weak_ptr_factory_.GetWeakPtr();
+  }
   void OnEnter(Surface* surface,
                const gfx::PointF& location,
                const DataOffer& data_offer) override {}
@@ -306,6 +322,9 @@ class TestDataDeviceDelegate : public DataDeviceDelegate {
   bool CanAcceptDataEventsForSurface(Surface* surface) const override {
     return false;
   }
+
+ private:
+  base::WeakPtrFactory<TestDataDeviceDelegate> weak_ptr_factory_{this};
 };
 
 TEST_F(DisplayTest, CreateDataDevice) {
@@ -327,11 +346,9 @@ TEST_F(DisplayTest, PinnedAlwaysOnTopWindow) {
   std::unique_ptr<ClientControlledShellSurface> shell_surface =
       display.CreateOrGetClientControlledShellSurface(
           surface.get(), ash::desks_util::GetActiveDeskContainerId(),
-          /*default_device_scale_factor=*/2.0,
           /*default_scale_cancellation=*/true,
           /*supports_floated_state=*/true);
   ASSERT_TRUE(shell_surface);
-  EXPECT_EQ(shell_surface->scale(), 2.0);
 
   // This should not crash
   shell_surface->SetAlwaysOnTop(true);

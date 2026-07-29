@@ -12,18 +12,29 @@
 
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/numerics/checked_math.h"
 #include "base/rand_util.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "chrome/common/safe_browsing/archive_analyzer_results.h"
+#include "chrome/utility/safe_browsing/archive_analysis_delegate.h"
+#include "chrome/utility/safe_browsing/zip_writer_delegate.h"
 #include "components/safe_browsing/content/common/file_type_policies.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "third_party/zlib/google/zip_reader.h"
 
 namespace safe_browsing {
+
+namespace {
+
+bool IsCheckedBinaryOrArchiveFile(const base::FilePath& path) {
+  const FileTypePolicies* file_type_policies = FileTypePolicies::GetInstance();
+  return file_type_policies->IsCheckedBinaryFile(path) ||
+         file_type_policies->IsArchiveFile(path);
+}
+
+}  // namespace
 
 ZipAnalyzer::ZipAnalyzer() = default;
 ZipAnalyzer::~ZipAnalyzer() = default;
@@ -43,34 +54,70 @@ bool ZipAnalyzer::ResumeExtraction() {
     // Since this code is expected to run within a utility process, this call
     // will fail on some platforms. We handle this by passing the length
     // into `UpdateResultsForEntry`, which will only consider
-    // the appropriate bytes. See crbug.com/1309879 and crbug.com/774762.
+    // the appropriate bytes. See crbug.com/40830053 and crbug.com/41349785.
     if (!temp_file_.SetLength(0)) {
       PLOG(WARNING) << "Failed truncate";
     }
-    zip::FileWriterDelegate writer(&temp_file_);
-    reader_.ExtractCurrentEntry(&writer, std::numeric_limits<uint64_t>::max());
+
+    CHECK(analysis_delegate_);
+
+    std::unique_ptr<SafeBrowsingZipWriterDelegate> writer =
+        analysis_delegate_->CreateZipWriterDelegate(temp_file_.Duplicate());
+
+    bool extract_success = reader_.ExtractCurrentEntry(
+        writer.get(), std::numeric_limits<uint64_t>::max());
+    writer->Close();
 
     has_encrypted_ |= entry->is_encrypted;
     has_aes_encrypted_ |= entry->uses_aes_encryption;
 
-    if (!UpdateResultsForEntry(
-            temp_file_.Duplicate(), GetRootPath().Append(entry->path),
-            writer.file_length(), entry->is_encrypted, entry->is_directory)) {
+    has_disk_error_ |= writer->has_disk_error();
+
+    if (!extract_success && entry->is_encrypted) {
+      results()->encryption_info.password_status =
+          EncryptionInfo::kKnownIncorrect;
+    }
+
+    // The Info-ZIP Unicode Path Extra Field can present a benign Unicode name
+    // (e.g. "receipt.txt") for an entry whose Central Directory path is a
+    // checked binary or nested archive (e.g. "malware.exe" or "payload.zip").
+    // Different extractors may use either name, so consider both for Safe
+    // Browsing classification while reporting the extracted bytes once.
+    base::FilePath path = GetRootPath().Append(entry->path);
+    if (entry->path != entry->physical_path && !entry->is_directory) {
+      base::FilePath physical_path = GetRootPath().Append(entry->physical_path);
+      if (!IsCheckedBinaryOrArchiveFile(path) &&
+          IsCheckedBinaryOrArchiveFile(physical_path)) {
+        path = std::move(physical_path);
+      }
+    }
+
+    if (!UpdateResultsForEntry(temp_file_.Duplicate(), std::move(path),
+                               writer->file_length(), entry->is_encrypted,
+                               entry->is_directory, extract_success)) {
       return false;
     }
   }
 
   if (has_encrypted_) {
-    base::UmaHistogramBoolean("SBClientDownload.EncryptedZipUsesAes",
-                              has_aes_encrypted_);
+    if (has_aes_encrypted_ && password() && !password()->empty()) {
+      results()->encryption_info.password_status = EncryptionInfo::kUnknown;
+    } else if (results()->encryption_info.password_status !=
+               EncryptionInfo::kKnownIncorrect) {
+      results()->encryption_info.password_status =
+          EncryptionInfo::kKnownCorrect;
+    }
   }
 
-  if (reader_.ok()) {
+  if (has_disk_error_) {
+    results()->analysis_result = ArchiveAnalysisResult::kDiskError;
+  } else if (reader_.ok()) {
     results()->analysis_result = ArchiveAnalysisResult::kValid;
   } else {
     results()->analysis_result = ArchiveAnalysisResult::kFailedDuringIteration;
   }
-  results()->success = reader_.ok();
+
+  results()->success = reader_.ok() && !has_disk_error_;
   return true;
 }
 
@@ -84,7 +131,12 @@ void ZipAnalyzer::OnGetTempFile(base::File temp_file) {
     return;
   }
 
-  if (!reader_.OpenFromPlatformFile(GetArchiveFile().GetPlatformFile())) {
+  CHECK(analysis_delegate_);
+  reader_delegate_ =
+      analysis_delegate_->CreateZipReaderDelegate(GetArchiveFile().Duplicate());
+
+  if (!reader_delegate_ ||
+      !reader_.OpenFromReaderDelegate(reader_delegate_.get())) {
     InitComplete(ArchiveAnalysisResult::kUnknown);
     return;
   }
@@ -97,6 +149,10 @@ void ZipAnalyzer::OnGetTempFile(base::File temp_file) {
     return;
   }
   temp_file_ = std::move(temp_file);
+
+  if (password().has_value()) {
+    reader_.SetPassword(*password());
+  }
 
   InitComplete(ArchiveAnalysisResult::kValid);
 }

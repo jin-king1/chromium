@@ -11,16 +11,20 @@
 
 #include "base/memory/scoped_refptr.h"
 
+namespace auto_deletion {
+class AutoDeletionService;
+}  // namespace auto_deletion
+
+namespace activity_reporter {
+class ActivityReporter;
+}
+
 namespace component_updater {
 class ComponentUpdateService;
 }
 
 namespace gcm {
 class GCMDriver;
-}
-
-namespace ios {
-class ChromeBrowserStateManager;
 }
 
 namespace metrics {
@@ -52,9 +56,22 @@ namespace network_time {
 class NetworkTimeTracker;
 }
 
-namespace segmentation_platform {
-class OTRWebStateObserver;
+namespace optimization_guide {
+class OptimizationGuideGlobalState;
+}  // namespace optimization_guide
+
+namespace os_crypt_async {
+class OSCryptAsync;
 }
+
+namespace signin {
+class ActivePrimaryAccountsMetricsRecorder;
+class AvatarProvider;
+}  // namespace signin
+
+namespace supervised_user {
+class DeviceParentalControls;
+}  // namespace supervised_user
 
 namespace ukm {
 class UkmRecorder;
@@ -64,10 +81,17 @@ namespace variations {
 class VariationsService;
 }
 
+class AdditionalFeaturesController;
+class AccountProfileMapper;
 class ApplicationContext;
+class ApplicationLocaleStorage;
 class BrowserPolicyConnectorIOS;
+class IncognitoSessionTracker;
 class IOSChromeIOThread;
 class PrefService;
+
+class ProfileManagerIOS;
+
 class PushNotificationService;
 class SafeBrowsingService;
 @protocol SingleSignOnService;
@@ -85,14 +109,23 @@ class ApplicationContext {
 
   virtual ~ApplicationContext();
 
-  // Invoked when application enters foreground. Cancels the effect of
+  // Invoked when the application enters the foreground. Cancels the effect of
   // OnAppEnterBackground(), in particular removes the boolean preference
-  // indicating that the ChromeBrowserStates have been shutdown.
+  // indicating that the Profiles have been shutdown.
   virtual void OnAppEnterForeground() = 0;
 
-  // Invoked when application enters background. Saves any state that must be
-  // saved before shutdown can continue.
+  // Invoked when the application enters the background from the foreground.
+  // Saves any state that must be saved before shutdown can continue.
   virtual void OnAppEnterBackground() = 0;
+
+  // Invoked when the application is launched in the background and begins doing
+  // background update work.
+  virtual void OnAppStartedBackgroundProcessing() = 0;
+
+  // Invoked when the application has completed update work in the background,
+  // but is not yet in the foreground. At this stage the app is effectively
+  // "background idle".
+  virtual void OnAppFinishedBackgroundProcessing() = 0;
 
   // Returns whether the last complete shutdown was clean (i.e. happened while
   // the application was backgrounded).
@@ -112,27 +145,32 @@ class ApplicationContext {
   // GetSystemURLRequestContext().
   virtual network::mojom::NetworkContext* GetSystemNetworkContext() = 0;
 
-  // Gets the locale used by the application.
-  virtual const std::string& GetApplicationLocale() = 0;
+  // Gets the ApplicationLocaleStorage associated with this application.
+  virtual ApplicationLocaleStorage* GetApplicationLocaleStorage() = 0;
 
   // Gets the country locale used by the application
   virtual const std::string& GetApplicationCountry() = 0;
 
-  // Gets the ChromeBrowserStateManager used by this application.
-  virtual ios::ChromeBrowserStateManager* GetChromeBrowserStateManager() = 0;
+  // Gets the Profile Manager used by this application.
+  virtual ProfileManagerIOS* GetProfileManager() = 0;
 
   // Gets the manager for the various metrics-related service, constructing it
-  // if necessary.
+  // if necessary. May return null.
   virtual metrics_services_manager::MetricsServicesManager*
   GetMetricsServicesManager() = 0;
 
-  // Gets the MetricsService used by this application.
+  // Gets the MetricsService used by this application. May return null.
   virtual metrics::MetricsService* GetMetricsService() = 0;
 
-  // Gets the UkmRecorder used by this application.
+  // Gets the ActivePrimaryAccountsMetricsRecorder used by this application. May
+  // return null.
+  virtual signin::ActivePrimaryAccountsMetricsRecorder*
+  GetActivePrimaryAccountsMetricsRecorder() = 0;
+
+  // Gets the UkmRecorder used by this application. May return null.
   virtual ukm::UkmRecorder* GetUkmRecorder() = 0;
 
-  // Gets the VariationsService used by this application.
+  // Gets the VariationsService used by this application. May return null.
   virtual variations::VariationsService* GetVariationsService() = 0;
 
   // Gets the NetLog.
@@ -140,7 +178,18 @@ class ApplicationContext {
 
   virtual net_log::NetExportFileWriter* GetNetExportFileWriter() = 0;
 
-  // Gets the NetworkTimeTracker.
+  // Gets the NetworkTimeTracker. The returned NetworkTimeTracker may not be
+  // fully initialized, but it can be subscribed to. It is permitted to call
+  // this method very early during startup (i.e., before the local state pref
+  // service and network services have started). This function may safely be
+  // called multiple times; it is idempotent.
+  virtual network_time::NetworkTimeTracker*
+  GetNetworkTimeTrackerMaybeUninitialized() = 0;
+
+  // Gets the NetworkTimeTracker. The returned NetworkTimeTracker will be fully
+  // initialized. It is not safe to call this method before threads are created,
+  // local state is initialized, and network services are started. This function
+  // may safely be called multiple times; it is idempotent.
   virtual network_time::NetworkTimeTracker* GetNetworkTimeTracker() = 0;
 
   // Gets the IOSChromeIOThread.
@@ -148,6 +197,9 @@ class ApplicationContext {
 
   // Gets the GCMDriver.
   virtual gcm::GCMDriver* GetGCMDriver() = 0;
+
+  // Gets the ActivityReporter.
+  virtual activity_reporter::ActivityReporter* GetActivityReporter() = 0;
 
   // Gets the ComponentUpdateService.
   virtual component_updater::ComponentUpdateService*
@@ -164,18 +216,44 @@ class ApplicationContext {
   virtual BrowserPolicyConnectorIOS* GetBrowserPolicyConnector() = 0;
 
   // Returns the SingleSignOnService instance used by this application.
-  virtual id<SingleSignOnService> GetSSOService() = 0;
+  virtual id<SingleSignOnService> GetSingleSignOnService() = 0;
+
+  // Returns the caches for avatars of accounts on the device.
+  virtual signin::AvatarProvider* GetIdentityAvatarProvider() = 0;
 
   // Returns the SystemIdentityManager instance used by this application.
   virtual SystemIdentityManager* GetSystemIdentityManager() = 0;
 
-  // Returns the application's OTRWebStateObserver for segmentation platform.
-  virtual segmentation_platform::OTRWebStateObserver*
-  GetSegmentationOTRWebStateObserver() = 0;
+  // Returns the AccountProfileMapper instance used by this application.
+  virtual AccountProfileMapper* GetAccountProfileMapper() = 0;
+
+  // Returns the application's IncognitoSessionTracker instance.
+  virtual IncognitoSessionTracker* GetIncognitoSessionTracker() = 0;
 
   // Returns the application's PushNotificationService that handles all
   // interactions with the push notification server
   virtual PushNotificationService* GetPushNotificationService() = 0;
+
+  // Returns the application's OSCryptAsync instance which can be used to create
+  // instances of Encryptor for data encryption.
+  virtual os_crypt_async::OSCryptAsync* GetOSCryptAsync() = 0;
+
+  // Returns the application's AdditionalFeaturesController that manages some
+  // features not declared by `BASE_DECLARE_FEATURE()`.
+  virtual AdditionalFeaturesController* GetAdditionalFeaturesController() = 0;
+
+  // Returns the AutoDeletionService instance.
+  virtual auto_deletion::AutoDeletionService* GetAutoDeletionService() = 0;
+
+  // Returns the OptimizationGuideGlobalState instance.
+  virtual optimization_guide::OptimizationGuideGlobalState*
+  GetOptimizationGuideGlobalState() = 0;
+
+  // Returns a not-null handle to the manager of device parental controls, which
+  // are independent from the profile. On platforms not implementing device
+  // parental controls, it will be a no-op stub.
+  virtual supervised_user::DeviceParentalControls&
+  GetDeviceParentalControls() = 0;
 
  protected:
   // Sets the global ApplicationContext instance.

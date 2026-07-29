@@ -13,6 +13,7 @@
 #include "base/logging.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
+#include "remoting/base/logging.h"
 #include "remoting/host/chromoting_host_services_client.h"
 #include "remoting/host/security_key/security_key_ipc_constants.h"
 
@@ -83,18 +84,21 @@ bool SecurityKeyIpcClient::SendSecurityKeyRequest(
 
 void SecurityKeyIpcClient::CloseIpcConnection() {
   DCHECK(thread_checker_.CalledOnValidThread());
+  HOST_LOG << "IPC connection closed.";
   security_key_forwarder_.reset();
 }
 
 void SecurityKeyIpcClient::OnQueryVersionResult(uint32_t unused_version) {
   DCHECK(thread_checker_.CalledOnValidThread());
 
+  HOST_LOG << "IPC channel connected.";
   std::move(connected_callback_).Run();
 }
 
 void SecurityKeyIpcClient::OnChannelError() {
   DCHECK(thread_checker_.CalledOnValidThread());
 
+  LOG(ERROR) << "IPC channel error.";
   security_key_forwarder_.reset();
   if (connection_error_callback_) {
     std::move(connection_error_callback_).Run();
@@ -126,10 +130,19 @@ void SecurityKeyIpcClient::ConnectToIpcChannel() {
     OnChannelError();
     return;
   }
+  auto disconnect_handler = base::BindRepeating(
+      &SecurityKeyIpcClient::OnChannelError, base::Unretained(this));
+  // There is a bug in Mojo, such that if the host rejects binding of session
+  // services, there is a chance that binding of SecurityKeyForwarder appears to
+  // be successful and the disconnect handler of `remote_` is never called, so
+  // `remote_` will remain invalid forever.
+  // The disconnect handler of session services is still called, so we set a
+  // disconnect handler on it.
+  // See https://crbug.com/425759818#comment8 for more context.
+  service_provider_->set_disconnect_handler(disconnect_handler);
   service_provider_->GetSessionServices()->BindSecurityKeyForwarder(
       security_key_forwarder_.BindNewPipeAndPassReceiver());
-  security_key_forwarder_.set_disconnect_handler(base::BindOnce(
-      &SecurityKeyIpcClient::OnChannelError, base::Unretained(this)));
+  security_key_forwarder_.set_disconnect_handler(disconnect_handler);
   // This is to determine if the peer binding is successful. If the connection
   // is disconnected before OnQueryVersionResult() is called, it means the
   // server has rejected the binding request.

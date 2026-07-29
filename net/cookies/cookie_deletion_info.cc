@@ -50,7 +50,7 @@ CookieDeletionInfo::TimeRange::TimeRange(base::Time start, base::Time end)
 CookieDeletionInfo::TimeRange& CookieDeletionInfo::TimeRange::operator=(
     const TimeRange& rhs) = default;
 
-bool CookieDeletionInfo::TimeRange::Contains(const base::Time& time) const {
+bool CookieDeletionInfo::TimeRange::Contains(base::Time time) const {
   DCHECK(!time.is_null());
 
   if (!start_.is_null() && start_ == end_)
@@ -121,13 +121,13 @@ bool CookieDeletionInfo::Matches(const CanonicalCookie& cookie,
     return false;
   }
 
-  if (!domains_and_ips_to_delete.empty() &&
-      !DomainMatchesDomains(cookie, domains_and_ips_to_delete)) {
+  if (domains_and_ips_to_delete.has_value() &&
+      !DomainMatchesDomains(cookie, *domains_and_ips_to_delete)) {
     return false;
   }
 
-  if (!domains_and_ips_to_ignore.empty() &&
-      DomainMatchesDomains(cookie, domains_and_ips_to_ignore)) {
+  if (domains_and_ips_to_ignore.has_value() &&
+      DomainMatchesDomains(cookie, *domains_and_ips_to_ignore)) {
     return false;
   }
 

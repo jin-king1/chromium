@@ -1,9 +1,11 @@
 // This file is generated. Do not edit.
-#define VERSION_MAJOR 1
-#define VERSION_MINOR 13
-#define VERSION_PATCH 0
-#define VERSION_EXTRA "278-g52076a9c7"
-#define VERSION_PACKED \
-  ((VERSION_MAJOR << 16) | (VERSION_MINOR << 8) | (VERSION_PATCH))
-#define VERSION_STRING_NOSP "v1.13.0-278-g52076a9c7"
-#define VERSION_STRING " v1.13.0-278-g52076a9c7"
+#ifndef VPX_VERSION_H_
+#define VPX_VERSION_H_
+#define VERSION_MAJOR  1
+#define VERSION_MINOR  16
+#define VERSION_PATCH  0
+#define VERSION_EXTRA  "176-gade52487a"
+#define VERSION_PACKED ((VERSION_MAJOR<<16)|(VERSION_MINOR<<8)|(VERSION_PATCH))
+#define VERSION_STRING_NOSP "v1.16.0-176-gade52487a"
+#define VERSION_STRING      " v1.16.0-176-gade52487a"
+#endif  // VPX_VERSION_H_

@@ -11,66 +11,79 @@
 #include "ui/color/color_provider.h"
 #include "ui/color/color_recipe.h"
 
-namespace {
-/* 70% opacity */
-constexpr SkAlpha kWebUiTabStripScrollbarThumbAlpha = 0.7 * 255;
-
-/* 16% opacity */
-constexpr SkAlpha kWebUiTabStripTabSeparatorAlpha = 0.16 * 255;
-}  // namespace
-
 void AddMaterialTabStripColorMixer(ui::ColorProvider* provider,
-                                   const ui::ColorProviderManager::Key& key) {
+                                   const ui::ColorProviderKey& key) {
   if (!ShouldApplyChromeMaterialOverrides(key)) {
     return;
   }
 
-  // TODO(crbug.com/1399942): Validate final mappings for ChromeRefresh23 color.
+  const bool dark_mode =
+      key.color_mode == ui::ColorProviderKey::ColorMode::kDark;
+
+  // TODO(crbug.com/40883407): Validate final mappings for ChromeRefresh23
+  // color.
   ui::ColorMixer& mixer = provider->AddMixer();
+  mixer[kColorDetachedTabBackgroundActiveFrameActive] = {
+      dark_mode ? ui::kColorSysSurfaceVariant : ui::kColorSysBase};
   mixer[kColorTabBackgroundActiveFrameActive] = {ui::kColorSysBase};
   mixer[kColorTabBackgroundActiveFrameInactive] = {
       kColorTabBackgroundActiveFrameActive};
+
   mixer[kColorTabBackgroundInactiveFrameActive] = {ui::kColorSysHeader};
   mixer[kColorTabBackgroundInactiveFrameInactive] = {
       ui::kColorSysHeaderInactive};
+  mixer[kColorTabBackgroundInactiveHoverFrameActive] = {
+      ui::kColorSysStateHeaderHover};
+  mixer[kColorTabStripComboButtonSeparator] = {ui::kColorSysDivider};
+  mixer[kColorTabStripControlButtonInkDrop] = {ui::kColorSysStateHeaderHover};
+  mixer[kColorTabStripControlButtonInkDropRipple] = {
+      ui::kColorSysStateRippleNeutralOnSubtle};
 
+  // TODO(tbergquist): Use kColorSysStateHeaderHoverInactive, once it exists.
+  mixer[kColorTabBackgroundInactiveHoverFrameInactive] = {
+      ui::kColorSysStateHeaderHoverInactive};
+
+  mixer[kColorTabBackgroundSelectedFrameActive] = {ui::GetResultingPaintColor(
+      ui::kColorSysStateHeaderSelect, kColorTabBackgroundInactiveFrameActive)};
+  mixer[kColorTabBackgroundSelectedFrameInactive] = {
+      ui::GetResultingPaintColor(ui::kColorSysStateHeaderSelect,
+                                 kColorTabBackgroundInactiveFrameInactive)};
+  mixer[kColorTabBackgroundSelectedHoverFrameActive] = {
+      ui::GetResultingPaintColor(ui::kColorSysStateHoverDimBlendProtection,
+                                 kColorTabBackgroundSelectedFrameActive)};
+  mixer[kColorTabBackgroundSelectedHoverFrameInactive] = {
+      ui::GetResultingPaintColor(ui::kColorSysStateHoverDimBlendProtection,
+                                 kColorTabBackgroundSelectedFrameInactive)};
+#if !BUILDFLAG(IS_ANDROID)
+  mixer[kColorTabDiscardRingFrameActive] = {ui::kColorSysStateInactiveRing};
+  mixer[kColorTabDiscardRingFrameInactive] = {kColorTabDiscardRingFrameActive};
+#endif
   mixer[kColorTabForegroundActiveFrameActive] = {ui::kColorSysOnSurface};
   mixer[kColorTabForegroundActiveFrameInactive] = {
       kColorTabForegroundActiveFrameActive};
-  mixer[kColorTabForegroundInactiveFrameActive] = {
-      ui::kColorSysOnSurfaceSecondary};
-  mixer[kColorTabForegroundInactiveFrameInactive] = {
-      kColorTabForegroundInactiveFrameActive};
-
-  mixer[kColorTabBackgroundHoverFrameActive] = {ui::kColorSysStateHeaderHover};
-  mixer[kColorTabBackgroundHoverFrameInactive] = {
-      ui::kColorSysStateHoverOnSubtle};
-
-  /* WebUI Tab Strip colors. */
-  mixer[kColorWebUiTabStripBackground] = {ui::kColorSysHeader};
-  mixer[kColorWebUiTabStripFocusOutline] = {ui::kColorSysPrimary};
-  mixer[kColorWebUiTabStripScrollbarThumb] =
-      ui::SetAlpha(ui::GetColorWithMaxContrast(ui::kColorSysHeader),
-                   kWebUiTabStripScrollbarThumbAlpha);
-  mixer[kColorWebUiTabStripTabActiveTitleBackground] = {ui::kColorSysPrimary};
-  mixer[kColorWebUiTabStripTabActiveTitleContent] = {ui::kColorSysOnPrimary};
-  mixer[kColorWebUiTabStripTabBackground] = {ui::kColorSysSurface};
-  mixer[kColorWebUiTabStripTabSeparator] =
-      ui::SetAlpha(ui::kColorSysOnSurface, kWebUiTabStripTabSeparatorAlpha);
-  mixer[kColorWebUiTabStripTabText] = {ui::kColorSysOnSurface};
+  mixer[kColorTabForegroundInactiveFrameActive] =
+      ui::BlendForMinContrast({ui::kColorSysOnSurfaceSecondary},
+                              {kColorTabBackgroundInactiveFrameActive});
+  mixer[kColorTabForegroundInactiveFrameInactive] =
+      ui::BlendForMinContrast({kColorTabForegroundInactiveFrameActive},
+                              {kColorTabBackgroundInactiveFrameInactive});
 
   // TabDivider colors.
   mixer[kColorTabDividerFrameActive] = {ui::kColorSysOnHeaderDivider};
   mixer[kColorTabDividerFrameInactive] = {ui::kColorSysOnHeaderDividerInactive};
 
-  // Tabstrip Button colors.
+  // Tabstrip Control Button colors.
   mixer[kColorNewTabButtonCRForegroundFrameActive] = {
-      ui::kColorSysOnSurfacePrimary};
+      ui::kColorSysOnSurfaceSubtle};
   mixer[kColorNewTabButtonCRForegroundFrameInactive] = {
-      ui::kColorSysOnSurfacePrimaryInactive};
+      ui::kColorSysOnSurfaceSubtle};
   mixer[kColorNewTabButtonCRBackgroundFrameActive] = {
       ui::kColorSysHeaderContainer};
   mixer[kColorNewTabButtonCRBackgroundFrameInactive] = {
       ui::kColorSysHeaderContainerInactive};
-  // MISSING 2
+
+  mixer[kColorTabSearchButtonCRForegroundFrameActive] = {
+      ui::kColorSysOnSurfacePrimary};
+  mixer[kColorTabSearchButtonCRForegroundFrameInactive] = {
+      ui::kColorSysOnSurfacePrimaryInactive};
 }

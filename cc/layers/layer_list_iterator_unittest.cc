@@ -22,9 +22,9 @@ namespace {
 
 TEST(LayerListIteratorTest, VerifyTraversalOrder) {
   // Unfortunate preamble.
-  FakeLayerTreeHostClient client;
+  FakeLayerTreeHostDelegate client;
   TestTaskGraphRunner task_graph_runner;
-  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::MAIN);
+  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::kMain);
   std::unique_ptr<FakeLayerTreeHost> host_ptr = FakeLayerTreeHost::Create(
       &client, &task_graph_runner, animation_host.get());
   FakeLayerTreeHost* host = host_ptr.get();
@@ -75,9 +75,9 @@ TEST(LayerListIteratorTest, VerifyTraversalOrder) {
 
 TEST(LayerListIteratorTest, VerifySingleLayer) {
   // Unfortunate preamble.
-  FakeLayerTreeHostClient client;
+  FakeLayerTreeHostDelegate client;
   TestTaskGraphRunner task_graph_runner;
-  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::MAIN);
+  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::kMain);
   std::unique_ptr<FakeLayerTreeHost> host_ptr = FakeLayerTreeHost::Create(
       &client, &task_graph_runner, animation_host.get());
   FakeLayerTreeHost* host = host_ptr.get();
@@ -109,9 +109,9 @@ TEST(LayerListIteratorTest, VerifyNullFirstLayer) {
 
 TEST(LayerListReverseIteratorTest, VerifyTraversalOrder) {
   // Unfortunate preamble.
-  FakeLayerTreeHostClient client;
+  FakeLayerTreeHostDelegate client;
   TestTaskGraphRunner task_graph_runner;
-  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::MAIN);
+  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::kMain);
   std::unique_ptr<FakeLayerTreeHost> host_ptr = FakeLayerTreeHost::Create(
       &client, &task_graph_runner, animation_host.get());
   FakeLayerTreeHost* host = host_ptr.get();
@@ -164,9 +164,9 @@ TEST(LayerListReverseIteratorTest, VerifyTraversalOrder) {
 
 TEST(LayerListReverseIteratorTest, VerifySingleLayer) {
   // Unfortunate preamble.
-  FakeLayerTreeHostClient client;
+  FakeLayerTreeHostDelegate client;
   TestTaskGraphRunner task_graph_runner;
-  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::MAIN);
+  auto animation_host = AnimationHost::CreateForTesting(ThreadInstance::kMain);
   std::unique_ptr<FakeLayerTreeHost> host_ptr = FakeLayerTreeHost::Create(
       &client, &task_graph_runner, animation_host.get());
   FakeLayerTreeHost* host = host_ptr.get();

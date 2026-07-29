@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env vpython3
 # Copyright 2018 The Chromium Authors
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -22,6 +22,7 @@ class MockInputApi(object):
         self.python_executable = self.python3_executable = sys.executable
         self.subprocess = subprocess
         self.is_windows = sys.platform == 'win32'
+        self.is_committing = False
         self.environ = os.environ
         self.logging = PrintLogger()
         self.change = MockChange()

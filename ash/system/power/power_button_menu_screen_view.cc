@@ -14,12 +14,13 @@
 #include "ash/system/power/power_button_menu_metrics_type.h"
 #include "ash/system/power/power_button_menu_view.h"
 #include "ash/system/power/power_button_menu_view_util.h"
-#include "ash/wm/tablet_mode/tablet_mode_controller.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
+#include "ui/views/background.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
@@ -34,7 +35,7 @@ constexpr float kPowerButtonMenuOpacity = 0.4f;
 // Gets the landscape size of the primary display. For landscape orientation,
 // the width is always larger than height.
 gfx::Size GetPrimaryDisplayLandscapeSize() {
-  gfx::Rect bounds = display::Screen::GetScreen()->GetPrimaryDisplay().bounds();
+  gfx::Rect bounds = display::Screen::Get()->GetPrimaryDisplay().bounds();
   return gfx::Size(std::max(bounds.width(), bounds.height()),
                    std::min(bounds.width(), bounds.height()));
 }
@@ -64,11 +65,15 @@ using TransformDirection = PowerButtonMenuView::TransformDirection;
 class PowerButtonMenuScreenView::PowerButtonMenuBackgroundView
     : public views::View,
       public ui::ImplicitAnimationObserver {
+  METADATA_HEADER(PowerButtonMenuBackgroundView, views::View)
+
  public:
   explicit PowerButtonMenuBackgroundView(
       base::RepeatingClosure show_animation_done)
       : show_animation_done_(show_animation_done) {
     SetPaintToLayer(ui::LAYER_SOLID_COLOR);
+    SetBackground(
+        views::CreateLayerBasedSolidBackground(kColorAshShieldAndBaseOpaque));
     layer()->SetOpacity(0.f);
   }
   PowerButtonMenuBackgroundView(const PowerButtonMenuBackgroundView&) = delete;
@@ -77,6 +82,14 @@ class PowerButtonMenuScreenView::PowerButtonMenuBackgroundView
   ~PowerButtonMenuBackgroundView() override = default;
 
   void OnImplicitAnimationsCompleted() override {
+    // If animation was aborted and opacity is currently 0, we could get left
+    // in an inconsistent state where we're animating to nonzero opacity but
+    // the layer has been set invisible. Only act on completed animations.
+    if (!WasAnimationCompletedForProperty(
+            ui::LayerAnimationElement::AnimatableProperty::OPACITY)) {
+      return;
+    }
+
     PowerButtonController* power_button_controller =
         Shell::Get()->power_button_controller();
     if (layer()->opacity() == 0.f) {
@@ -85,6 +98,8 @@ class PowerButtonMenuScreenView::PowerButtonMenuBackgroundView
     }
 
     if (layer()->opacity() == kPowerButtonMenuOpacity) {
+      CHECK(layer()->GetTargetVisibility())
+          << "layer is invisible but we animated it to visible";
       show_animation_done_.Run();
     }
   }
@@ -103,22 +118,13 @@ class PowerButtonMenuScreenView::PowerButtonMenuBackgroundView
     layer()->SetOpacity(show ? kPowerButtonMenuOpacity : 0.f);
   }
 
-  // views::View:
-  const char* GetClassName() const override {
-    return "PowerButtonMenuBackgroundView";
-  }
-
  private:
-  // views::View:
-  void OnThemeChanged() override {
-    views::View::OnThemeChanged();
-    layer()->SetColor(
-        GetColorProvider()->GetColor(kColorAshShieldAndBaseOpaque));
-  }
-
   // A callback for when the animation that shows the power menu has finished.
   base::RepeatingClosure show_animation_done_;
 };
+
+BEGIN_METADATA(PowerButtonMenuScreenView, PowerButtonMenuBackgroundView)
+END_METADATA
 
 PowerButtonMenuScreenView::PowerButtonMenuScreenView(
     ShutdownReason shutdown_reason,
@@ -129,10 +135,10 @@ PowerButtonMenuScreenView::PowerButtonMenuScreenView(
       power_button_offset_percentage_(power_button_offset_percentage) {
   power_button_screen_background_shield_ =
       new PowerButtonMenuBackgroundView(show_animation_done);
-  AddChildView(power_button_screen_background_shield_.get());
+  AddChildViewRaw(power_button_screen_background_shield_.get());
   power_button_menu_view_ =
       new PowerButtonMenuView(shutdown_reason, power_button_position_);
-  AddChildView(power_button_menu_view_.get());
+  AddChildViewRaw(power_button_menu_view_.get());
 
   AddAccelerator(ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE));
 }
@@ -179,7 +185,7 @@ void PowerButtonMenuScreenView::OnWidgetShown(
   if (power_button_position_ != PowerButtonPosition::NONE) {
     UpdateMenuBoundsOrigins();
   }
-  Layout();
+  DeprecatedLayoutImmediately();
 }
 
 PowerButtonMenuCurtainView*
@@ -191,11 +197,7 @@ PowerButtonMenuScreenView::GetOrCreateCurtainView() {
   return power_button_menu_curtain_view_;
 }
 
-const char* PowerButtonMenuScreenView::GetClassName() const {
-  return "PowerButtonMenuScreenView";
-}
-
-void PowerButtonMenuScreenView::Layout() {
+void PowerButtonMenuScreenView::Layout(PassKey) {
   power_button_screen_background_shield_->SetBoundsRect(GetContentsBounds());
   if (IsCurtainModeEnabled()) {
     LayoutMenuCurtainView();
@@ -241,7 +243,7 @@ bool PowerButtonMenuScreenView::AcceleratorPressed(
 }
 
 void PowerButtonMenuScreenView::OnGestureEvent(ui::GestureEvent* event) {
-  if (event->type() != ui::ET_GESTURE_TAP_DOWN) {
+  if (event->type() != ui::EventType::kGestureTapDown) {
     return;
   }
 
@@ -253,8 +255,7 @@ void PowerButtonMenuScreenView::OnGestureEvent(ui::GestureEvent* event) {
 void PowerButtonMenuScreenView::OnDisplayMetricsChanged(
     const display::Display& display,
     uint32_t changed_metrics) {
-  GetWidget()->SetBounds(
-      display::Screen::GetScreen()->GetPrimaryDisplay().bounds());
+  GetWidget()->SetBounds(display::Screen::Get()->GetPrimaryDisplay().bounds());
 
   LayoutWithoutTransform();
 }
@@ -264,7 +265,7 @@ void PowerButtonMenuScreenView::LayoutWithoutTransform() {
   if (IsCurtainModeEnabled()) {
     GetOrCreateCurtainView()->SetBoundsRect(GetMenuBounds());
   } else {
-    power_button_menu_view_->layer()->SetTransform(gfx::Transform());
+    power_button_menu_view_->SetTransform(gfx::Transform());
     power_button_menu_view_->SetBoundsRect(GetMenuBounds());
   }
 }
@@ -309,7 +310,6 @@ void PowerButtonMenuScreenView::UpdateMenuBoundsOrigins() {
       break;
     default:
       NOTREACHED();
-      return;
   }
 
   switch (power_button_position_) {
@@ -340,7 +340,6 @@ void PowerButtonMenuScreenView::UpdateMenuBoundsOrigins() {
       break;
     default:
       NOTREACHED();
-      return;
   }
 
   menu_bounds_origins_.clear();
@@ -384,7 +383,7 @@ gfx::Rect PowerButtonMenuScreenView::GetMenuBounds() {
   gfx::Rect menu_bounds;
 
   if (power_button_position_ == PowerButtonPosition::NONE ||
-      !Shell::Get()->tablet_mode_controller()->InTabletMode()) {
+      !display::Screen::Get()->InTabletMode()) {
     menu_bounds = GetContentsBounds();
     menu_bounds.ClampToCenteredSize(GetMenuViewPreferredSize());
   } else {
@@ -404,5 +403,14 @@ gfx::Size PowerButtonMenuScreenView::GetMenuViewPreferredSize() {
     return power_button_menu_view_->GetPreferredSize();
   }
 }
+
+ui::Layer*
+PowerButtonMenuScreenView::GetPowerButtonScreenBackgroundShieldLayerForTest()
+    const {
+  return power_button_screen_background_shield_->layer();
+}
+
+BEGIN_METADATA(PowerButtonMenuScreenView)
+END_METADATA
 
 }  // namespace ash

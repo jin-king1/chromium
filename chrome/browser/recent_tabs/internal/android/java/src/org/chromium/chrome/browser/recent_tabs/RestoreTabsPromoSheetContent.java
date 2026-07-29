@@ -4,20 +4,67 @@
 
 package org.chromium.chrome.browser.recent_tabs;
 
+import static org.chromium.chrome.browser.recent_tabs.RestoreTabsProperties.ScreenType.DEVICE_SCREEN;
+import static org.chromium.chrome.browser.recent_tabs.RestoreTabsProperties.ScreenType.HOME_SCREEN;
+import static org.chromium.chrome.browser.recent_tabs.RestoreTabsProperties.ScreenType.REVIEW_TABS_SCREEN;
+import static org.chromium.chrome.browser.recent_tabs.RestoreTabsProperties.ScreenType.UNINITIALIZED;
+
+import android.content.Context;
 import android.view.View;
+import android.widget.ScrollView;
 
-import androidx.annotation.Nullable;
+import androidx.annotation.StringRes;
+import androidx.recyclerview.widget.RecyclerView;
 
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetContent;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetObserver;
+import org.chromium.components.browser_ui.bottomsheet.EmptyBottomSheetObserver;
+import org.chromium.ui.modelutil.PropertyModel;
 
-/**
- * The bottom sheet content for the Restore Tabs promo.
- */
+/** The bottom sheet content for the Restore Tabs promo. */
+@NullMarked
 public class RestoreTabsPromoSheetContent implements BottomSheetContent {
     private final View mContentView;
+    private final PropertyModel mModel;
+    private final BottomSheetController mBottomSheetController;
+    private final BottomSheetObserver mBottomSheetOpenedObserver;
+    private final RestoreTabsBackPressHandler mBackPressHandler;
+    private final SettableNonNullObservableSupplier<Boolean> mBackPressStateChangedSupplier =
+            ObservableSuppliers.createNonNull(false);
+    private ScrollView mScrollView;
+    private RecyclerView mRecyclerView;
 
-    public RestoreTabsPromoSheetContent(View contentView) {
+    public RestoreTabsPromoSheetContent(
+            View contentView, PropertyModel model, BottomSheetController bottomSheetController) {
         mContentView = contentView;
+        mModel = model;
+        mBottomSheetController = bottomSheetController;
+        mScrollView = mContentView.findViewById(R.id.restore_tabs_promo_sheet_scrollview);
+        mRecyclerView = mContentView.findViewById(R.id.restore_tabs_detail_screen_recycler_view);
+        mBackPressHandler = new RestoreTabsBackPressHandler(model);
+
+        mBottomSheetOpenedObserver =
+                new EmptyBottomSheetObserver() {
+                    @Override
+                    public void onSheetOpened(@BottomSheetController.StateChangeReason int reason) {
+                        super.onSheetOpened(reason);
+                        mBackPressStateChangedSupplier.set(true);
+                    }
+
+                    @Override
+                    public void onSheetClosed(@BottomSheetController.StateChangeReason int reason) {
+                        super.onSheetClosed(reason);
+                        mBackPressStateChangedSupplier.set(false);
+                        mBottomSheetController.removeObserver(mBottomSheetOpenedObserver);
+                    }
+                };
+        mBottomSheetController.addObserver(mBottomSheetOpenedObserver);
     }
 
     @Override
@@ -31,8 +78,28 @@ public class RestoreTabsPromoSheetContent implements BottomSheetContent {
         return null;
     }
 
+    /**
+     * The vertical scroll offset of the recycler view's list containing the user's devices
+     * or the currently selected device's tab items. The offset prevents scroll flinging from
+     * dismissing the sheet.
+     */
     @Override
     public int getVerticalScrollOffset() {
+        int currentScreen = mModel.get(RestoreTabsProperties.CURRENT_SCREEN);
+
+        if (currentScreen == HOME_SCREEN) {
+            if (mScrollView != null) {
+                // Calculate the scroll position of the scrollview and make sure it is
+                // non-zero, otherwise allows swipe to dismiss on the bottom sheet.
+                return mScrollView.getScrollY();
+            }
+        } else if (currentScreen == DEVICE_SCREEN || currentScreen == REVIEW_TABS_SCREEN) {
+            // Get the first item in the recycler view to make sure it is scrolled off-screen
+            // (has non-zero value) otherwise allow swipe to dismiss on the bottom sheet.
+            View v = mRecyclerView.getChildAt(0);
+            return v == null ? 0 : -(v.getTop() - mRecyclerView.getPaddingTop());
+        }
+
         return 0;
     }
 
@@ -45,13 +112,24 @@ public class RestoreTabsPromoSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public int getPeekHeight() {
-        return BottomSheetContent.HeightMode.DISABLED;
+    public float getFullHeightRatio() {
+        return BottomSheetContent.HeightMode.WRAP_CONTENT;
     }
 
     @Override
-    public float getFullHeightRatio() {
-        return BottomSheetContent.HeightMode.WRAP_CONTENT;
+    public boolean handleBackPress() {
+        mBackPressHandler.backPressOnCurrentScreen();
+        return mModel.get(RestoreTabsProperties.CURRENT_SCREEN) != UNINITIALIZED;
+    }
+
+    @Override
+    public NonNullObservableSupplier<Boolean> getBackPressStateChangedSupplier() {
+        return mBackPressStateChangedSupplier;
+    }
+
+    @Override
+    public void onBackPressed() {
+        mBackPressHandler.backPressOnCurrentScreen();
     }
 
     @Override
@@ -60,22 +138,30 @@ public class RestoreTabsPromoSheetContent implements BottomSheetContent {
     }
 
     @Override
-    public int getSheetContentDescriptionStringId() {
-        return R.string.restore_tabs_content_description;
+    public String getSheetContentDescription(Context context) {
+        return context.getString(R.string.restore_tabs_content_description);
     }
 
     @Override
-    public int getSheetClosedAccessibilityStringId() {
+    public @StringRes int getSheetClosedAccessibilityStringId() {
         return R.string.restore_tabs_sheet_closed;
     }
 
     @Override
-    public int getSheetHalfHeightAccessibilityStringId() {
+    public @StringRes int getSheetHalfHeightAccessibilityStringId() {
         return R.string.restore_tabs_content_description;
     }
 
     @Override
-    public int getSheetFullHeightAccessibilityStringId() {
+    public @StringRes int getSheetFullHeightAccessibilityStringId() {
         return R.string.restore_tabs_content_description;
+    }
+
+    void setRecyclerViewForTesting(RecyclerView recyclerView) {
+        mRecyclerView = recyclerView;
+    }
+
+    void setScrollViewForTesting(ScrollView scrollView) {
+        mScrollView = scrollView;
     }
 }

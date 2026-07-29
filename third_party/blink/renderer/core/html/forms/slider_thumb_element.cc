@@ -32,7 +32,6 @@
 #include "third_party/blink/renderer/core/html/forms/slider_thumb_element.h"
 
 #include "third_party/blink/renderer/core/dom/events/event.h"
-#include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/events/mouse_event.h"
 #include "third_party/blink/renderer/core/events/touch_event.h"
@@ -43,9 +42,10 @@
 #include "third_party/blink/renderer/core/html/parser/html_parser_idioms.h"
 #include "third_party/blink/renderer/core/html/shadow/shadow_element_names.h"
 #include "third_party/blink/renderer/core/input/event_handler.h"
+#include "third_party/blink/renderer/core/layout/flex/layout_flexible_box.h"
+#include "third_party/blink/renderer/core/layout/layout_block_flow.h"
+#include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
 #include "third_party/blink/renderer/core/layout/layout_theme.h"
-#include "third_party/blink/renderer/core/layout/ng/flex/layout_ng_flexible_box.h"
-#include "third_party/blink/renderer/core/layout/ng/layout_ng_block_flow.h"
 #include "ui/base/ui_base_features.h"
 
 namespace blink {
@@ -53,7 +53,6 @@ namespace blink {
 SliderThumbElement::SliderThumbElement(Document& document)
     : HTMLDivElement(document), in_drag_mode_(false) {
   SetHasCustomStyleCallbacks();
-  setAttribute(html_names::kIdAttr, shadow_element_names::kIdSliderThumb);
 }
 
 void SliderThumbElement::SetPositionFromValue() {
@@ -73,7 +72,7 @@ void SliderThumbElement::SetPositionFromValue() {
 
 LayoutObject* SliderThumbElement::CreateLayoutObject(
     const ComputedStyle& style) {
-  return MakeGarbageCollected<LayoutNGBlockFlow>(this);
+  return MakeGarbageCollected<LayoutBlockFlow>(this);
 }
 
 bool SliderThumbElement::IsDisabledFormControl() const {
@@ -88,12 +87,12 @@ bool SliderThumbElement::MatchesReadWritePseudoClass() const {
   return HostInput() && HostInput()->MatchesReadWritePseudoClass();
 }
 
-void SliderThumbElement::DragFrom(const LayoutPoint& point) {
+void SliderThumbElement::DragFrom(const PhysicalOffset& point) {
   StartDragging();
   SetPositionFromPoint(point);
 }
 
-void SliderThumbElement::SetPositionFromPoint(const LayoutPoint& point) {
+void SliderThumbElement::SetPositionFromPoint(const PhysicalOffset& point) {
   HTMLInputElement* input(HostInput());
   Element* track_element = input->EnsureShadowSubtree()->getElementById(
       shadow_element_names::kIdSliderTrack);
@@ -104,47 +103,35 @@ void SliderThumbElement::SetPositionFromPoint(const LayoutPoint& point) {
   if (!input_object || !thumb_box || !track_box)
     return;
 
-  PhysicalOffset point_in_track =
-      track_box->AbsoluteToLocalPoint(PhysicalOffsetToBeNoop(point));
-  const bool is_vertical = !thumb_box->StyleRef().IsHorizontalWritingMode();
-  bool is_left_to_right_direction =
-      thumb_box->StyleRef().IsLeftToRightDirection();
+  PhysicalOffset point_in_track = track_box->AbsoluteToLocalPoint(point);
+  auto writing_direction = thumb_box->StyleRef().GetWritingDirection();
+  bool is_flipped = writing_direction.IsFlippedInlines();
+  const auto* input_box = To<LayoutBox>(input_object);
+  const PhysicalOffset thumb_offset =
+      thumb_box->LocalToAncestorPoint(PhysicalOffset(), input_box) -
+      track_box->LocalToAncestorPoint(PhysicalOffset(), input_box);
+  const PhysicalSize thumb_size = thumb_box->StitchedSize();
+  const PhysicalBoxStrut thumb_margins = thumb_box->MarginOutsets();
+  const PhysicalSize track_box_size = track_box->PhysicalContentBoxRect().size;
+
   LayoutUnit track_size;
   LayoutUnit position;
   LayoutUnit current_position;
-  const auto* input_box = To<LayoutBox>(input_object);
-  PhysicalOffset thumb_offset =
-      thumb_box->LocalToAncestorPoint(PhysicalOffset(), input_box) -
-      track_box->LocalToAncestorPoint(PhysicalOffset(), input_box);
-  if (is_vertical) {
-    track_size = track_box->ContentHeight() - thumb_box->Size().Height();
-    position = point_in_track.top - thumb_box->Size().Height() / 2;
-    if (is_left_to_right_direction &&
-        !RuntimeEnabledFeatures::
-            FormControlsVerticalWritingModeDirectionSupportEnabled()) {
-      position -= thumb_box->MarginBottom() - track_size;
-    } else {
-      position -= is_left_to_right_direction ? thumb_box->MarginTop()
-                                             : thumb_box->MarginBottom();
-    }
+  if (!writing_direction.IsHorizontal()) {
+    track_size = track_box_size.height - thumb_size.height;
+    position = point_in_track.top - thumb_size.height / 2;
+    position -= is_flipped ? thumb_margins.bottom : thumb_margins.top;
     current_position = thumb_offset.top;
   } else {
-    track_size = track_box->ContentWidth() - thumb_box->Size().Width();
-    position = point_in_track.left - thumb_box->Size().Width() / 2;
-    position -= is_left_to_right_direction ? thumb_box->MarginLeft()
-                                           : thumb_box->MarginRight();
+    track_size = track_box_size.width - thumb_size.width;
+    position = point_in_track.left - thumb_size.width / 2;
+    position -= is_flipped ? thumb_margins.right : thumb_margins.left;
     current_position = thumb_offset.left;
   }
   position = std::min(position, track_size).ClampNegativeToZero();
   const Decimal ratio =
       Decimal::FromDouble(static_cast<double>(position) / track_size);
-  const Decimal fraction =
-      (is_vertical && is_left_to_right_direction &&
-       !RuntimeEnabledFeatures::
-           FormControlsVerticalWritingModeDirectionSupportEnabled()) ||
-              !is_left_to_right_direction
-          ? Decimal(1) - ratio
-          : ratio;
+  const Decimal fraction = is_flipped ? Decimal(1) - ratio : ratio;
   StepRange step_range(input->CreateStepRange(kRejectAny));
   Decimal value =
       step_range.ClampValue(step_range.ValueFromProportion(fraction));
@@ -154,12 +141,7 @@ void SliderThumbElement::SetPositionFromPoint(const LayoutPoint& point) {
     double closest_fraction =
         step_range.ProportionFromValue(closest).ToDouble();
     double closest_ratio =
-        (is_vertical && is_left_to_right_direction &&
-         !RuntimeEnabledFeatures::
-             FormControlsVerticalWritingModeDirectionSupportEnabled()) ||
-                !is_left_to_right_direction
-            ? 1.0 - closest_fraction
-            : closest_fraction;
+        is_flipped ? 1.0 - closest_fraction : closest_fraction;
     LayoutUnit closest_position(track_size * closest_ratio);
     const LayoutUnit snapping_threshold(5);
     if ((closest_position - position).Abs() <= snapping_threshold)
@@ -187,7 +169,7 @@ void SliderThumbElement::StartDragging() {
   }
 }
 
-void SliderThumbElement::StopDragging() {
+void SliderThumbElement::StopDragging(EventDispatch event_dispatch) {
   if (!in_drag_mode_)
     return;
 
@@ -200,8 +182,9 @@ void SliderThumbElement::StopDragging() {
     GetLayoutObject()->SetNeedsLayoutAndFullPaintInvalidation(
         layout_invalidation_reason::kSliderValueChanged);
   }
-  if (HostInput())
+  if (HostInput() && event_dispatch == kEventDispatchAllowed) {
     HostInput()->DispatchFormControlChangeEvent();
+  }
 }
 
 void SliderThumbElement::DefaultEventHandler(Event& event) {
@@ -244,8 +227,10 @@ void SliderThumbElement::DefaultEventHandler(Event& event) {
     return;
   }
   if (event_type == event_type_names::kMousemove) {
-    if (in_drag_mode_)
-      SetPositionFromPoint(LayoutPoint(mouse_event.AbsoluteLocation()));
+    if (in_drag_mode_) {
+      SetPositionFromPoint(
+          PhysicalOffset::FromPointFFloor(mouse_event.AbsoluteLocation()));
+    }
     return;
   }
 
@@ -291,10 +276,10 @@ const AtomicString& SliderThumbElement::ShadowPseudoId() const {
 
   const ComputedStyle& slider_style = input->GetLayoutObject()->StyleRef();
   switch (slider_style.EffectiveAppearance()) {
-    case kMediaSliderPart:
-    case kMediaSliderThumbPart:
-    case kMediaVolumeSliderPart:
-    case kMediaVolumeSliderThumbPart:
+    case AppearanceValue::kMediaSlider:
+    case AppearanceValue::kMediaSliderThumb:
+    case AppearanceValue::kMediaVolumeSlider:
+    case AppearanceValue::kMediaVolumeSliderThumb:
       return shadow_element_names::kPseudoMediaSliderThumb;
     default:
       return shadow_element_names::kPseudoSliderThumb;
@@ -306,16 +291,19 @@ void SliderThumbElement::AdjustStyle(ComputedStyleBuilder& builder) {
   DCHECK(host);
   const ComputedStyle& host_style = host->ComputedStyleRef();
 
-  if (host_style.EffectiveAppearance() == kSliderVerticalPart &&
-      !RuntimeEnabledFeatures::
-          RemoveNonStandardAppearanceValueSliderVerticalEnabled()) {
-    builder.SetEffectiveAppearance(kSliderThumbVerticalPart);
-  } else if (host_style.EffectiveAppearance() == kSliderHorizontalPart) {
-    builder.SetEffectiveAppearance(kSliderThumbHorizontalPart);
-  } else if (host_style.EffectiveAppearance() == kMediaSliderPart) {
-    builder.SetEffectiveAppearance(kMediaSliderThumbPart);
-  } else if (host_style.EffectiveAppearance() == kMediaVolumeSliderPart) {
-    builder.SetEffectiveAppearance(kMediaVolumeSliderThumbPart);
+  if (host_style.EffectiveAppearance() == AppearanceValue::kSliderVertical &&
+      RuntimeEnabledFeatures::
+          NonStandardAppearanceValueSliderVerticalEnabled()) {
+    builder.SetEffectiveAppearance(AppearanceValue::kSliderThumbVertical);
+  } else if (host_style.EffectiveAppearance() ==
+             AppearanceValue::kSliderHorizontal) {
+    builder.SetEffectiveAppearance(AppearanceValue::kSliderThumbHorizontal);
+  } else if (host_style.EffectiveAppearance() ==
+             AppearanceValue::kMediaSlider) {
+    builder.SetEffectiveAppearance(AppearanceValue::kMediaSliderThumb);
+  } else if (host_style.EffectiveAppearance() ==
+             AppearanceValue::kMediaVolumeSlider) {
+    builder.SetEffectiveAppearance(AppearanceValue::kMediaVolumeSliderThumb);
   }
   if (builder.HasEffectiveAppearance())
     LayoutTheme::GetTheme().AdjustSliderThumbSize(builder);
@@ -334,7 +322,7 @@ HTMLInputElement* SliderContainerElement::HostInput() const {
 }
 
 LayoutObject* SliderContainerElement::CreateLayoutObject(const ComputedStyle&) {
-  return MakeGarbageCollected<LayoutNGFlexibleBox>(this);
+  return MakeGarbageCollected<LayoutFlexibleBox>(this);
 }
 
 void SliderContainerElement::DefaultEventHandler(Event& event) {
@@ -377,9 +365,9 @@ void SliderContainerElement::HandleTouchEvent(TouchEvent* event) {
       start_point_ = touches->item(0)->AbsoluteLocation();
       sliding_direction_ = Direction::kNoMove;
       touch_started_ = true;
-      thumb->SetPositionFromPoint(touches->item(0)->AbsoluteLocation());
+      thumb->SetPositionFromPoint(start_point_);
     } else if (touch_started_) {
-      LayoutPoint current_point = touches->item(0)->AbsoluteLocation();
+      PhysicalOffset current_point = touches->item(0)->AbsoluteLocation();
       if (sliding_direction_ == Direction::kNoMove) {
         // Still needs to update the direction.
         sliding_direction_ = GetDirection(current_point, start_point_);
@@ -388,7 +376,7 @@ void SliderContainerElement::HandleTouchEvent(TouchEvent* event) {
       // sliding_direction_ has been updated, so check whether it's okay to
       // slide again.
       if (CanSlide()) {
-        thumb->SetPositionFromPoint(touches->item(0)->AbsoluteLocation());
+        thumb->SetPositionFromPoint(current_point);
         event->SetDefaultHandled();
       }
     }
@@ -396,12 +384,12 @@ void SliderContainerElement::HandleTouchEvent(TouchEvent* event) {
 }
 
 SliderContainerElement::Direction SliderContainerElement::GetDirection(
-    LayoutPoint& point1,
-    LayoutPoint& point2) {
+    const PhysicalOffset& point1,
+    const PhysicalOffset& point2) {
   if (point1 == point2) {
     return Direction::kNoMove;
   }
-  if ((point1.X() - point2.X()).Abs() >= (point1.Y() - point2.Y()).Abs()) {
+  if ((point1.left - point2.left).Abs() >= (point1.top - point2.top).Abs()) {
     return Direction::kHorizontal;
   }
   return Direction::kVertical;
@@ -423,7 +411,11 @@ bool SliderContainerElement::CanSlide() {
       }
     }
   }
-  bool is_horizontal = GetComputedStyle()->IsHorizontalWritingMode();
+  const ComputedStyle* container_style = GetComputedStyle();
+  if (!container_style) {
+    return false;
+  }
+  bool is_horizontal = container_style->IsHorizontalWritingMode();
   if ((sliding_direction_ == Direction::kVertical && is_horizontal) ||
       (sliding_direction_ == Direction::kHorizontal && !is_horizontal)) {
     return false;
@@ -438,10 +430,10 @@ const AtomicString& SliderContainerElement::ShadowPseudoId() const {
   const ComputedStyle& slider_style =
       OwnerShadowHost()->GetLayoutObject()->StyleRef();
   switch (slider_style.EffectiveAppearance()) {
-    case kMediaSliderPart:
-    case kMediaSliderThumbPart:
-    case kMediaVolumeSliderPart:
-    case kMediaVolumeSliderThumbPart:
+    case AppearanceValue::kMediaSlider:
+    case AppearanceValue::kMediaSliderThumb:
+    case AppearanceValue::kMediaVolumeSlider:
+    case AppearanceValue::kMediaVolumeSliderThumb:
       return shadow_element_names::kPseudoMediaSliderContainer;
     default:
       return shadow_element_names::kPseudoSliderContainer;
@@ -464,6 +456,7 @@ void SliderContainerElement::UpdateTouchEventHandlerRegistry() {
 }
 
 void SliderContainerElement::DidMoveToNewDocument(Document& old_document) {
+  has_touch_event_handler_ = false;
   UpdateTouchEventHandlerRegistry();
   HTMLElement::DidMoveToNewDocument(old_document);
 }

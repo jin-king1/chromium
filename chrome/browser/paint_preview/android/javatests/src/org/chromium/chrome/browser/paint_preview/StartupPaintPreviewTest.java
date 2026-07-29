@@ -21,47 +21,37 @@ import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mock;
 import org.mockito.Mockito;
 
+import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.chrome.browser.paint_preview.services.PaintPreviewTabService;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.paintpreview.player.PlayerManager;
-import org.chromium.content_public.browser.test.util.TestThreadUtils;
 
 import java.util.concurrent.ExecutionException;
 
-/**
- * Tests for the {@link TabbedPaintPreview} class.
- */
+/** Tests for the {@link StartupPaintPreview} class. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(PER_CLASS)
 public class StartupPaintPreviewTest {
-    @ClassRule
-    public static ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
-    // Tell R8 not to break the ability to mock the class.
-    @Mock
-    private static PaintPreviewTabService sUnused;
-
     @Rule
-    public final BlankCTATabInitialStateRule mInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, true);
+    public final AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.autoResetCtaActivityRule();
 
     private static final String TEST_URL = "/chrome/test/data/android/about.html";
+    private WebPageStation mPage;
 
     @BeforeClass
     public static void setUp() {
@@ -80,7 +70,9 @@ public class StartupPaintPreviewTest {
 
     @Before
     public void setup() {
-        sActivityTestRule.loadUrl(sActivityTestRule.getTestServer().getURL(TEST_URL));
+        mPage =
+                mActivityTestRule.startOnWebPage(
+                        mActivityTestRule.getTestServer().getURL(TEST_URL));
     }
 
     /**
@@ -90,28 +82,29 @@ public class StartupPaintPreviewTest {
     @Test
     @MediumTest
     public void testDisplayedCorrectly() throws ExecutionException {
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        StartupPaintPreview startupPaintPreview = TestThreadUtils.runOnUiThreadBlocking(
-                () -> new StartupPaintPreview(tab, null, null, null));
+        Tab tab = mPage.getTab();
+        StartupPaintPreview startupPaintPreview =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> new StartupPaintPreview(tab, null, null, null));
         TabbedPaintPreview tabbedPaintPreview =
-                TestThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
+                ThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
         showAndWaitForInflation(startupPaintPreview, tabbedPaintPreview, null);
     }
 
     @Test
     @MediumTest
-    @DisabledTest(message = "https://crbug.com/1444246")
     public void testSnackbarShow() throws ExecutionException, InterruptedException {
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        StartupPaintPreview startupPaintPreview = TestThreadUtils.runOnUiThreadBlocking(
-                () -> new StartupPaintPreview(tab, null, null, null));
+        Tab tab = mPage.getTab();
+        StartupPaintPreview startupPaintPreview =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> new StartupPaintPreview(tab, null, null, null));
         TabbedPaintPreview tabbedPaintPreview =
-                TestThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
+                ThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
         showAndWaitForInflation(startupPaintPreview, tabbedPaintPreview, null);
 
         // Snackbar should appear on user frustration. It currently happens when users taps 3 times,
         // or when users longpress.
-        SnackbarManager snackbarManager = sActivityTestRule.getActivity().getSnackbarManager();
+        SnackbarManager snackbarManager = mActivityTestRule.getActivity().getSnackbarManager();
         assertSnackbarVisibility(snackbarManager, false);
         View view = tabbedPaintPreview.getViewForTesting();
 
@@ -125,7 +118,7 @@ public class StartupPaintPreviewTest {
         onView(Matchers.is(view)).perform(click());
         assertSnackbarVisibility(snackbarManager, true);
 
-        TestThreadUtils.runOnUiThreadBlocking(snackbarManager::dismissAllSnackbars);
+        ThreadUtils.runOnUiThreadBlocking(snackbarManager::dismissAllSnackbars);
         assertSnackbarVisibility(snackbarManager, false);
 
         // Simulate long press.
@@ -133,39 +126,37 @@ public class StartupPaintPreviewTest {
         assertSnackbarVisibility(snackbarManager, true);
     }
 
-    /**
-     * Tests that the paint preview is removed when certain conditions are met.
-     */
+    /** Tests that the paint preview is removed when certain conditions are met. */
     @Test
     @MediumTest
     public void testRemoveOnFirstMeaningfulPaint() throws ExecutionException {
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        StartupPaintPreview startupPaintPreview = TestThreadUtils.runOnUiThreadBlocking(
-                () -> new StartupPaintPreview(tab, null, null, null));
+        Tab tab = mPage.getTab();
+        StartupPaintPreview startupPaintPreview =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> new StartupPaintPreview(tab, null, null, null));
         TabbedPaintPreview tabbedPaintPreview =
-                TestThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
+                ThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
         CallbackHelper dismissCallback = new CallbackHelper();
 
         // Should be removed on FMP signal.
         showAndWaitForInflation(startupPaintPreview, tabbedPaintPreview, dismissCallback);
-        TestThreadUtils.runOnUiThreadBlocking(
+        ThreadUtils.runOnUiThreadBlocking(
                 () -> startupPaintPreview.onWebContentsFirstMeaningfulPaint(tab.getWebContents()));
         assertAttachedAndShown(tabbedPaintPreview, false, false);
         Assert.assertEquals(
                 "Dismiss callback should have been called.", 1, dismissCallback.getCallCount());
     }
 
-    /**
-     * Tests that the paint preview is removed when offline page is shown.
-     */
+    /** Tests that the paint preview is removed when offline page is shown. */
     @Test
     @MediumTest
     public void testRemoveOnOfflinePage() throws ExecutionException {
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        StartupPaintPreview startupPaintPreview = TestThreadUtils.runOnUiThreadBlocking(
-                () -> new StartupPaintPreview(tab, null, null, null));
+        Tab tab = mPage.getTab();
+        StartupPaintPreview startupPaintPreview =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> new StartupPaintPreview(tab, null, null, null));
         TabbedPaintPreview tabbedPaintPreview =
-                TestThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
+                ThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
         // Offline page callback always returns true.
         startupPaintPreview.setIsOfflinePage(() -> true);
         CallbackHelper dismissCallback = new CallbackHelper();
@@ -173,58 +164,58 @@ public class StartupPaintPreviewTest {
         showAndWaitForInflation(startupPaintPreview, tabbedPaintPreview, dismissCallback);
         assertAttachedAndShown(tabbedPaintPreview, true, true);
         // Should be removed on PageLoadFinished signal.
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            startupPaintPreview.getTabObserverForTesting().onPageLoadFinished(tab, null);
-        });
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    startupPaintPreview.getTabObserverForTesting().onPageLoadFinished(tab, null);
+                });
         assertAttachedAndShown(tabbedPaintPreview, false, false);
         Assert.assertEquals(
                 "Dismiss callback should have been called.", 1, dismissCallback.getCallCount());
     }
 
-    /**
-     * Tests that the paint preview is removed when certain conditions are met.
-     */
+    /** Tests that the paint preview is removed when certain conditions are met. */
     @Test
     @MediumTest
     public void testRemoveOnSnackbarClick() throws ExecutionException, InterruptedException {
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        StartupPaintPreview startupPaintPreview = TestThreadUtils.runOnUiThreadBlocking(
-                () -> new StartupPaintPreview(tab, null, null, null));
+        Tab tab = mPage.getTab();
+        StartupPaintPreview startupPaintPreview =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> new StartupPaintPreview(tab, null, null, null));
         TabbedPaintPreview tabbedPaintPreview =
-                TestThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
+                ThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
         CallbackHelper dismissCallback = new CallbackHelper();
 
         // Should be removed on SnackBar click.
         showAndWaitForInflation(startupPaintPreview, tabbedPaintPreview, dismissCallback);
-        SnackbarManager snackbarManager = sActivityTestRule.getActivity().getSnackbarManager();
+        SnackbarManager snackbarManager = mActivityTestRule.getActivity().getSnackbarManager();
         View view = tabbedPaintPreview.getViewForTesting();
         onView(Matchers.is(view)).perform(longClick());
         assertSnackbarVisibility(snackbarManager, true);
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            snackbarManager.getCurrentSnackbarForTesting().getController().onAction(null);
-        });
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    snackbarManager.getCurrentSnackbarForTesting().getController().onAction(null);
+                });
         assertAttachedAndShown(tabbedPaintPreview, false, false);
         Assert.assertEquals(
                 "Dismiss callback should have been called.", 1, dismissCallback.getCallCount());
     }
 
-    /**
-     * Tests that the paint preview is removed when certain conditions are met.
-     */
+    /** Tests that the paint preview is removed when certain conditions are met. */
     @Test
     @MediumTest
     public void testRemoveOnNavigation() throws ExecutionException {
-        Tab tab = sActivityTestRule.getActivity().getActivityTab();
-        StartupPaintPreview startupPaintPreview = TestThreadUtils.runOnUiThreadBlocking(
-                () -> new StartupPaintPreview(tab, null, null, null));
+        Tab tab = mPage.getTab();
+        StartupPaintPreview startupPaintPreview =
+                ThreadUtils.runOnUiThreadBlocking(
+                        () -> new StartupPaintPreview(tab, null, null, null));
         TabbedPaintPreview tabbedPaintPreview =
-                TestThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
+                ThreadUtils.runOnUiThreadBlocking(() -> TabbedPaintPreview.get(tab));
         CallbackHelper dismissCallback = new CallbackHelper();
 
         // Should be removed on navigation start.
         showAndWaitForInflation(startupPaintPreview, tabbedPaintPreview, dismissCallback);
         startupPaintPreview.getTabObserverForTesting().onRestoreStarted(tab);
-        TestThreadUtils.runOnUiThreadBlocking(tab::reload);
+        ThreadUtils.runOnUiThreadBlocking(tab::reload);
         assertAttachedAndShown(tabbedPaintPreview, false, false);
         Assert.assertEquals(
                 "Dismiss callback should have been called.", 1, dismissCallback.getCallCount());
@@ -233,24 +224,32 @@ public class StartupPaintPreviewTest {
     private void assertSnackbarVisibility(SnackbarManager snackbarManager, boolean visible) {
         String message =
                 visible ? "Snackbar should be visible." : "Snackbar should not be visible.";
-        CriteriaHelper.pollUiThread(() -> {
-            Criteria.checkThat(message, snackbarManager.isShowing(), Matchers.is(visible));
-        });
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(message, snackbarManager.isShowing(), Matchers.is(visible));
+                });
     }
 
-    private void showAndWaitForInflation(StartupPaintPreview startupPaintPreview,
-            TabbedPaintPreview tabbedPaintPreview, CallbackHelper dismissCallback) {
-        TestThreadUtils.runOnUiThreadBlocking(() -> {
-            startupPaintPreview.show(
-                    dismissCallback == null ? null : dismissCallback::notifyCalled);
-        });
+    private void showAndWaitForInflation(
+            StartupPaintPreview startupPaintPreview,
+            TabbedPaintPreview tabbedPaintPreview,
+            CallbackHelper dismissCallback) {
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    startupPaintPreview.show(
+                            dismissCallback == null ? null : dismissCallback::notifyCalled);
+                });
         assertAttachedAndShown(tabbedPaintPreview, true, true);
-        CriteriaHelper.pollUiThread(() -> {
-            Criteria.checkThat("TabbedPaintPreview has no view",
-                    tabbedPaintPreview.getViewForTesting(), Matchers.notNullValue());
-            Criteria.checkThat("TabbedPaintPreview has 0 children",
-                    ((ViewGroup) tabbedPaintPreview.getViewForTesting()).getChildCount(),
-                    Matchers.not(0));
-        });
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    Criteria.checkThat(
+                            "TabbedPaintPreview has no view",
+                            tabbedPaintPreview.getViewForTesting(),
+                            Matchers.notNullValue());
+                    Criteria.checkThat(
+                            "TabbedPaintPreview has 0 children",
+                            ((ViewGroup) tabbedPaintPreview.getViewForTesting()).getChildCount(),
+                            Matchers.not(0));
+                });
     }
 }

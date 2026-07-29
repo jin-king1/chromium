@@ -8,14 +8,12 @@
 
 #import "ios/chrome/common/app_group/app_group_constants.h"
 #import "ios/chrome/common/credential_provider/credential.h"
+#import "ios/chrome/common/credential_provider/net_util.h"
 #import "ios/chrome/credential_provider_extension/password_util.h"
+#import "ios/chrome/credential_provider_extension/ui/new_password_coordinator+Testing.h"
 #import "ios/chrome/credential_provider_extension/ui/new_password_mediator.h"
 #import "ios/chrome/credential_provider_extension/ui/new_password_view_controller.h"
 #import "ios/chrome/credential_provider_extension/ui/ui_util.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 @interface NewPasswordCoordinator () <NewPasswordViewControllerDelegate>
 
@@ -78,8 +76,8 @@
   self.mediator.uiHandler = newPasswordViewController;
 
   NSString* identifier = self.serviceIdentifiers.firstObject.identifier;
-  NSURL* url = identifier ? [NSURL URLWithString:identifier] : nil;
-  newPasswordViewController.currentHost = url ? url.host : @"";
+  newPasswordViewController.currentHost =
+      credential_provider::HostForIdentifier(identifier) ?: @"";
 
   self.viewController = [[UINavigationController alloc]
       initWithRootViewController:newPasswordViewController];

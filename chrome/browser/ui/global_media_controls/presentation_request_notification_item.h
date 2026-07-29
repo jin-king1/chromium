@@ -9,6 +9,7 @@
 #include <string>
 
 #include "base/memory/raw_ptr_exclusion.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "components/global_media_controls/public/mojom/device_service.mojom.h"
 #include "components/media_message_center/media_notification_item.h"
@@ -50,7 +51,7 @@ class PresentationRequestNotificationItem final
   void MediaSessionInfoChanged(
       media_session::mojom::MediaSessionInfoPtr session_info) override {}
   void MediaSessionMetadataChanged(
-      const absl::optional<media_session::MediaMetadata>& metadata) override;
+      const std::optional<media_session::MediaMetadata>& metadata) override;
   void MediaSessionActionsChanged(
       const std::vector<media_session::mojom::MediaSessionAction>& actions)
       override {}
@@ -59,7 +60,7 @@ class PresentationRequestNotificationItem final
                            std::vector<media_session::MediaImage>>& images)
       override;
   void MediaSessionPositionChanged(
-      const absl::optional<media_session::MediaPosition>& position) override {}
+      const std::optional<media_session::MediaPosition>& position) override {}
 
   base::WeakPtr<PresentationRequestNotificationItem> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
@@ -85,6 +86,10 @@ class PresentationRequestNotificationItem final
   void OnArtworkBitmap(const SkBitmap& bitmap);
   void OnFaviconBitmap(const SkBitmap& bitmap);
 
+  // Returns true if the origin of the active MediaSession's routed frame is the
+  // same as the origin of the frame that initiated the presentation request.
+  bool ShouldShowMediaSessionMetadata() const;
+
   // True if the item is created from a default PresentationRequest, which means
   // |context_| is set to nullptr in the constructor.
   const bool is_default_presentation_request_;
@@ -101,14 +106,15 @@ class PresentationRequestNotificationItem final
 
   // The metadata for the Media Session associated with the WebContents that
   // this presentation request is associated with.
-  absl::optional<media_session::MediaMetadata> metadata_;
+  std::optional<media_session::MediaMetadata> metadata_;
 
   // The favicon/artwork images for the Media Session associated with the
   // WebContents this presentation request is associated with.
   gfx::ImageSkia artwork_image_;
   gfx::ImageSkia favicon_image_;
 
-  const mojo::Remote<global_media_controls::mojom::DevicePickerProvider>&
+  const raw_ref<
+      const mojo::Remote<global_media_controls::mojom::DevicePickerProvider>>
       provider_;
 
   base::WeakPtrFactory<PresentationRequestNotificationItem> weak_ptr_factory_{

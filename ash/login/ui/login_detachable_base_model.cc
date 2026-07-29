@@ -55,8 +55,12 @@ class LoginDetachableBaseModelImpl : public LoginDetachableBaseModel,
   void OnDetachableBaseRequiresUpdateChanged(bool requires_update) override {}
 
  private:
-  raw_ptr<DetachableBaseHandler, ExperimentalAsh> detachable_base_handler_;
-  base::ScopedObservation<DetachableBaseHandler, DetachableBaseObserver>
+  raw_ptr<DetachableBaseHandler, LeakedDanglingUntriaged>
+      detachable_base_handler_;
+  // TODO(crbug.com/498575974): remove when the LoginDetachableBaseModelImpl is
+  // no longer outliving the DetachableBaseHandler it observes.
+  base::ScopedObservation<DetachableBaseHandler,
+                          DetachableBaseObserver>::LeakedDanglingUntriaged
       detachable_base_observation_{this};
 };
 

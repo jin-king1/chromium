@@ -73,7 +73,8 @@ class EventBasedStatusReportingService
   void OnSessionStateChanged() override;
 
   // network::NetworkConnectionTracker::NetworkConnectionObserver:
-  void OnConnectionChanged(network::mojom::ConnectionType type) override;
+  void OnConnectionChanged(
+      net::NetworkChangeNotifier::ConnectionType type) override;
 
   // PowerManagerClient::Observer:
   void SuspendDone(base::TimeDelta duration) override;
@@ -91,7 +92,7 @@ class EventBasedStatusReportingService
   // KeyedService:
   void Shutdown() override;
 
-  const raw_ptr<content::BrowserContext, ExperimentalAsh> context_;
+  const raw_ptr<content::BrowserContext, DanglingUntriaged> context_;
   bool session_just_started_ = true;
 };
 

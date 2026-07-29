@@ -19,12 +19,16 @@
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "chromeos/ash/components/network/onc/network_onc_utils.h"
 #include "chromeos/ash/components/network/proxy/proxy_config_handler.h"
+#include "chromeos/constants/chromeos_features.h"
+#include "chromeos/constants/pref_names.h"
 #include "components/onc/onc_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/proxy_config/pref_proxy_config_tracker_impl.h"
 #include "components/proxy_config/proxy_config_dictionary.h"
 #include "components/proxy_config/proxy_config_pref_names.h"
 #include "components/proxy_config/proxy_prefs.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user_manager.h"
 
 namespace ash {
@@ -49,6 +53,33 @@ bool GetNetworkProxyConfig(const PrefService* profile_prefs,
                                                            proxy_config);
 }
 
+// This code is responsible for determining whether proxies should be disabled
+// for captive portal signin windows.
+bool ProxiesDisabledForCaptivePortalSignin(const PrefService* profile_prefs) {
+  // Prior to login only the signin Profile can be used with no special
+  // behavior.
+  if (!profile_prefs) {
+    return false;
+  }
+  // The kCaptivePortalSignin pref identifies signin windows. If this is not
+  // a signin window, do not disable proxies here.
+  const PrefService::Preference* const captive_portal_pref =
+      profile_prefs->FindPreference(chromeos::prefs::kCaptivePortalSignin);
+  if (!captive_portal_pref || !captive_portal_pref->GetValue()->GetBool()) {
+    return false;
+  }
+  // If the CaptivePortalAuthenticationIgnoresProxy pref is set to false by
+  // policy, proxies should not be disabled for captive portal signin.
+  const PrefService::Preference* const ignore_proxy_pref =
+      profile_prefs->FindPreference(
+          chromeos::prefs::kCaptivePortalAuthenticationIgnoresProxy);
+  if (ignore_proxy_pref && !ignore_proxy_pref->GetValue()->GetBool()) {
+    return false;
+  }
+  // Otherwise, disable proxies for captive portal signin.
+  return true;
+}
+
 }  // namespace
 
 ProxyConfigServiceImpl::ProxyConfigServiceImpl(
@@ -57,7 +88,8 @@ ProxyConfigServiceImpl::ProxyConfigServiceImpl(
     scoped_refptr<base::SingleThreadTaskRunner> io_task_runner)
     : PrefProxyConfigTrackerImpl(
           profile_prefs ? profile_prefs : local_state_prefs,
-          io_task_runner),
+          io_task_runner,
+          /*policy_service=*/nullptr),
       profile_prefs_(profile_prefs),
       local_state_prefs_(local_state_prefs) {
   const base::RepeatingClosure proxy_change_callback = base::BindRepeating(
@@ -68,6 +100,8 @@ ProxyConfigServiceImpl::ProxyConfigServiceImpl(
     profile_pref_registrar_.Add(::onc::prefs::kOpenNetworkConfiguration,
                                 proxy_change_callback);
     profile_pref_registrar_.Add(::proxy_config::prefs::kUseSharedProxies,
+                                proxy_change_callback);
+    profile_pref_registrar_.Add(chromeos::prefs::kCaptivePortalSignin,
                                 proxy_change_callback);
   }
   local_state_pref_registrar_.Init(local_state_prefs);
@@ -156,8 +190,12 @@ bool ProxyConfigServiceImpl::IgnoreProxy(const PrefService* profile_prefs,
     return false;
   }
   if (onc_source == ::onc::ONC_SOURCE_DEVICE_POLICY) {
+    const session_manager::Session* primary_session =
+        session_manager::SessionManager::Get()->GetPrimarySession();
     const user_manager::User* primary_user =
-        user_manager::UserManager::Get()->GetPrimaryUser();
+        primary_session ? user_manager::UserManager::Get()->FindUser(
+                              primary_session->account_id())
+                        : nullptr;
     if (!primary_user || primary_user->IsAffiliated()) {
       VLOG(1) << "Respecting proxy for network, as the primary user belongs to "
               << "the domain the device is enrolled to.";
@@ -177,11 +215,15 @@ std::unique_ptr<ProxyConfigDictionary>
 ProxyConfigServiceImpl::GetActiveProxyConfigDictionary(
     const PrefService* profile_prefs,
     const PrefService* local_state_prefs) {
+  if (ProxiesDisabledForCaptivePortalSignin(profile_prefs)) {
+    return nullptr;
+  }
+
   // Apply Pref Proxy configuration if available.
   net::ProxyConfigWithAnnotation pref_proxy_config;
   ProxyPrefs::ConfigState pref_state =
-      PrefProxyConfigTrackerImpl::ReadPrefConfig(profile_prefs,
-                                                 &pref_proxy_config);
+      PrefProxyConfigTrackerImpl::ReadPrefConfig(
+          profile_prefs, &pref_proxy_config, /*policy_service=*/nullptr);
   if (PrefProxyConfigTrackerImpl::PrefPrecedes(pref_state)) {
     const PrefService::Preference* const pref =
         profile_prefs->FindPreference(::proxy_config::prefs::kProxy);
@@ -193,8 +235,9 @@ ProxyConfigServiceImpl::GetActiveProxyConfigDictionary(
   const NetworkState* network =
       NetworkHandler::Get()->network_state_handler()->DefaultNetwork();
   // No connected network.
-  if (!network)
+  if (!network) {
     return nullptr;
+  }
 
   // Apply network proxy configuration.
   ::onc::ONCSource onc_source;
@@ -202,17 +245,23 @@ ProxyConfigServiceImpl::GetActiveProxyConfigDictionary(
       proxy_config::GetProxyConfigForNetwork(
           profile_prefs, local_state_prefs, *network,
           NetworkHandler::Get()->network_profile_handler(), &onc_source);
-  if (!ProxyConfigServiceImpl::IgnoreProxy(profile_prefs,
-                                           network->profile_path(), onc_source))
+  if (!ProxyConfigServiceImpl::IgnoreProxy(
+          profile_prefs, network->profile_path(), onc_source)) {
     return proxy_config;
+  }
 
   return std::make_unique<ProxyConfigDictionary>(
       ProxyConfigDictionary::CreateDirect());
 }
 
 void ProxyConfigServiceImpl::DetermineEffectiveConfigFromDefaultNetwork() {
-  if (!NetworkHandler::IsInitialized())
+  if (!NetworkHandler::IsInitialized()) {
     return;
+  }
+
+  if (ProxiesDisabledForCaptivePortalSignin(profile_prefs_)) {
+    return;
+  }
 
   NetworkStateHandler* handler = NetworkHandler::Get()->network_state_handler();
   const NetworkState* network = handler->DefaultNetwork();

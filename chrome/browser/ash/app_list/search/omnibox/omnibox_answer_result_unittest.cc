@@ -4,18 +4,23 @@
 
 #include "chrome/browser/ash/app_list/search/omnibox/omnibox_answer_result.h"
 
+#include <optional>
+
 #include "ash/public/cpp/app_list/app_list_metrics.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "base/json/json_reader.h"
 #include "base/values.h"
-#include "chrome/browser/chromeos/launcher_search/search_util.h"
+#include "chrome/browser/ash/app_list/search/omnibox/omnibox_types.h"
+#include "chrome/browser/ash/app_list/search/omnibox/omnibox_util.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/suggestion_answer.h"
+#include "components/omnibox/common/omnibox_feature_configs.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "third_party/omnibox_proto/answer_type.pb.h"
+#include "third_party/omnibox_proto/rich_answer_template.pb.h"
 
 namespace app_list::test {
 namespace {
@@ -44,8 +49,8 @@ TEST_F(OmniboxAnswerResultTest, CalculatorResult) {
 
   OmniboxAnswerResult result(
       /*profile=*/nullptr, /*list_controller=*/nullptr,
-      crosapi::CreateAnswerResult(match, /*controller=*/nullptr, u"query",
-                                  AutocompleteInput()),
+      CreateAnswerResult(match, /*controller=*/nullptr, u"query",
+                         AutocompleteInput()),
       u"query");
   EXPECT_EQ(result.display_type(), ash::SearchResultDisplayType::kAnswerCard);
   EXPECT_EQ(result.result_type(), ash::AppListSearchResultType::kOmnibox);
@@ -62,8 +67,7 @@ TEST_F(OmniboxAnswerResultTest, CalculatorResult) {
   ASSERT_EQ(details.GetType(), ash::SearchResultTextItemType::kString);
   EXPECT_EQ(details.GetText(), u"4");
   EXPECT_TRUE(details.GetTextTags().empty());
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kCalculator);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kCalculator);
 
   std::stringstream out;
   out << result;
@@ -78,8 +82,8 @@ TEST_F(OmniboxAnswerResultTest, CalculatorResultNoDescription) {
 
   OmniboxAnswerResult result(
       /*profile=*/nullptr, /*list_controller=*/nullptr,
-      crosapi::CreateAnswerResult(match, /*controller=*/nullptr, u"2+2",
-                                  AutocompleteInput()),
+      CreateAnswerResult(match, /*controller=*/nullptr, u"2+2",
+                         AutocompleteInput()),
       u"2+2");
   EXPECT_EQ(result.display_type(), ash::SearchResultDisplayType::kAnswerCard);
   EXPECT_EQ(result.result_type(), ash::AppListSearchResultType::kOmnibox);
@@ -96,15 +100,15 @@ TEST_F(OmniboxAnswerResultTest, CalculatorResultNoDescription) {
   ASSERT_EQ(details.GetType(), ash::SearchResultTextItemType::kString);
   EXPECT_EQ(details.GetText(), u"4");
   EXPECT_TRUE(details.GetTextTags().empty());
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kCalculator);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kCalculator);
 }
 
 TEST_F(OmniboxAnswerResultTest, WeatherResult) {
-  // This comes from SuggestionAnswer::AnswerType::ANSWER_TYPE_WEATHER.
-  const std::u16string kWeatherType = u"8";
+  AutocompleteMatch match;
+  match.contents = u"contents";
+  match.description = u"description";
+  match.answer_type = omnibox::ANSWER_TYPE_WEATHER;
 
-  SuggestionAnswer answer;
   std::string json =
       "{ \"l\": ["
       "  { \"il\": { \"t\": [{ \"t\": \"text one\", \"tt\": 8 }], "
@@ -113,20 +117,18 @@ TEST_F(OmniboxAnswerResultTest, WeatherResult) {
       "              \"t\": [{ \"t\": \"-5°C\", \"tt\": 8 }], "
       "              \"at\": { \"t\": \"additional two\", \"tt\": 42 } } } "
       "] }";
-  absl::optional<base::Value> value = base::JSONReader::Read(json);
+  std::optional<base::Value> value =
+      base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(value && value->is_dict());
-  ASSERT_TRUE(
-      SuggestionAnswer::ParseAnswer(value->GetDict(), kWeatherType, &answer));
-
-  AutocompleteMatch match;
-  match.answer = answer;
-  match.contents = u"contents";
-  match.description = u"description";
-
+  // Create weather result when ACMatch has |answer_template| populated.
+  omnibox::RichAnswerTemplate answer_template;
+  ASSERT_TRUE(omnibox::answer_data_parser::ParseJsonToAnswerData(
+      value->GetDict(), &answer_template));
+  match.answer_template = answer_template;
   OmniboxAnswerResult result(
       /*profile=*/nullptr, /*list_controller=*/nullptr,
-      crosapi::CreateAnswerResult(match, /*controller=*/nullptr, u"query",
-                                  AutocompleteInput()),
+      CreateAnswerResult(match, /*controller=*/nullptr, u"query",
+                         AutocompleteInput()),
       u"query");
   EXPECT_EQ(result.display_type(), ash::SearchResultDisplayType::kAnswerCard);
   EXPECT_EQ(result.result_type(), ash::AppListSearchResultType::kOmnibox);
@@ -156,17 +158,19 @@ TEST_F(OmniboxAnswerResultTest, WeatherResult) {
   EXPECT_EQ(details.GetText(), u"additional two");
   EXPECT_TRUE(details.GetTextTags().empty());
 
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kWeather);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kWeather);
 }
 
 TEST_F(OmniboxAnswerResultTest, AnswerResult) {
-  // This comes from SuggestionAnswer::AnswerType::ANSWER_TYPE_FINANCE.
-  const std::u16string kWeatherType = u"2";
+  AutocompleteMatch match;
+  match.contents = u"contents";
+  match.description = u"description";
+  match.answer_type = omnibox::ANSWER_TYPE_FINANCE;
 
-  SuggestionAnswer answer;
-  // Text tags ("tt") 5 and 6 are SuggestionAnswer::TextType::NEGATIVE and
-  // SuggestionAnswer::TextType::POSITIVE respectively.
+  // Text tags ("tt") 5 and 6 are
+  // omnibox::FormattedString::ColorType::COLOR_ON_SURFACE_NEGATIVE and
+  // omnibox::FormattedString::ColorType::COLOR_ON_SURFACE_POSITIVE
+  // respectively.
   std::string json =
       "{ \"l\": ["
       "  { \"il\": { \"t\": [{ \"t\": \"text one\", \"tt\": 8 }], "
@@ -174,20 +178,19 @@ TEST_F(OmniboxAnswerResultTest, AnswerResult) {
       "  { \"il\": { \"t\": [{ \"t\": \"text two\", \"tt\": 5 }], "
       "              \"at\": { \"t\": \"additional two\", \"tt\": 6 } } } "
       "] }";
-  absl::optional<base::Value> value = base::JSONReader::Read(json);
+  std::optional<base::Value> value =
+      base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(value && value->is_dict());
-  ASSERT_TRUE(
-      SuggestionAnswer::ParseAnswer(value->GetDict(), kWeatherType, &answer));
-
-  AutocompleteMatch match;
-  match.answer = answer;
-  match.contents = u"contents";
-  match.description = u"description";
+  // Create result when ACMatch has |answer_template| populated.
+  omnibox::RichAnswerTemplate answer_template;
+  ASSERT_TRUE(omnibox::answer_data_parser::ParseJsonToAnswerData(
+      value->GetDict(), &answer_template));
+  match.answer_template = answer_template;
 
   OmniboxAnswerResult result(
       /*profile=*/nullptr, /*list_controller=*/nullptr,
-      crosapi::CreateAnswerResult(match, /*controller=*/nullptr, u"query",
-                                  AutocompleteInput()),
+      CreateAnswerResult(match, /*controller=*/nullptr, u"query",
+                         AutocompleteInput()),
       u"query");
   EXPECT_EQ(result.display_type(), ash::SearchResultDisplayType::kAnswerCard);
   EXPECT_EQ(result.result_type(), ash::AppListSearchResultType::kOmnibox);
@@ -229,111 +232,84 @@ TEST_F(OmniboxAnswerResultTest, AnswerResult) {
               testing::UnorderedElementsAre(
                   TagEquals(Tag(Tag::Style::GREEN, 0, length))));
 
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kFinance);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kFinance);
 }
 
 TEST_F(OmniboxAnswerResultTest, DictionaryResultMultiline) {
-  // This comes from SuggestionAnswer::AnswerType::ANSWER_TYPE_DICTIONARY.
-  const std::u16string kDictionaryType = u"1";
+  AutocompleteMatch match;
+  match.contents = u"contents";
+  match.description = u"description";
+  match.answer_type = omnibox::ANSWER_TYPE_DICTIONARY;
 
-  SuggestionAnswer answer;
   std::string json =
       "{ \"l\": ["
       "  { \"il\": { \"t\": [{ \"t\": \"text one\", \"tt\": 8 }] } }, "
       "  { \"il\": { \"t\": [{ \"t\": \"text two\", \"tt\": 5 }] } } "
       "] }";
-  absl::optional<base::Value> value = base::JSONReader::Read(json);
+  std::optional<base::Value> value =
+      base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(value && value->is_dict());
-  ASSERT_TRUE(SuggestionAnswer::ParseAnswer(value->GetDict(), kDictionaryType,
-                                            &answer));
-
-  AutocompleteMatch match;
-  match.answer = answer;
-  match.contents = u"contents";
-  match.description = u"description";
+  // Dictionary result when ACMatch has |answer_template| populated.
+  omnibox::RichAnswerTemplate answer_template;
+  ASSERT_TRUE(omnibox::answer_data_parser::ParseJsonToAnswerData(
+      value->GetDict(), &answer_template));
+  match.answer_template = answer_template;
 
   OmniboxAnswerResult result(
       /*profile=*/nullptr, /*list_controller=*/nullptr,
-      crosapi::CreateAnswerResult(match, /*controller=*/nullptr, u"query",
-                                  AutocompleteInput()),
+      CreateAnswerResult(match, /*controller=*/nullptr, u"query",
+                         AutocompleteInput()),
       u"query");
   EXPECT_TRUE(result.multiline_details());
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kDictionary);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kDictionary);
 }
 
 TEST_F(OmniboxAnswerResultTest, TranslationResult) {
-  // This comes from SuggestionAnswer::AnswerType::ANSWER_TYPE_TRANSLATION.
-  const int kTranslationType = 7;
-  SuggestionAnswer answer;
-  answer.set_type(kTranslationType);
-
   AutocompleteMatch match;
-  match.answer = answer;
+  match.answer_type = omnibox::ANSWER_TYPE_TRANSLATION;
+  // Translation result when ACMatch has |answer_template| populated.
+  omnibox::RichAnswerTemplate answer_template;
+  answer_template.add_answers();
+  match.answer_template = answer_template;
 
   OmniboxAnswerResult result(
       /*profile=*/nullptr, /*list_controller=*/nullptr,
-      crosapi::CreateAnswerResult(match, /*controller=*/nullptr,
-                                  u"hello in Spanish", AutocompleteInput()),
+      CreateAnswerResult(match, /*controller=*/nullptr, u"hello in Spanish",
+                         AutocompleteInput()),
       u"hello in Spanish");
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kTranslation);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kTranslation);
 }
 
 TEST_F(OmniboxAnswerResultTest, CurrencyResult) {
-  // This comes from SuggestionAnswer::AnswerType::ANSWER_TYPE_CURRENCY.
-  const int kCurrencyType = 10;
-  SuggestionAnswer answer;
-  answer.set_type(kCurrencyType);
-
   AutocompleteMatch match;
-  match.answer = answer;
+  match.answer_type = omnibox::ANSWER_TYPE_CURRENCY;
+  // Currency result when ACMatch has |answer_template| populated.
+  omnibox::RichAnswerTemplate answer_template;
+  answer_template.add_answers();
+  match.answer_template = answer_template;
 
   OmniboxAnswerResult result(
       /*profile=*/nullptr, /*list_controller=*/nullptr,
-      crosapi::CreateAnswerResult(match, /*controller=*/nullptr,
-                                  u"100 usd in aud", AutocompleteInput()),
+      CreateAnswerResult(match, /*controller=*/nullptr, u"100 usd in aud",
+                         AutocompleteInput()),
       u"100 usd in aud");
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kCurrency);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kCurrency);
 }
 
 TEST_F(OmniboxAnswerResultTest, SunriseResult) {
-  // This comes from SuggestionAnswer::AnswerType::ANSWER_TYPE_SUNRISE.
-  const int kSunriseType = 6;
-  SuggestionAnswer answer;
-  answer.set_type(kSunriseType);
-
   AutocompleteMatch match;
-  match.answer = answer;
+  match.answer_type = omnibox::ANSWER_TYPE_SUNRISE_SUNSET;
+  // Sunrise result when ACMatch has |answer_template| populated.
+  omnibox::RichAnswerTemplate answer_template;
+  answer_template.add_answers();
+  match.answer_template = answer_template;
 
   OmniboxAnswerResult result(
       /*profile=*/nullptr, /*list_controller=*/nullptr,
-      crosapi::CreateAnswerResult(match, /*controller=*/nullptr,
-                                  u"sunrise time in Sydney",
-                                  AutocompleteInput()),
+      CreateAnswerResult(match, /*controller=*/nullptr,
+                         u"sunrise time in Sydney", AutocompleteInput()),
       u"sunrise time in Sydney");
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kSunrise);
-}
-
-TEST_F(OmniboxAnswerResultTest, WhenIsResult) {
-  // This comes from SuggestionAnswer::AnswerType::ANSWER_TYPE_WHEN_IS.
-  const int kWhenIsType = 9;
-  SuggestionAnswer answer;
-  answer.set_type(kWhenIsType);
-
-  AutocompleteMatch match;
-  match.answer = answer;
-
-  OmniboxAnswerResult result(
-      /*profile=*/nullptr, /*list_controller=*/nullptr,
-      crosapi::CreateAnswerResult(match, /*controller=*/nullptr,
-                                  u"when is christmas", AutocompleteInput()),
-      u"when is christmas");
-  EXPECT_EQ(result.answer_type(),
-            crosapi::mojom::SearchResult::AnswerType::kWhenIs);
+  EXPECT_EQ(result.answer_type(), OmniboxResultAnswerType::kSunrise);
 }
 
 }  // namespace app_list::test

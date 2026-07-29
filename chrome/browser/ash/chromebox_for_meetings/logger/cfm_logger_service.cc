@@ -8,7 +8,7 @@
 #include "chrome/browser/ash/chromebox_for_meetings/logger/reporting_pipeline.h"
 #include "chromeos/ash/components/chromebox_for_meetings/features.h"
 #include "chromeos/ash/components/dbus/chromebox_for_meetings/cfm_hotline_client.h"
-#include "chromeos/ash/services/chromebox_for_meetings/public/mojom/meet_devices_logger.mojom-shared.h"
+#include "chromeos/services/chromebox_for_meetings/public/mojom/meet_devices_logger.mojom-shared.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
 
 namespace ash::cfm {
@@ -94,8 +94,7 @@ bool CfmLoggerService::ServiceRequestReceived(
 }
 
 void CfmLoggerService::OnBindService(
-    mojo::ScopedMessagePipeHandle receiver_pipe,
-    const absl::optional<std::string>&) {
+    mojo::ScopedMessagePipeHandle receiver_pipe) {
   receivers_.Add(this, mojo::PendingReceiver<mojom::MeetDevicesLogger>(
                            std::move(receiver_pipe)));
 }
@@ -139,8 +138,9 @@ void CfmLoggerService::AddStateObserver(
 
 void CfmLoggerService::NotifyStateObserver(mojom::LoggerState state) {
   current_logger_state_ = state;
-  for (auto& observer : observer_list_)
+  for (auto& observer : observer_list_) {
     observer->OnNotifyState(current_logger_state_);
+  }
 }
 
 void CfmLoggerService::SetDelegate(Delegate* delegate) {

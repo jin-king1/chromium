@@ -5,12 +5,6 @@
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_header_footer_item.h"
 
 #import "base/check.h"
-#import "ios/chrome/browser/shared/ui/table_view/chrome_table_view_styler.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 @implementation TableViewHeaderFooterItem
 
 - (instancetype)initWithType:(NSInteger)type {
@@ -20,18 +14,10 @@
   return self;
 }
 
-- (void)configureHeaderFooterView:(UITableViewHeaderFooterView*)headerFooter
-                       withStyler:(ChromeTableViewStyler*)styler {
+- (void)configureHeaderFooterView:(UITableViewHeaderFooterView*)headerFooter {
   DCHECK([headerFooter class] == self.cellClass);
   headerFooter.accessibilityTraits = self.accessibilityTraits;
   headerFooter.accessibilityIdentifier = self.accessibilityIdentifier;
-  // Use the styler tableViewBackgroundColor (as a performance optimization) if
-  // available.
-  if (styler.tableViewBackgroundColor) {
-    UIView* backgroundView = [[UIView alloc] init];
-    backgroundView.backgroundColor = styler.tableViewBackgroundColor;
-    headerFooter.backgroundView = backgroundView;
-  }
 }
 
 @end

@@ -5,6 +5,7 @@
 #include "components/upload_list/text_log_upload_list.h"
 
 #include <algorithm>
+#include <optional>
 #include <sstream>
 #include <utility>
 
@@ -15,7 +16,6 @@
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace {
 
@@ -44,7 +44,8 @@ bool CheckCsvUploadListOutOfRange(const std::string& line,
       !components[kUploadTimeIndex].empty() &&
       base::StringToDouble(components[kUploadTimeIndex],
                            &seconds_since_epoch)) {
-    base::Time upload_time = base::Time::FromDoubleT(seconds_since_epoch);
+    base::Time upload_time =
+        base::Time::FromSecondsSinceUnixEpoch(seconds_since_epoch);
     if (begin <= upload_time && upload_time <= end)
       return false;
   }
@@ -53,7 +54,8 @@ bool CheckCsvUploadListOutOfRange(const std::string& line,
       !components[kCaptureTimeIndex].empty() &&
       base::StringToDouble(components[kCaptureTimeIndex],
                            &seconds_since_epoch)) {
-    base::Time capture_time = base::Time::FromDoubleT(seconds_since_epoch);
+    base::Time capture_time =
+        base::Time::FromSecondsSinceUnixEpoch(seconds_since_epoch);
     if (begin <= capture_time && capture_time <= end)
       return false;
   }
@@ -67,7 +69,8 @@ bool CheckFieldOutOfRange(const std::string* time_string,
   if (time_string) {
     double upload_time_double = 0.0;
     if (base::StringToDouble(*time_string, &upload_time_double)) {
-      base::Time upload_time = base::Time::FromDoubleT(upload_time_double);
+      base::Time upload_time =
+          base::Time::FromSecondsSinceUnixEpoch(upload_time_double);
       if (begin <= upload_time && upload_time <= end)
         return false;
     }
@@ -75,7 +78,7 @@ bool CheckFieldOutOfRange(const std::string* time_string,
   return true;
 }
 
-bool CheckJsonUploadListOutOfRange(const base::Value::Dict& dict,
+bool CheckJsonUploadListOutOfRange(const base::DictValue& dict,
                                    const base::Time& begin,
                                    const base::Time& end) {
   const std::string* upload_time_string =
@@ -126,7 +129,8 @@ void TextLogUploadList::ClearUploadList(const base::Time& begin,
 
   std::ostringstream new_contents_stream;
   for (const std::string& line : log_entries) {
-    absl::optional<base::Value> json = base::JSONReader::Read(line);
+    std::optional<base::Value> json =
+        base::JSONReader::Read(line, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     bool should_copy = false;
 
     if (json.has_value()) {
@@ -161,7 +165,7 @@ std::unique_ptr<UploadList::UploadInfo> TextLogUploadList::TryParseCsvLogEntry(
     if (!base::StringToDouble(components[kUploadTimeIndex],
                               &seconds_since_epoch))
       return nullptr;
-    upload_time = base::Time::FromDoubleT(seconds_since_epoch);
+    upload_time = base::Time::FromSecondsSinceUnixEpoch(seconds_since_epoch);
   }
   auto info = std::make_unique<TextLogUploadList::UploadInfo>(components[1],
                                                               upload_time);
@@ -175,7 +179,8 @@ std::unique_ptr<UploadList::UploadInfo> TextLogUploadList::TryParseCsvLogEntry(
       !components[kCaptureTimeIndex].empty() &&
       base::StringToDouble(components[kCaptureTimeIndex],
                            &seconds_since_epoch)) {
-    info->capture_time = base::Time::FromDoubleT(seconds_since_epoch);
+    info->capture_time =
+        base::Time::FromSecondsSinceUnixEpoch(seconds_since_epoch);
   }
 
   int state;
@@ -188,7 +193,7 @@ std::unique_ptr<UploadList::UploadInfo> TextLogUploadList::TryParseCsvLogEntry(
 }
 
 std::unique_ptr<UploadList::UploadInfo> TextLogUploadList::TryParseJsonLogEntry(
-    const base::Value::Dict& dict) {
+    const base::DictValue& dict) {
   // Parse upload_id.
   const base::Value* upload_id_value = dict.Find(kJsonLogKeyUploadId);
   if (upload_id_value && !upload_id_value->is_string())
@@ -204,7 +209,7 @@ std::unique_ptr<UploadList::UploadInfo> TextLogUploadList::TryParseJsonLogEntry(
 
   auto info = std::make_unique<TextLogUploadList::UploadInfo>(
       upload_id_value ? upload_id_value->GetString() : std::string(),
-      base::Time::FromDoubleT(upload_time_double));
+      base::Time::FromSecondsSinceUnixEpoch(upload_time_double));
 
   // Parse local_id.
   const std::string* local_id = dict.FindString(kJsonLogKeyLocalId);
@@ -217,10 +222,11 @@ std::unique_ptr<UploadList::UploadInfo> TextLogUploadList::TryParseJsonLogEntry(
   double capture_time_double = 0.0;
   if (capture_time_string &&
       base::StringToDouble(*capture_time_string, &capture_time_double))
-    info->capture_time = base::Time::FromDoubleT(capture_time_double);
+    info->capture_time =
+        base::Time::FromSecondsSinceUnixEpoch(capture_time_double);
 
   // Parse state.
-  absl::optional<int> state = dict.FindInt(kJsonLogKeyState);
+  std::optional<int> state = dict.FindInt(kJsonLogKeyState);
   if (state.has_value())
     info->state = static_cast<UploadList::UploadInfo::State>(state.value());
 
@@ -243,7 +249,8 @@ void TextLogUploadList::ParseLogEntries(
     std::vector<std::unique_ptr<UploadList::UploadInfo>>* uploads) {
   for (const std::string& line : base::Reversed(log_entries)) {
     std::unique_ptr<UploadList::UploadInfo> info;
-    absl::optional<base::Value> json = base::JSONReader::Read(line);
+    std::optional<base::Value> json =
+        base::JSONReader::Read(line, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
 
     if (json.has_value() && json->is_dict())
       info = TryParseJsonLogEntry(json.value().GetDict());

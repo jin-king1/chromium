@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,6 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
-#include "base/ranges/algorithm.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chromeos/ash/components/dbus/update_engine/fake_update_engine_client.h"
@@ -245,8 +245,9 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
                        std::move(callback)));
   }
 
-  void ApplyDeferredUpdate(bool shutdown_after_update,
-                           base::OnceClosure failure_callback) override {
+  void ApplyDeferredUpdateAdvanced(
+      bool shutdown_after_update,
+      base::OnceClosure failure_callback) override {
     update_engine::ApplyUpdateConfig config;
     config.set_done_action(shutdown_after_update
                                ? update_engine::UpdateDoneAction::SHUTDOWN
@@ -265,7 +266,7 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
 
     update_engine_proxy_->CallMethod(
         &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-        base::BindOnce(&UpdateEngineClientImpl::OnApplyDeferredUpdate,
+        base::BindOnce(&UpdateEngineClientImpl::OnApplyDeferredUpdateAdvanced,
                        weak_ptr_factory_.GetWeakPtr(),
                        std::move(failure_callback)));
   }
@@ -308,15 +309,13 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
   }
 
   void GetUpdateEngineStatus() {
-    // TODO(crbug.com/977320): Rename the method call back to GetStatus() after
-    // the interface changed.
+    // TODO(crbug.com/40633112): Rename the method call back to GetStatus()
+    // after the interface changed.
     dbus::MethodCall method_call(update_engine::kUpdateEngineInterface,
                                  update_engine::kGetStatusAdvanced);
-    update_engine_proxy_->CallMethodWithErrorCallback(
+    update_engine_proxy_->CallMethodWithErrorResponse(
         &method_call, dbus::ObjectProxy::TIMEOUT_USE_DEFAULT,
-        base::BindOnce(&UpdateEngineClientImpl::OnGetStatus,
-                       weak_ptr_factory_.GetWeakPtr()),
-        base::BindOnce(&UpdateEngineClientImpl::OnGetStatusError,
+        base::BindOnce(&UpdateEngineClientImpl::OnGetStatusResponse,
                        weak_ptr_factory_.GetWeakPtr()));
   }
 
@@ -395,7 +394,13 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
   }
 
   // Called when a response for GetStatus is received.
-  void OnGetStatus(dbus::Response* response) {
+  void OnGetStatusResponse(dbus::Response* response,
+                           dbus::ErrorResponse* error_response) {
+    if (error_response) {
+      LOG(ERROR) << "GetStatus request failed with error: "
+                 << error_response->ToString();
+      return;
+    }
     if (!response) {
       LOG(ERROR) << "Failed to get response for GetStatus request.";
       return;
@@ -411,12 +416,6 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
     last_status_ = status;
     for (auto& observer : observers_)
       observer.UpdateStatusChanged(status);
-  }
-
-  // Called when GetStatus call failed.
-  void OnGetStatusError(dbus::ErrorResponse* error) {
-    LOG(ERROR) << "GetStatus request failed with error: "
-               << (error ? error->ToString() : "");
   }
 
   // Called when a response for SetReleaseChannel() is received.
@@ -464,12 +463,21 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
     }
 
     VLOG(1) << "Eol date received: " << status.eol_date();
+    VLOG(1) << "Extended date received: " << status.extended_date();
+    VLOG(1) << "Extended opt in received: "
+            << status.extended_opt_in_required();
 
     EolInfo eol_info;
     if (status.eol_date() > 0) {
       eol_info.eol_date =
           base::Time::UnixEpoch() + base::Days(status.eol_date());
     }
+    if (status.extended_date() > 0) {
+      eol_info.extended_date =
+          base::Time::UnixEpoch() + base::Days(status.extended_date());
+    }
+    eol_info.extended_opt_in_required = status.extended_opt_in_required();
+
     std::move(callback).Run(eol_info);
   }
 
@@ -501,7 +509,7 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
     if (!response) {
       LOG(ERROR) << update_engine::kIsFeatureEnabled
                  << " call failed for feature " << feature;
-      std::move(callback).Run(absl::nullopt);
+      std::move(callback).Run(std::nullopt);
       return;
     }
 
@@ -509,7 +517,7 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
     bool enabled;
     if (!reader.PopBool(&enabled)) {
       LOG(ERROR) << "Bad response: " << response->ToString();
-      std::move(callback).Run(absl::nullopt);
+      std::move(callback).Run(std::nullopt);
       return;
     }
 
@@ -538,11 +546,12 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
     std::move(callback).Run(success);
   }
 
-  // Called when a response for `ApplyDeferredUpdate()` is received.
-  void OnApplyDeferredUpdate(base::OnceClosure failure_callback,
-                             dbus::Response* response) {
+  // Called when a response for `ApplyDeferredUpdateAdvanced()` is received.
+  void OnApplyDeferredUpdateAdvanced(base::OnceClosure failure_callback,
+                                     dbus::Response* response) {
     if (!response) {
-      LOG(ERROR) << update_engine::kApplyDeferredUpdate << " call failed.";
+      LOG(ERROR) << update_engine::kApplyDeferredUpdateAdvanced
+                 << " call failed.";
       std::move(failure_callback).Run();
       return;
     }
@@ -572,8 +581,8 @@ class UpdateEngineClientImpl : public UpdateEngineClient {
     LOG_IF(WARNING, !success) << "Failed to connect to status updated signal.";
   }
 
-  raw_ptr<dbus::ObjectProxy, ExperimentalAsh> update_engine_proxy_;
-  base::ObserverList<Observer>::Unchecked observers_;
+  raw_ptr<dbus::ObjectProxy> update_engine_proxy_;
+  base::ObserverList<Observer> observers_;
   update_engine::StatusResult last_status_;
 
   // True after update_engine's D-Bus service has become available.
@@ -693,12 +702,13 @@ class UpdateEngineClientDesktopFake : public UpdateEngineClient {
   void IsFeatureEnabled(const std::string& feature,
                         IsFeatureEnabledCallback callback) override {
     VLOG(1) << "Requesting to get " << feature;
-    std::move(callback).Run(absl::nullopt);
+    std::move(callback).Run(std::nullopt);
   }
 
-  void ApplyDeferredUpdate(bool shutdown_after_update,
-                           base::OnceClosure failure_callback) override {
-    VLOG(1) << "Applying deferred update and "
+  void ApplyDeferredUpdateAdvanced(
+      bool shutdown_after_update,
+      base::OnceClosure failure_callback) override {
+    VLOG(1) << "Applying deferred update advanced and "
             << (shutdown_after_update ? "shutdown." : "reboot.");
   }
 
@@ -756,7 +766,7 @@ class UpdateEngineClientDesktopFake : public UpdateEngineClient {
     }
   }
 
-  base::ObserverList<Observer>::Unchecked observers_;
+  base::ObserverList<Observer> observers_;
 
   std::string current_channel_;
   std::string target_channel_;

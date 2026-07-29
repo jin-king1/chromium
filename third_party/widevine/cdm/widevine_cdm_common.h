@@ -13,17 +13,6 @@
 // "alpha" is a temporary name until a convention is defined.
 inline constexpr char kWidevineKeySystem[] = "com.widevine.alpha";
 
-#if BUILDFLAG(IS_WIN)
-// A sub key system of `kWidevineKeySystem` only used in experiments.
-inline constexpr char kWidevineExperimentKeySystem[] =
-    "com.widevine.alpha.experiment";
-
-// A sub key system of `kWidevineKeySystem` only used in experiments to support
-// hardware decryption with codecs that support clear lead.
-inline constexpr char kWidevineExperiment2KeySystem[] =
-    "com.widevine.alpha.experiment2";
-#endif  // BUILDFLAG(IS_WIN)
-
 // Widevine CDM files are in a directory with this name. This path is also
 // hardcoded in some build files and changing it requires changing the build
 // files as well.
@@ -57,4 +46,12 @@ inline constexpr media::CdmType kMediaFoundationWidevineCdmType{
     0x8e73dec793bf5adcull, 0x27e572c9a1fd930eull};
 #endif  // BUILDFLAG(IS_WIN)
 
+// UUID from http://dashif.org/identifiers/content_protection/. UUIDs are used
+// in Android for creating MediaDRM objects that support the DRM scheme required
+// by content.
+#if BUILDFLAG(IS_ANDROID)
+inline constexpr uint8_t kWidevineUuid[16] = {
+    0xED, 0xEF, 0x8B, 0xA9, 0x79, 0xD6, 0x4A, 0xCE,  //
+    0xA3, 0xC8, 0x27, 0xDC, 0xD5, 0x1D, 0x21, 0xED};
+#endif  // BUILDFLAG(IS_ANDROID)
 #endif  // WIDEVINE_CDM_WIDEVINE_CDM_COMMON_H_

@@ -6,6 +6,7 @@
 #define CHROMECAST_PUBLIC_MEDIA_DECODER_CONFIG_H_
 
 #include <stdint.h>
+
 #include <vector>
 
 #include "cast_decrypt_config.h"
@@ -132,7 +133,6 @@ enum VideoProfile : int {
   kVP9Profile2,
   kVP9Profile3,
   kDolbyVisionProfile0,
-  kDolbyVisionProfile4,
   kDolbyVisionProfile5,
   kDolbyVisionProfile7,
   kHEVCMain,
@@ -231,7 +231,7 @@ enum class RangeID : int8_t {
   INVALID = 0,
   // Limited Rec. 709 color range with RGB values ranging from 16 to 235.
   LIMITED = 1,
-  // Full RGB color range with RGB valees from 0 to 255.
+  // Full RGB color range with RGB values from 0 to 255.
   FULL = 2,
   // Range is defined by TransferID/MatrixID.
   DERIVED = 3,
@@ -343,6 +343,8 @@ struct VideoConfig {
   VideoCodec codec = VideoCodec::kVideoCodecUnknown;
   // Video codec profile.
   VideoProfile profile = VideoProfile::kVideoProfileUnknown;
+  // Video codec level.
+  uint32_t codec_profile_level = 0;
   // Additional video config for the video stream if available. Consumers of
   // this structure should make an explicit copy of |additional_config| if it
   // will be used after SetConfig() finishes.
@@ -376,8 +378,9 @@ inline bool IsValidConfig(const AudioConfig& config) {
          config.channel_layout != ChannelLayout::UNSUPPORTED &&
          config.sample_format >= kSampleFormatMin &&
          config.sample_format <= kSampleFormatMax &&
+         config.channel_number > 0 && config.channel_number <= 32 &&
          ((config.sample_format != kUnknownSampleFormat &&
-           config.channel_number > 0 && config.bytes_per_channel > 0 &&
+           config.bytes_per_channel > 0 &&
            config.bytes_per_channel <= kMaxBytesPerSample) ||
           config.channel_layout == ChannelLayout::BITSTREAM) &&
          config.samples_per_second > 0 &&

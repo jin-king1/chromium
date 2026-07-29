@@ -20,26 +20,25 @@ MockMediaStreamVideoSink::~MockMediaStreamVideoSink() {}
 blink::VideoCaptureDeliverFrameCB
 MockMediaStreamVideoSink::GetDeliverFrameCB() {
   return base::BindPostTaskToCurrentDefault(
-      WTF::BindRepeating(&MockMediaStreamVideoSink::DeliverVideoFrame,
-                         weak_factory_.GetWeakPtr()));
+      blink::BindRepeating(&MockMediaStreamVideoSink::DeliverVideoFrame,
+                           weak_factory_.GetWeakPtr()));
 }
 
 EncodedVideoFrameCB MockMediaStreamVideoSink::GetDeliverEncodedVideoFrameCB() {
   return base::BindPostTaskToCurrentDefault(
-      WTF::BindRepeating(&MockMediaStreamVideoSink::DeliverEncodedVideoFrame,
-                         weak_factory_.GetWeakPtr()));
+      blink::BindRepeating(&MockMediaStreamVideoSink::DeliverEncodedVideoFrame,
+                           weak_factory_.GetWeakPtr()));
 }
 
 VideoCaptureNotifyFrameDroppedCB
 MockMediaStreamVideoSink::GetNotifyFrameDroppedCB() {
   return base::BindPostTaskToCurrentDefault(
-      WTF::BindRepeating(&MockMediaStreamVideoSink::NotifyFrameDropped,
-                         weak_factory_.GetWeakPtr()));
+      blink::BindRepeating(&MockMediaStreamVideoSink::NotifyFrameDropped,
+                           weak_factory_.GetWeakPtr()));
 }
 
 void MockMediaStreamVideoSink::DeliverVideoFrame(
     scoped_refptr<media::VideoFrame> frame,
-    std::vector<scoped_refptr<media::VideoFrame>> scaled_frames,
     base::TimeTicks estimated_capture_time) {
   ++number_of_frames_;
   format_ = frame->format();
@@ -54,8 +53,9 @@ void MockMediaStreamVideoSink::DeliverEncodedVideoFrame(
   OnEncodedVideoFrame(estimated_capture_time);
 }
 
-void MockMediaStreamVideoSink::NotifyFrameDropped() {
-  OnNotifyFrameDropped();
+void MockMediaStreamVideoSink::NotifyFrameDropped(
+    media::VideoCaptureFrameDropReason reason) {
+  OnNotifyFrameDropped(reason);
 }
 
 void MockMediaStreamVideoSink::OnReadyStateChanged(

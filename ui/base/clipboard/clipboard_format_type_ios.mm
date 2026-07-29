@@ -16,39 +16,50 @@
 
 namespace ui {
 
+struct ClipboardFormatType::ObjCStorage {
+  // A Uniform Type identifier string.
+  NSString* uttype;
+};
+
 // ClipboardFormatType implementation.
-ClipboardFormatType::ClipboardFormatType() : uttype_(nil) {}
+ClipboardFormatType::ClipboardFormatType()
+    : objc_storage_(std::make_unique<ObjCStorage>()) {}
 
 ClipboardFormatType::ClipboardFormatType(NSString* native_format)
-    : uttype_([native_format retain]) {}
+    : ClipboardFormatType() {
+  objc_storage_->uttype = native_format;
+}
 
 ClipboardFormatType::ClipboardFormatType(const ClipboardFormatType& other)
-    : uttype_([other.uttype_ retain]) {}
+    : ClipboardFormatType() {
+  objc_storage_->uttype = other.objc_storage_->uttype;
+}
 
 ClipboardFormatType& ClipboardFormatType::operator=(
     const ClipboardFormatType& other) {
   if (this != &other) {
-    [uttype_ release];
-    uttype_ = [other.uttype_ retain];
+    objc_storage_->uttype = other.objc_storage_->uttype;
   }
   return *this;
 }
 
 bool ClipboardFormatType::operator==(const ClipboardFormatType& other) const {
-  return [uttype_ isEqualToString:other.uttype_];
+  return [objc_storage_->uttype isEqualToString:other.objc_storage_->uttype];
 }
 
-ClipboardFormatType::~ClipboardFormatType() {
-  [uttype_ release];
-}
+ClipboardFormatType::~ClipboardFormatType() = default;
 
 std::string ClipboardFormatType::Serialize() const {
-  return base::SysNSStringToUTF8(uttype_);
+  return base::SysNSStringToUTF8(objc_storage_->uttype);
+}
+
+NSString* ClipboardFormatType::ToNSString() const {
+  return objc_storage_->uttype;
 }
 
 // static
 ClipboardFormatType ClipboardFormatType::Deserialize(
-    const std::string& serialization) {
+    std::string_view serialization) {
   return ClipboardFormatType(base::SysUTF8ToNSString(serialization));
 }
 
@@ -57,7 +68,8 @@ std::string ClipboardFormatType::GetName() const {
 }
 
 bool ClipboardFormatType::operator<(const ClipboardFormatType& other) const {
-  return [uttype_ compare:other.uttype_] == NSOrderedAscending;
+  return [objc_storage_->uttype compare:other.objc_storage_->uttype] ==
+         NSOrderedAscending;
 }
 
 std::string ClipboardFormatType::WebCustomFormatName(int index) {
@@ -74,18 +86,12 @@ const ClipboardFormatType& ClipboardFormatType::WebCustomFormatMap() {
 
 // static
 ClipboardFormatType ClipboardFormatType::CustomPlatformType(
-    const std::string& format_string) {
-  DCHECK(base::IsStringASCII(format_string));
+    std::string_view format_string) {
+  CHECK(base::IsStringASCII(format_string));
   return ClipboardFormatType::Deserialize(format_string);
 }
 
 // Various predefined ClipboardFormatTypes.
-
-// static
-ClipboardFormatType ClipboardFormatType::GetType(
-    const std::string& format_string) {
-  return ClipboardFormatType::Deserialize(format_string);
-}
 
 // static
 const ClipboardFormatType& ClipboardFormatType::FilenamesType() {
@@ -143,9 +149,9 @@ const ClipboardFormatType& ClipboardFormatType::WebKitSmartPasteType() {
 }
 
 // static
-const ClipboardFormatType& ClipboardFormatType::WebCustomDataType() {
+const ClipboardFormatType& ClipboardFormatType::DataTransferCustomType() {
   static base::NoDestructor<ClipboardFormatType> type(
-      kUTTypeChromiumWebCustomData);
+      kUTTypeChromiumDataTransferCustomData);
   return *type;
 }
 

@@ -4,7 +4,10 @@
 
 #include "components/services/heap_profiling/connection_manager.h"
 
+#include <utility>
+
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/json/string_escape.h"
 #include "base/metrics/histogram_macros.h"
 #include "components/services/heap_profiling/json_exporter.h"
@@ -44,11 +47,14 @@ struct ConnectionManager::Connection {
              mojo::PendingRemote<mojom::ProfilingClient> client,
              mojom::ProcessType process_type,
              uint32_t sampling_rate,
-             mojom::StackMode stack_mode)
+             mojom::StackMode stack_mode,
+             mojom::ProfilingService::AddProfilingClientCallback
+                 started_profiling_callback)
       : client(std::move(client)),
         process_type(process_type),
         stack_mode(stack_mode),
-        sampling_rate(sampling_rate) {
+        sampling_rate(sampling_rate),
+        started_profiling_callback(std::move(started_profiling_callback)) {
     this->client.set_disconnect_handler(std::move(complete_cb));
   }
 
@@ -62,6 +68,7 @@ struct ConnectionManager::Connection {
   mojom::StackMode stack_mode;
 
   bool started_profiling = false;
+  bool waiting_for_stop_response = false;
 
   // When sampling is enabled, allocations are recorded with probability (size /
   // sampling_rate) when size < sampling_rate. When size >= sampling_rate, the
@@ -70,6 +77,9 @@ struct ConnectionManager::Connection {
   // https://bugs.chromium.org/p/chromium/issues/detail?id=810748#c4.
   // A |sampling_rate| of 1 is equivalent to recording all allocations.
   uint32_t sampling_rate = 1;
+
+  mojom::ProfilingService::AddProfilingClientCallback
+      started_profiling_callback;
 };
 
 ConnectionManager::ConnectionManager() {
@@ -83,13 +93,17 @@ void ConnectionManager::OnNewConnection(
     base::ProcessId pid,
     mojo::PendingRemote<mojom::ProfilingClient> client,
     mojom::ProcessType process_type,
-    mojom::ProfilingParamsPtr params) {
+    mojom::ProfilingParamsPtr params,
+    mojom::ProfilingService::AddProfilingClientCallback
+        started_profiling_closure) {
   base::AutoLock lock(connections_lock_);
 
   // Attempting to start profiling on an already profiled processs should have
   // no effect.
-  if (connections_.find(pid) != connections_.end())
+  if (connections_.find(pid) != connections_.end()) {
+    std::move(started_profiling_closure).Run(/*success=*/false);
     return;
+  }
 
   // It's theoretically possible that we started profiling a process, the
   // profiling was stopped [e.g. by hitting the 10-s timeout], and then we tried
@@ -106,11 +120,55 @@ void ConnectionManager::OnNewConnection(
 
   auto connection = std::make_unique<Connection>(
       std::move(complete_cb), std::move(client), process_type,
-      params->sampling_rate, params->stack_mode);
+      params->sampling_rate, params->stack_mode,
+      std::move(started_profiling_closure));
   connection->client->StartProfiling(
       std::move(params), base::BindOnce(&ConnectionManager::OnProfilingStarted,
                                         weak_factory_.GetWeakPtr(), pid));
   connections_[pid] = std::move(connection);
+}
+
+void ConnectionManager::StopProfilingAllClients(
+    base::OnceCallback<void(bool)> callback) {
+  std::vector<base::OnceClosure> stop_calls;
+  {
+    base::AutoLock lock(connections_lock_);
+
+    if (stop_profiling_callback_) {
+      std::move(callback).Run(false);
+      return;
+    }
+
+    if (connections_.empty()) {
+      std::move(callback).Run(true);
+      return;
+    }
+
+    stop_profiling_callback_ = std::move(callback);
+    stop_profiling_waiting_responses_ = connections_.size();
+    stop_profiling_success_ = true;
+
+    stop_calls.reserve(connections_.size());
+    for (const auto& it : connections_) {
+      base::ProcessId pid = it.first;
+      auto* client = &it.second->client;
+      it.second->waiting_for_stop_response = true;
+      stop_calls.push_back(base::BindOnce(
+          [](mojo::Remote<mojom::ProfilingClient>* client,
+             base::WeakPtr<ConnectionManager> manager, base::ProcessId pid) {
+            if (!manager) {
+              return;
+            }
+            (*client)->StopProfiling(base::BindOnce(
+                &ConnectionManager::OnProfilingStopped, manager, pid));
+          },
+          base::Unretained(client), weak_factory_.GetWeakPtr(), pid));
+    }
+  }
+
+  for (auto& stop_call : stop_calls) {
+    std::move(stop_call).Run();
+  }
 }
 
 std::vector<base::ProcessId> ConnectionManager::GetConnectionPids() {
@@ -118,8 +176,9 @@ std::vector<base::ProcessId> ConnectionManager::GetConnectionPids() {
   std::vector<base::ProcessId> results;
   results.reserve(connections_.size());
   for (const auto& pair : connections_) {
-    if (pair.second->started_profiling)
+    if (pair.second->started_profiling) {
       results.push_back(pair.first);
+    }
   }
   return results;
 }
@@ -130,8 +189,9 @@ ConnectionManager::GetConnectionPidsThatNeedVmRegions() {
   std::vector<base::ProcessId> results;
   results.reserve(connections_.size());
   for (const auto& pair : connections_) {
-    if (pair.second->HeapDumpNeedsVmRegions())
+    if (pair.second->HeapDumpNeedsVmRegions()) {
       results.push_back(pair.first);
+    }
   }
   return results;
 }
@@ -140,6 +200,19 @@ void ConnectionManager::OnConnectionComplete(base::ProcessId pid) {
   base::AutoLock lock(connections_lock_);
   auto found = connections_.find(pid);
   CHECK(found != connections_.end());
+  if (!found->second->started_profiling_callback.is_null()) {
+    std::move(found->second->started_profiling_callback).Run(/*success=*/false);
+  }
+
+  // If a client disconnects while we are waiting for it to stop profiling,
+  // we must decrement the waiting counter to avoid hanging indefinitely.
+  if (found->second->waiting_for_stop_response) {
+    stop_profiling_success_ = false;
+    if (--stop_profiling_waiting_responses_ == 0) {
+      std::move(stop_profiling_callback_).Run(stop_profiling_success_);
+    }
+  }
+
   connections_.erase(found);
 }
 
@@ -149,8 +222,30 @@ void ConnectionManager::OnProfilingStarted(base::ProcessId pid) {
   // It's possible that the client disconnected in the short time before
   // profiling started.
   auto found = connections_.find(pid);
-  if (found != connections_.end())
+  if (found != connections_.end()) {
     found->second->started_profiling = true;
+    std::move(found->second->started_profiling_callback).Run(/*success=*/true);
+  }
+}
+
+void ConnectionManager::OnProfilingStopped(base::ProcessId pid) {
+  base::AutoLock lock(connections_lock_);
+
+  if (!stop_profiling_callback_) {
+    return;
+  }
+
+  auto found = connections_.find(pid);
+  if (found != connections_.end()) {
+    found->second->started_profiling = false;
+    found->second->waiting_for_stop_response = false;
+  } else {
+    stop_profiling_success_ = false;
+  }
+
+  if (--stop_profiling_waiting_responses_ == 0) {
+    std::move(stop_profiling_callback_).Run(stop_profiling_success_);
+  }
 }
 
 void ConnectionManager::ReportMetrics() {
@@ -185,10 +280,6 @@ void ConnectionManager::DumpProcessesForTracing(
   for (auto& it : connections_) {
     base::ProcessId pid = it.first;
     Connection* connection = it.second.get();
-    // TODO(ssid): Stop writing JSON to traces when proto output is enabled,
-    // https://crbug.com/1228548.
-    if (write_proto)
-      connection->client->AddHeapProfileToTrace(base::DoNothing());
 
     connection->client->RetrieveHeapProfile(base::BindOnce(
         &ConnectionManager::HeapProfileRetrieved, weak_factory_.GetWeakPtr(),
@@ -209,8 +300,9 @@ bool ConnectionManager::ConvertProfileToExportParams(
     int context_id = 0;
     if (sample->context_id) {
       auto it = profile->strings.find(sample->context_id);
-      if (it == profile->strings.end())
+      if (it == profile->strings.end()) {
         return false;
+      }
       const std::string& context = it->second;
       // Escape the strings early, to simplify exporting a heap dump.
       std::string escaped_context;
@@ -224,8 +316,9 @@ bool ConnectionManager::ConvertProfileToExportParams(
 
     size_t alloc_size = sample->total;
     float alloc_count = 1;
-    if (sample->size != 0)
+    if (sample->size != 0) {
       alloc_count = float(sample->total) / float(sample->size);
+    }
 
     std::vector<Address> stack(sample->stack.begin(), sample->stack.end());
     AllocationMetrics& metrics =
@@ -273,8 +366,9 @@ void ConnectionManager::HeapProfileRetrieved(
     params.next_id = next_id_;
 
     auto it = tracking->vm_regions.find(pid);
-    if (it != tracking->vm_regions.end())
+    if (it != tracking->vm_regions.end()) {
       params.maps = std::move(it->second);
+    }
 
     memory_instrumentation::mojom::HeapProfileResultPtr result =
         memory_instrumentation::mojom::HeapProfileResult::New();
@@ -285,8 +379,9 @@ void ConnectionManager::HeapProfileRetrieved(
   }
 
   // When all responses complete, issue done callback.
-  if (--tracking->waiting_responses == 0)
+  if (--tracking->waiting_responses == 0) {
     std::move(tracking->callback).Run(std::move(tracking->results));
+  }
 }
 
 }  // namespace heap_profiling

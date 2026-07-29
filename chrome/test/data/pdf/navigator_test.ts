@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {NavigatorDelegate, OpenPdfParamsParser, PdfNavigator, WindowOpenDisposition} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
-import {assertNotReached} from 'chrome://resources/js/assert_ts.js';
+import type {NavigatorDelegate, PdfNavigator} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+import {OpenPdfParamsParser, PdfNavigatorImpl, WindowOpenDisposition} from 'chrome-extension://mhjfbmdgcfjbbpaeojofohoefgiehjai/pdf_viewer_wrapper.js';
+import {assertNotReached} from 'chrome://resources/js/assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
 import {getZoomableViewport, MockDocumentDimensions, MockElement, MockSizer, MockViewportChangedCallback} from './test_util.js';
@@ -117,8 +118,8 @@ async function doNavigationUrlTests(
       getNamedDestinationCallback, getPageBoundingBoxCallback);
 
   const navigatorDelegate = new MockNavigatorDelegate();
-  const navigator =
-      new PdfNavigator(originalUrl, viewport, paramsParser, navigatorDelegate);
+  const navigator = new PdfNavigatorImpl(
+      originalUrl, viewport, paramsParser, navigatorDelegate);
 
   await doNavigationUrlTest(
       navigator, url, WindowOpenDisposition.CURRENT_TAB, expectedResultUrl,
@@ -164,7 +165,7 @@ chrome.test.runTests([
 
     const navigatorDelegate = new MockNavigatorDelegate();
     const navigator =
-        new PdfNavigator(url, viewport, paramsParser, navigatorDelegate);
+        new PdfNavigatorImpl(url, viewport, paramsParser, navigatorDelegate);
 
     const documentDimensions = new MockDocumentDimensions();
     documentDimensions.addPage(100, 100);
@@ -253,7 +254,7 @@ chrome.test.runTests([
     await doNavigationUrlTests(
         url, '\\bar.pdf', 'http://www.example.com/subdir//bar.pdf');
 
-    // Regression test for https://crbug.com/569040
+    // Regression test for https://crbug.com/41228426
     await doNavigationUrlTests(
         url, 'http://something.else/foo#page=5',
         'http://something.else/foo#page=5');
@@ -274,7 +275,7 @@ chrome.test.runTests([
     chrome.test.succeed();
   },
 
-  async function testNavigateInvalidUrls() {
+  async function testNavigateDisallowedSchemes() {
     const url = 'https://example.com/some-web-document.pdf';
 
     // From non-file: to file:
@@ -283,7 +284,7 @@ chrome.test.runTests([
     await doNavigationUrlTests(url, 'chrome://version', undefined);
 
     await doNavigationUrlTests(
-        url, 'javascript:// this is not a document.pdf', undefined);
+        url, 'javascript://this-is-not-a-document.pdf', undefined);
 
     await doNavigationUrlTests(
         url, 'this-is-not-a-valid-scheme://path.pdf', undefined);

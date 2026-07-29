@@ -19,21 +19,14 @@ SelectToSpeakMouseSelectionTest = class extends SelectToSpeakE2ETest {
   /** @override */
   async setUpDeferred() {
     await super.setUpDeferred();
-    window.EventType = chrome.automation.EventType;
-    window.SelectToSpeakState = chrome.accessibilityPrivate.SelectToSpeakState;
+    globalThis.EventType = chrome.automation.EventType;
+    globalThis.SelectToSpeakState =
+        chrome.accessibilityPrivate.SelectToSpeakState;
 
-    await importModule(
-        'selectToSpeak', '/select_to_speak/select_to_speak_main.js');
-    await importModule(
-        'SELECT_TO_SPEAK_TRAY_CLASS_NAME', '/select_to_speak/ui_manager.js');
-    await importModule(
-        'SelectToSpeakConstants',
-        '/select_to_speak/select_to_speak_constants.js');
-    await importModule('PrefsManager', '/select_to_speak/prefs_manager.js');
     await new Promise(resolve => {
       chrome.settingsPrivate.setPref(
           PrefsManager.ENHANCED_VOICES_DIALOG_SHOWN_KEY, true,
-          '' /* unused, see crbug.com/866161 */, () => resolve());
+          '' /* unused, see crbug.com/40586037 */, () => resolve());
     });
     if (!selectToSpeak.prefsManager_.enhancedVoicesDialogShown()) {
       // TODO(b/267705784): This shouldn't happen, but sometimes the
@@ -231,7 +224,7 @@ AX_TEST_F(
       this.triggerReadMouseSelectedText(event, event);
     });
 
-// TODO(crbug.com/1177140) Re-enable test
+// TODO(crbug.com/40748296) Re-enable test
 TEST_F(
     'SelectToSpeakMouseSelectionTest', 'DISABLED_DoesNotSpeakOnlyTheTrayButton',
     function() {

@@ -65,7 +65,8 @@ ERROR_REMAP = {
 }
 
 _EXTENDED_ATTRIBUTES_APPLICABLE_TO_TYPES = [
-    'Clamp', 'EnforceRange', 'StringContext', 'TreatNullAs']
+    'Clamp', 'EnforceRange', 'TreatNullAs'
+]
 
 
 def Boolean(val):
@@ -681,9 +682,14 @@ class IDLParser(object):
     p[0] = self.BuildProduction('Iterable', p, 2, childlist)
 
   def p_AsyncIterable(self, p):
-    """AsyncIterable : ASYNC ITERABLE '<' TypeWithExtendedAttributes OptionalType '>' OptionalArgumentList ';'"""
-    childlist = ListFromConcat(p[4], p[5], p[7])
+    """AsyncIterable : AsyncIterableKeyword '<' TypeWithExtendedAttributes OptionalType '>' OptionalArgumentList ';'"""
+    childlist = ListFromConcat(p[3], p[4], p[6])
     p[0] = self.BuildProduction('AsyncIterable', p, 2, childlist)
+
+  def p_AsyncIterableKeyword(self, p):
+    # TODO(433299826): remove old syntax.
+    """AsyncIterableKeyword : ASYNC_ITERABLE
+                            | ASYNC ITERABLE"""
 
   def p_OptionalType(self, p):
     """OptionalType : ',' TypeWithExtendedAttributes
@@ -1044,11 +1050,13 @@ class IDLParser(object):
   #    [ identifier ]
   #    [ identifier ( ArgumentList ) ]
   #    [ identifier = identifier ]
+  #    [ identifier = * ]
   #    [ identifier = ( IdentifierList ) ]
   #    [ identifier = identifier ( ArgumentList ) ]
+  #    [ identifier = integer ]
   #    [ identifier = StringLiteral ]
   #    [ identifier = ( StringList ) ]
-  # The first five patterns are specified in the Web IDL spec and the last two
+  # The first seven patterns are specified in the Web IDL spec and the last two
   # patterns are Blink's custom extension to support [ReflectOnly].
   def p_ExtendedAttribute(self, p):
     """ExtendedAttribute : ExtendedAttributeNoArgs
@@ -1057,6 +1065,7 @@ class IDLParser(object):
                          | ExtendedAttributeWildcard
                          | ExtendedAttributeIdentList
                          | ExtendedAttributeNamedArgList
+                         | ExtendedAttributeInteger
                          | ExtendedAttributeStringLiteral
                          | ExtendedAttributeStringLiteralList"""
     p[0] = p[1]
@@ -1105,6 +1114,11 @@ class IDLParser(object):
     """ExtendedAttributeNamedArgList : identifier '=' identifier '(' ArgumentList ')'"""
     args = self.BuildProduction('Arguments', p, 4, p[5])
     value = self.BuildNamed('Call', p, 3, args)
+    p[0] = self.BuildNamed('ExtAttribute', p, 1, value)
+
+  def p_ExtendedAttributeInteger(self, p):
+    """ExtendedAttributeInteger : identifier '=' integer"""
+    value = self.BuildAttribute('VALUE', p[3])
     p[0] = self.BuildNamed('ExtAttribute', p, 1, value)
 
   # Blink extension: Add support for string literal Extended Attribute values
@@ -1304,7 +1318,7 @@ class IDLParser(object):
 
     try:
       self.lexer.Tokenize(data, filename)
-      nodes = self.yaccobj.parse(lexer=self.lexer) or []
+      nodes = self.yaccobj.parse(lexer=self.lexer, tracking=True) or []
       name = self.BuildAttribute('NAME', filename)
       return IDLNode('File', filename, 0, 0, nodes + [name])
 

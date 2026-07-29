@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 
+#include <memory>
 #include <string>
 
 #include "base/files/file_path.h"
@@ -17,6 +18,7 @@
 #include "chrome/common/chrome_content_client.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/pref_names.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "content/public/browser/plugin_service.h"
 #include "content/public/common/webplugininfo.h"
 
@@ -55,25 +57,28 @@ void PluginPrefs::UpdatePdfPolicy(const std::string& pref_name) {
   always_open_pdf_externally_ =
       prefs_->GetBoolean(prefs::kPluginsAlwaysOpenPdfExternally);
 
-  content::PluginService::GetInstance()->PurgePluginListCache(profile_, false);
+  content::PluginService::GetInstance()->PurgePluginListCache(profile_);
   std::vector<Profile*> otr_profiles = profile_->GetAllOffTheRecordProfiles();
-  for (Profile* otr : otr_profiles)
-    content::PluginService::GetInstance()->PurgePluginListCache(otr, false);
+  for (Profile* otr : otr_profiles) {
+    content::PluginService::GetInstance()->PurgePluginListCache(otr);
+  }
 }
 
 void PluginPrefs::SetPrefs(PrefService* prefs) {
   prefs_ = prefs;
 
   UpdatePdfPolicy(prefs::kPluginsAlwaysOpenPdfExternally);
-  registrar_.Init(prefs_);
-  registrar_.Add(prefs::kPluginsAlwaysOpenPdfExternally,
-                 base::BindRepeating(&PluginPrefs::UpdatePdfPolicy,
-                                     base::Unretained(this)));
+  registrar_ = std::make_unique<PrefChangeRegistrar>();
+  registrar_->Init(prefs_);
+  registrar_->Add(prefs::kPluginsAlwaysOpenPdfExternally,
+                  base::BindRepeating(&PluginPrefs::UpdatePdfPolicy,
+                                      base::Unretained(this)));
 }
 
 void PluginPrefs::ShutdownOnUIThread() {
   prefs_ = nullptr;
-  registrar_.RemoveAll();
+  registrar_.reset();
+  profile_ = nullptr;
 }
 
 PluginPrefs::PluginPrefs() = default;

@@ -6,20 +6,18 @@
 #define DEVICE_VR_OPENXR_OPENXR_PLATFORM_HELPER_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
+#include "base/functional/callback.h"
 #include "build/build_config.h"
 #include "device/vr/openxr/openxr_extension_helper.h"
 #include "device/vr/public/mojom/isolated_xr_service.mojom-forward.h"
 #include "device/vr/vr_export.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
-
-#if BUILDFLAG(IS_WIN)
-#include "device/vr/windows/d3d11_texture_helper.h"
-#endif
+#include "ipc/constants.mojom-forward.h"
+#include "services/network/public/cpp/renderer_process_id.h"
 
 namespace device {
-
 class OpenXrGraphicsBinding;
 
 // Simple struct containing the values that the platform will actually need to
@@ -28,8 +26,9 @@ class OpenXrGraphicsBinding;
 // Activity that this session should be associated with, and this value is
 // unused on Windows.
 struct OpenXrCreateInfo {
-  int render_process_id;
-  int render_frame_id;
+  network::RendererProcessId render_process_id;
+  int render_frame_id = IPC::mojom::kRoutingIdNone;
+  bool needs_separate_activity = true;
 };
 
 // This class exists to help provide an interface for working with OpenXR
@@ -38,6 +37,14 @@ struct OpenXrCreateInfo {
 // xrCreateSession, or different rules about XrInstance lifetime management.
 class DEVICE_VR_EXPORT OpenXrPlatformHelper {
  public:
+  using CreateInstanceCallback =
+      base::OnceCallback<void(XrResult result, XrInstance)>;
+
+  using PlatformCreateInfoReadyCallback =
+      base::OnceCallback<void(void* create_info)>;
+
+  using PlatormInitiatedShutdownCallback = base::OnceClosure;
+
   // Gets the set of RequiredExtensions that need to be present on the platform.
   static void GetRequiredExtensions(std::vector<const char*>& extensions);
 
@@ -55,26 +62,10 @@ class DEVICE_VR_EXPORT OpenXrPlatformHelper {
   // Must be called before making any calls to e.g. xrCreateInstance.
   bool EnsureInitialized();
 
-#if BUILDFLAG(IS_WIN)
-  // Creates an OpenXrGraphicsBinding which is responsible for returning the
-  // information about the graphics pipeline that is required to create an
-  // XrInstance and/or XrSession.
-  // The caller is responsible for ensuring that the TextureHelper outlives the
-  // GraphicsBinding.
-  // TODO(https://crbug.com/1441073): D3D11TextureHelper should be converted to
-  // either an interface that can be shared by the graphics bindings for the
-  // information that is needed (though that may require a downcast in the
-  // concrete helper), or to be entirely owned by the OpenXrGraphicsBinding and
-  // any relevant logic ported there with the necessary interfaces exposed on
-  // OpenXrGraphicsBinding.
-  virtual std::unique_ptr<OpenXrGraphicsBinding> GetGraphicsBinding(
-      D3D11TextureHelper* texture_helper) = 0;
-#else
   // Creates an OpenXrGraphicsBinding which is responsible for returning the
   // information about the graphics pipeline that is required to create an
   // XrInstance and/or XrSession.
   virtual std::unique_ptr<OpenXrGraphicsBinding> GetGraphicsBinding() = 0;
-#endif
 
   // Gets the ExtensionEnumeration which is the list of extensions supported by
   // the platform.
@@ -82,19 +73,34 @@ class DEVICE_VR_EXPORT OpenXrPlatformHelper {
 
   // Gets any platform-specific struct that needs to be appended to
   // `XrInstanceCreateInfo`.`next`.
-  virtual const void* GetPlatformCreateInfo(
-      const OpenXrCreateInfo& create_info) = 0;
+  virtual void GetPlatformCreateInfo(
+      const device::OpenXrCreateInfo& create_info,
+      PlatformCreateInfoReadyCallback result_callback,
+      PlatormInitiatedShutdownCallback shutdown_callback) = 0;
 
   // Used to create an XrInstance. As the different platforms may have
   // different lifetime requirements, xrCreateInstance should only be called via
   // the methods on this class, and the same is true for xrDestroyInstance.
   // Only one "outstanding" XrInstance is allowed at a time.
-  virtual XrResult CreateInstance(XrInstance* instance,
-                                  absl::optional<OpenXrCreateInfo> create_info);
+  virtual XrResult CreateInstance(XrInstance* instance, void* create_info);
 
   // Convenience method for the above without any OpenXrCreateInfo. Platforms
   // that require additional information via this mechanism will fail creation.
   XrResult CreateInstance(XrInstance* instance);
+
+  // Run any platform-specific shutdown that has to happen before the OpenXr
+  // session can be ended. E.g. On Android, if there is a separate activity, it
+  // needs to be destroyed before the session is shutdown so that the system
+  // rendering takes over.
+  // If a `shutdown_callback` was previously passed in, it will not be run, in
+  // favor of this callback.
+  virtual void PrepareForSessionShutdown(
+      base::OnceClosure shutdown_ready_callback) = 0;
+
+  void CreateInstanceWithCreateInfo(
+      std::optional<OpenXrCreateInfo> create_info,
+      CreateInstanceCallback instance_ready_callback,
+      PlatormInitiatedShutdownCallback shutdown_callback);
 
   // Destroys the instance and sets it to XR_NULL_HANDLE on success. As the
   // different platforms may have different lifetime requirements, this should
@@ -105,6 +111,8 @@ class DEVICE_VR_EXPORT OpenXrPlatformHelper {
   // features.
   virtual device::mojom::XRDeviceData GetXRDeviceData() = 0;
 
+  bool IsArBlendModeSupported(XrInstance instance);
+
  protected:
   OpenXrPlatformHelper();
 
@@ -114,10 +122,20 @@ class DEVICE_VR_EXPORT OpenXrPlatformHelper {
   // EnsureInitialized if not currently initialized.
   virtual bool Initialize() = 0;
 
+  void OnPlatformCreateInfoResult(CreateInstanceCallback callback,
+                                  void* instance_create_info);
+
+  // Called when XrCreateInstance fails in order to provide a mechanism to clean
+  // up any state that was established prior to the call, since any external
+  // cleanup likely won't happen since we don't have an XrInstance.
+  virtual void OnInstanceCreateFailure() {}
+
   XrInstance xr_instance_ = XR_NULL_HANDLE;
   std::unique_ptr<OpenXrExtensionEnumeration> extension_enumeration_;
 
  private:
+  void UpdateExtensionFactorySupport();
+
   bool initialized_ = false;
 };
 

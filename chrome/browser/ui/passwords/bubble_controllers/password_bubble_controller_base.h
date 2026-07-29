@@ -24,7 +24,6 @@ class Profile;
 // password management actions for the corresponding view.
 class PasswordBubbleControllerBase {
  public:
-  enum class PasswordAction { kRemovePassword, kAddPassword };
   enum class DisplayReason { kAutomatic, kUserAction };
   PasswordBubbleControllerBase(
       base::WeakPtr<PasswordsModelDelegate> delegate,
@@ -46,6 +45,12 @@ class PasswordBubbleControllerBase {
   // being closed. Otherwise, it is called later on when the controller is
   // destroyed.
   void OnBubbleClosing();
+
+  // Called when the mouse enters the bubble view.
+  void OnMouseEntered();
+
+  // Called when the mouse exits the bubble view.
+  void OnMouseExited();
 
   Profile* GetProfile() const;
   content::WebContents* GetWebContents() const;

@@ -11,6 +11,8 @@
 #include <unordered_map>
 
 #include "base/functional/callback.h"
+#import "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "mojo/public/cpp/system/message_pipe.h"
 #include "mojo/public/cpp/system/simple_watcher.h"
@@ -48,7 +50,7 @@ class MojoFacade {
   // Value returned by GetMessageNameAndArguments.
   struct MessageNameAndArguments {
     std::string name;
-    base::Value::Dict args;
+    base::DictValue args;
   };
 
   // Extracts message name and arguments from the given JSON string obtained
@@ -62,18 +64,18 @@ class MojoFacade {
   //   - "interfaceName" (a string representing an interface name);
   //   - "requestHandle" (a number representing MojoHandle of the interface
   //     request).
-  void HandleMojoBindInterface(base::Value::Dict args);
+  void HandleMojoBindInterface(base::DictValue args);
 
   // Closes the given handle. `args` is a dictionary which must contain "handle"
   // key, which is a number representing a MojoHandle.
-  void HandleMojoHandleClose(base::Value::Dict args);
+  void HandleMojoHandleClose(base::DictValue args);
 
   // Creates a Mojo message pipe. `args` is unused.
   // Returns a dictionary with the following keys:
   //   - "result" (a number representing MojoResult);
   //   - "handle0" and "handle1" (the numbers representing two endpoints of the
   //     message pipe).
-  base::Value HandleMojoCreateMessagePipe(base::Value::Dict args);
+  base::Value HandleMojoCreateMessagePipe(base::DictValue args);
 
   // Writes a message to the message pipe endpoint given by handle. `args` is a
   // dictionary which must contain the following keys:
@@ -83,7 +85,7 @@ class MojoFacade {
   //   - "handles" (an array representing any handles to attach; handles are
   //     transferred and will no longer be valid; may be empty);
   // Returns MojoResult as a number.
-  base::Value HandleMojoHandleWriteMessage(base::Value::Dict args);
+  base::Value HandleMojoHandleWriteMessage(base::DictValue args);
 
   // Reads a message from the message pipe endpoint given by handle. `args` is
   // a dictionary which must contain the keys "handle" (a number representing
@@ -93,7 +95,7 @@ class MojoFacade {
   //   - "buffer" (an array representing message data; non-empty only on
   //     success);
   //   - "handles" (an array representing MojoHandles received, if any);
-  base::Value HandleMojoHandleReadMessage(base::Value::Dict args);
+  base::Value HandleMojoHandleReadMessage(base::DictValue args);
 
   // Begins watching a handle for signals to be satisfied or unsatisfiable.
   // `args` is a dictionary which must contain the following keys:
@@ -102,16 +104,26 @@ class MojoFacade {
   //   - "callbackId" (a number representing the id which should be passed to
   //     Mojo.internal.signalWatch call).
   // Returns watch id as a number.
-  base::Value HandleMojoHandleWatch(base::Value::Dict args);
+  base::Value HandleMojoHandleWatch(base::DictValue args);
 
   // Cancels a handle watch initiated by "MojoHandle.watch". `args` is a
   // dictionary which must contain "watchId" key (a number representing id
   // returned from "MojoHandle.watch").
-  void HandleMojoWatcherCancel(base::Value::Dict args);
+  void HandleMojoWatcherCancel(base::DictValue args);
 
   // Assigns a new unique integer ID to the given message pipe handle and
   // returns that ID. The ID can be used by JS to reference this pipe.
   int AllocatePipeId(mojo::ScopedMessagePipeHandle pipe);
+
+  // SimpleWatcher callback which notifies us when a handle's watched signals
+  // are raised. `callback_id` identifies the JS-side callback registered for
+  // this watcher, and `watch_id` identifies the JS-side MojoWatcher responsible
+  // for the event. This ultimately invokes the JS-side callback and then
+  // re-arms the watcher once the JS has run.
+  void OnWatcherCallback(int callback_id, int watch_id, MojoResult result);
+
+  // Calls ArmOrNotify() for matching watcher.
+  void ArmOnNotifyWatcher(int watch_id);
 
   // Returns the pipe handle associated with `id` in JS, or an invalid handle if
   // no such association exists.
@@ -123,7 +135,7 @@ class MojoFacade {
   mojo::ScopedMessagePipeHandle TakePipeFromId(int id);
 
   // Runs JavaScript on WebUI page.
-  WebState* web_state_ = nullptr;
+  raw_ptr<WebState> web_state_ = nullptr;
 
   // The next available integer ID to assign a Mojo pipe for use in JS.
   int next_pipe_id_ = 1;
@@ -137,8 +149,10 @@ class MojoFacade {
 
   // Currently active watches created through this facade.
   std::map<int, std::unique_ptr<mojo::SimpleWatcher>> watchers_;
+
+  base::WeakPtrFactory<MojoFacade> weak_ptr_factory_{this};
 };
 
-}  // web
+}  // namespace web
 
 #endif  // IOS_WEB_WEBUI_MOJO_FACADE_H_

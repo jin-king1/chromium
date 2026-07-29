@@ -10,6 +10,7 @@
 #include "base/json/json_writer.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
+#include "chrome/browser/enterprise/connectors/device_trust/device_trust_features.h"
 #include "chrome/browser/enterprise/connectors/device_trust/key_management/browser/commands/key_rotation_command.h"
 
 namespace enterprise_commands {
@@ -34,12 +35,17 @@ std::string ResultToString(KeyRotationResult result) {
 }
 
 std::string CreatePayload(KeyRotationResult result) {
-  base::Value::Dict root_dict;
+  base::DictValue root_dict;
   root_dict.Set(kResultFieldName, ResultToString(result));
 
-  std::string payload;
-  base::JSONWriter::Write(root_dict, &payload);
-  return payload;
+  return base::WriteJson(root_dict).value_or("");
+}
+
+std::string CreateUnsupportedPayload() {
+  base::DictValue root_dict;
+  root_dict.Set(kResultFieldName, "unsupported");
+
+  return base::WriteJson(root_dict).value_or("");
 }
 
 bool IsSuccess(KeyRotationResult result) {
@@ -65,15 +71,12 @@ RotateAttestationCredentialJob::GetType() const {
 
 bool RotateAttestationCredentialJob::ParseCommandPayload(
     const std::string& command_payload) {
-  absl::optional<base::Value> root(base::JSONReader::Read(command_payload));
+  std::optional<base::DictValue> root = base::JSONReader::ReadDict(
+      command_payload, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!root)
     return false;
 
-  if (!root->is_dict())
-    return false;
-
-  std::string* nonce_ptr = root->GetDict().FindString(kNoncePathField);
-
+  std::string* nonce_ptr = root->FindString(kNoncePathField);
   if (nonce_ptr && !nonce_ptr->empty()) {
     nonce_ = *nonce_ptr;
     return true;
@@ -83,6 +86,14 @@ bool RotateAttestationCredentialJob::ParseCommandPayload(
 
 void RotateAttestationCredentialJob::RunImpl(
     CallbackWithResult result_callback) {
+  if (!enterprise_connectors::IsKeyRotationEnabled()) {
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(std::move(result_callback), policy::ResultType::kFailure,
+                       CreateUnsupportedPayload()));
+    return;
+  }
+
   DCHECK(nonce_.has_value());
 
   key_manager_->RotateKey(

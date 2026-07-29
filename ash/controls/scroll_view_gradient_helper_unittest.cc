@@ -4,7 +4,6 @@
 
 #include <memory>
 
-#include "ash/controls/gradient_layer_delegate.h"
 #include "ash/controls/scroll_view_gradient_helper.h"
 #include "base/memory/raw_ptr.h"
 #include "ui/compositor/layer.h"
@@ -55,6 +54,7 @@ class ScrollViewGradientHelperTest : public views::ViewsTestBase {
 
   void TearDown() override {
     gradient_helper_.reset();
+    scroll_view_ = nullptr;
     widget_.reset();
     ViewsTestBase::TearDown();
   }
@@ -85,7 +85,7 @@ class ScrollViewGradientHelperTest : public views::ViewsTestBase {
   }
 
   views::UniqueWidgetPtr widget_;
-  raw_ptr<views::ScrollView, ExperimentalAsh> scroll_view_ = nullptr;
+  raw_ptr<views::ScrollView> scroll_view_ = nullptr;
   std::unique_ptr<ScrollViewGradientHelper> gradient_helper_;
 };
 

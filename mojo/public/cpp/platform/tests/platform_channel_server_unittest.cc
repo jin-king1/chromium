@@ -4,6 +4,7 @@
 
 #include "mojo/public/cpp/platform/platform_channel_server.h"
 
+#include <optional>
 #include <tuple>
 #include <utility>
 
@@ -16,9 +17,9 @@
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
 #include "mojo/core/channel.h"
+#include "mojo/core/ipcz_driver/envelope.h"
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace mojo {
 namespace {
@@ -66,9 +67,7 @@ class TestChannel : public core::Channel::Delegate {
   }
 
   void SendMessage(const std::string& message) {
-    auto data = base::make_span(
-        reinterpret_cast<const uint8_t*>(message.data()), message.size());
-    channel_->Write(core::Channel::Message::CreateIpczMessage(data, {}));
+    channel_->WriteNextIpczMessage(base::as_byte_span(message), {});
   }
 
   std::string WaitForSingleMessage() {
@@ -84,9 +83,11 @@ class TestChannel : public core::Channel::Delegate {
     return true;
   }
 
-  void OnChannelMessage(const void* payload,
-                        size_t payload_size,
-                        std::vector<PlatformHandle> handles) override {
+  void OnChannelMessage(
+      const void* payload,
+      size_t payload_size,
+      std::vector<PlatformHandle> handles,
+      scoped_refptr<core::ipcz_driver::Envelope> envelope) override {
     received_message_ =
         std::string(static_cast<const char*>(payload), payload_size);
     std::move(quit_).Run();
@@ -99,13 +100,19 @@ class TestChannel : public core::Channel::Delegate {
   const scoped_refptr<core::Channel> channel_;
   base::RunLoop wait_for_message_;
   base::OnceClosure quit_{wait_for_message_.QuitClosure()};
-  absl::optional<std::string> received_message_;
+  std::optional<std::string> received_message_;
   bool stopped_ = false;
 };
 
 class PlatformChannelServerTest : public testing::Test {
  public:
-  PlatformChannelServerTest() { CHECK(temp_dir_.CreateUniqueTempDir()); }
+  // On Mac, the maximum length of `sun_path` within the `sockaddr_un` structure
+  // has a limit of only 104 characters (including the null terminator). The
+  // default prefix of "scoped_dir" in `base::ScopedTempDir` makes the path in
+  // the unit test exceed this limit. So we use a blank prefix here.
+  PlatformChannelServerTest() {
+    CHECK(temp_dir_.CreateUniqueTempDir(/*prefix=*/FILE_PATH_LITERAL("")));
+  }
 
   ~PlatformChannelServerTest() override = default;
 

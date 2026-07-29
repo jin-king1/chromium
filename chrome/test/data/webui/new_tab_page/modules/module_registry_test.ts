@@ -2,17 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://webui-test/mojo_webui_test_support.js';
-
 import {ModuleDescriptor, ModuleRegistry} from 'chrome://new-tab-page/lazy_load.js';
-import {NewTabPageProxy, WindowProxy} from 'chrome://new-tab-page/new_tab_page.js';
-import {ModuleIdName, PageCallbackRouter, PageHandlerRemote, PageRemote} from 'chrome://new-tab-page/new_tab_page.mojom-webui.js';
+import {NewTabPageProxy, PageCallbackRouter, PageHandlerRemote, WindowProxy} from 'chrome://new-tab-page/new_tab_page.js';
+import type {ModuleIdName, PageRemote} from 'chrome://new-tab-page/new_tab_page.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
-import {assertDeepEquals, assertEquals} from 'chrome://webui-test/chai_assert.js';
-import {fakeMetricsPrivate, MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {MetricsTracker} from 'chrome://webui-test/metrics_test_support.js';
+import {fakeMetricsPrivate} from 'chrome://webui-test/metrics_test_support.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
-import {TestMock} from 'chrome://webui-test/test_mock.js';
+import type {TestMock} from 'chrome://webui-test/test_mock.js';
 
 import {createElement, initNullModule, installMock} from '../test_support.js';
 
@@ -22,7 +21,7 @@ suite('NewTabPageModulesModuleRegistryTest', () => {
   let callbackRouterRemote: PageRemote;
   let metrics: MetricsTracker;
 
-  setup(async () => {
+  setup(() => {
     loadTimeData.overrideValues({navigationStartTime: 0.0});
     metrics = fakeMetricsPrivate();
     windowProxy = installMock(WindowProxy);
@@ -43,12 +42,12 @@ suite('NewTabPageModulesModuleRegistryTest', () => {
       new ModuleDescriptor('baz', initNullModule),
     ];
 
-    handler.setResultFor('getModulesIdNames', Promise.resolve({
+    handler.setPromiseResolveFor('getModulesIdNames', {
       data: descriptors.map(d => ({id: d.id, name: d.id} as ModuleIdName)),
-    }));
-    handler.setResultFor('getModulesOrder', Promise.resolve({
+    });
+    handler.setPromiseResolveFor('getModulesOrder', {
       moduleIds: [],
-    }));
+    });
 
     const moduleRegistry = new ModuleRegistry(descriptors);
     const modulesPromise = moduleRegistry.initializeModules(0);
@@ -75,12 +74,12 @@ suite('NewTabPageModulesModuleRegistryTest', () => {
       new ModuleDescriptor('buz', () => Promise.resolve(fooModule)),
     ];
     windowProxy.setResultFor('now', 5.0);
-    handler.setResultFor('getModulesIdNames', Promise.resolve({
+    handler.setPromiseResolveFor('getModulesIdNames', {
       data: descriptors.map(d => ({id: d.id, name: d.id} as ModuleIdName)),
-    }));
-    handler.setResultFor('getModulesOrder', Promise.resolve({
+    });
+    handler.setPromiseResolveFor('getModulesOrder', {
       moduleIds: [],
-    }));
+    });
 
     // Act.
     const moduleRegistry = new ModuleRegistry(descriptors);
@@ -117,6 +116,88 @@ suite('NewTabPageModulesModuleRegistryTest', () => {
     assertEquals(1, metrics.count('NewTabPage.Modules.LoadDuration.baz', 118));
   });
 
+  test('does not initialize module without id and name', async () => {
+    // Arrange.
+    const fooElement = createElement();
+    const barElement = createElement();
+    const fooDescriptor =
+        new ModuleDescriptor('foo', () => Promise.resolve(fooElement));
+    const barDescriptor =
+        new ModuleDescriptor('bar', () => Promise.resolve(barElement));
+    handler.setPromiseResolveFor('getModulesOrder', {
+      moduleIds: [],
+    });
+    // Only return barDescriptor when `getModulesIdNames` is called.
+    handler.setPromiseResolveFor('getModulesIdNames', {
+      data: [{id: barDescriptor.id, name: barDescriptor.id} as ModuleIdName],
+    });
+
+    // Act - Attempt to initialize both foo and bar modules.
+    const moduleRegistry = new ModuleRegistry([fooDescriptor, barDescriptor]);
+    const modulesPromise = moduleRegistry.initializeModules(0);
+    callbackRouterRemote.setDisabledModules(false, []);
+
+    // Arrange - Ensure only bar module loads since foo was not part of result
+    // for `getModulesIdNames`.
+    const modules = await modulesPromise;
+    assertEquals(1, modules.length);
+    assertEquals('bar', modules[0]!.descriptor.id);
+    assertDeepEquals(barElement, modules[0]!.elements[0]);
+  });
+
+  suite('initializes module by id', () => {
+    test(
+        'returns module if valid descriptor and instantiated element',
+        async () => {
+          // Arrange.
+          const fooModule = createElement();
+          const fooDescriptor =
+              new ModuleDescriptor('foo', () => Promise.resolve(fooModule));
+          const moduleRegistry = new ModuleRegistry([fooDescriptor]);
+
+          // Act.
+          const modulesPromise =
+              moduleRegistry.initializeModuleById(fooDescriptor.id, 0);
+
+          // Assert.
+          const module = await modulesPromise;
+          assertTrue(!!module);
+          assertEquals('foo', module.descriptor.id);
+          assertDeepEquals(fooModule, module.elements[0]);
+        });
+
+    test('returns null if missing descriptor', async () => {
+      // Arrange.
+      const fooModule = createElement();
+      const fooDescriptor =
+          new ModuleDescriptor('foo', () => Promise.resolve(fooModule));
+      const moduleRegistry = new ModuleRegistry([fooDescriptor]);
+
+      // Act.
+      const barDescriptor = new ModuleDescriptor('bar', initNullModule);
+      const modulesPromise =
+          moduleRegistry.initializeModuleById(barDescriptor.id, 0);
+
+      // Assert.
+      const module = await modulesPromise;
+      assertFalse(!!module);
+    });
+
+    test('returns null if uninstantiated element', async () => {
+      // Arrange.
+      const fooDescriptor = new ModuleDescriptor('foo', initNullModule);
+      const moduleRegistry = new ModuleRegistry([fooDescriptor]);
+
+      // Act.
+      const modulesPromise =
+          moduleRegistry.initializeModuleById(fooDescriptor.id, 0);
+
+      // Assert.
+      const module = await modulesPromise;
+      assertFalse(!!module);
+    });
+  });
+
   suite('reorder', () => {
     test(
         'instantiates reordered modules without disabled modules', async () => {
@@ -129,13 +210,13 @@ suite('NewTabPageModulesModuleRegistryTest', () => {
             new ModuleDescriptor('bar', () => Promise.resolve(barModule)),
             new ModuleDescriptor('baz', () => Promise.resolve(bazModule)),
           ];
-          handler.setResultFor('getModulesIdNames', Promise.resolve({
+          handler.setPromiseResolveFor('getModulesIdNames', {
             data:
                 descriptors.map(d => ({id: d.id, name: d.id} as ModuleIdName)),
-          }));
-          handler.setResultFor('getModulesOrder', Promise.resolve({
+          });
+          handler.setPromiseResolveFor('getModulesOrder', {
             moduleIds: ['bar', 'baz', 'foo'],
-          }));
+          });
 
           // Act.
           const moduleRegistry = new ModuleRegistry(descriptors);
@@ -172,9 +253,9 @@ suite('NewTabPageModulesModuleRegistryTest', () => {
       handler.setResultFor('getModulesIdNames', Promise.resolve({
         data: descriptors.map(d => ({id: d.id, name: d.id} as ModuleIdName)),
       }));
-      handler.setResultFor('getModulesOrder', Promise.resolve({
+      handler.setPromiseResolveFor('getModulesOrder', {
         moduleIds: ['biz', 'bar'],
-      }));
+      });
 
       // Act.
       const moduleRegistry = new ModuleRegistry(descriptors);

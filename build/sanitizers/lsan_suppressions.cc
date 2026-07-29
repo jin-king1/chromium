@@ -23,6 +23,7 @@ char kLSanDefaultSuppressions[] =
 
     // False positives in libfontconfig. http://crbug.com/39050
     "leak:libfontconfig\n"
+    "leak:libthird_party_fontconfig\n"
     // eglibc-2.19/string/strdup.c creates false positive leak errors because of
     // the same reason as crbug.com/39050. The leak error stack trace, when
     // unwind on malloc, includes a call to libfontconfig. But the default stack
@@ -47,10 +48,6 @@ char kLSanDefaultSuppressions[] =
     // xrandr leak. http://crbug.com/119677
     "leak:XRRFindDisplay\n"
 
-    // http://crbug.com/431213, http://crbug.com/416665
-    "leak:gin/object_template_builder.h\n"
-    "leak:gin/function_template.h\n"
-
     // Leaks in swrast_dri.so. http://crbug.com/540042
     "leak:swrast_dri.so\n"
 
@@ -62,6 +59,9 @@ char kLSanDefaultSuppressions[] =
 
     // Suppress leaks from unknown third party modules. http://anglebug.com/6937
     "leak:<unknown module>\n"
+
+    // Suppress leaks from temporary files. http://crbug.com/1433299
+    "leak:(deleted)\n"
 
     // ================ Leaks in Chromium code ================
     // PLEASE DO NOT ADD SUPPRESSIONS FOR NEW LEAKS.
@@ -104,7 +104,7 @@ char kLSanDefaultSuppressions[] =
 #if BUILDFLAG(IS_MAC)
     // These are caused by the system, but not yet clear if they are false
     // positives or bugs in the Mac LSAN runtime. Suppress while investigating.
-    // TODO(https://crbug.com/1320449): Remove these if/when fixed in macOS
+    // TODO(crbug.com/40223516): Remove these if/when fixed in macOS
     // or the runtime.
     "leak:_ensureAuxServiceAwareOfHostApp\n"
     "leak:cssmErrorString\n"

@@ -5,9 +5,10 @@
 #ifndef CONTENT_PUBLIC_BROWSER_DEVTOOLS_AGENT_HOST_CLIENT_H_
 #define CONTENT_PUBLIC_BROWSER_DEVTOOLS_AGENT_HOST_CLIENT_H_
 
+#include <optional>
+
 #include "base/containers/span.h"
 #include "content/common/content_export.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/origin.h"
 
 class GURL;
@@ -44,6 +45,12 @@ class CONTENT_EXPORT DevToolsAgentHostClient {
   // manipulate browser altogether.
   virtual bool IsTrusted();
 
+  // Returns true if the client has unrestricted access to all cookies
+  // (i.e., MayAttachToURL() returns true for all possible cookie domains).
+  // When true, cookie operations like clearBrowserCookies can use a more
+  // efficient atomic deletion path instead of per-cookie filtering.
+  virtual bool MayAccessAllCookies();
+
   // Returns true if the client is allowed to read local files over the
   // protocol. Example would be exposing file content to the page under debug.
   virtual bool MayReadLocalFiles();
@@ -63,7 +70,7 @@ class CONTENT_EXPORT DevToolsAgentHostClient {
   // This is useful e.g. for Chrome Extensions so that their calls to
   // Page.navigate would be treated as renderer-initiated naviation subject to
   // URL spoofing protection.
-  virtual absl::optional<url::Origin> GetNavigationInitiatorOrigin();
+  virtual std::optional<url::Origin> GetNavigationInitiatorOrigin();
 
   // Determines protocol message format.
   virtual bool UsesBinaryProtocol();

@@ -4,6 +4,7 @@
 
 #include "chrome/updater/app/app_server.h"
 
+#include <optional>
 #include <string>
 
 #include "base/files/file_path.h"
@@ -15,7 +16,7 @@
 #include "build/build_config.h"
 #include "chrome/updater/constants.h"
 #include "chrome/updater/prefs.h"
-#include "chrome/updater/test_scope.h"
+#include "chrome/updater/test/test_scope.h"
 #include "chrome/updater/update_service.h"
 #include "chrome/updater/update_service_internal.h"
 #include "chrome/updater/updater_scope.h"
@@ -24,14 +25,12 @@
 #include "components/prefs/pref_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
-
-using testing::Invoke;
-using testing::Return;
 
 namespace updater {
-
 namespace {
+
+using ::testing::Invoke;
+using ::testing::Return;
 
 class AppServerTest : public AppServer {
  public:
@@ -48,24 +47,24 @@ class AppServerTest : public AppServer {
               (scoped_refptr<UpdateServiceInternal>),
               (override));
   MOCK_METHOD(bool, SwapInNewVersion, (), (override));
-  MOCK_METHOD(bool,
-              MigrateLegacyUpdaters,
-              (base::RepeatingCallback<void(const RegistrationRequest&)>),
-              (override));
+  MOCK_METHOD(void, RepairUpdater, (UpdaterScope, bool), (override));
   MOCK_METHOD(void, UninstallSelf, (), (override));
-
- protected:
-  ~AppServerTest() override = default;
+  MOCK_METHOD(bool, ShutdownIfIdleAfterTask, (), (override));
+  MOCK_METHOD(void, OnDelayedTaskComplete, (), (override));
 
  private:
-  UpdaterScope updater_scope() const override { return GetTestScope(); }
+  ~AppServerTest() override = default;
+
+  UpdaterScope updater_scope() const override {
+    return GetUpdaterScopeForTesting();
+  }
 
   void Shutdown0() { Shutdown(0); }
 };
 
 void ClearPrefs() {
-  const UpdaterScope updater_scope = GetTestScope();
-  for (const absl::optional<base::FilePath>& path :
+  const UpdaterScope updater_scope = GetUpdaterScopeForTesting();
+  for (const std::optional<base::FilePath>& path :
        {GetInstallDirectory(updater_scope),
         GetVersionedInstallDirectory(updater_scope)}) {
     ASSERT_TRUE(path);
@@ -77,9 +76,8 @@ void ClearPrefs() {
 class AppServerTestCase : public testing::Test {
  public:
   void SetUp() override {
-// TODO(crbug.com/1428653): Fix these test cases to work for mac system scope.
 #if BUILDFLAG(IS_MAC)
-    if (GetTestScope() == UpdaterScope::kSystem) {
+    if (GetUpdaterScopeForTesting() == UpdaterScope::kSystem) {
       GTEST_SKIP();
     }
 #endif  // BUILDFLAG(IS_MAC)
@@ -94,13 +92,16 @@ class AppServerTestCase : public testing::Test {
 
 TEST_F(AppServerTestCase, SelfUninstall) {
   base::test::ScopedCommandLine command_line;
-  command_line.GetProcessCommandLine()->AppendSwitchASCII(
+  command_line.GetProcessCommandLine()->AppendSwitchUTF8(
       kServerServiceSwitch, kServerUpdateServiceInternalSwitchValue);
   {
-    scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+    scoped_refptr<GlobalPrefs> global_prefs =
+        CreateGlobalPrefs(GetUpdaterScopeForTesting());
+    ASSERT_TRUE(global_prefs);
     global_prefs->SetActiveVersion("9999999");
     PrefsCommitPendingWrites(global_prefs->GetPrefService());
-    scoped_refptr<LocalPrefs> local_prefs = CreateLocalPrefs(GetTestScope());
+    scoped_refptr<LocalPrefs> local_prefs =
+        CreateLocalPrefs(GetUpdaterScopeForTesting());
     local_prefs->SetQualified(true);
     PrefsCommitPendingWrites(local_prefs->GetPrefService());
   }
@@ -108,17 +109,17 @@ TEST_F(AppServerTestCase, SelfUninstall) {
 
   // Expect the app to ActiveDutyInternal then SelfUninstall.
   EXPECT_CALL(*app, ActiveDuty).Times(0);
-  EXPECT_CALL(*app, ActiveDutyInternal).Times(1);
+  EXPECT_CALL(*app, ActiveDutyInternal);
   EXPECT_CALL(*app, SwapInNewVersion).Times(0);
-  EXPECT_CALL(*app, MigrateLegacyUpdaters).Times(0);
-  EXPECT_CALL(*app, UninstallSelf).Times(1);
+  EXPECT_CALL(*app, UninstallSelf);
   EXPECT_EQ(app->Run(), 0);
-  EXPECT_TRUE(CreateLocalPrefs(GetTestScope())->GetQualified());
+  EXPECT_TRUE(CreateLocalPrefs(GetUpdaterScopeForTesting())->GetQualified());
 }
 
 TEST_F(AppServerTestCase, SelfPromote) {
   {
-    scoped_refptr<LocalPrefs> local_prefs = CreateLocalPrefs(GetTestScope());
+    scoped_refptr<LocalPrefs> local_prefs =
+        CreateLocalPrefs(GetUpdaterScopeForTesting());
     local_prefs->SetQualified(true);
     PrefsCommitPendingWrites(local_prefs->GetPrefService());
   }
@@ -127,13 +128,14 @@ TEST_F(AppServerTestCase, SelfPromote) {
 
     // Expect the app to SwapInNewVersion and then ActiveDuty then
     // Shutdown(0).
-    EXPECT_CALL(*app, ActiveDuty).Times(1);
+    EXPECT_CALL(*app, ActiveDuty);
     EXPECT_CALL(*app, SwapInNewVersion).WillOnce(Return(true));
-    EXPECT_CALL(*app, MigrateLegacyUpdaters).WillOnce(Return(true));
     EXPECT_CALL(*app, UninstallSelf).Times(0);
     EXPECT_EQ(app->Run(), 0);
   }
-  scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+  scoped_refptr<GlobalPrefs> global_prefs =
+      CreateGlobalPrefs(GetUpdaterScopeForTesting());
+  ASSERT_TRUE(global_prefs);
   EXPECT_FALSE(global_prefs->GetSwapping());
   EXPECT_EQ(global_prefs->GetActiveVersion(), kUpdaterVersion);
 }
@@ -144,21 +146,23 @@ TEST_F(AppServerTestCase, InstallAutoPromotes) {
 
     // Expect the app to SwapInNewVersion and then ActiveDuty then
     // Shutdown(0). In this case it bypasses qualification.
-    EXPECT_CALL(*app, ActiveDuty).Times(1);
+    EXPECT_CALL(*app, ActiveDuty);
     EXPECT_CALL(*app, SwapInNewVersion).WillOnce(Return(true));
-    EXPECT_CALL(*app, MigrateLegacyUpdaters).WillOnce(Return(true));
     EXPECT_CALL(*app, UninstallSelf).Times(0);
     EXPECT_EQ(app->Run(), 0);
-    EXPECT_FALSE(CreateLocalPrefs(GetTestScope())->GetQualified());
+    EXPECT_FALSE(CreateLocalPrefs(GetUpdaterScopeForTesting())->GetQualified());
   }
-  scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+  scoped_refptr<GlobalPrefs> global_prefs =
+      CreateGlobalPrefs(GetUpdaterScopeForTesting());
+  ASSERT_TRUE(global_prefs);
   EXPECT_FALSE(global_prefs->GetSwapping());
   EXPECT_EQ(global_prefs->GetActiveVersion(), kUpdaterVersion);
 }
 
 TEST_F(AppServerTestCase, SelfPromoteFails) {
   {
-    scoped_refptr<LocalPrefs> local_prefs = CreateLocalPrefs(GetTestScope());
+    scoped_refptr<LocalPrefs> local_prefs =
+        CreateLocalPrefs(GetUpdaterScopeForTesting());
     local_prefs->SetQualified(true);
     PrefsCommitPendingWrites(local_prefs->GetPrefService());
   }
@@ -167,22 +171,26 @@ TEST_F(AppServerTestCase, SelfPromoteFails) {
 
     // Expect the app to SwapInNewVersion and then Shutdown(2).
     EXPECT_CALL(*app, ActiveDuty).Times(0);
-    EXPECT_CALL(*app, MigrateLegacyUpdaters).WillOnce(Return(true));
     EXPECT_CALL(*app, SwapInNewVersion).WillOnce(Return(false));
     EXPECT_CALL(*app, UninstallSelf).Times(0);
-    EXPECT_EQ(app->Run(), 2);
+    EXPECT_EQ(app->Run(), kErrorFailedToSwap);
   }
-  scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+  scoped_refptr<GlobalPrefs> global_prefs =
+      CreateGlobalPrefs(GetUpdaterScopeForTesting());
+  ASSERT_TRUE(global_prefs);
   EXPECT_TRUE(global_prefs->GetSwapping());
   EXPECT_EQ(global_prefs->GetActiveVersion(), "0");
 }
 
 TEST_F(AppServerTestCase, ActiveDutyAlready) {
   {
-    scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+    scoped_refptr<GlobalPrefs> global_prefs =
+        CreateGlobalPrefs(GetUpdaterScopeForTesting());
+    ASSERT_TRUE(global_prefs);
     global_prefs->SetActiveVersion(kUpdaterVersion);
     PrefsCommitPendingWrites(global_prefs->GetPrefService());
-    scoped_refptr<LocalPrefs> local_prefs = CreateLocalPrefs(GetTestScope());
+    scoped_refptr<LocalPrefs> local_prefs =
+        CreateLocalPrefs(GetUpdaterScopeForTesting());
     local_prefs->SetQualified(true);
     PrefsCommitPendingWrites(local_prefs->GetPrefService());
   }
@@ -190,24 +198,28 @@ TEST_F(AppServerTestCase, ActiveDutyAlready) {
     auto app = base::MakeRefCounted<AppServerTest>();
 
     // Expect the app to ActiveDuty and then Shutdown(0).
-    EXPECT_CALL(*app, ActiveDuty).Times(1);
+    EXPECT_CALL(*app, ActiveDuty);
     EXPECT_CALL(*app, SwapInNewVersion).Times(0);
-    EXPECT_CALL(*app, MigrateLegacyUpdaters).Times(0);
     EXPECT_CALL(*app, UninstallSelf).Times(0);
     EXPECT_EQ(app->Run(), 0);
   }
-  scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+  scoped_refptr<GlobalPrefs> global_prefs =
+      CreateGlobalPrefs(GetUpdaterScopeForTesting());
+  ASSERT_TRUE(global_prefs);
   EXPECT_FALSE(global_prefs->GetSwapping());
   EXPECT_EQ(global_prefs->GetActiveVersion(), kUpdaterVersion);
 }
 
 TEST_F(AppServerTestCase, StateDirty) {
   {
-    scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+    scoped_refptr<GlobalPrefs> global_prefs =
+        CreateGlobalPrefs(GetUpdaterScopeForTesting());
+    ASSERT_TRUE(global_prefs);
     global_prefs->SetActiveVersion(kUpdaterVersion);
     global_prefs->SetSwapping(true);
     PrefsCommitPendingWrites(global_prefs->GetPrefService());
-    scoped_refptr<LocalPrefs> local_prefs = CreateLocalPrefs(GetTestScope());
+    scoped_refptr<LocalPrefs> local_prefs =
+        CreateLocalPrefs(GetUpdaterScopeForTesting());
     local_prefs->SetQualified(true);
     PrefsCommitPendingWrites(local_prefs->GetPrefService());
   }
@@ -216,24 +228,28 @@ TEST_F(AppServerTestCase, StateDirty) {
 
     // Expect the app to SwapInNewVersion and then ActiveDuty and then
     // Shutdown(0).
-    EXPECT_CALL(*app, ActiveDuty).Times(1);
+    EXPECT_CALL(*app, ActiveDuty);
     EXPECT_CALL(*app, SwapInNewVersion).WillOnce(Return(true));
-    EXPECT_CALL(*app, MigrateLegacyUpdaters).WillOnce(Return(true));
     EXPECT_CALL(*app, UninstallSelf).Times(0);
     EXPECT_EQ(app->Run(), 0);
   }
-  scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+  scoped_refptr<GlobalPrefs> global_prefs =
+      CreateGlobalPrefs(GetUpdaterScopeForTesting());
+  ASSERT_TRUE(global_prefs);
   EXPECT_FALSE(global_prefs->GetSwapping());
   EXPECT_EQ(global_prefs->GetActiveVersion(), kUpdaterVersion);
 }
 
 TEST_F(AppServerTestCase, StateDirtySwapFails) {
   {
-    scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+    scoped_refptr<GlobalPrefs> global_prefs =
+        CreateGlobalPrefs(GetUpdaterScopeForTesting());
+    ASSERT_TRUE(global_prefs);
     global_prefs->SetActiveVersion(kUpdaterVersion);
     global_prefs->SetSwapping(true);
     PrefsCommitPendingWrites(global_prefs->GetPrefService());
-    scoped_refptr<LocalPrefs> local_prefs = CreateLocalPrefs(GetTestScope());
+    scoped_refptr<LocalPrefs> local_prefs =
+        CreateLocalPrefs(GetUpdaterScopeForTesting());
     local_prefs->SetQualified(true);
     PrefsCommitPendingWrites(local_prefs->GetPrefService());
   }
@@ -242,12 +258,13 @@ TEST_F(AppServerTestCase, StateDirtySwapFails) {
 
     // Expect the app to SwapInNewVersion and Shutdown(2).
     EXPECT_CALL(*app, ActiveDuty).Times(0);
-    EXPECT_CALL(*app, MigrateLegacyUpdaters).WillOnce(Return(true));
     EXPECT_CALL(*app, SwapInNewVersion).WillOnce(Return(false));
     EXPECT_CALL(*app, UninstallSelf).Times(0);
-    EXPECT_EQ(app->Run(), 2);
+    EXPECT_EQ(app->Run(), kErrorFailedToSwap);
   }
-  scoped_refptr<GlobalPrefs> global_prefs = CreateGlobalPrefs(GetTestScope());
+  scoped_refptr<GlobalPrefs> global_prefs =
+      CreateGlobalPrefs(GetUpdaterScopeForTesting());
+  ASSERT_TRUE(global_prefs);
   EXPECT_TRUE(global_prefs->GetSwapping());
   EXPECT_EQ(global_prefs->GetActiveVersion(), kUpdaterVersion);
 }

@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include "base/memory/raw_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -34,7 +35,7 @@ class PLATFORM_EXPORT P2PSocketClientImpl
     : public blink::P2PSocketClient,
       public network::mojom::blink::P2PSocketClient {
  public:
-  P2PSocketClientImpl();
+  explicit P2PSocketClientImpl(bool batch_packets);
   P2PSocketClientImpl(const P2PSocketClientImpl&) = delete;
   P2PSocketClientImpl& operator=(const P2PSocketClientImpl&) = delete;
   ~P2PSocketClientImpl() override;
@@ -48,7 +49,8 @@ class PLATFORM_EXPORT P2PSocketClientImpl
   // |dscp|. Return value is the unique packet_id for this packet.
   uint64_t Send(const net::IPEndPoint& address,
                 base::span<const uint8_t> data,
-                const rtc::PacketOptions& options) override;
+                const webrtc::AsyncSocketPacketOptions& options) override;
+  void FlushBatch() override;
 
   // Setting socket options.
   void SetOption(network::P2PSocketOption option, int value) override;
@@ -85,21 +87,33 @@ class PLATFORM_EXPORT P2PSocketClientImpl
   // condition.
   void SendWithPacketId(const net::IPEndPoint& address,
                         base::span<const uint8_t> data,
-                        const rtc::PacketOptions& options,
+                        const webrtc::AsyncSocketPacketOptions& options,
                         uint64_t packet_id);
 
   // network::mojom::blink::P2PSocketClient interface.
   void SocketCreated(const net::IPEndPoint& local_address,
                      const net::IPEndPoint& remote_address) override;
   void SendComplete(const network::P2PSendPacketMetrics& send_metrics) override;
-  void DataReceived(WTF::Vector<P2PReceivedPacketPtr> packets) override;
+  void SendBatchComplete(const Vector<::network::P2PSendPacketMetrics>&
+                             in_send_metrics_batch) override;
+  void DataReceived(Vector<P2PReceivedPacketPtr> packets) override;
+  void DoSendBatch();
 
   void OnConnectionError();
 
   THREAD_CHECKER(thread_checker_);
+  const bool batch_packets_;
   int socket_id_;
-  blink::P2PSocketClientDelegate* delegate_;
+  raw_ptr<blink::P2PSocketClientDelegate> delegate_;
   State state_;
+
+  // Packets sent with webrtc::AsyncSocketPacketOptions::batchable being true
+  // are collected here until a packet with
+  // webrtc::AsyncSocketPacketOptions::last_packet_in_batch is signalled.
+  Vector<network::mojom::blink::P2PSendPacketPtr> batched_send_packets_;
+  Vector<Vector<uint8_t>> batched_packets_storage_;
+  // Attribute recording if we're currently awaiting OnSendWatchComplete.
+  bool awaiting_batch_complete_ = false;
 
   // These two fields are used to identify packets for tracing.
   uint32_t random_socket_id_;

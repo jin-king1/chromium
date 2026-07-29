@@ -2,43 +2,61 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "mojo/public/c/system/invitation.h"
+
 #include <cstdint>
+#include <cstring>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/base_paths.h"
 #include "base/base_switches.h"
 #include "base/check_op.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/memory/read_only_shared_memory_region.h"
+#include "base/memory/shared_memory_mapping.h"
+#include "base/memory/writable_shared_memory_region.h"
 #include "base/notreached.h"
 #include "base/path_service.h"
 #include "base/process/process.h"
+#include "base/process/process_metrics.h"
 #include "base/run_loop.h"
-#include "base/strings/string_piece.h"
 #include "base/synchronization/lock.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/bind.h"
 #include "base/test/multiprocess_test.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "mojo/buildflags.h"
-#include "mojo/core/core.h"
 #include "mojo/core/embedder/embedder.h"
-#include "mojo/core/node_controller.h"
+#include "mojo/core/ipcz_api.h"
 #include "mojo/core/test/mojo_test_base.h"
 #include "mojo/core/test/test_switches.h"
-#include "mojo/public/c/system/invitation.h"
 #include "mojo/public/cpp/platform/named_platform_channel.h"
 #include "mojo/public/cpp/platform/platform_channel.h"
 #include "mojo/public/cpp/system/invitation.h"
+#include "mojo/public/cpp/system/message_pipe.h"
 #include "mojo/public/cpp/system/platform_handle.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+
+#if BUILDFLAG(MOJO_SUPPORT_LEGACY_CORE)
+#include "mojo/core/core.h"
+#include "mojo/core/node_controller.h"
+#endif
 
 #if BUILDFLAG(MOJO_USE_APPLE_CHANNEL)
-#include "base/mac/mach_port_rendezvous.h"
+#include "base/apple/mach_port_rendezvous.h"
+#endif
+
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
 #endif
 
 namespace mojo {
@@ -47,8 +65,11 @@ namespace {
 
 const char kSecondaryChannelHandleSwitch[] = "test-secondary-channel-handle";
 
-// TODO(https://crbug.com/1428561): Flaky on Tsan.
+// TODO(crbug.com/40900578): Flaky on Tsan.
 #if defined(THREAD_SANITIZER)
+#define MAYBE_InvitationTest DISABLED_InvitationTest
+#elif BUILDFLAG(IS_CHROMEOS)
+// TODO(https://crbug.com/498954838): Flaky on CrOS.
 #define MAYBE_InvitationTest DISABLED_InvitationTest
 #else
 #define MAYBE_InvitationTest InvitationTest
@@ -65,23 +86,28 @@ class MAYBE_InvitationTest : public test::MojoTestBase {
  protected:
   static base::Process LaunchChildTestClient(
       const std::string& test_client_name,
-      MojoHandle* primordial_pipes,
-      size_t num_primordial_pipes,
+      base::span<MojoHandle> primordial_pipes,
       MojoSendInvitationFlags send_flags,
       MojoProcessErrorHandler error_handler = nullptr,
       uintptr_t error_handler_context = 0,
       base::CommandLine* custom_command_line = nullptr,
       base::LaunchOptions* custom_launch_options = nullptr);
 
-  static void SendInvitationToClient(
-      PlatformHandle endpoint_handle,
-      base::ProcessHandle process,
-      MojoHandle* primordial_pipes,
-      size_t num_primordial_pipes,
-      MojoSendInvitationFlags flags,
-      MojoProcessErrorHandler error_handler,
-      uintptr_t error_handler_context,
-      base::StringPiece isolated_invitation_name);
+  static void SendInvitationToClient(PlatformHandle endpoint_handle,
+                                     base::ProcessHandle process,
+                                     base::span<MojoHandle> primordial_pipes,
+                                     MojoSendInvitationFlags flags,
+                                     MojoProcessErrorHandler error_handler,
+                                     uintptr_t error_handler_context,
+                                     std::string_view isolated_invitation_name);
+
+  static void WaitForProcessToTerminate(base::Process& process) {
+    int wait_result = -1;
+    base::WaitForMultiprocessTestChildExit(
+        process, TestTimeouts::action_timeout(), &wait_result);
+    EXPECT_EQ(0, wait_result);
+    process.Close();
+  }
 
  private:
   base::test::TaskEnvironment task_environment_;
@@ -90,21 +116,8 @@ class MAYBE_InvitationTest : public test::MojoTestBase {
 void PrepareToPassRemoteEndpoint(PlatformChannel* channel,
                                  base::LaunchOptions* options,
                                  base::CommandLine* command_line,
-                                 base::StringPiece switch_name = {}) {
-  std::string value;
-#if BUILDFLAG(IS_FUCHSIA)
-  channel->PrepareToPassRemoteEndpoint(&options->handles_to_transfer, &value);
-#elif BUILDFLAG(MOJO_USE_APPLE_CHANNEL)
-  channel->PrepareToPassRemoteEndpoint(&options->mach_ports_for_rendezvous,
-                                       &value);
-#elif BUILDFLAG(IS_POSIX)
-  channel->PrepareToPassRemoteEndpoint(&options->fds_to_remap, &value);
-#elif BUILDFLAG(IS_WIN)
-  channel->PrepareToPassRemoteEndpoint(&options->handles_to_inherit, &value);
-#else
-#error "Platform not yet supported."
-#endif
-
+                                 std::string_view switch_name = {}) {
+  const std::string value = channel->PrepareToPassRemoteEndpoint(*options);
   if (switch_name.empty()) {
     switch_name = PlatformChannel::kHandleSwitch;
   }
@@ -303,8 +316,7 @@ TEST_F(MAYBE_InvitationTest, AttachNameInUse) {
 // static
 base::Process MAYBE_InvitationTest::LaunchChildTestClient(
     const std::string& test_client_name,
-    MojoHandle* primordial_pipes,
-    size_t num_primordial_pipes,
+    base::span<MojoHandle> primordial_pipes,
     MojoSendInvitationFlags send_flags,
     MojoProcessErrorHandler error_handler,
     uintptr_t error_handler_context,
@@ -314,6 +326,11 @@ base::Process MAYBE_InvitationTest::LaunchChildTestClient(
       base::GetMultiProcessTestChildBaseCommandLine();
   base::CommandLine& command_line =
       custom_command_line ? *custom_command_line : default_command_line;
+
+  // If this is called from a test child process launching yet another child
+  // process, ensure this switch isn't set so that `SpawnMultiprocessTestChild`
+  // sets it properly.
+  command_line.RemoveSwitch(switches::kTestChildProcess);
 
   base::LaunchOptions default_launch_options;
   base::LaunchOptions& launch_options =
@@ -343,9 +360,8 @@ base::Process MAYBE_InvitationTest::LaunchChildTestClient(
   channel.RemoteProcessLaunchAttempted();
 
   SendInvitationToClient(std::move(local_endpoint_handle),
-                         child_process.Handle(), primordial_pipes,
-                         num_primordial_pipes, send_flags, error_handler,
-                         error_handler_context, "");
+                         child_process.Handle(), primordial_pipes, send_flags,
+                         error_handler, error_handler_context, "");
 
   return child_process;
 }
@@ -354,22 +370,22 @@ base::Process MAYBE_InvitationTest::LaunchChildTestClient(
 void MAYBE_InvitationTest::SendInvitationToClient(
     PlatformHandle endpoint_handle,
     base::ProcessHandle process,
-    MojoHandle* primordial_pipes,
-    size_t num_primordial_pipes,
+    base::span<MojoHandle> primordial_pipes,
     MojoSendInvitationFlags flags,
     MojoProcessErrorHandler error_handler,
     uintptr_t error_handler_context,
-    base::StringPiece isolated_invitation_name) {
+    std::string_view isolated_invitation_name) {
   MojoPlatformHandle handle;
   PlatformHandle::ToMojoPlatformHandle(std::move(endpoint_handle), &handle);
   CHECK_NE(handle.type, MOJO_PLATFORM_HANDLE_TYPE_INVALID);
 
   MojoHandle invitation;
   CHECK_EQ(MOJO_RESULT_OK, MojoCreateInvitation(nullptr, &invitation));
-  for (uint32_t name = 0; name < num_primordial_pipes; ++name) {
-    CHECK_EQ(MOJO_RESULT_OK,
-             MojoAttachMessagePipeToInvitation(invitation, &name, 4, nullptr,
-                                               &primordial_pipes[name]));
+  for (uint32_t name = 0; name < primordial_pipes.size(); ++name) {
+    auto name_span = base::as_bytes(base::span_from_ref(name));
+    CHECK_EQ(MOJO_RESULT_OK, MojoAttachMessagePipeToInvitation(
+                                 invitation, name_span.data(), name_span.size(),
+                                 nullptr, &primordial_pipes[name]));
   }
 
   MojoPlatformProcessHandle process_handle;
@@ -406,7 +422,7 @@ class TestClientBase : public MAYBE_InvitationTest {
   TestClientBase& operator=(const TestClientBase&) = delete;
 
   static MojoHandle AcceptInvitation(MojoAcceptInvitationFlags flags,
-                                     base::StringPiece switch_name = {}) {
+                                     std::string_view switch_name = {}) {
     const auto& command_line = *base::CommandLine::ForCurrentProcess();
     PlatformChannelEndpoint channel_endpoint;
     if (switch_name.empty()) {
@@ -435,17 +451,26 @@ class TestClientBase : public MAYBE_InvitationTest {
              MojoAcceptInvitation(&transport_endpoint, &options, &invitation));
     return invitation;
   }
+
+  static MojoHandle ExtractPipeFromInvitation(MojoHandle invitation) {
+    MojoHandle pipe = MOJO_HANDLE_INVALID;
+    const uint32_t kPipeName = 0;
+    EXPECT_EQ(MOJO_RESULT_OK, MojoExtractMessagePipeFromInvitation(
+                                  invitation, &kPipeName, 4, nullptr, &pipe));
+    EXPECT_EQ(MOJO_RESULT_OK, MojoClose(invitation));
+    return pipe;
+  }
 };
 
-#define DEFINE_TEST_CLIENT(name)             \
-  class name##Impl : public TestClientBase { \
-   public:                                   \
-    static void Run();                       \
-  };                                         \
-  MULTIPROCESS_TEST_MAIN(name) {             \
-    name##Impl::Run();                       \
-    return 0;                                \
-  }                                          \
+#define DEFINE_TEST_CLIENT(name)                \
+  class name##Impl : public TestClientBase {    \
+   public:                                      \
+    static void Run();                          \
+  };                                            \
+  MULTIPROCESS_TEST_MAIN(name) {                \
+    name##Impl::Run();                          \
+    return testing::Test::HasFailure() ? 1 : 0; \
+  }                                             \
   void name##Impl::Run()
 
 const std::string kTestMessage1 = "i am the pusher robot";
@@ -455,9 +480,9 @@ const std::string kTestMessage4 = "i shove the messages down the pipe";
 
 TEST_F(MAYBE_InvitationTest, SendInvitation) {
   MojoHandle primordial_pipe;
-  base::Process child_process =
-      LaunchChildTestClient("SendInvitationClient", &primordial_pipe, 1,
-                            MOJO_SEND_INVITATION_FLAG_NONE);
+  base::Process child_process = LaunchChildTestClient(
+      "SendInvitationClient", base::span_from_ref(primordial_pipe),
+      MOJO_SEND_INVITATION_FLAG_NONE);
 
   WriteMessage(primordial_pipe, kTestMessage1);
   EXPECT_EQ(MOJO_RESULT_OK,
@@ -465,21 +490,12 @@ TEST_F(MAYBE_InvitationTest, SendInvitation) {
   EXPECT_EQ(kTestMessage3, ReadMessage(primordial_pipe));
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(primordial_pipe));
 
-  int wait_result = -1;
-  base::WaitForMultiprocessTestChildExit(
-      child_process, TestTimeouts::action_timeout(), &wait_result);
-  child_process.Close();
-  EXPECT_EQ(0, wait_result);
+  WaitForProcessToTerminate(child_process);
 }
 
 DEFINE_TEST_CLIENT(SendInvitationClient) {
-  MojoHandle primordial_pipe;
   MojoHandle invitation = AcceptInvitation(MOJO_ACCEPT_INVITATION_FLAG_NONE);
-  const uint32_t pipe_name = 0;
-  ASSERT_EQ(MOJO_RESULT_OK,
-            MojoExtractMessagePipeFromInvitation(invitation, &pipe_name, 4,
-                                                 nullptr, &primordial_pipe));
-  ASSERT_EQ(MOJO_RESULT_OK, MojoClose(invitation));
+  MojoHandle primordial_pipe = ExtractPipeFromInvitation(invitation);
 
   WaitForSignals(primordial_pipe, MOJO_HANDLE_SIGNAL_READABLE);
   ASSERT_EQ(kTestMessage1, ReadMessage(primordial_pipe));
@@ -492,8 +508,8 @@ DEFINE_TEST_CLIENT(SendInvitationClient) {
 TEST_F(MAYBE_InvitationTest, SendInvitationMultiplePipes) {
   MojoHandle pipes[2];
   base::Process child_process =
-      LaunchChildTestClient("SendInvitationMultiplePipesClient", pipes, 2,
-                            MOJO_SEND_INVITATION_FLAG_NONE);
+      LaunchChildTestClient("SendInvitationMultiplePipesClient",
+                            base::span(pipes), MOJO_SEND_INVITATION_FLAG_NONE);
 
   WriteMessage(pipes[0], kTestMessage1);
   WriteMessage(pipes[1], kTestMessage2);
@@ -507,11 +523,7 @@ TEST_F(MAYBE_InvitationTest, SendInvitationMultiplePipes) {
   ASSERT_EQ(MOJO_RESULT_OK, MojoClose(pipes[0]));
   ASSERT_EQ(MOJO_RESULT_OK, MojoClose(pipes[1]));
 
-  int wait_result = -1;
-  base::WaitForMultiprocessTestChildExit(
-      child_process, TestTimeouts::action_timeout(), &wait_result);
-  child_process.Close();
-  EXPECT_EQ(0, wait_result);
+  WaitForProcessToTerminate(child_process);
 }
 
 DEFINE_TEST_CLIENT(SendInvitationMultiplePipesClient) {
@@ -567,11 +579,12 @@ class RemoteProcessState {
   void NotifyError(const std::string& error_message, bool disconnected) {
     base::AutoLock lock(lock_);
     CHECK(!disconnected_);
-    EXPECT_NE(error_message.find(expected_error_message_), std::string::npos);
+    EXPECT_TRUE(error_message.contains(expected_error_message_));
     disconnected_ = disconnected;
     ++call_count_;
-    if (error_callback_)
+    if (error_callback_) {
       callback_task_runner_->PostTask(FROM_HERE, error_callback_);
+    }
   }
 
  private:
@@ -600,8 +613,9 @@ TEST_F(MAYBE_InvitationTest, ProcessErrors) {
   RemoteProcessState process_state;
   MojoHandle pipe;
   base::Process child_process = LaunchChildTestClient(
-      "ProcessErrorsClient", &pipe, 1, MOJO_SEND_INVITATION_FLAG_NONE,
-      &TestProcessErrorHandler, reinterpret_cast<uintptr_t>(&process_state));
+      "ProcessErrorsClient", base::span_from_ref(pipe),
+      MOJO_SEND_INVITATION_FLAG_NONE, &TestProcessErrorHandler,
+      reinterpret_cast<uintptr_t>(&process_state));
 
   MojoMessageHandle message;
   WaitForSignals(pipe, MOJO_HANDLE_SIGNAL_READABLE);
@@ -628,22 +642,14 @@ TEST_F(MAYBE_InvitationTest, ProcessErrors) {
 
   EXPECT_TRUE(process_state.disconnected());
 
-  int wait_result = -1;
-  base::WaitForMultiprocessTestChildExit(
-      child_process, TestTimeouts::action_timeout(), &wait_result);
-  child_process.Close();
-  EXPECT_EQ(0, wait_result);
+  WaitForProcessToTerminate(child_process);
 
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(pipe));
 }
 
 DEFINE_TEST_CLIENT(ProcessErrorsClient) {
-  MojoHandle pipe;
   MojoHandle invitation = AcceptInvitation(MOJO_ACCEPT_INVITATION_FLAG_NONE);
-  const uint32_t pipe_name = 0;
-  ASSERT_EQ(MOJO_RESULT_OK, MojoExtractMessagePipeFromInvitation(
-                                invitation, &pipe_name, 4, nullptr, &pipe));
-  ASSERT_EQ(MOJO_RESULT_OK, MojoClose(invitation));
+  MojoHandle pipe = ExtractPipeFromInvitation(invitation);
 
   // Send a message. Contents are irrelevant, the test process is just going to
   // flag it as a bad.
@@ -655,6 +661,7 @@ DEFINE_TEST_CLIENT(ProcessErrorsClient) {
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(pipe));
 }
 
+#if BUILDFLAG(MOJO_SUPPORT_LEGACY_CORE)
 // Temporary removed support for reinvitation for non-isolated connections.
 TEST_F(MAYBE_InvitationTest, DISABLED_Reinvitation) {
   // The gist of this test is that a process should be able to accept an
@@ -671,9 +678,10 @@ TEST_F(MAYBE_InvitationTest, DISABLED_Reinvitation) {
                               &command_line, kSecondaryChannelHandleSwitch);
 
   MojoHandle pipe;
-  base::Process child_process = LaunchChildTestClient(
-      "ReinvitationClient", &pipe, 1, MOJO_SEND_INVITATION_FLAG_NONE, nullptr,
-      0, &command_line, &launch_options);
+  base::Process child_process =
+      LaunchChildTestClient("ReinvitationClient", base::span_from_ref(pipe),
+                            MOJO_SEND_INVITATION_FLAG_NONE, nullptr, 0,
+                            &command_line, &launch_options);
   secondary_channel.RemoteProcessLaunchAttempted();
 
   // Synchronize end-to-end communication first to ensure the process connection
@@ -702,20 +710,13 @@ TEST_F(MAYBE_InvitationTest, DISABLED_Reinvitation) {
   EXPECT_EQ(kTestMessage4, ReadMessage(new_pipe.get().value()));
   WriteMessage(new_pipe.get().value(), kDisconnectMessage);
 
-  int wait_result = -1;
-  base::WaitForMultiprocessTestChildExit(
-      child_process, TestTimeouts::action_timeout(), &wait_result);
-  child_process.Close();
-  EXPECT_EQ(0, wait_result);
+  WaitForProcessToTerminate(child_process);
 }
+#endif  // BUILDFLAG(MOJO_SUPPORT_LEGACY_CORE)
 
 DEFINE_TEST_CLIENT(ReinvitationClient) {
-  MojoHandle pipe;
   MojoHandle invitation = AcceptInvitation(MOJO_ACCEPT_INVITATION_FLAG_NONE);
-  const uint32_t pipe_name = 0;
-  ASSERT_EQ(MOJO_RESULT_OK, MojoExtractMessagePipeFromInvitation(
-                                invitation, &pipe_name, 4, nullptr, &pipe));
-  ASSERT_EQ(MOJO_RESULT_OK, MojoClose(invitation));
+  MojoHandle pipe = ExtractPipeFromInvitation(invitation);
   EXPECT_EQ(kTestMessage1, ReadMessage(pipe));
   WriteMessage(pipe, kTestMessage2);
 
@@ -740,9 +741,9 @@ DEFINE_TEST_CLIENT(ReinvitationClient) {
 
 TEST_F(MAYBE_InvitationTest, SendIsolatedInvitation) {
   MojoHandle primordial_pipe;
-  base::Process child_process =
-      LaunchChildTestClient("SendIsolatedInvitationClient", &primordial_pipe, 1,
-                            MOJO_SEND_INVITATION_FLAG_ISOLATED);
+  base::Process child_process = LaunchChildTestClient(
+      "SendIsolatedInvitationClient", base::span_from_ref(primordial_pipe),
+      MOJO_SEND_INVITATION_FLAG_ISOLATED);
 
   WriteMessage(primordial_pipe, kTestMessage1);
   EXPECT_EQ(MOJO_RESULT_OK,
@@ -750,22 +751,13 @@ TEST_F(MAYBE_InvitationTest, SendIsolatedInvitation) {
   EXPECT_EQ(kTestMessage3, ReadMessage(primordial_pipe));
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(primordial_pipe));
 
-  int wait_result = -1;
-  base::WaitForMultiprocessTestChildExit(
-      child_process, TestTimeouts::action_timeout(), &wait_result);
-  child_process.Close();
-  EXPECT_EQ(0, wait_result);
+  WaitForProcessToTerminate(child_process);
 }
 
 DEFINE_TEST_CLIENT(SendIsolatedInvitationClient) {
-  MojoHandle primordial_pipe;
   MojoHandle invitation =
       AcceptInvitation(MOJO_ACCEPT_INVITATION_FLAG_ISOLATED);
-  const uint32_t pipe_name = 0;
-  ASSERT_EQ(MOJO_RESULT_OK,
-            MojoExtractMessagePipeFromInvitation(invitation, &pipe_name, 4,
-                                                 nullptr, &primordial_pipe));
-  ASSERT_EQ(MOJO_RESULT_OK, MojoClose(invitation));
+  MojoHandle primordial_pipe = ExtractPipeFromInvitation(invitation);
 
   WaitForSignals(primordial_pipe, MOJO_HANDLE_SIGNAL_READABLE);
   ASSERT_EQ(kTestMessage1, ReadMessage(primordial_pipe));
@@ -794,8 +786,9 @@ TEST_F(MAYBE_InvitationTest, SendMultipleIsolatedInvitations) {
 
   MojoHandle primordial_pipe;
   base::Process child_process = LaunchChildTestClient(
-      "SendMultipleIsolatedInvitationsClient", &primordial_pipe, 1,
-      MOJO_SEND_INVITATION_FLAG_ISOLATED, nullptr, 0, &command_line, &options);
+      "SendMultipleIsolatedInvitationsClient",
+      base::span_from_ref(primordial_pipe), MOJO_SEND_INVITATION_FLAG_ISOLATED,
+      nullptr, 0, &command_line, &options);
   secondary_transport.RemoteProcessLaunchAttempted();
 
   WriteMessage(primordial_pipe, kTestMessage1);
@@ -808,8 +801,8 @@ TEST_F(MAYBE_InvitationTest, SendMultipleIsolatedInvitations) {
   MojoHandle new_pipe;
   SendInvitationToClient(
       secondary_transport.TakeLocalEndpoint().TakePlatformHandle(),
-      child_process.Handle(), &new_pipe, 1, MOJO_SEND_INVITATION_FLAG_ISOLATED,
-      nullptr, 0, "");
+      child_process.Handle(), base::span_from_ref(new_pipe),
+      MOJO_SEND_INVITATION_FLAG_ISOLATED, nullptr, 0, "");
   WaitForSignals(primordial_pipe, MOJO_HANDLE_SIGNAL_PEER_CLOSED);
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(primordial_pipe));
 
@@ -820,22 +813,13 @@ TEST_F(MAYBE_InvitationTest, SendMultipleIsolatedInvitations) {
   EXPECT_EQ(kTestMessage3, ReadMessage(new_pipe));
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(new_pipe));
 
-  int wait_result = -1;
-  base::WaitForMultiprocessTestChildExit(
-      child_process, TestTimeouts::action_timeout(), &wait_result);
-  child_process.Close();
-  EXPECT_EQ(0, wait_result);
+  WaitForProcessToTerminate(child_process);
 }
 
 DEFINE_TEST_CLIENT(SendMultipleIsolatedInvitationsClient) {
-  MojoHandle primordial_pipe;
   MojoHandle invitation =
       AcceptInvitation(MOJO_ACCEPT_INVITATION_FLAG_ISOLATED);
-  const uint32_t pipe_name = 0;
-  ASSERT_EQ(MOJO_RESULT_OK,
-            MojoExtractMessagePipeFromInvitation(invitation, &pipe_name, 4,
-                                                 nullptr, &primordial_pipe));
-  ASSERT_EQ(MOJO_RESULT_OK, MojoClose(invitation));
+  MojoHandle primordial_pipe = ExtractPipeFromInvitation(invitation);
 
   WaitForSignals(primordial_pipe, MOJO_HANDLE_SIGNAL_READABLE);
   ASSERT_EQ(kTestMessage1, ReadMessage(primordial_pipe));
@@ -848,6 +832,7 @@ DEFINE_TEST_CLIENT(SendMultipleIsolatedInvitationsClient) {
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(primordial_pipe));
 
   primordial_pipe = MOJO_HANDLE_INVALID;
+  const uint32_t pipe_name = 0;
   ASSERT_EQ(MOJO_RESULT_OK,
             MojoExtractMessagePipeFromInvitation(invitation, &pipe_name, 4,
                                                  nullptr, &primordial_pipe));
@@ -873,14 +858,14 @@ TEST_F(MAYBE_InvitationTest, SendIsolatedInvitationWithDuplicateName) {
   MojoHandle pipe0, pipe1;
   const char kConnectionName[] = "there can be only one!";
   SendInvitationToClient(channel1.TakeLocalEndpoint().TakePlatformHandle(),
-                         base::kNullProcessHandle, &pipe0, 1,
+                         base::kNullProcessHandle, base::span_from_ref(pipe0),
                          MOJO_SEND_INVITATION_FLAG_ISOLATED, nullptr, 0,
                          kConnectionName);
 
   // Send another invitation with the same connection name. |pipe0| should be
   // disconnected as the first invitation's connection is torn down.
   SendInvitationToClient(channel2.TakeLocalEndpoint().TakePlatformHandle(),
-                         base::kNullProcessHandle, &pipe1, 1,
+                         base::kNullProcessHandle, base::span_from_ref(pipe1),
                          MOJO_SEND_INVITATION_FLAG_ISOLATED, nullptr, 0,
                          kConnectionName);
 
@@ -889,7 +874,17 @@ TEST_F(MAYBE_InvitationTest, SendIsolatedInvitationWithDuplicateName) {
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(pipe1));
 }
 
-TEST_F(MAYBE_InvitationTest, SendIsolatedInvitationToSelf) {
+// TODO(crbug.com/504855187): Flaky due to a race condition in isolated
+// self-connections where MergePortEvent bypasses the channel and arrives before
+// OnAcceptPeer updates the expected peer name. Disabled on ChromeOS devices due
+// to high retry cost on cros_test_platform. Preserves coverage on
+// linux-chromeos-chrome, linux-chromeos-rel, and etc.
+#if BUILDFLAG(IS_CHROMEOS_DEVICE)
+#define MAYBE_SendIsolatedInvitationToSelf DISABLED_SendIsolatedInvitationToSelf
+#else
+#define MAYBE_SendIsolatedInvitationToSelf SendIsolatedInvitationToSelf
+#endif
+TEST_F(MAYBE_InvitationTest, MAYBE_SendIsolatedInvitationToSelf) {
   if (IsMojoIpczEnabled()) {
     GTEST_SKIP() << "MojoIpcz does not support nodes sending isolated "
                  << "invitations to themselves.";
@@ -898,10 +893,10 @@ TEST_F(MAYBE_InvitationTest, SendIsolatedInvitationToSelf) {
   PlatformChannel channel;
   MojoHandle pipe0, pipe1;
   SendInvitationToClient(channel.TakeLocalEndpoint().TakePlatformHandle(),
-                         base::kNullProcessHandle, &pipe0, 1,
+                         base::kNullProcessHandle, base::span_from_ref(pipe0),
                          MOJO_SEND_INVITATION_FLAG_ISOLATED, nullptr, 0, "");
   SendInvitationToClient(channel.TakeRemoteEndpoint().TakePlatformHandle(),
-                         base::kNullProcessHandle, &pipe1, 1,
+                         base::kNullProcessHandle, base::span_from_ref(pipe1),
                          MOJO_SEND_INVITATION_FLAG_ISOLATED, nullptr, 0, "");
 
   WriteMessage(pipe0, kTestMessage1);
@@ -912,42 +907,266 @@ TEST_F(MAYBE_InvitationTest, SendIsolatedInvitationToSelf) {
 
 TEST_F(MAYBE_InvitationTest, BrokenInvitationTransportBreaksAttachedPipe) {
   MojoHandle primordial_pipe;
-  base::Process child_process =
-      LaunchChildTestClient("BrokenTransportClient", &primordial_pipe, 1,
-                            MOJO_SEND_INVITATION_FLAG_NONE);
+  base::Process child_process = LaunchChildTestClient(
+      "BrokenTransportClient", base::span_from_ref(primordial_pipe),
+      MOJO_SEND_INVITATION_FLAG_NONE);
 
   EXPECT_EQ(MOJO_RESULT_OK,
             WaitForSignals(primordial_pipe, MOJO_HANDLE_SIGNAL_PEER_CLOSED));
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(primordial_pipe));
 
-  int wait_result = -1;
-  base::WaitForMultiprocessTestChildExit(
-      child_process, TestTimeouts::action_timeout(), &wait_result);
-  child_process.Close();
-  EXPECT_EQ(0, wait_result);
+  WaitForProcessToTerminate(child_process);
 }
 
 TEST_F(MAYBE_InvitationTest,
        BrokenIsolatedInvitationTransportBreaksAttachedPipe) {
   MojoHandle primordial_pipe;
-  base::Process child_process =
-      LaunchChildTestClient("BrokenTransportClient", &primordial_pipe, 1,
-                            MOJO_SEND_INVITATION_FLAG_ISOLATED);
+  base::Process child_process = LaunchChildTestClient(
+      "BrokenTransportClient", base::span_from_ref(primordial_pipe),
+      MOJO_SEND_INVITATION_FLAG_ISOLATED);
 
   EXPECT_EQ(MOJO_RESULT_OK,
             WaitForSignals(primordial_pipe, MOJO_HANDLE_SIGNAL_PEER_CLOSED));
   EXPECT_EQ(MOJO_RESULT_OK, MojoClose(primordial_pipe));
 
-  int wait_result = -1;
-  base::WaitForMultiprocessTestChildExit(
-      child_process, TestTimeouts::action_timeout(), &wait_result);
-  child_process.Close();
-  EXPECT_EQ(0, wait_result);
+  WaitForProcessToTerminate(child_process);
 }
 
 DEFINE_TEST_CLIENT(BrokenTransportClient) {
   // No-op. Exit immediately without accepting any invitation.
 }
+
+// TODO(crbug.com/407060377): Flaky in Android.
+#if BUILDFLAG(IS_ANDROID)
+#define MAYBE_NonBrokerToNonBroker DISABLED_NonBrokerToNonBroker
+#else
+#define MAYBE_NonBrokerToNonBroker NonBrokerToNonBroker
+#endif
+
+TEST_F(MAYBE_InvitationTest, MAYBE_NonBrokerToNonBroker) {
+  // Tests a non-broker inviting another non-broker to join the network.
+  MojoHandle host;
+  base::Process host_process = LaunchChildTestClient(
+      "NonBrokerToNonBrokerHost", base::span_from_ref(host),
+      MOJO_SEND_INVITATION_FLAG_NONE);
+
+  // Send a pipe to the host, which it will forward to its launched client.
+  MessagePipe pipe;
+  MojoHandle client = pipe.handle0.release().value();
+  MojoHandle pipe_for_client = pipe.handle1.release().value();
+  WriteMessageWithHandles(host, "aaa", &pipe_for_client, 1);
+
+  // If the host can successfully invite the client, the client will receive
+  // this message and we'll eventually receive a message back from it.
+  WriteMessage(client, "bbb");
+  EXPECT_EQ("ccc", ReadMessage(client));
+
+  // Signal to the host that it's OK to terminate, then wait for it ack.
+  WriteMessage(host, "bye");
+  WaitForProcessToTerminate(host_process);
+  MojoClose(host);
+  MojoClose(client);
+}
+
+DEFINE_TEST_CLIENT(NonBrokerToNonBrokerHost) {
+  MojoHandle invitation = AcceptInvitation(MOJO_ACCEPT_INVITATION_FLAG_NONE);
+  MojoHandle test = ExtractPipeFromInvitation(invitation);
+
+  MojoHandle pipe_for_client;
+  EXPECT_EQ("aaa", ReadMessageWithHandles(test, &pipe_for_client, 1));
+
+  MojoHandle client;
+  base::Process client_process = LaunchChildTestClient(
+      "NonBrokerToNonBrokerClient", base::span_from_ref(client),
+      MOJO_SEND_INVITATION_FLAG_SHARE_BROKER);
+
+  // Forward the pipe from the test to the client, then wait. We're done
+  // whenever the client acks. The success of the test is determined by
+  // the outcome of interactions between the test and the client process.
+  WriteMessageWithHandles(client, "ddd", &pipe_for_client, 1);
+
+  // Wait for a signal from the test to let us know we can terminate.
+  EXPECT_EQ("bye", ReadMessage(test));
+  WriteMessage(client, "bye");
+  WaitForProcessToTerminate(client_process);
+
+  MojoClose(client);
+  MojoClose(test);
+}
+
+DEFINE_TEST_CLIENT(NonBrokerToNonBrokerClient) {
+  MojoHandle invitation =
+      AcceptInvitation(MOJO_ACCEPT_INVITATION_FLAG_INHERIT_BROKER);
+  MojoHandle host = ExtractPipeFromInvitation(invitation);
+
+  MojoHandle pipe_to_test;
+  EXPECT_EQ("ddd", ReadMessageWithHandles(host, &pipe_to_test, 1));
+
+  EXPECT_EQ("bbb", ReadMessage(pipe_to_test));
+  WriteMessage(pipe_to_test, "ccc");
+
+  EXPECT_EQ("bye", ReadMessage(host));
+  MojoClose(host);
+  MojoClose(pipe_to_test);
+}
+
+TEST_F(MAYBE_InvitationTest, MultiBrokerNetwork) {
+  // Regression test for https://crbug.com/1432382, ensuring that a non-broker
+  // can communicate with brokers other than its own and can transmit platform
+  // handles between them.
+
+  if (!mojo::core::IsMojoIpczEnabled()) {
+    // Mutli-broker networks are only supported with ipcz enabled.
+    GTEST_SKIP() << "This tests functionality which is only supported when "
+                 << "MojoIpcz is enabled, but MojoIpcz is not enabled.";
+  }
+
+  ASSERT_TRUE(mojo::core::GetIpczNodeOptions().is_broker);
+
+  // First we launch a second broker and connect to it.
+  MojoHandle secondary_broker;
+  base::Process secondary_broker_process = LaunchChildTestClient(
+      "SecondaryBroker", base::span_from_ref(secondary_broker),
+      MOJO_SEND_INVITATION_FLAG_ISOLATED);
+
+  // Then launch a non-broker and connect to it.
+  MojoHandle client;
+  base::Process client_process = LaunchChildTestClient(
+      "MultiBrokerNetworkClient", base::span_from_ref(client),
+      MOJO_SEND_INVITATION_FLAG_NONE);
+
+  // Pass them each one end of the same pipe.
+  MessagePipe pipe;
+  MojoHandle broker_to_client = pipe.handle0.release().value();
+  MojoHandle client_to_broker = pipe.handle1.release().value();
+  WriteMessageWithHandles(secondary_broker, "hi", &broker_to_client, 1);
+  WriteMessageWithHandles(client, "hi", &client_to_broker, 1);
+
+  // Signal to the host that it's OK to terminate, then wait for acks.
+  WriteMessage(secondary_broker, "bye");
+  WriteMessage(client, "bye");
+  WaitForProcessToTerminate(secondary_broker_process);
+  WaitForProcessToTerminate(client_process);
+  MojoClose(secondary_broker);
+  MojoClose(client);
+}
+
+MojoHandle CreateMemory(std::string_view contents) {
+  auto region = base::WritableSharedMemoryRegion::Create(contents.size());
+  auto mapping = region.Map();
+  mapping.GetMemoryAsSpan<char>().copy_prefix_from(base::span(contents));
+  auto buffer = WrapReadOnlySharedMemoryRegion(
+      base::WritableSharedMemoryRegion::ConvertToReadOnly(std::move(region)));
+  return buffer.release().value();
+}
+
+std::string ReadMemory(MojoHandle handle) {
+  auto region = UnwrapReadOnlySharedMemoryRegion(
+      ScopedSharedBufferHandle{SharedBufferHandle{handle}});
+  auto mapping = region.Map();
+  auto span = mapping.GetMemoryAsSpan<const char>();
+  return std::string(span.begin(), span.end());
+}
+
+constexpr size_t kNumMultiBrokerMessageIterations = 100;
+
+DEFINE_TEST_CLIENT(SecondaryBroker) {
+  ASSERT_TRUE(mojo::core::GetIpczNodeOptions().is_broker);
+  MojoHandle invitation =
+      AcceptInvitation(MOJO_ACCEPT_INVITATION_FLAG_ISOLATED);
+  MojoHandle test_runner = ExtractPipeFromInvitation(invitation);
+
+  MojoHandle client;
+  EXPECT_EQ("hi", ReadMessageWithHandles(test_runner, &client, 1));
+
+  // Note that handle passing can succeed even if communication is broken
+  // between non-brokers and secondary brokers, as long as no direct link
+  // between them has been fully negotiated yet. We perform many iterations of
+  // handle passing to ensure adequate coverage.
+  for (size_t i = 0; i < kNumMultiBrokerMessageIterations; ++i) {
+    MojoHandle buffer = CreateMemory("lol");
+    WriteMessageWithHandles(client, "aaa", &buffer, 1);
+    EXPECT_EQ("bbb", ReadMessageWithHandles(client, &buffer, 1));
+    EXPECT_EQ("lmao", ReadMemory(buffer));
+  }
+
+  EXPECT_EQ("bye", ReadMessage(test_runner));
+
+  MojoClose(test_runner);
+  MojoClose(client);
+}
+
+DEFINE_TEST_CLIENT(MultiBrokerNetworkClient) {
+  ASSERT_FALSE(mojo::core::GetIpczNodeOptions().is_broker);
+  MojoHandle invitation = AcceptInvitation(MOJO_ACCEPT_INVITATION_FLAG_NONE);
+  MojoHandle test_runner = ExtractPipeFromInvitation(invitation);
+
+  MojoHandle secondary_broker;
+  EXPECT_EQ("hi", ReadMessageWithHandles(test_runner, &secondary_broker, 1));
+
+  for (size_t i = 0; i < kNumMultiBrokerMessageIterations; ++i) {
+    MojoHandle buffer = CreateMemory("lmao");
+    WriteMessageWithHandles(secondary_broker, "bbb", &buffer, 1);
+    EXPECT_EQ("aaa", ReadMessageWithHandles(secondary_broker, &buffer, 1));
+    EXPECT_EQ("lol", ReadMemory(buffer));
+  }
+
+  EXPECT_EQ("bye", ReadMessage(test_runner));
+
+  MojoClose(test_runner);
+  MojoClose(secondary_broker);
+}
+
+#if BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WIN)
+TEST_F(MAYBE_InvitationTest, NoLeakOnFailedSend) {
+  if (!mojo::core::IsMojoIpczEnabled()) {
+    GTEST_SKIP() << "This test is specific to the MojoIpcz driver.";
+  }
+
+  // Helper lambda to retrieve the number of open handles.
+  auto get_open_handle_count = []() {
+#if BUILDFLAG(IS_WIN)
+    DWORD handle_count = 0;
+    ::GetProcessHandleCount(::GetCurrentProcess(), &handle_count);
+    return static_cast<int>(handle_count);
+#else  // BUILDFLAG(IS_POSIX)
+    return base::ProcessMetrics::CreateCurrentProcessMetrics()
+        ->GetOpenFdCount();
+#endif
+  };
+
+  const int initial_count = get_open_handle_count();
+  const int iterations = 100;
+
+  for (int i = 0; i < iterations; i++) {
+    PlatformChannel channel;
+    MojoPlatformHandle endpoint_handle;
+    endpoint_handle.struct_size = sizeof(endpoint_handle);
+    PlatformHandle::ToMojoPlatformHandle(
+        channel.TakeLocalEndpoint().TakePlatformHandle(), &endpoint_handle);
+
+    MojoInvitationTransportEndpoint endpoint;
+    endpoint.struct_size = sizeof(endpoint);
+    endpoint.type = MOJO_INVITATION_TRANSPORT_TYPE_CHANNEL;
+    endpoint.num_platform_handles = 1;
+    endpoint.platform_handles = &endpoint_handle;
+
+    MojoHandle invitation;
+    EXPECT_EQ(MOJO_RESULT_OK, MojoCreateInvitation(nullptr, &invitation));
+
+    // Send without attaching any pipes. This should fail.
+    EXPECT_EQ(MOJO_RESULT_FAILED_PRECONDITION,
+              MojoSendInvitation(invitation, nullptr, &endpoint, nullptr, 0,
+                                 nullptr));
+    MojoClose(invitation);
+  }
+
+  // Check that we haven't leaked a handle for every iteration.
+  // We allow some margin for other threads / noise.
+  const int final_count = get_open_handle_count();
+  EXPECT_LT(final_count, initial_count + iterations / 2);
+}
+#endif  // BUILDFLAG(IS_POSIX) || BUILDFLAG(IS_WIN)
 
 }  // namespace
 }  // namespace core

@@ -15,14 +15,17 @@
  * Fires a 'cr-lottie-playing' event when the animation starts playing.
  * Fires a 'cr-lottie-paused' event when the animation has paused.
  * Fires a 'cr-lottie-stopped' event when animation has stopped.
+ * Fires a 'cr-lottie-completed' event when animation has completed.
  * Fires a 'cr-lottie-resized' event when the canvas the animation is being
  * drawn on is resized.
  */
 
-import {assert, assertNotReached} from '//resources/js/assert_ts.js';
-import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {assert, assertNotReached} from '//resources/js/assert.js';
+import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
 
-import {getTemplate} from './cr_lottie.html.js';
+import {getCss} from './cr_lottie.css.js';
+import {getHtml} from './cr_lottie.html.js';
 
 let workerLoaderPolicy: TrustedTypePolicy|null = null;
 
@@ -65,44 +68,32 @@ export interface CrLottieElement {
   };
 }
 
-export class CrLottieElement extends PolymerElement {
+export class CrLottieElement extends CrLitElement {
   static get is() {
     return 'cr-lottie';
   }
 
-  static get template() {
-    return getTemplate();
+  static override get styles() {
+    return getCss();
   }
 
-  static get properties() {
+  override render() {
+    return getHtml.bind(this)();
+  }
+
+  static override get properties() {
     return {
-      animationUrl: {
-        type: String,
-        value: '',
-        observer: 'animationUrlChanged_',
-      },
-
-      autoplay: {
-        type: Boolean,
-        value: false,
-      },
-
-      hidden: {
-        type: Boolean,
-        value: false,
-      },
-
-      singleLoop: {
-        type: Boolean,
-        value: false,
-      },
+      animationUrl: {type: String},
+      autoplay: {type: Boolean},
+      hidden: {type: Boolean},
+      singleLoop: {type: Boolean},
     };
   }
 
-  animationUrl: string;
-  autoplay: boolean;
-  override hidden: boolean;
-  singleLoop: boolean;
+  accessor animationUrl: string = '';
+  accessor autoplay: boolean = false;
+  override accessor hidden: boolean = false;
+  accessor singleLoop: boolean = false;
 
   private canvasElement_: CanvasElementWithOffscreen|null = null;
   private isAnimationLoaded_: boolean = false;
@@ -130,12 +121,28 @@ export class CrLottieElement extends PolymerElement {
   private workerNeedsSizeUpdate_: boolean = false;
 
   /**
+   * The last segments that were explicitly set via playSegments.
+   * In case playSegments() is invoked before the animation is initialized, the
+   * segments are stored in this variable. Once the animation initializes, the
+   * state is sent to the worker.
+   */
+  private playSegments_: [number, number]|null = null;
+
+  /**
    * Whether the Worker needs to receive new control
    * information about its desired state. This is necessary for the corner
    * case when the control information is received when the animation is still
    * being loaded into the worker.
    */
   private workerNeedsPlayControlUpdate_: boolean = false;
+
+  /**
+   * Whether the Worker needs to receive new segments
+   * information. This is necessary for the corner case when the segments
+   * information is received when the animation is still being loaded into
+   * the worker.
+   */
+  private workerNeedsPlaySegmentsUpdate_: boolean = false;
 
   private worker_: Worker|null = null;
 
@@ -167,53 +174,14 @@ export class CrLottieElement extends PolymerElement {
   }
 
   /**
-   * Controls the animation based on the value of |shouldPlay|. If the
-   * animation is being loaded into the worker when this method is invoked,
-   * the action will be postponed to when the animation is fully loaded.
-   * @param shouldPlay True for play, false for pause.
+   * Updates the animation that is being displayed.
    */
-  setPlay(shouldPlay: boolean) {
-    this.playState_ = shouldPlay;
-    if (this.isAnimationLoaded_) {
-      this.sendPlayControlInformationToWorker_();
-    } else {
-      this.workerNeedsPlayControlUpdate_ = true;
-    }
-  }
-
-  /**
-   * Sends control (play/pause) information to the worker.
-   */
-  private sendPlayControlInformationToWorker_() {
-    assert(this.worker_);
-    this.worker_.postMessage({control: {play: this.playState_}});
-  }
-
-  /**
-   * Initializes all the members of this polymer element.
-   */
-  private initialize_() {
-    // Generate an offscreen canvas.
-    this.canvasElement_ = this.$.canvas;
-    this.offscreenCanvas_ = this.canvasElement_.transferControlToOffscreen();
-
-    this.resizeObserver_ =
-        new ResizeObserver(this.onCanvasElementResized_.bind(this));
-    this.resizeObserver_.observe(this.canvasElement_);
-
-    if (this.isAnimationLoaded_) {
+  override updated(changedProperties: PropertyValues<this>) {
+    super.updated(changedProperties);
+    if (!changedProperties.has('animationUrl')) {
       return;
     }
 
-    // Open animation file and start playing the animation.
-    this.sendXmlHttpRequest_(
-        this.animationUrl, 'json', this.initAnimation_.bind(this));
-  }
-
-  /**
-   * Updates the animation that is being displayed.
-   */
-  private animationUrlChanged_() {
     if (!this.worker_) {
       // The worker hasn't loaded yet. We will load the new animation once the
       // worker loads.
@@ -229,6 +197,74 @@ export class CrLottieElement extends PolymerElement {
       this.worker_.postMessage({control: {stop: true}});
       this.isAnimationLoaded_ = false;
     }
+    this.sendXmlHttpRequest_(
+        this.animationUrl, 'json', this.initAnimation_.bind(this));
+  }
+
+  /**
+   * Controls the animation based on the value of |shouldPlay|. If the
+   * animation is being loaded into the worker when this method is invoked,
+   * the action will be postponed to when the animation is fully loaded.
+   * @param shouldPlay True for play, false for pause.
+   */
+  setPlay(shouldPlay: boolean) {
+    this.playState_ = shouldPlay;
+    if (this.isAnimationLoaded_) {
+      this.sendPlayControlInformationToWorker_();
+    } else {
+      this.workerNeedsPlayControlUpdate_ = true;
+    }
+  }
+
+  /**
+   * Plays a segment of the animation.
+   * @param segments The start and end frames.
+   */
+  playSegments(segments: [number, number]) {
+    this.playSegments_ = segments;
+    this.playState_ = true;
+
+    if (this.isAnimationLoaded_) {
+      this.sendPlaySegmentsInformationToWorker_();
+      return;
+    }
+    this.workerNeedsPlaySegmentsUpdate_ = true;
+    this.workerNeedsPlayControlUpdate_ = false;
+  }
+
+  /**
+   * Sends control (play/pause) information to the worker.
+   */
+  private sendPlayControlInformationToWorker_() {
+    assert(this.worker_);
+    this.worker_.postMessage({control: {play: this.playState_}});
+  }
+
+  /**
+   * Sends segment information to the worker.
+   */
+  private sendPlaySegmentsInformationToWorker_() {
+    assert(this.worker_);
+    this.worker_.postMessage({control: {playSegments: this.playSegments_}});
+  }
+
+  /**
+   * Initializes all the members of this element.
+   */
+  private initialize_() {
+    // Generate an offscreen canvas.
+    this.canvasElement_ = this.$.canvas;
+    this.offscreenCanvas_ = this.canvasElement_.transferControlToOffscreen();
+
+    this.resizeObserver_ =
+        new ResizeObserver(this.onCanvasElementResized_.bind(this));
+    this.resizeObserver_.observe(this.canvasElement_);
+
+    if (this.isAnimationLoaded_) {
+      return;
+    }
+
+    // Open animation file and start playing the animation.
     this.sendXmlHttpRequest_(
         this.animationUrl, 'json', this.initAnimation_.bind(this));
   }
@@ -256,7 +292,7 @@ export class CrLottieElement extends PolymerElement {
    */
   private isValidUrl_(maybeValidUrl: string): boolean {
     const url = new URL(maybeValidUrl, document.location.href);
-    return url.protocol === 'chrome:' ||
+    return url.protocol === 'chrome:' || url.protocol === 'chrome-extension:' ||
         (url.protocol === 'data:' &&
          url.pathname.startsWith('application/json;'));
   }
@@ -277,10 +313,10 @@ export class CrLottieElement extends PolymerElement {
     assert(!this.xhr_);
 
     this.xhr_ = new XMLHttpRequest();
-    this.xhr_!.open('GET', url, true);
-    this.xhr_!.responseType = responseType;
-    this.xhr_!.send();
-    this.xhr_!.onreadystatechange = () => {
+    this.xhr_.open('GET', url, true);
+    this.xhr_.responseType = responseType;
+    this.xhr_.send();
+    this.xhr_.onreadystatechange = () => {
       assert(this.xhr_);
       if (this.xhr_.readyState === 4 && this.xhr_.status === 200) {
         // |successCallback| might trigger another xhr, so we set to null before
@@ -334,11 +370,6 @@ export class CrLottieElement extends PolymerElement {
     }
   }
 
-  private fire_(eventName: string, eventData?: number) {
-    this.dispatchEvent(new CustomEvent(
-        eventName, {bubbles: true, composed: true, detail: eventData}));
-  }
-
   /**
    * Handles the messages sent from the web worker to its parent thread.
    * @param event Event sent by the web worker.
@@ -347,15 +378,17 @@ export class CrLottieElement extends PolymerElement {
     if (event.data.name === 'initialized' && event.data.success) {
       this.isAnimationLoaded_ = true;
       this.sendPendingInfo_();
-      this.fire_('cr-lottie-initialized');
+      this.fire('cr-lottie-initialized');
     } else if (event.data.name === 'playing') {
-      this.fire_('cr-lottie-playing');
+      this.fire('cr-lottie-playing', {segments: event.data.segments});
     } else if (event.data.name === 'paused') {
-      this.fire_('cr-lottie-paused');
+      this.fire('cr-lottie-paused');
     } else if (event.data.name === 'stopped') {
-      this.fire_('cr-lottie-stopped');
+      this.fire('cr-lottie-stopped');
+    } else if (event.data.name === 'completed') {
+      this.fire('cr-lottie-completed');
     } else if (event.data.name === 'resized') {
-      this.fire_('cr-lottie-resized', event.data.size);
+      this.fire('cr-lottie-resized', event.data.size);
     }
   }
 
@@ -368,6 +401,10 @@ export class CrLottieElement extends PolymerElement {
     if (this.workerNeedsSizeUpdate_) {
       this.workerNeedsSizeUpdate_ = false;
       this.sendCanvasSizeToWorker_();
+    }
+    if (this.workerNeedsPlaySegmentsUpdate_) {
+      this.workerNeedsPlaySegmentsUpdate_ = false;
+      this.sendPlaySegmentsInformationToWorker_();
     }
     if (this.workerNeedsPlayControlUpdate_) {
       this.workerNeedsPlayControlUpdate_ = false;

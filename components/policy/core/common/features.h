@@ -11,40 +11,96 @@
 #include "build/build_config.h"
 #include "components/policy/policy_export.h"
 
-namespace policy {
-namespace features {
+namespace policy::features {
 
-// Enable detection/upload Crowdstrike Agent signals with security
-// events.
-POLICY_EXPORT BASE_DECLARE_FEATURE(kCrowdstrikeSignalReporting);
+// Enable the PolicyBlocklistThrottle optimization to hide the DEFER latency
+// on WillStartRequest and WillRedirectRequest. See https://crbug.com/349964973.
+// This is launched, but the feature flag will be kept in 2025 for monitoring.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kPolicyBlocklistProceedUntilResponse);
 
-// Enable the UserCloudSigninRestrictionPolicyFetcher to get the
-// ManagedAccountsSigninRestriction policy for a dasher account.
-POLICY_EXPORT
-BASE_DECLARE_FEATURE(kEnableUserCloudSigninRestrictionPolicyFetcher);
+// Enables the fact that the ProfileSeparationDomainExceptionList retroactively
+// signs out accounts that require a new profile. This is used as a kill switch.
+POLICY_EXPORT BASE_DECLARE_FEATURE(
+    kProfileSeparationDomainExceptionListRetroactive);
+
+// Enables the addition of new security fields for SecOps.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kEnhancedSecurityEventFields);
+
+// Controls if we can use the cec flag in PolicyData.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kUseCECFlagInPolicyData);
 
 #if BUILDFLAG(IS_ANDROID)
-// Enable comma-separated strings for list policies on Android.
-// Enabled by default, to be used as a kill switch.
+// Enables policy initialization for signed-in users in new entry points.
 POLICY_EXPORT BASE_DECLARE_FEATURE(
-    kListPoliciesAcceptCommaSeparatedStringsAndroid);
+    kInitializePoliciesForSignedInUserInNewEntryPoints);
 
-// Enable logging and chrome://policy/logs page on Android.
-POLICY_EXPORT BASE_DECLARE_FEATURE(kPolicyLogsPageAndroid);
+// Controls whether to use active admins to calculate the enterprise info.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kAndroidUseAdminsForEnterpriseInfo);
+#endif
 
-// Enable SafeSitesFilterBehavior policy on Android.
-POLICY_EXPORT BASE_DECLARE_FEATURE(kSafeSitesFilterBehaviorPolicyAndroid);
-#endif  // BUILDFLAG(IS_ANDROID)
+// Enables a configurable delay for policy registration.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kCustomPolicyRegistrationDelay);
+POLICY_EXPORT extern const base::FeatureParam<base::TimeDelta>
+    kPolicyRegistrationDelay;
 
-// Prevent policies set by a single source from being treated as merged.
-POLICY_EXPORT BASE_DECLARE_FEATURE(kPolicyMergeMultiSource);
+// Used to enable future_on policies on Desktop Android.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kFuturePoliciesOnDesktopAndroid);
 
-#if BUILDFLAG(IS_IOS)
-// Enable logging and chrome://policy/logs page on IOS.
-POLICY_EXPORT BASE_DECLARE_FEATURE(kPolicyLogsPageIOS);
-#endif  // BUILDFLAG(IS_IOS)
+// A blocklist of policies supported on Desktop Android.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kDesktopAndroidPolicy);
+POLICY_EXPORT extern const base::FeatureParam<std::string>
+    kDesktopAndroidPolicyBlocklist;
 
-}  // namespace features
-}  // namespace policy
+// Used to add a captive portal check in SafeSitesNavigationThrottle.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kSafeSitesCaptivePortalCheck);
+
+// Used to enable extension install policy support.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kEnableExtensionInstallPolicyFetching);
+
+// When enabled, uses ManagementService to determine whether to honor sensitive
+// policies. When disabled, falls back to the original ShouldHonorPolicies()
+// behavior. This flag allows reverting if the new approach causes issues.
+// Note: Only has an effect on Mac and Windows where ShouldHonorPolicies()
+// performs platform-specific checks.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kUseManagementServiceForSensitivePolicies);
+
+// When enabled, AzureActiveDirectoryDeviceStatusProvider only returns
+// CLOUD_DOMAIN for device-joined Azure AD accounts. When disabled (kill
+// switch), it falls back to the behavior of AzureActiveDirectoryStatusProvider,
+// returning CLOUD_DOMAIN for all Azure AD joined accounts (including
+// workplace-joined).
+POLICY_EXPORT BASE_DECLARE_FEATURE(
+    kFilterSensitivePoliciesOnWorkplaceJoinedDevices);
+
+// Modifies behavior of policies utilizing URLBlocklistManager.
+// When enabled, bypasses the wildcard "*" in the blocklist for internal
+// chrome:// URLs such as chrome://ntp, chrome://bookmarks, etc.
+// This feature serves as a killswitch to allow for immediate revert via Finch
+// if regressions are detected.
+POLICY_EXPORT BASE_DECLARE_FEATURE(
+    kBypassURLBlocklistWildcardForInternalChromeUrls);
+
+// Modifies behavior of policies utilizing URLBlocklistManager.
+// When enabled, downgrades the match level to neutral if the URL is allowed by
+// the wildcard '*' in the allowlist.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kDowngradeURLAllowlistWildcardToNeutral);
+
+// Enables the mojo version of the page handler for chrome://policy.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kPolicyPageMojoMigration);
+
+// If enabled, device signals collection disclaimer will be shown during signin
+// for profiles created before the profile flow with disclaimer was released.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kDeviceSignalsBackfillDisclaimer);
+POLICY_EXPORT extern const base::FeatureParam<bool>
+    kClearDeviceSignalsPermissionOnStartup;
+
+// When enabled, URLs in the general blocklist are still blocked in incognito
+// even if they are in the incognito allowlist.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kURLBlocklistOverridesIncognitoAllowlist);
+
+// Enables the export of platform policies as JSON on the chrome://policy page.
+POLICY_EXPORT BASE_DECLARE_FEATURE(kExportPlatformPoliciesJson);
+
+}  // namespace policy::features
 
 #endif  // COMPONENTS_POLICY_CORE_COMMON_FEATURES_H_

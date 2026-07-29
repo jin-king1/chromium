@@ -7,8 +7,9 @@
 #include <utility>
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "components/media_router/common/providers/cast/cast_media_source.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/media_session.h"
@@ -20,11 +21,12 @@ namespace {
 
 base::WeakPtr<media_router::WebContentsPresentationManager>
 GetActiveWebContentsPresentationManager() {
-  auto* browser = chrome::FindLastActive();
+  auto* browser =
+      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
   if (!browser) {
     return nullptr;
   }
-  auto* tab_strip = browser->tab_strip_model();
+  auto* tab_strip = browser->GetTabStripModel();
   if (!tab_strip) {
     return nullptr;
   }
@@ -77,10 +79,10 @@ PresentationRequestNotificationProducer::
         base::RepeatingCallback<bool(content::WebContents*)>
             has_active_notifications_callback,
         const base::UnguessableToken& source_id)
-    : has_active_notifications_callback_(
+    : observer_receiver_(this),
+      has_active_notifications_callback_(
           std::move(has_active_notifications_callback)),
-      source_id_(source_id),
-      observer_receiver_(this) {}
+      source_id_(source_id) {}
 
 PresentationRequestNotificationProducer::
     ~PresentationRequestNotificationProducer() = default;
@@ -165,7 +167,9 @@ void PresentationRequestNotificationProducer::OnPresentationsChanged(
   // If there is a presentation, there would already be an item associated with
   // that, so `this` doesn't have to provide another item.
   if (has_presentation && provider_.is_bound()) {
+#if !BUILDFLAG(IS_CHROMEOS)
     provider_->HideMediaUI();
+#endif
     provider_->HideItem();
   }
 }

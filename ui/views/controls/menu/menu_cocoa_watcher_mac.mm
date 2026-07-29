@@ -27,7 +27,7 @@ BOOL ShouldIgnoreNotification(NSNotification* notification) {
     case MacNotificationFilter::DontIgnoreNotifications:
       return NO;
     case MacNotificationFilter::IgnoreWorkspaceNotifications:
-      return [[notification name]
+      return [notification.name
           isEqualToString:NSWorkspaceDidActivateApplicationNotification];
     case MacNotificationFilter::IgnoreAllNotifications:
       return YES;
@@ -39,9 +39,9 @@ BOOL ShouldIgnoreNotification(NSNotification* notification) {
 
 struct MenuCocoaWatcherMac::ObjCStorage {
   // Tokens representing the notification observers.
-  id observer_token_other_menu = nil;
-  id observer_token_new_window_focus = nil;
-  id observer_token_app_change = nil;
+  id __strong observer_token_other_menu;
+  id __strong observer_token_new_window_focus;
+  id __strong observer_token_app_change;
 };
 
 MenuCocoaWatcherMac::MenuCocoaWatcherMac(base::OnceClosure callback)
@@ -69,6 +69,11 @@ MenuCocoaWatcherMac::MenuCocoaWatcherMac(base::OnceClosure callback)
                       return;
                     }
 
+                    if (ignore_window_key_notification_once_) {
+                      ignore_window_key_notification_once_ = false;
+                      return;
+                    }
+
                     ExecuteCallback();
                   }];
   objc_storage_->observer_token_app_change =
@@ -77,8 +82,9 @@ MenuCocoaWatcherMac::MenuCocoaWatcherMac(base::OnceClosure callback)
                       object:nil
                        queue:nil
                   usingBlock:^(NSNotification* notification) {
-                    if (ShouldIgnoreNotification(notification))
+                    if (ShouldIgnoreNotification(notification)) {
                       return;
+                    }
 
                     // Only destroy menus if the browser is losing focus, not if
                     // it's gaining focus. This is to ensure that we can invoke
@@ -91,11 +97,11 @@ MenuCocoaWatcherMac::MenuCocoaWatcherMac(base::OnceClosure callback)
 }
 
 MenuCocoaWatcherMac::~MenuCocoaWatcherMac() {
-  [[NSNotificationCenter defaultCenter]
+  [NSNotificationCenter.defaultCenter
       removeObserver:objc_storage_->observer_token_other_menu];
-  [[NSNotificationCenter defaultCenter]
+  [NSNotificationCenter.defaultCenter
       removeObserver:objc_storage_->observer_token_new_window_focus];
-  [[[NSWorkspace sharedWorkspace] notificationCenter]
+  [NSWorkspace.sharedWorkspace.notificationCenter
       removeObserver:objc_storage_->observer_token_app_change];
 }
 
@@ -111,6 +117,10 @@ void MenuCocoaWatcherMac::ExecuteCallback() {
       std::move(callback).Run();
     }
   });
+}
+
+void MenuCocoaWatcherMac::SetIgnoreWindowKeyNotificationOnce() {
+  ignore_window_key_notification_once_ = true;
 }
 
 }  // namespace views

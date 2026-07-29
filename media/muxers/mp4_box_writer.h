@@ -6,17 +6,46 @@
 #define MEDIA_MUXERS_MP4_BOX_WRITER_H_
 
 #include <memory>
+#include <optional>
 #include <vector>
 
+#include "base/memory/raw_ptr_exclusion.h"
+#include "base/memory/raw_ref.h"
 #include "base/sequence_checker.h"
 #include "media/base/media_export.h"
 #include "media/formats/mp4/fourccs.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace media {
 
 class BoxByteStream;
 class Mp4MuxerContext;
+
+#define DECLARE_MP4_BOX_WRITER_CLASS_NO_DATA(class_name) \
+  class MEDIA_EXPORT class_name : public Mp4BoxWriter {  \
+   public:                                               \
+    explicit class_name(const Mp4MuxerContext& context); \
+    ~class_name() override;                              \
+    class_name(const class_name&) = delete;              \
+    class_name& operator=(const class_name&) = delete;   \
+    void Write(BoxByteStream& writer) override;          \
+                                                         \
+   private:                                              \
+    SEQUENCE_CHECKER(sequence_checker_);                 \
+  }
+
+#define DECLARE_MP4_BOX_WRITER_CLASS(class_name, box_type)           \
+  class MEDIA_EXPORT class_name : public Mp4BoxWriter {              \
+   public:                                                           \
+    class_name(const Mp4MuxerContext& context, const box_type& box); \
+    ~class_name() override;                                          \
+    class_name(const class_name&) = delete;                          \
+    class_name& operator=(const class_name&) = delete;               \
+    void Write(BoxByteStream& writer) override;                      \
+                                                                     \
+   private:                                                          \
+    const raw_ref<const box_type> box_;                              \
+    SEQUENCE_CHECKER(sequence_checker_);                             \
+  }
 
 // The Mp4BoxWriter is parent class for all box writers.
 // Every box writers must derive from Mp4BoxWriter.
@@ -35,7 +64,12 @@ class MEDIA_EXPORT Mp4BoxWriter {
 
   // Same as `Write()` but creates a `BoxByteStream` and writes to `context`.
   // It is expected that it will create box itself as well as its children.
-  void WriteAndFlush();
+  size_t WriteAndFlush();
+
+  // Same as `WriteAndFlush()` but accept `BoxByteStream` as a parameter.
+  // It is expected that it write on input `BoxByteStream` object.
+  // `writer` must not have any opened box.
+  size_t WriteAndFlush(BoxByteStream& writer);
 
  protected:
   // Write for children boxes. The function will calls Write
@@ -46,11 +80,12 @@ class MEDIA_EXPORT Mp4BoxWriter {
   void AddChildBox(std::unique_ptr<Mp4BoxWriter> box_writer);
 
   // Get the Mp4MuxerContext object.
-  const Mp4MuxerContext& context() const { return context_; }
+  const Mp4MuxerContext& context() const { return *context_; }
 
  private:
-  const Mp4MuxerContext& context_;
+  const raw_ref<const Mp4MuxerContext, DanglingUntriaged> context_;
   std::vector<std::unique_ptr<Mp4BoxWriter>> child_boxes_;
+
   SEQUENCE_CHECKER(sequence_checker_);
 };
 

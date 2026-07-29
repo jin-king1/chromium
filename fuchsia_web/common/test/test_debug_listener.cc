@@ -17,7 +17,7 @@ void TestDebugListener::DestroyListener(TestPerContextListener* listener) {
 }
 
 void TestDebugListener::AddPort(uint16_t port) {
-  EXPECT_EQ(debug_ports_.find(port), debug_ports_.end());
+  EXPECT_FALSE(debug_ports_.contains(port));
   debug_ports_.insert(port);
   if (on_debug_ports_changed_) {
     on_debug_ports_changed_.Run();

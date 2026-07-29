@@ -4,29 +4,34 @@
 
 #include "chrome/browser/ash/dbus/chrome_features_service_provider.h"
 
+#include <algorithm>
 #include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
 
-#include "ash/components/arc/arc_features.h"
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/field_trial.h"
-#include "base/ranges/algorithm.h"
+#include "base/strings/strcat.h"
+#include "chrome/browser/ash/bruschetta/bruschetta_util.h"
 #include "chrome/browser/ash/crostini/crostini_features.h"
 #include "chrome/browser/ash/crostini/crostini_pref_names.h"
+#include "chrome/browser/ash/dbus/service_util.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_features.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/ash/settings/cros_settings.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/profiles/profile_manager.h"
-#include "chrome/common/chrome_features.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
+#include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
+#include "chromeos/ash/experiences/arc/arc_features.h"
 #include "components/prefs/pref_service.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
 #include "dbus/bus.h"
 #include "dbus/message.h"
 #include "third_party/cros_system_api/dbus/service_constants.h"
@@ -41,7 +46,7 @@ namespace {
 // |base::Feature|s should be defined with this prefix.
 // A presubmit will enforce that no |base::Feature|s will be defined with this
 // prefix.
-// TODO(https://crbug.com/1263068): Add the aforementioned presubmit.
+// TODO(crbug.com/40202807): Add the aforementioned presubmit.
 constexpr char kCrOSLateBootFeaturePrefix[] = "CrOSLateBoot";
 
 void SendResponse(dbus::MethodCall* method_call,
@@ -57,6 +62,8 @@ void SendResponse(dbus::MethodCall* method_call,
   std::move(response_sender).Run(std::move(response));
 }
 
+// TODO(crbug.com/479421366): We should use user_manager::User* for profile
+// prefs.
 Profile* GetSenderProfile(
     dbus::MethodCall* method_call,
     dbus::ExportedObject::ResponseSender* response_sender) {
@@ -72,18 +79,16 @@ Profile* GetSenderProfile(
     return nullptr;
   }
 
-  if (user_id_hash.empty())
-    return ProfileManager::GetActiveUserProfile();
-
-  return g_browser_process->profile_manager()->GetProfileByPath(
-      ProfileHelper::GetProfilePathByUserIdHash(user_id_hash));
+  return GetProfileFromUserIdHash(user_id_hash);
 }
 
 }  // namespace
 
 ChromeFeaturesServiceProvider::ChromeFeaturesServiceProvider(
+    const PrefService* local_state,
     std::unique_ptr<base::FeatureList::Accessor> feature_list_accessor)
-    : feature_list_accessor_(std::move(feature_list_accessor)) {}
+    : local_state_(CHECK_DEREF(local_state)),
+      feature_list_accessor_(std::move(feature_list_accessor)) {}
 
 ChromeFeaturesServiceProvider::~ChromeFeaturesServiceProvider() = default;
 
@@ -100,6 +105,13 @@ void ChromeFeaturesServiceProvider::Start(
       chromeos::kChromeFeaturesServiceInterface,
       chromeos::kChromeFeaturesServiceGetFeatureParamsMethod,
       base::BindRepeating(&ChromeFeaturesServiceProvider::GetFeatureParams,
+                          weak_ptr_factory_.GetWeakPtr()),
+      base::BindOnce(&ChromeFeaturesServiceProvider::OnExported,
+                     weak_ptr_factory_.GetWeakPtr()));
+  exported_object->ExportMethod(
+      chromeos::kChromeFeaturesServiceInterface,
+      chromeos::kChromeFeaturesServiceIsBruschettaEnabledMethod,
+      base::BindRepeating(&ChromeFeaturesServiceProvider::IsBruschettaEnabled,
                           weak_ptr_factory_.GetWeakPtr()),
       base::BindOnce(&ChromeFeaturesServiceProvider::OnExported,
                      weak_ptr_factory_.GetWeakPtr()));
@@ -165,6 +177,14 @@ void ChromeFeaturesServiceProvider::Start(
                           weak_ptr_factory_.GetWeakPtr()),
       base::BindRepeating(&ChromeFeaturesServiceProvider::OnExported,
                           weak_ptr_factory_.GetWeakPtr()));
+  exported_object->ExportMethod(
+      chromeos::kChromeFeaturesServiceInterface,
+      chromeos::kChromeFeaturesServiceIsRootNsDnsProxyEnabledMethod,
+      base::BindRepeating(
+          &ChromeFeaturesServiceProvider::IsRootNsDnsProxyEnabled,
+          weak_ptr_factory_.GetWeakPtr()),
+      base::BindRepeating(&ChromeFeaturesServiceProvider::OnExported,
+                          weak_ptr_factory_.GetWeakPtr()));
 }
 
 void ChromeFeaturesServiceProvider::OnExported(
@@ -180,13 +200,11 @@ void ChromeFeaturesServiceProvider::IsFeatureEnabled(
     dbus::MethodCall* method_call,
     dbus::ExportedObject::ResponseSender response_sender) {
   static const base::Feature constexpr* kFeatureLookup[] = {
-      &arc::kBootCompletedBroadcastFeature,
-      &arc::kCustomTabsExperimentFeature,
-      &arc::kFilePickerExperimentFeature,
       &arc::kNativeBridgeToggleFeature,
       &features::kSessionManagerLongKillTimeout,
       &features::kSessionManagerLivenessCheck,
-      &features::kVmPerBootShaderCache,
+      &features::kBorealisProvision,
+
   };
 
   dbus::MessageReader reader(method_call);
@@ -201,7 +219,7 @@ void ChromeFeaturesServiceProvider::IsFeatureEnabled(
   }
 
   auto* const* it =
-      base::ranges::find(kFeatureLookup, feature_name, &base::Feature::name);
+      std::ranges::find(kFeatureLookup, feature_name, &base::Feature::name);
   if (it != std::end(kFeatureLookup)) {
     SendResponse(method_call, std::move(response_sender),
                  base::FeatureList::IsEnabled(**it));
@@ -214,7 +232,7 @@ void ChromeFeaturesServiceProvider::IsFeatureEnabled(
   // base.
   // Separately, a presubmit will enforce that no `base::Feature` definition
   // has a name starting with this prefix.
-  // TODO(https://crbug.com/1263068): Add the aforementioned presubmit.
+  // TODO(crbug.com/40202807): Add the aforementioned presubmit.
   base::FeatureList::OverrideState state =
       base::FeatureList::OVERRIDE_USE_DEFAULT;
   if (feature_name.find(kCrOSLateBootFeaturePrefix) == 0) {
@@ -222,13 +240,23 @@ void ChromeFeaturesServiceProvider::IsFeatureEnabled(
   } else {
     LOG(ERROR) << "Invalid prefix on feature " << feature_name << " (want "
                << kCrOSLateBootFeaturePrefix << ")";
+    std::move(response_sender)
+        .Run(dbus::ErrorResponse::FromMethodCall(
+            method_call, DBUS_ERROR_INVALID_ARGS,
+            base::StrCat({"Invalid prefix for feature name: '", feature_name,
+                          "'. Want ", kCrOSLateBootFeaturePrefix})));
+    return;
   }
   if (state == base::FeatureList::OVERRIDE_USE_DEFAULT) {
     VLOG(1) << "Unexpected feature name '" << feature_name << "'"
             << " (likely just indicates there isn't a variations seed).";
+    // This isn't really an error, we're just using the error channel to signal
+    // to feature_library that it should fall back to its defaults.
     std::move(response_sender)
         .Run(dbus::ErrorResponse::FromMethodCall(
-            method_call, DBUS_ERROR_INVALID_ARGS, "Unexpected feature name."));
+            method_call, DBUS_ERROR_INVALID_ARGS,
+            base::StrCat({"Chrome can't get state for '", feature_name,
+                          "'; feature_library will decide"})));
     return;
   }
   SendResponse(method_call, std::move(response_sender),
@@ -268,9 +296,10 @@ void ChromeFeaturesServiceProvider::GetFeatureParams(
       LOG(ERROR) << "Unexpected prefix on feature name '" << feature_name << "'"
                  << " (want " << kCrOSLateBootFeaturePrefix << ")";
       std::move(response_sender)
-          .Run(dbus::ErrorResponse::FromMethodCall(method_call,
-                                                   DBUS_ERROR_INVALID_ARGS,
-                                                   "Unexpected feature name."));
+          .Run(dbus::ErrorResponse::FromMethodCall(
+              method_call, DBUS_ERROR_INVALID_ARGS,
+              base::StrCat({"Invalid prefix for feature name: '", feature_name,
+                            "'. Want ", kCrOSLateBootFeaturePrefix})));
       return;
     }
 
@@ -342,6 +371,18 @@ void ChromeFeaturesServiceProvider::GetFeatureParams(
   std::move(response_sender).Run(std::move(response));
 }
 
+void ChromeFeaturesServiceProvider::IsBruschettaEnabled(
+    dbus::MethodCall* method_call,
+    dbus::ExportedObject::ResponseSender response_sender) {
+  Profile* profile = GetSenderProfile(method_call, &response_sender);
+  if (!profile) {
+    return;
+  }
+
+  bool answer = !bruschetta::GetInstallableConfigs(profile).empty();
+  SendResponse(method_call, std::move(response_sender), answer);
+}
+
 void ChromeFeaturesServiceProvider::IsCrostiniEnabled(
     dbus::MethodCall* method_call,
     dbus::ExportedObject::ResponseSender response_sender) {
@@ -360,7 +401,7 @@ void ChromeFeaturesServiceProvider::IsCryptohomeDistributedModelEnabled(
     dbus::ExportedObject::ResponseSender response_sender) {
   SendResponse(
       method_call, std::move(response_sender),
-      base::FeatureList::IsEnabled(::features::kCryptohomeDistributedModel));
+      base::FeatureList::IsEnabled(ash::features::kCryptohomeDistributedModel));
 }
 
 void ChromeFeaturesServiceProvider::IsCryptohomeUserDataAuthEnabled(
@@ -368,7 +409,7 @@ void ChromeFeaturesServiceProvider::IsCryptohomeUserDataAuthEnabled(
     dbus::ExportedObject::ResponseSender response_sender) {
   SendResponse(
       method_call, std::move(response_sender),
-      base::FeatureList::IsEnabled(::features::kCryptohomeUserDataAuth));
+      base::FeatureList::IsEnabled(ash::features::kCryptohomeUserDataAuth));
 }
 
 void ChromeFeaturesServiceProvider::IsCryptohomeUserDataAuthKillswitchEnabled(
@@ -376,7 +417,7 @@ void ChromeFeaturesServiceProvider::IsCryptohomeUserDataAuthKillswitchEnabled(
     dbus::ExportedObject::ResponseSender response_sender) {
   SendResponse(method_call, std::move(response_sender),
                base::FeatureList::IsEnabled(
-                   ::features::kCryptohomeUserDataAuthKillswitch));
+                   ash::features::kCryptohomeUserDataAuthKillswitch));
 }
 
 void ChromeFeaturesServiceProvider::IsPluginVmEnabled(
@@ -411,9 +452,8 @@ void ChromeFeaturesServiceProvider::IsPeripheralDataAccessEnabled(
   bool peripheral_data_access_enabled = false;
   // Enterprise managed devices use the local state pref.
   if (InstallAttributes::Get()->IsEnterpriseManaged()) {
-    peripheral_data_access_enabled =
-        g_browser_process->local_state()->GetBoolean(
-            prefs::kLocalStateDevicePeripheralDataAccessEnabled);
+    peripheral_data_access_enabled = local_state_->GetBoolean(
+        prefs::kLocalStateDevicePeripheralDataAccessEnabled);
   } else {
     // Consumer devices use the CrosSetting pref.
     CrosSettings::Get()->GetBoolean(kDevicePeripheralDataAccessEnabled,
@@ -428,6 +468,13 @@ void ChromeFeaturesServiceProvider::IsDnsProxyEnabled(
     dbus::ExportedObject::ResponseSender response_sender) {
   SendResponse(method_call, std::move(response_sender),
                !base::FeatureList::IsEnabled(features::kDisableDnsProxy));
+}
+
+void ChromeFeaturesServiceProvider::IsRootNsDnsProxyEnabled(
+    dbus::MethodCall* method_call,
+    dbus::ExportedObject::ResponseSender response_sender) {
+  SendResponse(method_call, std::move(response_sender),
+               base::FeatureList::IsEnabled(features::kEnableRootNsDnsProxy));
 }
 
 }  // namespace ash

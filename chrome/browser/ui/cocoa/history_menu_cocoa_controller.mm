@@ -4,7 +4,7 @@
 
 #import "chrome/browser/ui/cocoa/history_menu_cocoa_controller.h"
 
-#import "base/mac/foundation_util.h"
+#import "base/apple/foundation_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/user_metrics.h"
 #include "chrome/app/chrome_command_ids.h"  // IDC_HISTORY_MENU
@@ -12,10 +12,11 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_live_tab_context.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/sessions/core/session_id.h"
@@ -28,7 +29,7 @@ using content::Referrer;
 
 namespace {
 
-// TODO(crbug.com/1334721): Single-tab windows get restored as tabs instead of
+// TODO(crbug.com/40228273): Single-tab windows get restored as tabs instead of
 // windows, which is confusing.
 //
 // NB: Takes |node| by value, because the HistoryMenuBridge could be destroyed
@@ -36,8 +37,9 @@ namespace {
 void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
                     WindowOpenDisposition disposition,
                     Profile* profile) {
-  if (!profile)
+  if (!profile) {
     return;  // Failed to load profile, ignore.
+  }
   // If this item can be restored using TabRestoreService, do so. Otherwise,
   // just load the URL.
   if (node.session_id.is_valid()) {
@@ -50,9 +52,12 @@ void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
     // Specifically, if the active window has the same root profile as the
     // bridge, target the active profile. Without this, history menu items open
     // in the nearest non-incognito window, or create one.
-    if (auto* active_browser = chrome::FindBrowserWithActiveWindow()) {
-      if (active_browser->profile()->GetOriginalProfile() == target_profile)
-        target_profile = active_browser->profile();
+    if (auto* active_browser =
+            GlobalBrowserCollection::GetInstance()->GetActiveBrowser()) {
+      if (active_browser->GetProfile()->GetOriginalProfile() ==
+          target_profile) {
+        target_profile = active_browser->GetProfile();
+      }
     }
 
     NavigateParams params(target_profile, node.url,
@@ -65,7 +70,8 @@ void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
 }  // namespace
 
 @implementation HistoryMenuCocoaController {
-  raw_ptr<HistoryMenuBridge, DanglingUntriaged> _bridge;  // weak; owns us
+  raw_ptr<HistoryMenuBridge, AcrossTasksDanglingUntriaged>
+      _bridge;  // weak; owns us
 }
 
 - (instancetype)initWithBridge:(HistoryMenuBridge*)bridge {
@@ -77,9 +83,7 @@ void OpenURLForItem(HistoryMenuBridge::HistoryItem node,
 }
 
 - (BOOL)validateMenuItem:(NSMenuItem*)menuItem {
-  AppController* controller =
-      base::mac::ObjCCastStrict<AppController>([NSApp delegate]);
-  return ![controller keyWindowIsModal];
+  return ![AppController.sharedController keyWindowIsModal];
 }
 
 // Open the URL of the given history item in the current tab.

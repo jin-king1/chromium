@@ -7,12 +7,15 @@
 
 #include <stdint.h>
 
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "base/containers/span.h"
+#include "base/memory/raw_ref.h"
 #include "base/time/time.h"
 #include "components/query_parser/snippet.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "url/gurl.h"
 
 namespace history {
@@ -105,12 +108,10 @@ class URLRow {
    public:
     explicit URLRowHasURL(const GURL& url) : url_(url) {}
 
-    bool operator()(const URLRow& row) {
-      return row.url() == url_;
-    }
+    bool operator()(const URLRow& row) { return row.url() == (*url_); }
 
    private:
-    const GURL& url_;
+    const raw_ref<const GURL> url_;
   };
 
  protected:
@@ -188,11 +189,10 @@ struct VisitContentModelAnnotations {
     Category(const std::string& id, int weight);
     // |vector| is expected to be of size 2 with the first entry being an ID of
     // string or int type and the second entry indicating an integer weight.
-    static absl::optional<Category> FromStringVector(
-        const std::vector<std::string>& vector);
+    static std::optional<Category> FromStringViewVector(
+        base::span<const std::string_view> vector);
     std::string ToString() const;
-    bool operator==(const Category& other) const;
-    bool operator!=(const Category& other) const;
+    friend bool operator==(const Category&, const Category&) = default;
 
     std::string id;
     int weight = 0;
@@ -235,9 +235,10 @@ struct VisitContentModelAnnotations {
 
 // A structure containing the annotations made to page content for a visit.
 //
-// Note: only `page_language` and `password_state` are being synced to remote
-// devices; other fields should not be synced without auditing the usages (
-// e.g. `BrowsingTopicsCalculator` is currently assuming that a visit entry
+// Note: only `page_language`, `password_state`, `has_url_keyed_image`,
+// `related_searches` and `model_annotations.categories` are being synced to
+// remote devices; other fields should not be synced without auditing the usages
+// ( e.g. `BrowsingTopicsCalculator` is currently assuming that a visit entry
 // comes from the local history as long as it is associated with a non-empty
 // `annotation_flags`).
 struct VisitContentAnnotations {
@@ -310,14 +311,18 @@ class URLResult : public URLRow {
     blocked_visit_ = blocked_visit;
   }
 
+  bool has_actor_source() const { return actor_source_; }
+  void set_actor_source(bool actor_source) { actor_source_ = actor_source; }
+
+  std::optional<std::string> app_id() const { return app_id_; }
+  void set_app_id(std::optional<std::string> app_id) { app_id_ = app_id; }
+
   // If this is a title match, title_match_positions contains an entry for
   // every word in the title that matched one of the query parameters. Each
   // entry contains the start and end of the match.
   const query_parser::Snippet::MatchPositions& title_match_positions() const {
     return title_match_positions_;
   }
-
-  void SwapResult(URLResult* other);
 
   static bool CompareVisitTime(const URLResult& lhs, const URLResult& rhs);
 
@@ -336,6 +341,13 @@ class URLResult : public URLRow {
 
   // Whether a managed user was blocked when attempting to visit this URL.
   bool blocked_visit_ = false;
+
+  // Whether a corresponding visit has `SOURCE_ACTOR` visit source.
+  bool actor_source_ = false;
+
+  // ID of the app this entry was generated for. Set to a non-null value
+  // on Android only.
+  std::optional<std::string> app_id_;
 
   // We support the implicit copy constructor and operator=.
 };

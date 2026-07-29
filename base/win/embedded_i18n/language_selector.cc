@@ -11,10 +11,10 @@
 
 #include <algorithm>
 #include <functional>
+#include <string_view>
 
 #include "base/check_op.h"
 #include "base/memory/raw_ptr.h"
-#include "base/ranges/algorithm.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/i18n.h"
@@ -46,11 +46,9 @@ struct AvailableLanguageAliases {
 #if DCHECK_IS_ON()
 // Returns true if the items in the given range are sorted and lower cased.
 bool IsArraySortedAndLowerCased(span<const LangToOffset> languages_to_offset) {
-  return std::is_sorted(languages_to_offset.begin(),
-                        languages_to_offset.end()) &&
-         base::ranges::all_of(languages_to_offset, [](const auto& lang) {
-           auto language = AsStringPiece16(lang.first);
-           return ToLowerASCII(language) == language;
+  return std::ranges::is_sorted(languages_to_offset) &&
+         std::ranges::all_of(languages_to_offset, [](const auto& lang) {
+           return ToLowerASCII(lang.first) == lang.first;
          });
 }
 #endif  // DCHECK_IS_ON()
@@ -62,26 +60,27 @@ AvailableLanguageAliases DetermineAvailableAliases(
   AvailableLanguageAliases available_aliases = {};
 
   for (const LangToOffset& lang_to_offset : languages_to_offset) {
-    if (lang_to_offset.first == L"en-gb")
+    if (lang_to_offset.first == L"en-gb") {
       available_aliases.en_gb_language_offset = &lang_to_offset;
-    else if (lang_to_offset.first == L"en-us")
+    } else if (lang_to_offset.first == L"en-us") {
       available_aliases.en_us_language_offset = &lang_to_offset;
-    else if (lang_to_offset.first == L"es")
+    } else if (lang_to_offset.first == L"es") {
       available_aliases.es_language_offset = &lang_to_offset;
-    else if (lang_to_offset.first == L"es-419")
+    } else if (lang_to_offset.first == L"es-419") {
       available_aliases.es_419_language_offset = &lang_to_offset;
-    else if (lang_to_offset.first == L"fil")
+    } else if (lang_to_offset.first == L"fil") {
       available_aliases.fil_language_offset = &lang_to_offset;
-    else if (lang_to_offset.first == L"iw")
+    } else if (lang_to_offset.first == L"iw") {
       available_aliases.iw_language_offset = &lang_to_offset;
-    else if (lang_to_offset.first == L"no")
+    } else if (lang_to_offset.first == L"no") {
       available_aliases.no_language_offset = &lang_to_offset;
-    else if (lang_to_offset.first == L"pt-br")
+    } else if (lang_to_offset.first == L"pt-br") {
       available_aliases.pt_br_language_offset = &lang_to_offset;
-    else if (lang_to_offset.first == L"zh-cn")
+    } else if (lang_to_offset.first == L"zh-cn") {
       available_aliases.zh_cn_language_offset = &lang_to_offset;
-    else if (lang_to_offset.first == L"zh-tw")
+    } else if (lang_to_offset.first == L"zh-tw") {
       available_aliases.zh_tw_language_offset = &lang_to_offset;
+    }
   }
 
   // Fallback language must exist.
@@ -100,11 +99,8 @@ bool GetExactLanguageOffset(span<const LangToOffset> languages_to_offset,
 
   // Binary search in the sorted arrays to find the offset corresponding
   // to a given language |name|.
-  auto search_result = std::lower_bound(
-      languages_to_offset.begin(), languages_to_offset.end(), language,
-      [](const LangToOffset& left, const std::wstring& to_find) {
-        return left.first < to_find;
-      });
+  auto search_result = std::ranges::lower_bound(languages_to_offset, language,
+                                                {}, &LangToOffset::first);
   if (languages_to_offset.end() != search_result &&
       search_result->first == language) {
     *matched_language_to_offset = &*search_result;
@@ -226,8 +222,7 @@ bool SelectIf(const std::vector<std::wstring>& candidates,
   // An earlier candidate entry matching on an exact match or alias match takes
   // precedence over a later candidate entry matching on an exact match.
   for (const std::wstring& scan : candidates) {
-    std::wstring lower_case_candidate =
-        AsWString(ToLowerASCII(AsStringPiece16(scan)));
+    std::wstring lower_case_candidate = ToLowerASCII(scan);
     if (GetExactLanguageOffset(languages_to_offset, lower_case_candidate,
                                matched_language_to_offset) ||
         GetAliasedLanguageOffset(available_aliases, lower_case_candidate,
@@ -240,8 +235,7 @@ bool SelectIf(const std::vector<std::wstring>& candidates,
   // If no candidate matches exactly or by alias, try to match by locale neutral
   // language.
   for (const std::wstring& scan : candidates) {
-    std::wstring lower_case_candidate =
-        AsWString(ToLowerASCII(AsStringPiece16(scan)));
+    std::wstring lower_case_candidate = ToLowerASCII(scan);
 
     // Extract the locale neutral language from the language to search and try
     // to find an exact match for that language in the provided table.
@@ -304,13 +298,14 @@ void SelectLanguageMatchingCandidate(
 }
 
 std::vector<std::wstring> GetCandidatesFromSystem(
-    WStringPiece preferred_language) {
+    std::wstring_view preferred_language) {
   std::vector<std::wstring> candidates;
 
   // Get the initial candidate list for this particular implementation (if
   // applicable).
-  if (!preferred_language.empty())
+  if (!preferred_language.empty()) {
     candidates.emplace_back(preferred_language);
+  }
 
   // Now try the UI languages.  Use the thread preferred ones since that will
   // kindly return us a list of all kinds of fallbacks.
@@ -320,7 +315,7 @@ std::vector<std::wstring> GetCandidatesFromSystem(
 
 }  // namespace
 
-LanguageSelector::LanguageSelector(WStringPiece preferred_language,
+LanguageSelector::LanguageSelector(std::wstring_view preferred_language,
                                    span<const LangToOffset> languages_to_offset)
     : LanguageSelector(GetCandidatesFromSystem(preferred_language),
                        languages_to_offset) {}

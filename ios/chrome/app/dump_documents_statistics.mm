@@ -4,36 +4,29 @@
 
 #import "ios/chrome/app/dump_documents_statistics.h"
 
+#import "base/apple/backup_util.h"
+#import "base/apple/foundation_util.h"
 #import "base/files/file.h"
 #import "base/files/file_enumerator.h"
 #import "base/files/file_path.h"
 #import "base/files/file_util.h"
+#import "base/i18n/time_formatting.h"
 #import "base/json/json_writer.h"
-#import "base/mac/backup_util.h"
-#import "base/mac/foundation_util.h"
 #import "base/strings/stringprintf.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/thread_pool.h"
 #import "base/time/time.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace documents_statistics {
 
 // Converts time to a human readable string in the device's local time.
 std::string TimeToLocalString(base::Time time) {
-  base::Time::Exploded exploded;
-  time.LocalExplode(&exploded);
-  return base::StringPrintf("%04d-%02d-%02dT%02d:%02d:%02d", exploded.year,
-                            exploded.month, exploded.day_of_month,
-                            exploded.hour, exploded.minute, exploded.second);
+  return base::UnlocalizedTimeFormatWithPattern(time, "yyyy-MM-dd'T'HH:mm:ss");
 }
 
 // Gathers statistics for `root`, recusively if `root` is a directory.
-base::Value::Dict CollectFileStatistics(base::FilePath root) {
-  base::Value::Dict statistics;
+base::DictValue CollectFileStatistics(base::FilePath root) {
+  base::DictValue statistics;
   std::u16string name = root.BaseName().LossyDisplayName();
   statistics.Set("name", name);
 
@@ -45,14 +38,14 @@ base::Value::Dict CollectFileStatistics(base::FilePath root) {
 
   if (info.is_directory) {
     int64_t total_directory_size = 0;
-    base::Value::List contents;
+    base::ListValue contents;
 
     base::FileEnumerator enumerator(
         root, /*recursive=*/false,
         base::FileEnumerator::DIRECTORIES | base::FileEnumerator::FILES);
     for (base::FilePath path = enumerator.Next(); !path.empty();
          path = enumerator.Next()) {
-      base::Value::Dict dir_item_statistics =
+      base::DictValue dir_item_statistics =
           CollectFileStatistics(root.Append(path.BaseName()));
       auto size = dir_item_statistics.FindDouble("size");
       if (size) {
@@ -70,7 +63,7 @@ base::Value::Dict CollectFileStatistics(base::FilePath root) {
   statistics.Set("created", TimeToLocalString(info.creation_time));
   statistics.Set("modified", TimeToLocalString(info.last_modified));
 
-  statistics.Set("excludedFromBackups", base::mac::GetBackupExclusion(root));
+  statistics.Set("excludedFromBackups", base::apple::GetBackupExclusion(root));
 
   return statistics;
 }
@@ -79,7 +72,7 @@ base::Value::Dict CollectFileStatistics(base::FilePath root) {
 // `statistics_dir`.
 void WriteSandboxStatisticsToFile(base::FilePath root,
                                   base::FilePath statistics_dir) {
-  base::Value::Dict statistics = CollectFileStatistics(root);
+  base::DictValue statistics = CollectFileStatistics(root);
 
   auto json = base::WriteJson(statistics);
   if (json) {
@@ -87,15 +80,14 @@ void WriteSandboxStatisticsToFile(base::FilePath root,
       base::CreateDirectory(statistics_dir);
     }
 
-    std::string file_name = base::StringPrintf(
-        "%s.json", TimeToLocalString(base::Time::Now()).c_str());
+    std::string file_name = TimeToLocalString(base::Time::Now()) + ".json";
 
     base::FilePath statistics_file_path = statistics_dir.Append(file_name);
     base::File statistics_file(
         statistics_file_path, base::File::FLAG_CREATE | base::File::FLAG_WRITE);
     if (statistics_file.IsValid()) {
-      std::string json_value = json.value();
-      statistics_file.WriteAtCurrentPos(json_value.data(), json_value.size());
+      statistics_file.WriteAtCurrentPos(
+          base::as_bytes(base::span(json.value())));
       statistics_file.Flush();
     } else {
       DLOG(ERROR) << "Statistics file path could not be opened.";
@@ -107,9 +99,9 @@ void WriteSandboxStatisticsToFile(base::FilePath root,
 
 // Dumps statistics in JSON format for the user's entire Document directory.
 void DumpSandboxFileStatistics() {
-  base::FilePath documents_path = base::mac::GetUserDocumentPath();
+  base::FilePath documents_path = base::apple::GetUserDocumentPath();
   base::FilePath file_stats_directory =
-      base::mac::GetUserDocumentPath().Append("sandboxFileStats");
+      base::apple::GetUserDocumentPath().Append("sandboxFileStats");
 
   // Go up one directory from documents to include all surrounding directories.
   base::FilePath root = documents_path.DirName();

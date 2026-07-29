@@ -2,22 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/extensions/extension_allowlist.h"
+#include "extensions/browser/extension_allowlist.h"
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/extensions/crx_installer.h"
 #include "chrome/browser/extensions/extension_management_test_util.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/extension_service_test_base.h"
-#include "chrome/browser/extensions/test_blocklist.h"
+#include "chrome/browser/policy/policy_test_utils.h"
 #include "chrome/test/base/testing_profile.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "extensions/browser/allowlist_state.h"
 #include "extensions/browser/blocklist_extension_prefs.h"
+#include "extensions/browser/crx_installer.h"
+#include "extensions/browser/disable_reason.h"
+#include "extensions/browser/extension_registrar.h"
+#include "extensions/browser/extension_registry.h"
+#include "extensions/browser/test_blocklist.h"
 #include "extensions/common/extension_builder.h"
 #include "extensions/common/extension_features.h"
+#include "extensions/common/extension_id.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -40,12 +47,17 @@ using ManagementPrefUpdater = ExtensionManagementPrefUpdater<
 // DisableMalwareExtensionsRemotely are enabled.
 class ExtensionAllowlistUnitTestBase : public ExtensionServiceTestBase {
  protected:
+  void TearDown() override {
+    extension_prefs_ = nullptr;
+    ExtensionServiceTestBase::TearDown();
+  }
+
   // Creates a test extension service with 3 installed extensions.
   void CreateExtensionService(bool enhanced_protection_enabled) {
     ExtensionServiceInitParams params;
     ASSERT_TRUE(
         params.ConfigureByTestDataDirectory(data_dir().AppendASCII("good")));
-    InitializeExtensionService(params);
+    InitializeExtensionService(std::move(params));
     extension_prefs_ = ExtensionPrefs::Get(profile());
 
     if (enhanced_protection_enabled) {
@@ -63,10 +75,10 @@ class ExtensionAllowlistUnitTestBase : public ExtensionServiceTestBase {
         safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION);
   }
 
-  void PerformActionBasedOnOmahaAttributes(const std::string& extension_id,
+  void PerformActionBasedOnOmahaAttributes(const ExtensionId& extension_id,
                                            bool is_malware,
                                            bool is_allowlisted) {
-    auto attributes = base::Value::Dict().Set("_esbAllowlist", is_allowlisted);
+    auto attributes = base::DictValue().Set("_esbAllowlist", is_allowlisted);
     if (is_malware) {
       attributes.Set("_malware", true);
     }
@@ -74,15 +86,15 @@ class ExtensionAllowlistUnitTestBase : public ExtensionServiceTestBase {
     service()->PerformActionBasedOnOmahaAttributes(extension_id, attributes);
   }
 
-  bool IsEnabled(const std::string& extension_id) {
+  bool IsEnabled(const ExtensionId& extension_id) {
     return registry()->enabled_extensions().Contains(extension_id);
   }
 
-  bool IsDisabled(const std::string& extension_id) {
+  bool IsDisabled(const ExtensionId& extension_id) {
     return registry()->disabled_extensions().Contains(extension_id);
   }
 
-  bool IsBlocklisted(const std::string& extension_id) {
+  bool IsBlocklisted(const ExtensionId& extension_id) {
     return registry()->blocklisted_extensions().Contains(extension_id);
   }
 
@@ -91,17 +103,18 @@ class ExtensionAllowlistUnitTestBase : public ExtensionServiceTestBase {
   ExtensionPrefs* extension_prefs() { return extension_prefs_; }
 
  private:
-  raw_ptr<ExtensionPrefs> extension_prefs_;
+  raw_ptr<ExtensionPrefs> extension_prefs_ = nullptr;
 };
 
 class ExtensionAllowlistUnitTest : public ExtensionAllowlistUnitTestBase {
  public:
   ExtensionAllowlistUnitTest() {
-    feature_list_.InitWithFeatures(
-        {extensions_features::kSafeBrowsingCrxAllowlistShowWarnings,
-         extensions_features::kSafeBrowsingCrxAllowlistAutoDisable},
-        {});
+    feature_list_.InitAndEnableFeature(
+        extensions_features::kSafeBrowsingCrxAllowlistAutoDisable);
   }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(ExtensionAllowlistUnitTest, AllowlistEnforcement) {
@@ -113,8 +126,7 @@ TEST_F(ExtensionAllowlistUnitTest, AllowlistEnforcement) {
   // undefined.
   EXPECT_EQ(ALLOWLIST_UNDEFINED,
             allowlist()->GetExtensionAllowlistState(kExtensionId1));
-  EXPECT_EQ(disable_reason::DISABLE_NONE,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_TRUE(extension_prefs()->GetDisableReasons(kExtensionId1).empty());
   EXPECT_TRUE(IsEnabled(kExtensionId1));
 
   // A first update check will set the allowlist state. In this case, an
@@ -124,8 +136,9 @@ TEST_F(ExtensionAllowlistUnitTest, AllowlistEnforcement) {
                                       /*is_allowlisted=*/false);
   EXPECT_EQ(ALLOWLIST_NOT_ALLOWLISTED,
             allowlist()->GetExtensionAllowlistState(kExtensionId1));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId1));
 
   // A future update check can change the allowlist state. Here the extension is
@@ -135,8 +148,7 @@ TEST_F(ExtensionAllowlistUnitTest, AllowlistEnforcement) {
                                       /*is_allowlisted=*/true);
   EXPECT_EQ(ALLOWLIST_ALLOWLISTED,
             allowlist()->GetExtensionAllowlistState(kExtensionId1));
-  EXPECT_EQ(disable_reason::DISABLE_NONE,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_TRUE(extension_prefs()->GetDisableReasons(kExtensionId1).empty());
   EXPECT_TRUE(IsEnabled(kExtensionId1));
 
   // When an extension is disabled remotely for malware and is not allowlisted,
@@ -152,8 +164,9 @@ TEST_F(ExtensionAllowlistUnitTest, AllowlistEnforcement) {
   EXPECT_TRUE(blocklist_prefs::HasOmahaBlocklistState(
       kExtensionId1, BitMapBlocklistState::BLOCKLISTED_MALWARE,
       extension_prefs()));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsBlocklisted(kExtensionId1));
 
   // A blocklisted item should not be allowlisted, but if the improbable
@@ -169,8 +182,7 @@ TEST_F(ExtensionAllowlistUnitTest, AllowlistEnforcement) {
   EXPECT_TRUE(blocklist_prefs::HasOmahaBlocklistState(
       kExtensionId1, BitMapBlocklistState::BLOCKLISTED_MALWARE,
       extension_prefs()));
-  EXPECT_EQ(disable_reason::DISABLE_NONE,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_TRUE(extension_prefs()->GetDisableReasons(kExtensionId1).empty());
   EXPECT_TRUE(IsBlocklisted(kExtensionId1));
 
   // If the item is removed from the malware blocklist, it should stay disabled
@@ -183,8 +195,9 @@ TEST_F(ExtensionAllowlistUnitTest, AllowlistEnforcement) {
   EXPECT_EQ(BitMapBlocklistState::NOT_BLOCKLISTED,
             blocklist_prefs::GetSafeBrowsingExtensionBlocklistState(
                 kExtensionId1, extension_prefs()));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId1));
 }
 
@@ -197,8 +210,9 @@ TEST_F(ExtensionAllowlistUnitTest, DisabledReasonResetWhenBlocklisted) {
   PerformActionBasedOnOmahaAttributes(kExtensionId1,
                                       /*is_malware=*/false,
                                       /*is_allowlisted=*/false);
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
 
   // The extension is added to the blocklist.
   service()->BlocklistExtensionForTest(kExtensionId1);
@@ -211,8 +225,7 @@ TEST_F(ExtensionAllowlistUnitTest, DisabledReasonResetWhenBlocklisted) {
   EXPECT_TRUE(IsBlocklisted(kExtensionId1));
   // The disabled reason should be reset because the extension is in the
   // allowlist.
-  EXPECT_EQ(disable_reason::DISABLE_NONE,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_TRUE(extension_prefs()->GetDisableReasons(kExtensionId1).empty());
 }
 
 TEST_F(ExtensionAllowlistUnitTest, DisabledItemStaysDisabledWhenAllowlisted) {
@@ -221,8 +234,8 @@ TEST_F(ExtensionAllowlistUnitTest, DisabledItemStaysDisabledWhenAllowlisted) {
   service()->Init();
 
   // Start with an extension disabled by user.
-  service()->DisableExtension(kExtensionId1,
-                              disable_reason::DISABLE_USER_ACTION);
+  registrar()->DisableExtension(kExtensionId1,
+                                {disable_reason::DISABLE_USER_ACTION});
   EXPECT_TRUE(IsDisabled(kExtensionId1));
 
   // Disable the extension with allowlist enforcement.
@@ -231,9 +244,10 @@ TEST_F(ExtensionAllowlistUnitTest, DisabledItemStaysDisabledWhenAllowlisted) {
                                       /*is_allowlisted=*/false);
   EXPECT_EQ(ALLOWLIST_NOT_ALLOWLISTED,
             allowlist()->GetExtensionAllowlistState(kExtensionId1));
-  EXPECT_EQ(disable_reason::DISABLE_USER_ACTION |
-                disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_USER_ACTION,
+                                    disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId1));
 
   // The extension is allowlisted, but stays disabled by user action.
@@ -245,8 +259,9 @@ TEST_F(ExtensionAllowlistUnitTest, DisabledItemStaysDisabledWhenAllowlisted) {
   EXPECT_EQ(BitMapBlocklistState::NOT_BLOCKLISTED,
             blocklist_prefs::GetSafeBrowsingExtensionBlocklistState(
                 kExtensionId1, extension_prefs()));
-  EXPECT_EQ(disable_reason::DISABLE_USER_ACTION,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_USER_ACTION));
   EXPECT_TRUE(IsDisabled(kExtensionId1));
 }
 
@@ -265,8 +280,9 @@ TEST_F(ExtensionAllowlistUnitTest, EnforcementOnInit) {
   service()->Init();
   EXPECT_EQ(ALLOWLIST_NOT_ALLOWLISTED,
             allowlist()->GetExtensionAllowlistState(kExtensionId1));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId1));
 
   // The enforcement isn't done for extensions having an undefined allowlist
@@ -309,14 +325,16 @@ TEST_F(ExtensionAllowlistUnitTest, EnhancedProtectionSettingChange) {
       safe_browsing::SafeBrowsingState::ENHANCED_PROTECTION);
   EXPECT_EQ(ALLOWLIST_NOT_ALLOWLISTED,
             allowlist()->GetExtensionAllowlistState(kExtensionId1));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId1));
 
   EXPECT_EQ(ALLOWLIST_NOT_ALLOWLISTED,
             allowlist()->GetExtensionAllowlistState(kExtensionId2));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId2));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId2),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId2));
 
   // If the ESB setting is turned off, the extensions are re-enabled.
@@ -363,8 +381,9 @@ TEST_F(ExtensionAllowlistUnitTest, ExtensionsNotAllowlistedThenBlocklisted) {
   EXPECT_EQ(BitMapBlocklistState::BLOCKLISTED_MALWARE,
             blocklist_prefs::GetSafeBrowsingExtensionBlocklistState(
                 kExtensionId1, extension_prefs()));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsBlocklisted(kExtensionId1));
 
   EXPECT_EQ(ALLOWLIST_NOT_ALLOWLISTED,
@@ -372,9 +391,10 @@ TEST_F(ExtensionAllowlistUnitTest, ExtensionsNotAllowlistedThenBlocklisted) {
   EXPECT_EQ(BitMapBlocklistState::BLOCKLISTED_POTENTIALLY_UNWANTED,
             blocklist_prefs::GetSafeBrowsingExtensionBlocklistState(
                 kExtensionId2, extension_prefs()));
-  EXPECT_EQ(disable_reason::DISABLE_GREYLIST |
-                disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId2));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId2),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_GREYLIST,
+                                    disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId2));
 
   // When the extensions are unblocklisted, the allowlist enforcement will still
@@ -388,8 +408,9 @@ TEST_F(ExtensionAllowlistUnitTest, ExtensionsNotAllowlistedThenBlocklisted) {
   EXPECT_EQ(BitMapBlocklistState::NOT_BLOCKLISTED,
             blocklist_prefs::GetSafeBrowsingExtensionBlocklistState(
                 kExtensionId1, extension_prefs()));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId1));
 
   EXPECT_EQ(ALLOWLIST_NOT_ALLOWLISTED,
@@ -397,8 +418,9 @@ TEST_F(ExtensionAllowlistUnitTest, ExtensionsNotAllowlistedThenBlocklisted) {
   EXPECT_EQ(BitMapBlocklistState::NOT_BLOCKLISTED,
             blocklist_prefs::GetSafeBrowsingExtensionBlocklistState(
                 kExtensionId2, extension_prefs()));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId2));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId2),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId2));
 }
 
@@ -428,8 +450,9 @@ TEST_F(ExtensionAllowlistUnitTest, ExtensionsBlocklistedThenNotAllowlisted) {
             blocklist_prefs::GetSafeBrowsingExtensionBlocklistState(
                 kExtensionId1, extension_prefs()));
   // The disable reason is added even if the extension is already blocklisted.
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsBlocklisted(kExtensionId1));
 
   // When the extensions is unblocklisted, the allowlist enforcement will still
@@ -442,8 +465,9 @@ TEST_F(ExtensionAllowlistUnitTest, ExtensionsBlocklistedThenNotAllowlisted) {
   EXPECT_EQ(BitMapBlocklistState::NOT_BLOCKLISTED,
             blocklist_prefs::GetSafeBrowsingExtensionBlocklistState(
                 kExtensionId1, extension_prefs()));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
   EXPECT_TRUE(IsDisabled(kExtensionId1));
 }
 
@@ -460,11 +484,12 @@ TEST_F(ExtensionAllowlistUnitTest, MissingAttributeAreIgnored) {
   // allowlisted.
   service()->Init();
   EXPECT_TRUE(IsEnabled(kExtensionId1));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId2));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId2),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
 
   // Simulate an update check with no custom attribute defined.
-  base::Value::Dict attributes;
+  base::DictValue attributes;
   service()->PerformActionBasedOnOmahaAttributes(kExtensionId1, attributes);
   service()->PerformActionBasedOnOmahaAttributes(kExtensionId2, attributes);
 
@@ -476,8 +501,9 @@ TEST_F(ExtensionAllowlistUnitTest, MissingAttributeAreIgnored) {
 
   EXPECT_EQ(ALLOWLIST_NOT_ALLOWLISTED,
             allowlist()->GetExtensionAllowlistState(kExtensionId2));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED,
-            extension_prefs()->GetDisableReasons(kExtensionId2));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId2),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED));
 }
 
 TEST_F(ExtensionAllowlistUnitTest, AcknowledgeNeededOnEnforcement) {
@@ -503,8 +529,8 @@ TEST_F(ExtensionAllowlistUnitTest, AcknowledgeNotNeededIfAlreadyDisabled) {
   CreateExtensionService(/*enhanced_protection_enabled=*/true);
 
   service()->Init();
-  service()->DisableExtension(kExtensionId1,
-                              disable_reason::DISABLE_USER_ACTION);
+  registrar()->DisableExtension(kExtensionId1,
+                                {disable_reason::DISABLE_USER_ACTION});
   EXPECT_TRUE(IsDisabled(kExtensionId1));
   EXPECT_EQ(ALLOWLIST_ACKNOWLEDGE_NONE,
             allowlist()->GetExtensionAllowlistAcknowledgeState(kExtensionId1));
@@ -516,9 +542,10 @@ TEST_F(ExtensionAllowlistUnitTest, AcknowledgeNotNeededIfAlreadyDisabled) {
 
   // There is no need for acknowledge if the extension was already disabled.
   EXPECT_TRUE(IsDisabled(kExtensionId1));
-  EXPECT_EQ(disable_reason::DISABLE_NOT_ALLOWLISTED |
-                disable_reason::DISABLE_USER_ACTION,
-            extension_prefs()->GetDisableReasons(kExtensionId1));
+  EXPECT_THAT(
+      extension_prefs()->GetDisableReasons(kExtensionId1),
+      testing::UnorderedElementsAre(disable_reason::DISABLE_NOT_ALLOWLISTED,
+                                    disable_reason::DISABLE_USER_ACTION));
   EXPECT_EQ(ALLOWLIST_ACKNOWLEDGE_NONE,
             allowlist()->GetExtensionAllowlistAcknowledgeState(kExtensionId1));
 }
@@ -541,7 +568,7 @@ TEST_F(ExtensionAllowlistUnitTest,
             allowlist()->GetExtensionAllowlistAcknowledgeState(kExtensionId1));
 
   // Re-enable the extension.
-  service()->EnableExtension(kExtensionId1);
+  registrar()->EnableExtension(kExtensionId1);
 
   // The extensions should now be marked with
   // `ALLOWLIST_ACKNOWLEDGE_ENABLED_BY_USER'.
@@ -644,14 +671,14 @@ TEST_F(ExtensionAllowlistUnitTest, TurnOffEnhancedProtection) {
 TEST_F(ExtensionAllowlistUnitTest, BypassFrictionSetAckowledgeEnabledByUser) {
   CreateExtensionService(/*enhanced_protection_enabled=*/true);
 
-  scoped_refptr<CrxInstaller> installer(CrxInstaller::CreateSilent(service()));
+  scoped_refptr<CrxInstaller> installer(CrxInstaller::CreateSilent(profile()));
   installer->set_allow_silent_install(true);
   installer->set_bypassed_safebrowsing_friction_for_testing(true);
 
   base::RunLoop run_loop;
   installer->AddInstallerCallback(base::BindOnce(
       [](base::OnceClosure quit_closure,
-         const absl::optional<CrxInstallError>& error) {
+         const std::optional<CrxInstallError>& error) {
         ASSERT_FALSE(error) << error->message();
         std::move(quit_closure).Run();
       },
@@ -668,6 +695,8 @@ TEST_F(ExtensionAllowlistUnitTest, BypassFrictionSetAckowledgeEnabledByUser) {
 }
 
 TEST_F(ExtensionAllowlistUnitTest, NoEnforcementOnPolicyForceInstall) {
+  // Mark as enterprise managed.
+  policy::ScopedDomainEnterpriseManagement scoped_domain;
   CreateEmptyExtensionService();
   service()->Init();
 
@@ -677,10 +706,10 @@ TEST_F(ExtensionAllowlistUnitTest, NoEnforcementOnPolicyForceInstall) {
           .SetPath(data_dir().AppendASCII("good.crx"))
           .SetLocation(mojom::ManifestLocation::kExternalPolicyDownload)
           .Build();
-  service()->AddExtension(extension.get());
+  registrar()->AddExtension(extension.get());
 
   {
-    ManagementPrefUpdater pref(profile_->GetTestingPrefService());
+    ManagementPrefUpdater pref(testing_profile()->GetTestingPrefService());
     pref.SetIndividualExtensionAutoInstalled(
         extension->id(), "http://example.com/update_url", true);
   }
@@ -705,10 +734,12 @@ class ExtensionAllowlistWithFeatureDisabledUnitTest
  public:
   ExtensionAllowlistWithFeatureDisabledUnitTest() {
     // Test with warnings enabled but auto disable disabled.
-    feature_list_.InitWithFeatures(
-        {extensions_features::kSafeBrowsingCrxAllowlistShowWarnings},
-        {extensions_features::kSafeBrowsingCrxAllowlistAutoDisable});
+    feature_list_.InitAndDisableFeature(
+        extensions_features::kSafeBrowsingCrxAllowlistAutoDisable);
   }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(ExtensionAllowlistWithFeatureDisabledUnitTest,
@@ -740,10 +771,10 @@ TEST_F(ExtensionAllowlistWithFeatureDisabledUnitTest,
           .SetPath(data_dir().AppendASCII("good.crx"))
           .SetLocation(mojom::ManifestLocation::kExternalPrefDownload)
           .Build();
-  service()->AddExtension(extension.get());
+  registrar()->AddExtension(extension.get());
 
   {
-    ManagementPrefUpdater pref(profile_->GetTestingPrefService());
+    ManagementPrefUpdater pref(testing_profile()->GetTestingPrefService());
     pref.SetIndividualExtensionAutoInstalled(
         extension->id(), "http://example.com/update_url", false);
   }
@@ -774,10 +805,10 @@ TEST_F(ExtensionAllowlistWithFeatureDisabledUnitTest,
           .SetPath(data_dir().AppendASCII("good.crx"))
           .SetLocation(mojom::ManifestLocation::kInternal)
           .Build();
-  service()->AddExtension(extension.get());
+  registrar()->AddExtension(extension.get());
 
   {
-    ManagementPrefUpdater pref(profile_->GetTestingPrefService());
+    ManagementPrefUpdater pref(testing_profile()->GetTestingPrefService());
     pref.SetIndividualExtensionInstallationAllowed(extension->id(), true);
   }
 
@@ -796,6 +827,6 @@ TEST_F(ExtensionAllowlistWithFeatureDisabledUnitTest,
   EXPECT_FALSE(allowlist()->ShouldDisplayWarning(extension->id()));
 }
 
-// TODO(crbug.com/1194051): Add more ExtensionAllowlist::Observer coverage
+// TODO(crbug.com/40175473): Add more ExtensionAllowlist::Observer coverage
 
 }  // namespace extensions

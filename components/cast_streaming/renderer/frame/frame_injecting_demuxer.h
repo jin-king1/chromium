@@ -5,38 +5,34 @@
 #ifndef COMPONENTS_CAST_STREAMING_RENDERER_FRAME_FRAME_INJECTING_DEMUXER_H_
 #define COMPONENTS_CAST_STREAMING_RENDERER_FRAME_FRAME_INJECTING_DEMUXER_H_
 
+#include <optional>
+
+#include "base/memory/scoped_refptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/cast_streaming/common/public/mojom/demuxer_connector.mojom.h"
+#include "components/cast_streaming/renderer/frame/demuxer_connector.h"
 #include "media/base/demuxer.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace cast_streaming {
 
 class StreamTimestampOffsetTracker;
 class FrameInjectingAudioDemuxerStream;
 class FrameInjectingVideoDemuxerStream;
-class DemuxerConnector;
+class DemuxerStreamConfigBuffer;
 
 // media::Demuxer implementation for a Cast Streaming Receiver.
-// This object is instantiated on the main thread, whose task runner is stored
-// as |original_task_runner_|. OnStreamsInitialized() is the only method called
-// on the main thread. Every other method is called on the media thread, whose
-// task runner is |media_task_runner_|.
-// TODO(crbug.com/1082821): Simplify the FrameInjectingDemuxer initialization
-// sequence when the DemuxerConnector Component has been implemented.
+// Every method is called on the media thread, whose task runner is
+// |media_task_runner_|.
 class FrameInjectingDemuxer final : public media::Demuxer {
  public:
   FrameInjectingDemuxer(
-      DemuxerConnector* demuxer_connector,
+      scoped_refptr<DemuxerStreamConfigBuffer> config_buffer,
       scoped_refptr<base::SequencedTaskRunner> media_task_runner);
   ~FrameInjectingDemuxer() override;
 
   FrameInjectingDemuxer(const FrameInjectingDemuxer&) = delete;
   FrameInjectingDemuxer& operator=(const FrameInjectingDemuxer&) = delete;
-
-  void OnStreamsInitialized(
-      mojom::AudioStreamInitializationInfoPtr audio_stream_info,
-      mojom::VideoStreamInitializationInfoPtr video_stream_info);
 
  private:
   void OnStreamsInitializedOnMediaThread(
@@ -45,7 +41,7 @@ class FrameInjectingDemuxer final : public media::Demuxer {
   void OnStreamInitializationComplete();
 
   // media::Demuxer implementation.
-  std::vector<media::DemuxerStream*> GetAllStreams() override;
+  std::vector<raw_ptr<media::DemuxerStream>> GetAllStreams() override;
   std::string GetDisplayName() const override;
   media::DemuxerType GetDemuxerType() const override;
   void Initialize(media::DemuxerHost* host,
@@ -60,16 +56,12 @@ class FrameInjectingDemuxer final : public media::Demuxer {
   base::TimeDelta GetStartTime() const override;
   base::Time GetTimelineOffset() const override;
   int64_t GetMemoryUsage() const override;
-  absl::optional<media::container_names::MediaContainerName>
+  std::optional<media::container_names::MediaContainerName>
   GetContainerForMetrics() const override;
-  void OnEnabledAudioTracksChanged(
-      const std::vector<media::MediaTrack::Id>& track_ids,
-      base::TimeDelta curr_time,
-      TrackChangeCB change_completed_cb) override;
-  void OnSelectedVideoTrackChanged(
-      const std::vector<media::MediaTrack::Id>& track_ids,
-      base::TimeDelta curr_time,
-      TrackChangeCB change_completed_cb) override;
+  void OnTracksChanged(media::DemuxerStream::Type track_type,
+                       std::optional<media::MediaTrack::Id> track_id,
+                       base::TimeDelta curr_time,
+                       TrackChangeCB change_completed_cb) override;
   void SetPlaybackRate(double rate) override {}
 
   // The number of initialized streams that have yet to call
@@ -77,8 +69,7 @@ class FrameInjectingDemuxer final : public media::Demuxer {
   int pending_stream_initialization_callbacks_ = 0;
 
   scoped_refptr<base::SequencedTaskRunner> media_task_runner_;
-  scoped_refptr<base::SequencedTaskRunner> original_task_runner_;
-  media::DemuxerHost* host_ = nullptr;
+  raw_ptr<media::DemuxerHost> host_ = nullptr;
 
   scoped_refptr<StreamTimestampOffsetTracker> timestamp_tracker_;
   std::unique_ptr<FrameInjectingAudioDemuxerStream> audio_stream_;
@@ -87,9 +78,9 @@ class FrameInjectingDemuxer final : public media::Demuxer {
   // Set to true if the Demuxer was successfully initialized.
   bool was_initialization_successful_ = false;
   media::PipelineStatusCallback initialized_cb_;
-  DemuxerConnector* const demuxer_connector_;
+  const scoped_refptr<DemuxerStreamConfigBuffer> config_buffer_;
 
-  base::WeakPtrFactory<FrameInjectingDemuxer> weak_factory_;
+  base::WeakPtrFactory<FrameInjectingDemuxer> weak_factory_{this};
 };
 
 }  // namespace cast_streaming

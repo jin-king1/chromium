@@ -30,10 +30,11 @@
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 
 namespace blink {
 
-RemoveCSSPropertyCommand::RemoveCSSPropertyCommand(Document& document,
+RemoveCssPropertyCommand::RemoveCssPropertyCommand(Document& document,
                                                    Element* element,
                                                    CSSPropertyID property)
     : SimpleEditCommand(document),
@@ -43,9 +44,9 @@ RemoveCSSPropertyCommand::RemoveCSSPropertyCommand(Document& document,
   DCHECK(element_);
 }
 
-RemoveCSSPropertyCommand::~RemoveCSSPropertyCommand() = default;
+RemoveCssPropertyCommand::~RemoveCssPropertyCommand() = default;
 
-void RemoveCSSPropertyCommand::DoApply(EditingState*) {
+void RemoveCssPropertyCommand::DoApply(EditingState*) {
   const CSSPropertyValueSet* style = element_->InlineStyle();
   if (!style)
     return;
@@ -62,14 +63,19 @@ void RemoveCSSPropertyCommand::DoApply(EditingState*) {
       IGNORE_EXCEPTION_FOR_TESTING);
 }
 
-void RemoveCSSPropertyCommand::DoUnapply() {
+void RemoveCssPropertyCommand::DoUnapply() {
   element_->style()->SetPropertyInternal(
       property_, String(), old_value_, important_,
       GetDocument().GetExecutionContext()->GetSecureContextMode(),
       IGNORE_EXCEPTION_FOR_TESTING);
 }
 
-void RemoveCSSPropertyCommand::Trace(Visitor* visitor) const {
+String RemoveCssPropertyCommand::ToString() const {
+  return StrCat({"RemoveCSSPropertyCommand {",
+                 CSSPropertyName(property_).ToAtomicString(), "}"});
+}
+
+void RemoveCssPropertyCommand::Trace(Visitor* visitor) const {
   visitor->Trace(element_);
   SimpleEditCommand::Trace(visitor);
 }

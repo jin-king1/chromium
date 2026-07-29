@@ -9,10 +9,11 @@
 
 #include "base/android/scoped_java_ref.h"
 #include "base/types/strong_alias.h"
-#include "chrome/browser/password_manager/android/password_store_operation_target.h"
-#include "components/password_manager/core/browser/android_backend_error.h"
 #include "components/password_manager/core/browser/password_form.h"
-#include "components/password_manager/core/browser/password_store_backend.h"
+#include "components/password_manager/core/browser/password_store/android_backend_error.h"
+#include "components/password_manager/core/browser/password_store/password_store_backend.h"
+#include "components/password_manager/core/browser/password_store/password_store_interface.h"
+#include "components/password_manager/core/browser/password_store/stored_credential.h"
 
 namespace password_manager {
 
@@ -25,9 +26,7 @@ namespace password_manager {
 // this bridge.
 class PasswordStoreAndroidBackendReceiverBridge {
  public:
-  using SyncingAccount =
-      base::StrongAlias<struct SyncingAccountTag, std::string>;
-  using Account = absl::variant<PasswordStoreOperationTarget, SyncingAccount>;
+  using Account = base::StrongAlias<struct SyncingAccountTag, std::string>;
   using JobId = base::StrongAlias<struct JobIdTag, int>;
 
   // Each bridge is created with a consumer that will be called when a job is
@@ -41,8 +40,9 @@ class PasswordStoreAndroidBackendReceiverBridge {
     // Asynchronous response called with the `job_id` which was passed to the
     // corresponding call to `PasswordStoreAndroidBackendDispatcherBridge`, and
     // with the requested `passwords`. Used in response to `GetAllLogins`.
-    virtual void OnCompleteWithLogins(JobId job_id,
-                                      std::vector<PasswordForm> passwords) = 0;
+    virtual void OnCompleteWithLogins(
+        JobId job_id,
+        std::vector<StoredCredential> passwords) = 0;
 
     // Asynchronous response called with the `job_id` which was passed to the
     // corresponding call to `PasswordStoreAndroidBackendDispatcherBridge`, and
@@ -66,7 +66,8 @@ class PasswordStoreAndroidBackendReceiverBridge {
 
   // Factory function for creating the bridge. Implementation is pulled in by
   // including an implementation or by defining it explicitly in tests.
-  static std::unique_ptr<PasswordStoreAndroidBackendReceiverBridge> Create();
+  static std::unique_ptr<PasswordStoreAndroidBackendReceiverBridge> Create(
+      password_manager::IsAccountStore is_account_store);
 };
 
 }  // namespace password_manager

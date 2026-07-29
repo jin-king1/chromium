@@ -2,14 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "content/browser/webui/web_ui_managed_interface.h"
+
 #include <memory>
 
-#include "base/functional/callback_forward.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
-#include "content/browser/webui/web_ui_managed_interface.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_process_host_observer.h"
@@ -66,7 +66,8 @@ template <typename Type>
 int InstanceCounter<Type>::count_ = 0;
 
 // FooImpl implements Foo.
-class FooImpl : public WebUIManagedInterface<FooImpl, mojom::Foo> {
+class FooImpl : public mojom::Foo,
+                public WebUIManagedInterface<FooImpl, mojom::Foo> {
  public:
   FooImpl() { InstanceCounter<FooImpl>::Increment(); }
 
@@ -80,7 +81,8 @@ class FooImpl : public WebUIManagedInterface<FooImpl, mojom::Foo> {
 
 // FooImpl implements Foo and talks to a Bar remote.
 class FooBarImpl
-    : public WebUIManagedInterface<FooBarImpl, mojom::Foo, mojom::Bar> {
+    : public mojom::Foo,
+      public WebUIManagedInterface<FooBarImpl, mojom::Foo, mojom::Bar> {
  public:
   FooBarImpl() { InstanceCounter<FooBarImpl>::Increment(); }
 
@@ -124,7 +126,7 @@ class WebUIManagedInterfaceTestUI : public WebUIController,
     // WebUIDataSource::CreateAndAdd() expects "host" as the `source_name` arg
     // for trusted hosts and "chrome-untrusted://host" for untrusted hosts.
     for (const auto& host :
-         {GURL(kFooURL).host(), std::string(kFooInIframeURL)}) {
+         {GURL(kFooURL).GetHost(), std::string(kFooInIframeURL)}) {
       WebUIDataSource* data_source = WebUIDataSource::CreateAndAdd(
           web_ui->GetWebContents()->GetBrowserContext(), host);
       data_source->SetDefaultResource(IDR_WEB_UI_MANAGED_INTERFACE_TEST_HTML);
@@ -218,8 +220,6 @@ class WebUIManagedInterfaceBrowserTest : public ContentBrowserTest {
     test_content_browser_client_ = std::make_unique<TestContentBrowserClient>();
   }
 
-  void TearDownOnMainThread() override { test_content_browser_client_.reset(); }
-
   // Evaluate `statement` in frame (defaults to main frame), and returns its
   // result. For convenience, `script` should evaluate to a string, or a promise
   // that resolves to a string.
@@ -233,8 +233,8 @@ class WebUIManagedInterfaceBrowserTest : public ContentBrowserTest {
         EvalJs(eval_frame, statement, content::EXECUTE_SCRIPT_DEFAULT_OPTIONS,
                content::ISOLATED_WORLD_ID_GLOBAL);
 
-    EXPECT_TRUE(result.error.empty());
-    return result.value.GetString();
+    EXPECT_TRUE(result.is_ok());
+    return result.ExtractString();
   }
 
   void Reload(RenderFrameHost* frame = nullptr) {
@@ -255,11 +255,14 @@ class WebUIManagedInterfaceBrowserTest : public ContentBrowserTest {
         delete;
     ~TestContentBrowserClient() override = default;
 
-    void RegisterWebUIInterfaceBrokers(
+    void RegisterTrustedWebUIInterfaceBrokers(
         WebUIBrowserInterfaceBrokerRegistry& registry) override {
       registry.ForWebUI<WebUIManagedInterfaceTestUI>()
           .Add<mojom::TestWebUIJsBridge>();
     }
+
+    void RegisterUntrustedWebUIInterfaceBrokers(
+        WebUIBrowserInterfaceBrokerRegistry& registry) override {}
   };
 
   std::unique_ptr<TestFooWebUIControllerFactory> factory_;
@@ -392,6 +395,7 @@ IN_PROC_BROWSER_TEST_F(WebUIManagedInterfaceBrowserTest, WebUIInIframe) {
 
   // Iframe navigation will destroy interface impls.
   Reload(foo_frame);
+  foo_frame = ChildFrameAt(web_contents->GetPrimaryMainFrame(), 0);
   EXPECT_EQ(0, InstanceCounter<FooImpl>::count());
 
   // Interface impls can be created after reload.

@@ -7,7 +7,6 @@
 #include <memory>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/test/test_cast_config_controller.h"
 #include "ash/public/cpp/test/test_system_tray_client.h"
 #include "ash/style/pill_button.h"
@@ -17,7 +16,6 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/test/scoped_feature_list.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/views/view.h"
 #include "ui/views/view_utils.h"
@@ -27,9 +25,7 @@ namespace ash {
 
 class CastDetailedViewTest : public AshTestBase {
  public:
-  CastDetailedViewTest() {
-    feature_list_.InitAndEnableFeature(features::kQsRevamp);
-  }
+  CastDetailedViewTest() = default;
 
   // AshTestBase:
   void SetUp() override {
@@ -43,8 +39,9 @@ class CastDetailedViewTest : public AshTestBase {
   }
 
   void TearDown() override {
-    widget_.reset();
     detailed_view_ = nullptr;
+    // widget_ depends on delegate, so is reset before delegate.
+    widget_.reset();
     delegate_.reset();
     AshTestBase::TearDown();
   }
@@ -55,6 +52,11 @@ class CastDetailedViewTest : public AshTestBase {
       views.push_back(it.first);
     }
     return views;
+  }
+
+  std::vector<raw_ptr<views::View, VectorExperimental>> GetExtraViewsForSink(
+      const std::string& sink_id) {
+    return detailed_view_->sink_extra_views_map_[sink_id];
   }
 
   views::View* GetZeroStateView() { return detailed_view_->zero_state_view_; }
@@ -87,11 +89,10 @@ class CastDetailedViewTest : public AshTestBase {
     return detailed_view_->add_access_code_device_;
   }
 
-  base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<views::Widget> widget_;
   TestCastConfigController cast_config_;
   std::unique_ptr<FakeDetailedViewDelegate> delegate_;
-  raw_ptr<CastDetailedView, ExperimentalAsh> detailed_view_ = nullptr;
+  raw_ptr<CastDetailedView> detailed_view_ = nullptr;
 };
 
 TEST_F(CastDetailedViewTest, ViewsCreatedForCastDevices) {
@@ -101,7 +102,7 @@ TEST_F(CastDetailedViewTest, ViewsCreatedForCastDevices) {
 
   for (views::View* view : GetDeviceViews()) {
     // Device views are children of the rounded container.
-    EXPECT_STREQ(view->parent()->GetClassName(), "RoundedContainer");
+    EXPECT_EQ(view->parent()->GetClassName(), "RoundedContainer");
 
     // Device views don't have a "stop casting" button by default.
     ASSERT_TRUE(views::IsViewClass<HoverHighlightView>(view));
@@ -131,9 +132,12 @@ TEST_F(CastDetailedViewTest, CastToSinkClosingBubbleDoesNotCrash) {
   // In multi-monitor situations, casting will create a picker window to choose
   // the desktop to cast. This causes a window activation that closes the
   // system tray bubble and deletes the widget owning the CastDetailedView.
-  cast_config_.set_cast_to_sink_closure(
-      base::BindOnce([](CastDetailedViewTest* test) { test->widget_.reset(); },
-                     base::Unretained(this)));
+  cast_config_.set_cast_to_sink_closure(base::BindOnce(
+      [](CastDetailedViewTest* test) {
+        test->detailed_view_ = nullptr;
+        test->widget_.reset();
+      },
+      base::Unretained(this)));
   LeftClickOn(first_view);
   EXPECT_EQ(cast_config_.cast_to_sink_count(), 1u);
   // No crash.
@@ -150,6 +154,16 @@ TEST_F(CastDetailedViewTest, AccessCodeCasting) {
   // The bubble is not closed via the delegate, because it happens via a focus
   // change when the dialog appears.
   EXPECT_EQ(delegate_->close_bubble_call_count(), 0u);
+}
+
+// When the screen is locked, we should not show the access code device button,
+// since this opens a dialog that can't be accessed when the screen is locked.
+TEST_F(CastDetailedViewTest, AccessCodeCastingButtonScreenLocked) {
+  cast_config_.set_access_code_casting_enabled(true);
+  GetSessionControllerClient()->LockScreen();
+  ResetCastDevices();
+  views::View* add_access_code_device = GetAddAccessCodeDeviceView();
+  EXPECT_FALSE(add_access_code_device);
 }
 
 TEST_F(CastDetailedViewTest, ZeroStateView) {
@@ -191,7 +205,7 @@ TEST_F(CastDetailedViewTest, StopCastingButton) {
   views::View* right_view = row->right_view();
   ASSERT_TRUE(right_view);
   EXPECT_TRUE(views::IsViewClass<PillButton>(right_view));
-  EXPECT_EQ(right_view->GetTooltipText(gfx::Point()), u"Stop casting");
+  EXPECT_EQ(right_view->GetRenderedTooltipText(gfx::Point()), u"Stop casting");
 
   // Clicking on the button stops casting.
   LeftClickOn(right_view);
@@ -224,6 +238,37 @@ TEST_F(CastDetailedViewTest, NoStopCastingButtonForNonLocalSource) {
   // The row does not contains a right view because there is no stop casting
   // button because the cast source is not the local machine.
   EXPECT_FALSE(row->right_view());
+}
+
+TEST_F(CastDetailedViewTest, FreezeButton) {
+  // Set up a fake sink and route, as if this Chromebook is casting to the
+  // device. And, the route may be frozen.
+  std::vector<SinkAndRoute> devices;
+  SinkAndRoute device;
+  device.sink.id = "fake_sink_id_1";
+  device.sink.name = "Sink Name 1";
+  device.sink.sink_icon_type = SinkIconType::kCast;
+  device.route.id = "fake_route_id_1";
+  device.route.title = "Title 1";
+  // Simulate a local source (this Chromebook).
+  device.route.is_local_source = true;
+  device.route.freeze_info.can_freeze = true;
+  devices.push_back(device);
+  OnDevicesUpdated(devices);
+
+  std::vector<raw_ptr<views::View, VectorExperimental>> views =
+      GetExtraViewsForSink("fake_sink_id_1");
+  ASSERT_EQ(views.size(), 2u);
+  auto* freeze_button = views[0].get();
+  EXPECT_TRUE(views::IsViewClass<PillButton>(freeze_button));
+  EXPECT_EQ(freeze_button->GetRenderedTooltipText(gfx::Point()),
+            u"Pause casting");
+
+  // Clicking on the button pauses casting.
+  LeftClickOn(freeze_button);
+  EXPECT_EQ(cast_config_.freeze_route_count(), 1u);
+  EXPECT_EQ(cast_config_.freeze_route_route_id(), "fake_route_id_1");
+  EXPECT_EQ(delegate_->close_bubble_call_count(), 1u);
 }
 
 }  // namespace ash

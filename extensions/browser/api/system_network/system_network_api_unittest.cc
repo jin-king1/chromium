@@ -22,16 +22,16 @@ using SystemNetworkApiUnitTest = extensions::ApiUnitTest;
 }  // namespace
 
 TEST_F(SystemNetworkApiUnitTest, GetNetworkInterfaces) {
-  scoped_refptr<SystemNetworkGetNetworkInterfacesFunction> socket_function(
-      new SystemNetworkGetNetworkInterfacesFunction());
+  scoped_refptr<SystemNetworkGetNetworkInterfacesFunction> socket_function =
+      base::MakeRefCounted<SystemNetworkGetNetworkInterfacesFunction>();
   scoped_refptr<const Extension> empty_extension(
       extensions::ExtensionBuilder("Test").Build());
 
   socket_function->set_extension(empty_extension.get());
   socket_function->set_has_callback(true);
 
-  absl::optional<base::Value> result(RunFunctionAndReturnSingleResult(
-      socket_function.get(), "[]", browser_context()));
+  std::optional<base::Value> result(RunFunctionAndReturnSingleResult(
+      socket_function, "[]", browser_context()));
   ASSERT_TRUE(result->is_list());
 
   // All we can confirm is that we have at least one address, but not what it
@@ -40,16 +40,16 @@ TEST_F(SystemNetworkApiUnitTest, GetNetworkInterfaces) {
 
   for (const auto& network_interface_value : result->GetList()) {
     ASSERT_TRUE(network_interface_value.is_dict());
-    NetworkInterface network_interface;
-    ASSERT_TRUE(NetworkInterface::Populate(network_interface_value.GetDict(),
-                                           network_interface));
+    auto network_interface =
+        NetworkInterface::FromValue(network_interface_value.GetDict());
+    ASSERT_TRUE(network_interface);
 
-    LOG(INFO) << "Network interface: address=" << network_interface.address
-              << ", name=" << network_interface.name
-              << ", prefix length=" << network_interface.prefix_length;
-    ASSERT_NE(std::string(), network_interface.address);
-    ASSERT_NE(std::string(), network_interface.name);
-    ASSERT_LE(0, network_interface.prefix_length);
+    LOG(INFO) << "Network interface: address=" << network_interface->address
+              << ", name=" << network_interface->name
+              << ", prefix length=" << network_interface->prefix_length;
+    ASSERT_NE(std::string(), network_interface->address);
+    ASSERT_NE(std::string(), network_interface->name);
+    ASSERT_LE(0, network_interface->prefix_length);
   }
 }
 

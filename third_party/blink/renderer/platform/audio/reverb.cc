@@ -35,6 +35,7 @@
 #include <utility>
 
 #include "build/build_config.h"
+#include "media/base/audio_bus.h"
 #include "third_party/blink/renderer/platform/audio/audio_bus.h"
 #include "third_party/blink/renderer/platform/audio/vector_math.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
@@ -49,7 +50,7 @@ const float kGainCalibrationSampleRate = 44100;
 
 // A minimum power value to when normalizing a silent (or very quiet) impulse
 // response
-const float kMinPower = 0.000125f;
+constexpr float kMinPower = 0.000125f;
 
 static float CalculateNormalizationScale(AudioBus* response) {
   // Normalize by RMS power
@@ -59,9 +60,8 @@ static float CalculateNormalizationScale(AudioBus* response) {
   float power = 0;
 
   for (unsigned i = 0; i < number_of_channels; ++i) {
-    float channel_power = 0;
-    vector_math::Vsvesq(response->Channel(i)->Data(), 1, &channel_power,
-                        length);
+    float channel_power =
+        vector_math::Vsvesq(response->Channel(i)->Span(), length);
     power += channel_power;
   }
 
@@ -267,7 +267,7 @@ void Reverb::Process(const AudioBus* source_bus,
 
     destination_bus->SumFrom(*temp_buffer_);
   } else {
-    NOTREACHED();
+    DUMP_WILL_BE_NOTREACHED();
     destination_bus->Zero();
   }
 }

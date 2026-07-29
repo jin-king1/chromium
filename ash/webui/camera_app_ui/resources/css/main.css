@@ -3,23 +3,7 @@
  * found in the LICENSE file. */
 
 :root {
-  /* Standard CrOS styles */
-  --blue-300-rgb: 138, 180, 248;
-  --blue-300: rgb(var(--blue-300-rgb));
-  --blue-500: rgb(66, 133, 244);
-  --blue-600: rgb(26, 115, 232);
-  --red-300-rgb: 242, 139, 130;
-  --red-300: rgb(var(--red-300-rgb));
-  --grey-100: rgb(241, 243, 244);
-  --grey-200-rgb: 233, 234, 237;
-  --grey-200: rgb(var(--grey-200-rgb));
-  --grey-400: rgb(189, 193, 198);
-  --grey-500: rgb(154, 160, 166);
-  --grey-600: rgb(128, 134, 139);
-  --grey-700: rgb(95, 99, 104);
-  --grey-900-rgb: 32, 33, 36;
-  --grey-900: rgb(var(--grey-900-rgb));
-  --yellow-300: rgb(253, 214, 99);
+  color-scheme: only dark;
 
   --fast1-duration: 100ms;
   --fast2-duration: 200ms;
@@ -33,11 +17,14 @@
   --exit-easing: cubic-bezier(0.4, 0, 1, 1);
 
   /* App specific settings */
+  --big-icon: 48px;
   --bottom-line: 44px;
   --default-font-family: 'Google Sans', sans-serif;
   --fixed-width-font-family: 'Cousine', monospace;
   --left-line: 44px;
   --right-line: 50px;
+  --small-icon: 40px;
+  --top-line: 48px;
 
   /* From https://www.w3.org/TR/css-backgrounds-3/#corner-overlap. */
   --border-radius-rounded-with-short-side: 9999999px;
@@ -55,10 +42,6 @@ html {
   height: 100%;  /* Required for printing. */
 }
 
-audio {
-  display: none;
-}
-
 body {
   background: var(--cros-sys-app_base);
   bottom: 0;
@@ -69,7 +52,12 @@ body {
   overflow: hidden;
   position: absolute;
   top: 0;
-  touch-action: none;
+  /*
+   * Disable pinch-to-zoom in CCA and allow the back gesture. Note that back
+   * gesture is an OS-level gesture and can only be disabled by setting
+   * `touch-action: none`.
+   */
+  touch-action: pan-left;
   width: 100%;
 }
 
@@ -93,11 +81,6 @@ input[type=checkbox] {
 
 [i18n-text] {
   user-select: none;
-}
-
-.cancel-animate {
-  animation: none !important;
-  transition: none !important;
 }
 
 .buttons {
@@ -128,7 +111,7 @@ input[type=checkbox] {
   width: 40px;
 }
 
-.menu-item > input.icon {
+.menu-item input.icon {
   outline-offset: -4px;
 }
 input[type=radio].icon {
@@ -152,7 +135,7 @@ input[type=radio].icon {
 
 .top-stripe {
   position: absolute;
-  top: 48px;
+  top: var(--top-line);
   transform: translateY(-50%);
 }
 
@@ -184,12 +167,6 @@ body.taking.video #options-group :not(#open-ptz-panel) {
   transform: translateX(50%);
 }
 
-.horizontal-center-stripe {
-  left: 50%;
-  position: absolute;
-  transform: translateX(-50%);
-}
-
 .vertical-center-stripe {
   position: absolute;
   top: 50%;
@@ -201,10 +178,6 @@ body.taking.video #options-group :not(#open-ptz-panel) {
 }
 
 .top-stripe.left-stripe {
-  transform: translate(-50%, -50%);
-}
-
-.top-stripe.horizontal-center-stripe {
   transform: translate(-50%, -50%);
 }
 
@@ -227,127 +200,17 @@ body.tablet-landscape .actions-group {
   flex-direction: column-reverse;
 }
 
-body.doc-mode-reviewing #mode-selector {
-  visibility: hidden;
-}
-
-#mode-selector {
-  --fade-padding: 24px;
-  --scrollbar-height: 4px;
-
+mode-selector {
   left: calc(var(--left-line) * 2);
   right: calc(var(--right-line) * 2);
-}
 
-#mode-selector::before,
-#mode-selector::after {
-  /* This is for "fading" effect when window is narrow and the mode selector
-   * overflows, so we use the same color as the background color here. */
-  background: linear-gradient(to right, var(--cros-sys-app_base), transparent);
-  content: '';
-  display: block;
-  height: calc(100% - var(--scrollbar-height));
-  pointer-events: none;
-  position: absolute;
-  top: 0;
-  width: var(--fade-padding);
-  z-index: 2;
-}
-
-#mode-selector::before {
-  left: 0;
-}
-
-#mode-selector::after {
-  right: 0;
-  transform: scaleX(-1);
-}
-
-#modes-group {
-  display: block;
-  overflow: auto;
-  padding: 10px 0;
-  pointer-events: auto;
-  text-align: center;
-  user-select: none;
-  white-space: nowrap;
+  body:is(.taking.video, .should-handle-intent-result, .doc-mode-reviewing) & {
+    display: none;
+  }
 }
 
 :is(#start-takephoto, #recordvideo, #video-snapshot):disabled {
   opacity: 0.38;
-}
-
-#modes-group::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.2);
-  border-radius: 2px;
-  height: auto;
-  width: auto;
-}
-
-#modes-group::-webkit-scrollbar {
-  height: var(--scrollbar-height);
-  width: auto;
-}
-
-body:is(.taking.video, .should-handle-intent-result) #modes-group {
-  display: none;
-}
-
-#modes-group .mode-item {
-  display: inline-block;
-  font-size: 0; /* Remove space between inline-block. */
-  margin: 0 8px;
-  position: relative;
-}
-
-#modes-group .mode-item.hide {
-  display: none;
-}
-
-#modes-group .mode-item.first {
-  margin-inline-start: var(--fade-padding);
-}
-
-#modes-group .mode-item.last {
-  margin-inline-end: var(--fade-padding);
-}
-
-#modes-group .mode-item input:active {
-  /* Don't scale when active to prevent twitching. See b/197583162. */
-  transform: none;
-}
-
-#modes-group .mode-item:has(input[data-disabled=true]) {
-  opacity: 0.38;
-}
-
-div.mode-item>input {
-  border-radius: 16px/50%;
-}
-
-div.mode-item>span {
-  border-radius: 16px/50%;
-  color: var(--cros-sys-on_surface);
-  display: inline-block;
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 16px;
-  padding: 8px 12px;
-  position: relative;
-  z-index: 0;
-}
-
-.mode-item>input {
-  height: 100%;
-  outline-offset: 7px;
-  position: absolute;
-  width: 100%;
-  z-index: 1;
-}
-
-.mode-item>input:checked + span {
-  background: var(--cros-sys-primary);
-  color: var(--cros-sys-inverse_on_surface);
 }
 
 button.shutter {
@@ -385,10 +248,10 @@ body:is(:not(.recording), .enable-gif-recording, .should-handle-intent-result) :
 
 :is(#start-takephoto, #video-snapshot) svg-wrapper {
   color: var(--cros-sys-inverse_surface);
-  --secondary-color: white;
+  --secondary-color: var(--cros-sys-white);
 }
 
-:is(#start-takephoto, #video-snapshot):enabled:hover::after {
+:is(#start-takephoto, #video-snapshot, #stop-takephoto):enabled:hover::after {
   background: var(--cros-sys-hover_on_prominent);
   border-radius: 50%;
   content: '';
@@ -397,7 +260,8 @@ body:is(:not(.recording), .enable-gif-recording, .should-handle-intent-result) :
   position: absolute;
 }
 
-:is(#start-takephoto, #video-snapshot):enabled:active svg-wrapper {
+:is(#start-takephoto, #video-snapshot, #stop-takephoto):enabled:active
+  svg-wrapper {
   color: var(--cros-sys-secondary);
 }
 
@@ -405,12 +269,19 @@ body.taking #start-takephoto:active {
   transform: unset;
 }
 
-#stop-takephoto {
-  background-image: url(/images/camera_shutter_photo_stop.svg);
+#stop-takephoto svg-wrapper {
+  color: var(--cros-sys-inverse_surface);
+  --secondary-color: var(--cros-sys-secondary_container);
 }
 
-#stop-takephoto:hover {
-  background-image: url(/images/camera_shutter_photo_stop_hover.svg);
+#recordvideo-container {
+  display: relative;
+  /*
+   * overflow: visible is needed since the progress bar for gif mode is larger
+   * than the button. This can't be set on the button itself since the ripple
+   * effect should be contained inside the button.
+   */
+  overflow: visible;
 }
 
 #recordvideo {
@@ -433,7 +304,7 @@ body.taking #start-takephoto:active {
   --square-delay: 45ms;
   --square-size: calc(100% / 3);
 
-  background: white;
+  background: var(--cros-sys-white);
   border-radius: 50%;
   height: var(--size);
   position: relative;
@@ -478,7 +349,7 @@ body:not(.recording-ui-paused).video #pause-recordvideo .red-dot {
 }
 
 #recordvideo .white-square {
-  background: white;
+  background: var(--cros-sys-white);
   border-radius: 2px;
   height: 0;
   left: 50%;
@@ -530,7 +401,7 @@ body.video.taking #recordvideo {
 }
 
 body:is(:not(.video), .record-type-gif, .record-type-time-lapse) #toggle-mic,
-body:not(.multi-camera) #switch-device {
+body:not(.multi-camera) switch-device-button {
   visibility: hidden;
 }
 
@@ -556,7 +427,7 @@ body.mode-switching:not(.streaming) #camera-mode {
 }
 
 #timer-tick-msg {
-  color: white;
+  color: var(--cros-sys-on_surface);
   font-size: 72px;
   visibility: hidden;
 }
@@ -569,47 +440,7 @@ body.mode-switching:not(.streaming) #camera-mode {
   visibility: visible;
 }
 
-#switch-device {
-  height: var(--big-icon);
-  outline-offset: 8px;
-  width: var(--big-icon);
-}
-
-#switch-device.animate {
-  animation: switch-device-rotate 350ms ease-out;
-}
-
-@keyframes switch-device-rotate {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(-180deg);
-  }
-}
-
-body.doc-mode-reviewing #gallery-enter {
-  visibility: hidden;
-}
-
-#gallery-enter {
-  background-color: rgba(24, 24, 24, 1);
-  height: var(--big-icon);
-  overflow: hidden;
-  width: var(--big-icon);
-}
-
-#gallery-enter>img {
-  height: 100%;
-  object-fit: cover;
-  width: 100%;
-}
-
-#gallery-enter>img:not(.draggable) {
-  pointer-events: none;
-}
-
-body:is(.taking.video, .should-handle-intent-result) #gallery-enter {
+body:is(.taking.video, .should-handle-intent-result, .doc-mode-reviewing) gallery-button {
   display: none;
 }
 
@@ -804,8 +635,6 @@ html[dir=rtl] body.view-expert-settings .right-stripe {
 }
 
 #view-camera {
-  --big-icon: 48px;
-  --small-icon: 40px;
   --shutter-vertical-center: 180px;
 
   align-items: center;
@@ -827,6 +656,7 @@ html[dir=rtl] body.view-expert-settings .right-stripe {
 }
 
 #preview-viewport {
+  anchor-name: --preview-viewport;
   height: var(--preview-viewport-height);
   overflow: hidden;
   position: relative;
@@ -861,6 +691,8 @@ body.mirror #preview-document-corner-overlay .corner-container {
 }
 
 #preview-focus-aim {
+  color: var(--cros-sys-ripple_primary);
+  --secondary-color: var(--cros-sys-focus_ring);
   position: absolute;
   transform: translate(-50%, -50%);
 }
@@ -893,7 +725,7 @@ body.use-fake-camera #view-expert-settings label.require-chromeos-vcd {
 }
 
 #expert-controls {
-  font-size: 14px;
+  font: var(--cros-body-1-font);
   left: 60px;
   position: absolute;
   text-align: left;  /* csschecker-disable-line left-right */
@@ -909,9 +741,9 @@ body.use-fake-camera #view-expert-settings label.require-chromeos-vcd {
 }
 
 #expert-controls .title {
-  background-color: rgb(0, 128, 0);
+  background-color: var(--cros-sys-primary);
   border-radius: 3px;
-  color: white;
+  color: var(--cros-sys-on_primary);
   display: inline;
   font-weight: bold;
   padding: 1px 3px 1px 3px;
@@ -923,23 +755,24 @@ body.use-fake-camera #view-expert-settings label.require-chromeos-vcd {
 }
 
 #expert-controls .metadata-row:not(.mode-on) .title {
-  background-color: rgba(255, 255, 255, 0.7);
-  color: grey;
+  background: var(--cros-sys-inverse_surface);
+  color: var(--cros-sys-inverse_on_surface);
 }
 
 #expert-controls .value {
-  background-color: rgba(255, 255, 255, 0.3);
+  background: var(--cros-sys-base_elevated);
   border-radius: 3px;
+  color: var(--cros-sys-on_surface);
   display: inline;
   padding: 1px 3px 1px 3px;
 }
 
-#preview-wb-gain-red {
-  color: red;
+#expert-controls #preview-wb-gain-red {
+  background: var(--cros-ref-red40);
 }
 
-#preview-wb-gain-blue {
-  color: blue;
+#expert-controls #preview-wb-gain-blue {
+  background: var(--cros-ref-blue40);
 }
 
 #preview-grid {
@@ -974,8 +807,8 @@ body:not(.custom-video-parameters) #expert-controls>.video-option-row {
 }
 
 #preview-grid-horizontal {
-  border-bottom: 1px solid white;
-  border-top: 1px solid white;
+  border-bottom: 1px solid var(--cros-sys-white);
+  border-top: 1px solid var(--cros-sys-white);
   height: 100%;
   left: 0;
   position: absolute;
@@ -989,7 +822,7 @@ body.grid #preview-grid {
 }
 
 body.grid.grid-4x4 #preview-grid-horizontal::before {
-  border-bottom: 1px solid white;
+  border-bottom: 1px solid var(--cros-sys-white);
   content: '';
   height: 0;
   left: 0;
@@ -1012,8 +845,8 @@ body.grid.grid-4x4 #preview-grid-horizontal::before {
 }
 
 #preview-grid-vertical {
-  border-inline-end: 1px solid white;
-  border-inline-start: 1px solid white;
+  border-inline-end: 1px solid var(--cros-sys-white);
+  border-inline-start: 1px solid var(--cros-sys-white);
   bottom: 0;
   left: 50%;
   position: absolute;
@@ -1023,7 +856,8 @@ body.grid.grid-4x4 #preview-grid-horizontal::before {
 }
 
 body.grid-4x4 #preview-grid-vertical::before {
-  border-right: 1px solid white;  /* csschecker-disable-line left-right */
+  border-right:  /* csschecker-disable-line left-right */
+      1px solid var(--cros-sys-white);
   bottom: 0;
   content: '';
   left: 0;
@@ -1055,77 +889,28 @@ body.grid.grid-4x4 #preview-grid-vertical::before {
   transition: width 500ms;
 }
 
-#record-time {
-  align-items: center;
-  background-color: var(--cros-sys-base_elevated);
-  border-radius: var(--border-radius-rounded-with-short-side);
-  box-sizing: border-box;
-  display: flex;
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  height: 32px;
-  justify-content: flex-start;
-  line-height: 20px;
-  padding: 6px 12px;
+record-time-chip {
+  left: 50%;
   pointer-events: none;
+  position: absolute;
+  top: var(--top-line);
+  transform: translate(-50%, -50%);
 }
 
-#record-time[hidden],
-.menu-item[hidden],
-#nudge[hidden] {
-  display: none;  /* Required for flexbox hidden. */
-}
-
-#record-time .icon {
-  background-color: var(--cros-ref-error40);
-  border-radius: 50%;
-  flex-shrink: 0;
-  height: 6px;
-  width: 6px;
-}
-
-body.recording-ui-paused #record-time .icon,
-body:not(.recording-ui-paused) #record-time [i18n-text=record_video_paused_msg] {
-  display: none;
-}
-
-#record-time #record-time-msg {
-  color: white;
-  flex-shrink: 0;
-}
-
-#record-time [i18n-text=record_video_paused_msg] {
-  color: var(--cros-sys-on_surface);
-  flex-shrink: 0;
-}
-
-#record-time #record-time-msg {
-  margin-inline-start: 8px;
+/*
+ * Since the [hidden] attribute is done by user agent style, and any change to
+ * `display` will override it, add a rule to force `display: none` to element
+ * with hidden attribute. Note that there's another possible value of
+ * 'until-found' but we're not using it in CCA.
+ *
+ * See https://css-tricks.com/the-hidden-attribute-is-visibly-weak/
+ */
+[hidden] {
+  display: none !important;
 }
 
 #spoken_msg {
   opacity: 0;
-}
-
-#tooltip {
-  background: var(--cros-sys-on_surface);
-  border-radius: 2px;
-  color: var(--cros-sys-inverse_on_surface);
-  font-size: 12px;
-  left: 0;
-  line-height: 22px;
-  opacity: 0;
-  padding: 0 8px;
-  pointer-events: none;
-  position: absolute;
-  top: 0;
-  white-space: nowrap;
-  z-index: 100;
-}
-
-#tooltip.visible {
-  opacity: 1;
-  transition: opacity 350ms ease-out 1500ms;
 }
 
 #toast {
@@ -1133,8 +918,7 @@ body:not(.recording-ui-paused) #record-time [i18n-text=record_video_paused_msg] 
   border-radius: 16px;
   box-shadow: 0 0 4px rgba(0, 0, 0, 0.1), 0 4px 4px rgba(0, 0, 0, 0.2);
   color: var(--cros-sys-on_surface);
-  font-size: 16px;
-  line-height: 32px;
+  font: var(--cros-body-0-font);
   opacity: 0;
   padding: 8px 16px;
   pointer-events: none;
@@ -1177,12 +961,15 @@ body:not(.recording-ui-paused) #record-time [i18n-text=record_video_paused_msg] 
 .menu-header,
 .menu-item {
   align-items: center;
-  color: white;
+  color: var(--cros-sys-on_surface);
   display: flex;
   flex-shrink: 0;
-  font-size: 13px;
   justify-content: flex-start;
   text-align: initial;
+}
+
+.menu-item {
+  font: var(--cros-body-2-font);
 }
 
 button.menu-item:hover,
@@ -1195,9 +982,9 @@ label.menu-item:hover {
 }
 
 .menu-header {
-  color: white;
+  color: var(--cros-sys-on_surface);
   cursor: default;
-  font-size: 20px;
+  font: var(--cros-title-1-font);
   height: 72px;
   padding-inline-start: 16px;
   user-select: none;
@@ -1281,10 +1068,9 @@ html[dir=rtl] .menu-header .icon {
 }
 
 #view-warning #error-msg {
-  font-size: 18px;
-  line-height: 32px;
+  font: var(--cros-body-0-font);
   text-align: center;
-  white-space: pre-wrap;
+  white-space: pre-line;
 }
 
 .dialog {
@@ -1305,14 +1091,16 @@ html[dir=rtl] .menu-header .icon {
  */
 #view-splash {
   align-items: center;
-  background: var(--cros-sys-app_base, var(--grey-900));
+  /* color-token-disable-next-line */
+  background: var(--cros-sys-app_base, rgb(32, 33, 36));
   display: flex;
   justify-content: center;
 }
 
 #view-splash .icon {
   -webkit-mask: url(/images/camera_mode_photo.svg);
-  background: var(--cros-sys-on_surface, var(--grey-200));
+  /* color-token-disable-next-line */
+  background: var(--cros-sys-on_surface, rgb(233, 234, 237));
   height: 40px;
   width: 40px;
 }
@@ -1340,18 +1128,16 @@ html[dir=rtl] .menu-header .icon {
   border-radius: 8px;
   display: flex;
   flex-direction: column;
-  padding: 8px;
+  padding: 8px 0;
   position: absolute;
   width: 225px;
 }
 
 #option-title {
   color: var(--cros-sys-secondary);
-  font-family: var(--default-font-family);
-  font-size: 13px;
-  font-weight: 400;
-  height: 28px;
-  padding: 8px 8px 0 8px;
+  font: var(--cros-button-2-font);
+  height: 20px;
+  padding: 8px 20px;
 }
 
 #options-container {
@@ -1380,7 +1166,7 @@ body:not(.video) #settings-video-resolution {
 
 .label-item {
   color: var(--cros-sys-secondary);
-  font: 500 13px/20px var(--default-font-family);
+  font: var(--cros-button-2-font);
   margin: 9px 0 3px 0;
   padding-inline-start: 26px;
 }
@@ -1395,7 +1181,7 @@ body:not(.video) #settings-video-resolution {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  font: 400 13px var(--default-font-family);
+  font: var(--cros-body-2-font);
   height: 64px;
   justify-content: center;
   padding-inline-end: 60px;
@@ -1461,7 +1247,7 @@ body:not(.video) #settings-video-resolution {
 
 #nudge .warning-msg {
   color: var(--cros-sys-on_surface);
-  font: 400 14px/20px Roboto;
+  font: var(--cros-body-2-font);
 }
 
 .low-storage-dialog-popup {
@@ -1475,13 +1261,13 @@ body:not(.video) #settings-video-resolution {
 }
 
 .low-storage-dialog-popup .dialog-title {
-  color: white;
-  font: 500 16px/24px var(--default-font-family);
+  color: var(--cros-sys-on_surface);
+  font: var(--cros-title-1-font);
 }
 
 .low-storage-dialog-popup .dialog-description {
   color: var(--cros-sys-secondary);
-  font: 400 14px/20px var(--default-font-family);
+  font: var(--cros-body-2-font);
 }
 
 .low-storage-dialog-buttons {
@@ -1505,4 +1291,86 @@ body:not(.video) #settings-video-resolution {
 
 #view-settings {
   background: var(--cros-sys-scrim);
+}
+
+body.hide-floating-ui-for-testing
+  :is(#nudge, #toast, text-tooltip, .custom-toast, .no-document-toast) {
+  display: none !important;
+}
+
+.snackbar {
+  align-items: center;
+  background: var(--cros-sys-inverse_surface);
+  border-radius: 12px;
+  /*
+   * TODO(pihsun): Move the snackbar to the position as the design after jelly
+   * is default on.
+   */
+  bottom: anchor(bottom);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 8px rgba(0, 0, 0, 0.15);
+  box-sizing: border-box;
+  color: var(--cros-sys-inverse_on_surface);
+  display: flex;
+  font: var(--cros-body-2-font);
+  height: 48px;
+  left: anchor(left);
+  margin: 4px;
+  opacity: 0;
+  padding: 14px 16px;
+  pointer-events: none;
+  position: absolute;
+  position-anchor: --preview-viewport;
+  width: 256px;
+}
+
+.snackbar.animate {
+  animation: 3s show-snackbar linear;
+}
+
+@keyframes show-snackbar {
+  0% {
+    opacity: 0;
+  }
+  /* 100ms fade-in */
+  3.33% {
+    opacity: 1;
+  }
+  97.33% {
+    opacity: 1;
+  }
+  /* 80ms fade-out */
+  100% {
+    opacity: 0;
+  }
+}
+
+body:not(.photo) #settings-preview-ocr {
+  display: none;
+}
+
+#settings-preview-ocr-option {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  margin-inline: auto 12px;
+  position: relative;
+}
+
+#settings-preview-ocr-option svg-wrapper {
+  color: transparent;
+  height: 0;
+  position: absolute;
+  transition: all var(--fast1-duration) ease-in;
+  width: 0;
+}
+
+/* Hide default check mark since it's using custom icon. */
+#settings-preview-ocr-option input::before {
+  background: transparent;
+}
+
+#settings-preview-ocr-option:has(input:checked) svg-wrapper {
+  color: var(--cros-sys-primary);
+  height: 14px;
+  width: 14px;
 }

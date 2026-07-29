@@ -4,16 +4,14 @@
 
 /**
  * @fileoverview xf-cloud-panel element.
- * Disable type checking for closure, as it is done by the typescript compiler.
- * @suppress {checkTypes}
  */
 
-import {str, strf, util} from '../common/js/util.js';
-import {constants} from '../foreground/js/constants.js';
+import type {CrActionMenuElement} from 'chrome://resources/ash/common/cr_elements/cr_action_menu/cr_action_menu.js';
+
+import {getCurrentLocaleOrDefault, secondsToRemainingTimeString, str, strf} from '../common/js/translations.js';
+import {ICON_TYPES} from '../foreground/js/constants.js';
 
 import {css, customElement, html, property, query, XfBase} from './xf_base.js';
-
-import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action_menu/cr_action_menu.js';
 
 /**
  * These type indicate static states that the cloud panel can enter. If one of
@@ -21,15 +19,17 @@ import type {CrActionMenuElement} from 'chrome://resources/cr_elements/cr_action
  */
 export enum CloudPanelType {
   OFFLINE = 'offline',
-  NOT_ENOUGH_SPACE = 'not-enough-space',
+  BATTERY_SAVER = 'battery_saver',
+  NOT_ENOUGH_SPACE = 'not_enough_space',
+  METERED_NETWORK = 'metered_network',
 }
 
 /**
  * The `<xf-cloud-panel>` represents the current state that the Drive bulk
  * pinning process is currently in. When files are being pinned and downloaded,
  * the `items` and `progress` attributes are used to signify that the panel is
- * in progress. The `type` attribute can be used with `not-enough-space` and
- * `offline` to signify possible error or paused states.
+ * in progress. The `type` attribute can be used with `not_enough_space`,
+ * `offline`, and `battery_saver` to signify possible error or paused states.
  */
 @customElement('xf-cloud-panel')
 export class XfCloudPanel extends XfBase {
@@ -48,18 +48,8 @@ export class XfCloudPanel extends XfBase {
     converter: {
       fromAttribute:
           (value: string) => {
-            let percentage = null;
-            try {
-              percentage = parseInt(value, 10);
-            } catch (e) {
-              return null;
-            }
-            if (util.isNullOrUndefined(percentage) ||
-                Number.isNaN(percentage) || percentage < 0 ||
-                percentage > 100) {
-              return null;
-            }
-            return percentage;
+            const percentage = parseInt(value, 10);
+            return percentage >= 0 && percentage <= 100 ? percentage : null;
           },
       toAttribute: (value: number) => String(value),
     },
@@ -75,7 +65,10 @@ export class XfCloudPanel extends XfBase {
     converter: {
       fromAttribute:
           (value: string) => {
-            if (value && value.toUpperCase() in CloudPanelType) {
+            if (!value) {
+              return null;
+            }
+            if (value.toUpperCase() in CloudPanelType) {
               return value as CloudPanelType;
             }
             console.warn(`Failed to convert ${value} to CloudPanelType`);
@@ -86,6 +79,20 @@ export class XfCloudPanel extends XfBase {
   })
   type?: CloudPanelType;
 
+  @property({
+    type: Number,
+    reflect: true,
+    converter: {
+      fromAttribute:
+          (value: string) => {
+            const seconds = parseInt(value, 10);
+            return seconds >= 0 ? seconds : null;
+          },
+      toAttribute: (value: number) => String(value),
+    },
+  })
+  seconds?: number;
+
   /**
    * The cloud panel uses the `CrActionMenu` to provide the dialog behaviour and
    * the overlay logic.
@@ -95,8 +102,7 @@ export class XfCloudPanel extends XfBase {
   /**
    * Provide a number formatter that matches the users locale.
    */
-  private numberFormatter_ =
-      new Intl.NumberFormat(util.getCurrentLocaleOrDefault());
+  private numberFormatter_ = new Intl.NumberFormat(getCurrentLocaleOrDefault());
 
   static get events() {
     return {
@@ -169,6 +175,10 @@ export class XfCloudPanel extends XfBase {
   override render() {
     return html`<cr-action-menu>
       <div class="body">
+        <div class="static progress" id="progress-preparing">
+          <files-spinner></files-spinner>
+          ${str('DRIVE_PREPARING_TO_SYNC')}
+        </div>
         <div id="progress-state">
           <div class="progress">${
         this.items && this.items > 1 ?
@@ -182,27 +192,43 @@ export class XfCloudPanel extends XfBase {
               value="${this.percentage}">
             ${this.percentage}%
           </progress>
-          <div class="progress-description">3 minutes remaining</div>
+          <div class="progress-description">
+          ${
+        this.seconds && this.seconds > 0 ?
+            secondsToRemainingTimeString(this.seconds) :
+            str('DRIVE_BULK_PINNING_CALCULATING')}
+          </div>
         </div>
         <div class="static" id="progress-finished">
-          <xf-icon type="${
-        constants.ICON_TYPES.BULK_PINNING_DONE}" size="large"></xf-icon>
+          <xf-icon type="${ICON_TYPES.CLOUD}" size="large"></xf-icon>
           <div class="status-description">
-            ${str('DRIVE_ALL_FILES_SYNCED')}
+            ${str('BULK_PINNING_FILE_SYNC_ON')}
           </div>
         </div>
         <div class="static" id="progress-offline">
         <xf-icon type="${
-        constants.ICON_TYPES.BULK_PINNING_OFFLINE}" size="large"></xf-icon>
+        ICON_TYPES.BULK_PINNING_OFFLINE}" size="large"></xf-icon>
           <div class="status-description">
             ${str('DRIVE_BULK_PINNING_OFFLINE')}
           </div>
         </div>
-        <div class="static" id="progress-not-enough-space">
+        <div class="static" id="progress-battery-saver">
         <xf-icon type="${
-        constants.ICON_TYPES.ERROR_BANNER}" size="large"></xf-icon>
+        ICON_TYPES.BULK_PINNING_BATTERY_SAVER}" size="large"></xf-icon>
+          <div class="status-description">
+            ${str('DRIVE_BULK_PINNING_BATTERY_SAVER')}
+          </div>
+        </div>
+        <div class="static" id="progress-not-enough-space">
+        <xf-icon type="${ICON_TYPES.ERROR_BANNER}" size="large"></xf-icon>
           <div class="status-description">
             ${str('DRIVE_BULK_PINNING_NOT_ENOUGH_SPACE')}
+          </div>
+        </div>
+        <div class="static" id="progress-metered-network">
+          <xf-icon type="${ICON_TYPES.CLOUD}" size="large"></xf-icon>
+          <div class="status-description">
+            ${str('DRIVE_BULK_PINNING_METERED_NETWORK')}
           </div>
         </div>
         <div class="divider"></div>
@@ -215,6 +241,10 @@ export class XfCloudPanel extends XfBase {
 
 function getCSS() {
   return css`
+    cr-action-menu {
+      --cr-menu-border-radius: 20px;
+    }
+
     :host {
       position: absolute;
       right: 0px;
@@ -233,11 +263,24 @@ function getCSS() {
       display: none;
     }
 
+    :host([percentage][items]) #progress-preparing,
+    :host([type]) #progress-preparing {
+      display: none;
+    }
+
     :host(:not([type="offline"])) #progress-offline {
       display: none;
     }
 
-    :host(:not([type="not-enough-space"])) #progress-not-enough-space {
+    :host(:not([type="battery_saver"])) #progress-battery-saver {
+      display: none;
+    }
+
+    :host(:not([type="not_enough_space"])) #progress-not-enough-space {
+      display: none;
+    }
+
+    :host(:not([type="metered_network"])) #progress-metered-network {
       display: none;
     }
 
@@ -267,12 +310,16 @@ function getCSS() {
       --xf-icon-color: var(--cros-sys-secondary);
     }
 
+    xf-icon[type="bulk_pinning_battery_saver"] {
+      --xf-icon-color: var(--cros-sys-secondary);
+    }
+
     xf-icon[type="error_banner"] {
       --xf-icon-color: var(--cros-sys-error);
     }
 
     .status-description {
-      color: var(--cros-text-color-secondary);
+      color: var(--cros-sys-on_surface_variant);
       font: var(--cros-annotation-1-font);
       line-height: 20px;
       padding: 0px 16px 20px;
@@ -280,7 +327,7 @@ function getCSS() {
     }
 
     .progress {
-      color: var(--cros-text-color-primary);
+      color: var(--cros-sys-on_surface);
       font: var(--cros-button-2-font);
       line-height: 20px;
       margin-inline: 16px;
@@ -288,7 +335,7 @@ function getCSS() {
     }
 
     .progress-description {
-      color: var(--cros-text-color-secondary);
+      color: var(--cros-sys-on_surface_variant);
       font: var(--cros-annotation-1-font);
       padding-bottom: 20px;
       padding-inline: 16px;
@@ -302,8 +349,20 @@ function getCSS() {
       width: calc(100% - 32px);
     }
 
+    #progress-preparing {
+      flex-direction: row;
+      padding-bottom: 20px;
+    }
+
+    #progress-preparing files-spinner {
+      height: 20px;
+      margin: 0;
+      margin-inline-end: 8px;
+      width: 20px;
+    }
+
     progress::-webkit-progress-bar {
-      background-color: var(--cros-sys-primary_container);
+      background-color: var(--cros-sys-highlight_shape);
       border-radius: 10px;
     }
 
@@ -322,10 +381,10 @@ function getCSS() {
       background-color: var(--cros-sys-base_elevated);
       border: 0;
       font: var(--cros-button-2-font);
-      height: 52px;
-      padding-bottom: 8px;
+      height: 36px;
+      margin-bottom: 8px;
+      margin-top: 8px;
       padding-inline: 16px;
-      padding-top: 8px;
       text-align: left;
     }
 

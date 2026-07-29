@@ -4,25 +4,34 @@
 
 #include "net/websockets/websocket_basic_stream_adapters.h"
 
-#include <algorithm>
 #include <cstring>
+#include <ostream>
 #include <utility>
 
+#include "base/check.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/location.h"
+#include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/notreached.h"
 #include "base/task/single_thread_task_runner.h"
 #include "net/base/io_buffer.h"
 #include "net/socket/client_socket_handle.h"
-#include "net/socket/socket.h"
+#include "net/socket/stream_socket.h"
+#include "net/socket/stream_socket_handle.h"
 #include "net/spdy/spdy_buffer.h"
-#include "net/third_party/quiche/src/quiche/quic/core/http/quic_spdy_stream.h"
+#include "net/third_party/quiche/src/quiche/quic/core/http/quic_header_list.h"
 #include "net/third_party/quiche/src/quiche/quic/core/http/spdy_utils.h"
+#include "net/third_party/quiche/src/quiche/quic/core/quic_error_codes.h"
 #include "net/websockets/websocket_quic_spdy_stream.h"
 
 namespace net {
+struct NetworkTrafficAnnotationTag;
 
 WebSocketClientSocketHandleAdapter::WebSocketClientSocketHandleAdapter(
-    std::unique_ptr<ClientSocketHandle> connection)
+    std::unique_ptr<StreamSocketHandle> connection)
     : connection_(std::move(connection)) {}
 
 WebSocketClientSocketHandleAdapter::~WebSocketClientSocketHandleAdapter() =
@@ -55,7 +64,9 @@ WebSocketSpdyStreamAdapter::WebSocketSpdyStreamAdapter(
     base::WeakPtr<SpdyStream> stream,
     Delegate* delegate,
     NetLogWithSource net_log)
-    : stream_(stream), delegate_(delegate), net_log_(net_log) {
+    : stream_(std::move(stream)),
+      delegate_(delegate),
+      net_log_(std::move(net_log)) {
   stream_->SetDelegate(this);
 }
 
@@ -131,14 +142,13 @@ void WebSocketSpdyStreamAdapter::OnHeadersSent() {
 }
 
 void WebSocketSpdyStreamAdapter::OnEarlyHintsReceived(
-    const spdy::Http2HeaderBlock& headers) {
+    const quiche::HttpHeaderBlock& headers) {
   // This callback should not be called for a WebSocket handshake.
   NOTREACHED();
 }
 
 void WebSocketSpdyStreamAdapter::OnHeadersReceived(
-    const spdy::Http2HeaderBlock& response_headers,
-    const spdy::Http2HeaderBlock* pushed_request_headers) {
+    const quiche::HttpHeaderBlock& response_headers) {
   if (delegate_)
     delegate_->OnHeadersReceived(response_headers);
 }
@@ -157,8 +167,12 @@ void WebSocketSpdyStreamAdapter::OnDataReceived(
   }
 
   read_data_.Enqueue(std::move(buffer));
-  if (read_callback_)
-    std::move(read_callback_).Run(CopySavedReadDataIntoBuffer());
+  if (read_callback_) {
+    // Avoid UAF due to C++17 sequencing rules. See crbug.com/499194333.
+    auto callback = std::move(read_callback_);
+    int rv = CopySavedReadDataIntoBuffer();
+    std::move(callback).Run(rv);
+  }
 }
 
 void WebSocketSpdyStreamAdapter::OnDataSent() {
@@ -168,7 +182,7 @@ void WebSocketSpdyStreamAdapter::OnDataSent() {
 }
 
 void WebSocketSpdyStreamAdapter::OnTrailers(
-    const spdy::Http2HeaderBlock& trailers) {}
+    const quiche::HttpHeaderBlock& trailers) {}
 
 void WebSocketSpdyStreamAdapter::OnClose(int status) {
   DCHECK_NE(ERR_IO_PENDING, status);
@@ -215,7 +229,7 @@ NetLogSource WebSocketSpdyStreamAdapter::source_dependency() const {
 int WebSocketSpdyStreamAdapter::CopySavedReadDataIntoBuffer() {
   DCHECK(read_buffer_);
   DCHECK(read_length_);
-  int rv = read_data_.Dequeue(read_buffer_->data(), read_length_);
+  int rv = read_data_.Dequeue(read_buffer_->first(read_length_));
   read_buffer_ = nullptr;
   read_length_ = 0u;
 
@@ -247,15 +261,22 @@ WebSocketQuicStreamAdapter::WebSocketQuicStreamAdapter(
 
 WebSocketQuicStreamAdapter::~WebSocketQuicStreamAdapter() {
   if (websocket_quic_spdy_stream_) {
-    websocket_quic_spdy_stream_->set_delegate(nullptr);
+    websocket_quic_spdy_stream_->DetachDelegate();
   }
 }
 
 size_t WebSocketQuicStreamAdapter::WriteHeaders(
-    spdy::Http2HeaderBlock header_block,
+    quiche::HttpHeaderBlock header_block,
     bool fin) {
   return websocket_quic_spdy_stream_->WriteHeaders(std::move(header_block), fin,
                                                    nullptr);
+}
+
+void WebSocketQuicStreamAdapter::SetPriority(
+    const quic::QuicStreamPriority& priority) {
+  if (websocket_quic_spdy_stream_) {
+    websocket_quic_spdy_stream_->SetPriority(priority);
+  }
 }
 
 // WebSocketBasicStream::Adapter methods.
@@ -263,7 +284,7 @@ int WebSocketQuicStreamAdapter::Read(IOBuffer* buf,
                                      int buf_len,
                                      CompletionOnceCallback callback) {
   if (!websocket_quic_spdy_stream_) {
-    return ERR_UNEXPECTED;
+    return stream_error_;
   }
 
   int rv = websocket_quic_spdy_stream_->Read(buf, buf_len);
@@ -282,18 +303,68 @@ int WebSocketQuicStreamAdapter::Write(
     int buf_len,
     CompletionOnceCallback callback,
     const NetworkTrafficAnnotationTag& traffic_annotation) {
-  // TODO(momoka): Write implementation.
-  return OK;
+  DCHECK(!write_callback_);
+  CHECK_GT(buf_len, 0);
+  DCHECK(callback);
+
+  if (!websocket_quic_spdy_stream_) {
+    return stream_error_;
+  }
+
+  // Queue data to the QUIC stream. WriteOrBufferBody() either sends the data
+  // immediately if flow control allows, or buffers it internally.
+  // It can also synchronously close the connection on socket write errors.
+  base::WeakPtr<WebSocketQuicStreamAdapter> weak_this =
+      weak_factory_.GetWeakPtr();
+  websocket_quic_spdy_stream_->WriteOrBufferBody(
+      {buf->data(), static_cast<size_t>(buf_len)},
+      /*fin=*/false);
+  // If the adapter was destroyed by a callback during the write, return
+  // safely without accessing member variables.
+  if (!weak_this) {
+    return ERR_CONNECTION_CLOSED;
+  }
+  if (!websocket_quic_spdy_stream_) {
+    return stream_error_;
+  }
+
+  // Check CanWriteNewData() after queuing rather than before. This is necessary
+  // because WriteOrBufferBody() may have caused the send buffer to cross its
+  // threshold or exhausted the flow control window, blocking further writes.
+  // If the stream can still accept new data, complete the write synchronously.
+  // Otherwise, save |callback| to invoke later when OnCanWriteNewData() is
+  // called (triggered when buffered data is sent and buffer size drops below
+  // the threshold, allowing more data to be accepted).
+  if (websocket_quic_spdy_stream_->CanWriteNewData()) {
+    return buf_len;
+  }
+
+  write_length_ = buf_len;
+  write_callback_ = std::move(callback);
+  return ERR_IO_PENDING;
 }
 
 void WebSocketQuicStreamAdapter::Disconnect() {
   if (websocket_quic_spdy_stream_) {
-    websocket_quic_spdy_stream_->Reset(quic::QUIC_STREAM_CANCELLED);
+    websocket_quic_spdy_stream_->DetachDelegate();
+    ClearStream();
   }
 }
 
 bool WebSocketQuicStreamAdapter::is_initialized() const {
   return true;
+}
+
+uint64_t WebSocketQuicStreamAdapter::stream_bytes_read() const {
+  return websocket_quic_spdy_stream_
+             ? websocket_quic_spdy_stream_->stream_bytes_read()
+             : 0;
+}
+
+uint64_t WebSocketQuicStreamAdapter::stream_bytes_written() const {
+  return websocket_quic_spdy_stream_
+             ? websocket_quic_spdy_stream_->stream_bytes_written()
+             : 0;
 }
 
 // WebSocketQuicSpdyStream::Delegate methods.
@@ -302,9 +373,10 @@ void WebSocketQuicStreamAdapter::OnInitialHeadersComplete(
     bool fin,
     size_t frame_len,
     const quic::QuicHeaderList& quic_header_list) {
-  spdy::Http2HeaderBlock response_headers;
-  if (!quic::SpdyUtils::CopyAndValidateHeaders(quic_header_list, nullptr,
-                                               &response_headers)) {
+  int64_t content_length = -1;
+  quiche::HttpHeaderBlock response_headers;
+  if (!quic::SpdyUtils::CopyAndValidateHeaders(
+          quic_header_list, &content_length, &response_headers)) {
     DLOG(ERROR) << "Failed to parse header list: "
                 << quic_header_list.DebugString();
     websocket_quic_spdy_stream_->ConsumeHeaderList();
@@ -331,7 +403,7 @@ void WebSocketQuicStreamAdapter::OnBodyAvailable() {
   }
 
   DCHECK(read_buffer_);
-  DCHECK_GT(read_length_, 0);
+  CHECK_GT(read_length_, 0);
 
   int rv = websocket_quic_spdy_stream_->Read(read_buffer_, read_length_);
 
@@ -344,9 +416,45 @@ void WebSocketQuicStreamAdapter::OnBodyAvailable() {
   std::move(read_callback_).Run(rv);
 }
 
+void WebSocketQuicStreamAdapter::OnClose(int status) {
+  CHECK_LE(status, 0);
+  if (status == OK) {
+    status = ERR_CONNECTION_CLOSED;
+  }
+  stream_error_ = status;
+
+  base::WeakPtr<WebSocketQuicStreamAdapter> weak_this =
+      weak_factory_.GetWeakPtr();
+  ClearStream();
+
+  // Running a completion callback can delete the current
+  // WebSocketQuicStreamAdapter. In that case, `weak_this` becomes invalid and
+  // OnClose() must return before accessing more member variables.
+  if (read_callback_) {
+    std::move(read_callback_).Run(status);
+    if (!weak_this) {
+      return;
+    }
+  }
+  if (write_callback_) {
+    std::move(write_callback_).Run(status);
+    if (!weak_this) {
+      return;
+    }
+  }
+  if (delegate_) {
+    delegate_->OnClose(status);
+  }
+}
+
 void WebSocketQuicStreamAdapter::ClearStream() {
-  if (websocket_quic_spdy_stream_) {
-    websocket_quic_spdy_stream_ = nullptr;
+  websocket_quic_spdy_stream_ = nullptr;
+}
+
+void WebSocketQuicStreamAdapter::OnCanWriteNewData() {
+  if (write_callback_) {
+    CHECK_GT(write_length_, 0);
+    std::move(write_callback_).Run(write_length_);
   }
 }
 

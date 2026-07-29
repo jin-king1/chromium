@@ -69,6 +69,7 @@ android_library("cardboard_java") {
 
 static_library("cardboard") {
   sources = [
+    "config/opengl_es2_custom_bindings.h",
     "src/sdk/cardboard.cc",
     "src/sdk/device_params/android/device_params.cc",
     "src/sdk/device_params/android/device_params.h",
@@ -78,6 +79,7 @@ static_library("cardboard") {
     "src/sdk/head_tracker.cc",
     "src/sdk/head_tracker.h",
     "src/sdk/include/cardboard.h",
+    "src/sdk/jni_utils/android/jni_utils.cc",
     "src/sdk/jni_utils/android/jni_utils.h",
     "src/sdk/lens_distortion.cc",
     "src/sdk/lens_distortion.h",
@@ -92,6 +94,7 @@ static_library("cardboard") {
     "src/sdk/qrcode/ios/qr_scan_view_controller.h",
     "src/sdk/rendering/android/shaders/distortion_frag.spv.h",
     "src/sdk/rendering/android/shaders/distortion_vert.spv.h",
+    "src/sdk/rendering/opengl_es2_distortion_renderer.cc",
     "src/sdk/screen_params.h",
     "src/sdk/screen_params/android/screen_params.cc",
     "src/sdk/sensors/accelerometer_data.h",
@@ -131,17 +134,29 @@ static_library("cardboard") {
     "src/sdk/util/vector.h",
     "src/sdk/util/vectorutils.cc",
     "src/sdk/util/vectorutils.h",
-    "src_overrides/sdk/jni_utils/android/jni_utils.cc",
-    "src_overrides/sdk/rendering/opengl_es2_distortion_renderer.cc",
   ]
 
-  deps = [ "//base" ]
+  deps = [
+    "//base",
+    "//third_party/jni_zero",
+    "//ui/gl",
+  ]
 
-  include_dirs = [ "src/sdk" ]
+  defines = [ "CARDBOARD_USE_CUSTOM_GL_BINDINGS" ]
+
+  include_dirs = [
+    "config",
+    "src/sdk",
+  ]
 
   libs = [
     "android",
     "log",
-    "GLESv2",
   ]
+
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
+
+  # Missing includes are fixed upstream
+  # TODO(crbug.com/440184687): Remove this once a release contains the fix
+  use_libcxx_modules = false
 }

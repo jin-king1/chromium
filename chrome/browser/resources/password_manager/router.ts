@@ -2,8 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {assert, assertNotReached} from 'chrome://resources/js/assert_ts.js';
-import {dedupingMixin, PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
+import type {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
+import {dedupingMixin} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 /**
  * The different pages that can be shown at a time.
@@ -14,7 +15,8 @@ export enum Page {
   SETTINGS = 'settings',
   // Sub-pages
   CHECKUP_DETAILS = 'checkup-details',
-  PASSWORD_DETAILS = 'password-details'
+  PASSWORD_DETAILS = 'password-details',
+  PASSWORD_CHANGE = 'password-change'
 }
 
 /**
@@ -37,7 +39,8 @@ export enum UrlParam {
 }
 
 export class Route {
-  constructor(page: Page, queryParameters?: URLSearchParams, details?: any) {
+  constructor(
+      page: Page, queryParameters?: URLSearchParams, details?: unknown) {
     this.page = page;
     this.queryParameters = queryParameters || new URLSearchParams();
     this.details = details;
@@ -45,7 +48,7 @@ export class Route {
 
   page: Page;
   queryParameters: URLSearchParams;
-  details?: any;
+  details?: unknown;
 
   path(): string {
     let path: string;
@@ -65,8 +68,13 @@ export class Route {
         break;
       case Page.CHECKUP_DETAILS:
         assert(this.details);
-        path = '/' + Page.CHECKUP + '/' + this.details;
+        path = '/' + Page.CHECKUP + '/' + (this.details as string);
         break;
+      case Page.PASSWORD_CHANGE:
+        path = '/' + Page.SETTINGS + '/' + Page.PASSWORD_CHANGE;
+        break;
+      default:
+        assertNotReached();
     }
     const queryString = this.queryParameters.toString();
     if (queryString) {
@@ -119,7 +127,7 @@ export class Router {
    * Navigates to a page and pushes a new history entry.
    */
   navigateTo(
-      page: Page, details?: any,
+      page: Page, details?: unknown,
       params: URLSearchParams = new URLSearchParams()) {
     const newRoute = new Route(page, params, details);
     if (this.currentRoute_.path() === newRoute.path()) {
@@ -185,7 +193,11 @@ export class Router {
         }
         break;
       case Page.SETTINGS:
-        this.currentRoute_.page = Page.SETTINGS;
+        if (details === Page.PASSWORD_CHANGE) {
+          this.currentRoute_.page = Page.PASSWORD_CHANGE;
+        } else {
+          this.currentRoute_.page = Page.SETTINGS;
+        }
         break;
       default:
         history.replaceState({}, '', this.currentRoute_.page);

@@ -4,7 +4,7 @@
 
 #include "third_party/blink/renderer/modules/eyedropper/eye_dropper.h"
 
-#include "third_party/blink/public/common/browser_interface_broker_proxy.h"
+#include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_throw_dom_exception.h"
@@ -19,6 +19,7 @@
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/graphics/color.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+#include "third_party/blink/renderer/platform/supplementable.h"
 #include "ui/base/ui_base_features.h"
 
 namespace blink {
@@ -44,6 +45,43 @@ class EyeDropper::OpenAbortAlgorithm final : public AbortSignal::Algorithm {
 
 constexpr char kNotAvailableMessage[] = "EyeDropper is not available.";
 
+namespace {
+
+// Tracks whether an EyeDropper is open in a window. If a second concurrent
+// open() reaches the browser it terminates the renderer with a bad message.
+// this lets Blink reject it with a developer-friendly exception.
+class ActiveWindowEyeDropper final
+    : public GarbageCollected<ActiveWindowEyeDropper>,
+      public Supplement<LocalDOMWindow> {
+ public:
+  static constexpr char kSupplementName[] = "ActiveWindowEyeDropper";
+
+  static ActiveWindowEyeDropper& From(LocalDOMWindow& window) {
+    ActiveWindowEyeDropper* supplement =
+        Supplement<LocalDOMWindow>::From<ActiveWindowEyeDropper>(window);
+    if (!supplement) {
+      supplement = MakeGarbageCollected<ActiveWindowEyeDropper>(window);
+      ProvideTo(window, supplement);
+    }
+    return *supplement;
+  }
+
+  explicit ActiveWindowEyeDropper(LocalDOMWindow& window)
+      : Supplement<LocalDOMWindow>(window) {}
+
+  bool IsOpen() const { return is_open_; }
+  void SetOpen(bool is_open) { is_open_ = is_open; }
+
+  void Trace(Visitor* visitor) const override {
+    Supplement<LocalDOMWindow>::Trace(visitor);
+  }
+
+ private:
+  bool is_open_ = false;
+};
+
+}  // namespace
+
 EyeDropper::EyeDropper(ExecutionContext* context)
     : eye_dropper_chooser_(context) {}
 
@@ -51,16 +89,17 @@ EyeDropper* EyeDropper::Create(ExecutionContext* context) {
   return MakeGarbageCollected<EyeDropper>(context);
 }
 
-ScriptPromise EyeDropper::open(ScriptState* script_state,
-                               const ColorSelectionOptions* options,
-                               ExceptionState& exception_state) {
+ScriptPromise<ColorSelectionResult> EyeDropper::open(
+    ScriptState* script_state,
+    const ColorSelectionOptions* options,
+    ExceptionState& exception_state) {
   DCHECK(RuntimeEnabledFeatures::EyeDropperAPIEnabled());
 
   if (!script_state->ContextIsValid()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidStateError,
         "The object is no longer associated with a window.");
-    return ScriptPromise();
+    return EmptyPromise();
   }
 
   LocalDOMWindow* window = LocalDOMWindow::From(script_state);
@@ -68,26 +107,30 @@ ScriptPromise EyeDropper::open(ScriptState* script_state,
     exception_state.ThrowDOMException(
         DOMExceptionCode::kNotAllowedError,
         "EyeDropper::open() requires user gesture.");
-    return ScriptPromise();
+    return EmptyPromise();
   }
 
   if (!::features::IsEyeDropperEnabled()) {
     exception_state.ThrowDOMException(DOMExceptionCode::kOperationError,
                                       kNotAvailableMessage);
-    return ScriptPromise();
+    return EmptyPromise();
   }
 
-  if (eye_dropper_chooser_.is_bound()) {
+  // Reject a second concurrent open() either reusing this EyeDropper or another
+  // instance already open in this window.
+  if (eye_dropper_chooser_.is_bound() ||
+      ActiveWindowEyeDropper::From(*window).IsOpen()) {
     exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
                                       "EyeDropper is already open.");
-    return ScriptPromise();
+    return EmptyPromise();
   }
 
   std::unique_ptr<ScopedAbortState> end_chooser_abort_state = nullptr;
   std::unique_ptr<ScopedAbortState> response_handler_abort_state = nullptr;
   if (auto* signal = options->getSignalOr(nullptr)) {
     if (signal->aborted()) {
-      return ScriptPromise::Reject(script_state, signal->reason(script_state));
+      return ScriptPromise<ColorSelectionResult>::Reject(
+          script_state, signal->reason(script_state));
     }
     auto* handle = signal->AddAlgorithm(
         MakeGarbageCollected<OpenAbortAlgorithm>(this, signal));
@@ -97,21 +140,22 @@ ScriptPromise EyeDropper::open(ScriptState* script_state,
         std::make_unique<ScopedAbortState>(signal, handle);
   }
 
-  resolver_ = MakeGarbageCollected<ScriptPromiseResolver>(
+  resolver_ = MakeGarbageCollected<ScriptPromiseResolver<ColorSelectionResult>>(
       script_state, exception_state.GetContext());
-  ScriptPromise promise = resolver_->Promise();
+  auto promise = resolver_->Promise();
 
   auto* frame = window->GetFrame();
   frame->GetBrowserInterfaceBroker().GetInterface(
       eye_dropper_chooser_.BindNewPipeAndPassReceiver(
           frame->GetTaskRunner(TaskType::kUserInteraction)));
   eye_dropper_chooser_.set_disconnect_handler(
-      WTF::BindOnce(&EyeDropper::EndChooser, WrapWeakPersistent(this),
-                    std::move(end_chooser_abort_state)));
-  eye_dropper_chooser_->Choose(
-      resolver_->WrapCallbackInScriptScope(WTF::BindOnce(
-          &EyeDropper::EyeDropperResponseHandler, WrapPersistent(this),
-          std::move(response_handler_abort_state))));
+      BindOnce(&EyeDropper::EndChooser, WrapWeakPersistent(this),
+               std::move(end_chooser_abort_state)));
+  ActiveWindowEyeDropper::From(*window).SetOpen(true);
+  open_window_ = window;
+  eye_dropper_chooser_->Choose(resolver_->WrapCallbackInScriptScope(
+      BindOnce(&EyeDropper::EyeDropperResponseHandler, WrapPersistent(this),
+               std::move(response_handler_abort_state))));
   return promise;
 }
 
@@ -127,14 +171,16 @@ void EyeDropper::AbortCallback(AbortSignal* signal) {
 
   eye_dropper_chooser_.reset();
   resolver_ = nullptr;
+  ClearWindowEyeDropper();
 }
 
 void EyeDropper::EyeDropperResponseHandler(
     std::unique_ptr<ScopedAbortState> scoped_abort_state,
-    ScriptPromiseResolver* resolver,
+    ScriptPromiseResolver<ColorSelectionResult>* resolver,
     bool success,
     uint32_t color) {
   eye_dropper_chooser_.reset();
+  ClearWindowEyeDropper();
 
   // The abort callback resets the Mojo remote if an abort is signalled,
   // so by receiving a reply, the eye dropper operation must *not* have
@@ -158,6 +204,7 @@ void EyeDropper::EyeDropperResponseHandler(
 void EyeDropper::EndChooser(
     std::unique_ptr<ScopedAbortState> scoped_abort_state) {
   eye_dropper_chooser_.reset();
+  ClearWindowEyeDropper();
 
   if (!resolver_ ||
       !IsInParallelAlgorithmRunnable(resolver_->GetExecutionContext(),
@@ -171,14 +218,22 @@ void EyeDropper::EndChooser(
 }
 
 void EyeDropper::RejectPromiseHelper(DOMExceptionCode exception_code,
-                                     const WTF::String& message) {
+                                     const String& message) {
   resolver_->RejectWithDOMException(exception_code, message);
   resolver_ = nullptr;
+}
+
+void EyeDropper::ClearWindowEyeDropper() {
+  if (open_window_) {
+    ActiveWindowEyeDropper::From(*open_window_).SetOpen(false);
+    open_window_ = nullptr;
+  }
 }
 
 void EyeDropper::Trace(Visitor* visitor) const {
   visitor->Trace(eye_dropper_chooser_);
   visitor->Trace(resolver_);
+  visitor->Trace(open_window_);
   ScriptWrappable::Trace(visitor);
 }
 

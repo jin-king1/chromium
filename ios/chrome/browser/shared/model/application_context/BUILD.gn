@@ -3,10 +3,12 @@
 # found in the LICENSE file.
 
 source_set("application_context") {
-  configs += [ "//build/config/compiler:enable_arc" ]
   sources = [
     "application_context.h",
     "application_context.mm",
   ]
-  deps = [ "//base" ]
+  deps = [
+    "//base",
+    "//components/optimization_guide:optimization_guide_buildflags",
+  ]
 }

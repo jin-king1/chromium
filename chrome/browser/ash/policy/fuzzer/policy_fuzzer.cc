@@ -20,6 +20,7 @@
 #include "chrome/browser/ash/dbus/ash_dbus_helper.h"
 #include "chrome/browser/ash/policy/core/device_policy_decoder.h"
 #include "chrome/browser/ash/policy/fuzzer/policy_fuzzer.pb.h"
+#include "chrome/browser/ash/policy/fuzzer/policy_fuzzer_fuzzable.pb.h"
 #include "chrome/browser/ash/settings/device_settings_provider.h"
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/policy/configuration_policy_handler_list_factory.h"
@@ -45,7 +46,7 @@ namespace policy {
 
 namespace {
 
-constexpr logging::LogSeverity kLogSeverity = logging::LOG_FATAL;
+constexpr logging::LogSeverity kLogSeverity = logging::LOGGING_FATAL;
 
 // A log handler that discards messages whose severity is lower than the
 // threshold. It's needed in order to suppress unneeded syslog logging (which by
@@ -122,8 +123,13 @@ void CheckPolicyMap(const PolicyMap& policy_map,
     const PolicyDetails* policy_details = GetChromePolicyDetails(policy_name);
     CHECK(policy_details) << "Policy " << policy_name
                           << " has no policy details";
-    CHECK_EQ(policy_details->is_device_policy, expected_is_device_policy)
-        << "Policy " << policy_name << " is of unexpected type";
+    if (expected_is_device_policy) {
+      CHECK_EQ(policy_details->scope, kDevice)
+        << "Policy " << policy_name << " should be device policy";
+    } else {
+      CHECK_NE(policy_details->scope, kDevice)
+        << "Policy " << policy_name << " should not be device policy";
+    }
   }
 }
 
@@ -152,7 +158,11 @@ void CheckPolicyToCrosSettingsTranslation(
 
 }  // namespace
 
-DEFINE_PROTO_FUZZER(const PolicyFuzzerProto& proto) {
+DEFINE_PROTO_FUZZER(const fuzzable::policy::PolicyFuzzerProto& fuzzable_proto) {
+  std::string serialized = fuzzable_proto.SerializeAsString();
+  PolicyFuzzerProto proto;
+  CHECK(proto.ParseFromString(serialized));
+
   static Environment env;
   PerInputEnvironment per_input_env;
 

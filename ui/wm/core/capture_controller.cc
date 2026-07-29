@@ -4,12 +4,12 @@
 
 #include "ui/wm/core/capture_controller.h"
 
+#include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "ui/aura/client/capture_client_observer.h"
 #include "ui/aura/env.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_event_dispatcher.h"
-#include "ui/aura/window_tracker.h"
 #include "ui/aura/window_tree_host.h"
 
 namespace wm {
@@ -42,10 +42,20 @@ void CaptureController::Detach(aura::Window* root) {
   aura::client::SetCaptureClient(root, nullptr);
 }
 
+void CaptureController::PrepareForShutdown() {
+  DCHECK(!destroying_);
+  SetCapture(nullptr);
+  destroying_ = true;
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // CaptureController, aura::client::CaptureClient implementation:
 
 void CaptureController::SetCapture(aura::Window* new_capture_window) {
+  if (destroying_) {
+    return;
+  }
+
   if (capture_window_ == new_capture_window)
     return;
 
@@ -57,14 +67,14 @@ void CaptureController::SetCapture(aura::Window* new_capture_window) {
   aura::client::CaptureDelegate* old_capture_delegate = capture_delegate_;
 
   // Copy the map in case it's modified out from under us.
-  std::map<aura::Window*, aura::client::CaptureDelegate*> delegates =
-      delegates_;
+  std::map<aura::Window*,
+           raw_ptr<aura::client::CaptureDelegate, CtnExperimental>>
+      delegates = delegates_;
 
-  aura::WindowTracker tracker;
-  if (new_capture_window)
-    tracker.Add(new_capture_window);
-  if (old_capture_window)
-    tracker.Add(old_capture_window);
+  base::WeakPtr<aura::Window> new_capture_window_weak =
+      new_capture_window ? new_capture_window->GetWeakPtrAsWindow() : nullptr;
+  base::WeakPtr<aura::Window> old_capture_window_weak =
+      old_capture_window ? old_capture_window->GetWeakPtrAsWindow() : nullptr;
 
   // If we're starting a new capture, cancel all touches that aren't
   // targeted to the capturing window.
@@ -74,10 +84,12 @@ void CaptureController::SetCapture(aura::Window* new_capture_window) {
     // Cancelling touches might cause |new_capture_window| to get deleted.
     // Track |new_capture_window| and check if it still exists before
     // committing |capture_window_|.
-    if (!tracker.Contains(new_capture_window))
+    if (!new_capture_window_weak) {
       new_capture_window = nullptr;
-    if (old_capture_window && !tracker.Contains(old_capture_window))
+    }
+    if (old_capture_window && !old_capture_window_weak) {
       old_capture_window = nullptr;
+    }
   }
 
   capture_window_ = new_capture_window;
@@ -85,7 +97,7 @@ void CaptureController::SetCapture(aura::Window* new_capture_window) {
       capture_window_ ? capture_window_->GetRootWindow() : nullptr;
   capture_delegate_ = delegates_.find(capture_root_window) == delegates_.end()
                           ? nullptr
-                          : delegates_[capture_root_window];
+                          : delegates_[capture_root_window].get();
 
   // With more than one delegate (e.g. multiple displays), an earlier
   // UpdateCapture() call could cancel an existing capture and destroy
@@ -93,8 +105,9 @@ void CaptureController::SetCapture(aura::Window* new_capture_window) {
   // a dangling pointer, so detect and handle it.
   for (const auto& it : delegates) {
     it.second->UpdateCapture(old_capture_window, new_capture_window);
-    if (old_capture_window && !tracker.Contains(old_capture_window))
+    if (old_capture_window && !old_capture_window_weak) {
       old_capture_window = nullptr;
+    }
   }
 
   if (capture_delegate_ != old_capture_delegate) {
@@ -104,8 +117,8 @@ void CaptureController::SetCapture(aura::Window* new_capture_window) {
       capture_delegate_->SetNativeCapture();
   }
 
-  for (aura::client::CaptureClientObserver& observer : observers_)
-    observer.OnCaptureChanged(old_capture_window, capture_window_);
+  observers_.Notify(&aura::client::CaptureClientObserver::OnCaptureChanged,
+                    old_capture_window, capture_window_);
 }
 
 void CaptureController::ReleaseCapture(aura::Window* window) {

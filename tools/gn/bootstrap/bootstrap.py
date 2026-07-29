@@ -76,9 +76,13 @@ def main(argv):
   def append_to_env(var, vals):
     os.environ[var] = os.environ.get(var, '') + ' ' + ' '.join(vals)
 
-  # https://crbug.com/1166707
-  append_to_env('CXXFLAGS',
-                ['-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS'])
+  append_to_env(
+      'CXXFLAGS',
+      [
+          '-D_LIBCPP_HARDENING_MODE_DEFAULT=_LIBCPP_HARDENING_MODE_FAST',
+          # https://crbug.com/1166707
+          '-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS',
+      ])
 
   if options.use_custom_libcxx:
     libcxx_dir = os.path.join(gn_build_dir, 'libc++')
@@ -102,13 +106,12 @@ def main(argv):
     append_to_env('LDFLAGS', [
         '-nodefaultlibs', 'libc++.gn.so',
         '-lpthread', '-lc', '-lm',
-        '-Wl,-rpath="\$$ORIGIN/."', '-Wl,-rpath-link=.'
+        r'-Wl,-rpath="\$$ORIGIN/."', '-Wl,-rpath-link=.'
     ])
     append_to_env('CXXFLAGS', [
-        '-nostdinc++',
-        '-isystem../../../buildtools/third_party/libc++',
-        '-isystem../../../buildtools/third_party/libc++/trunk/include',
-        '-isystem../../../buildtools/third_party/libc++abi/trunk/include'
+        '-nostdinc++', '-isystem../../../buildtools/third_party/libc++',
+        '-isystem../../../third_party/libc++/src/include',
+        '-isystem../../../third_party/libc++abi/src/include'
     ])
 
   cmd = [
@@ -123,7 +126,7 @@ def main(argv):
 
   shutil.copy2(
       os.path.join(BOOTSTRAP_DIR, 'last_commit_position.h'), gn_build_dir)
-  cmd = [ninja_binary, '-C', gn_build_dir, '-w', 'dupbuild=err', 'gn']
+  cmd = [ninja_binary, '-C', gn_build_dir, 'gn']
   if options.jobs:
     cmd += ['-j', str(options.jobs)]
   subprocess.check_call(cmd)

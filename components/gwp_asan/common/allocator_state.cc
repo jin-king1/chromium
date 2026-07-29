@@ -7,6 +7,8 @@
 #include <algorithm>
 
 #include "base/bits.h"
+#include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/memory/page_size.h"
 #include "base/strings/stringprintf.h"
@@ -16,7 +18,7 @@
 namespace gwp_asan {
 namespace internal {
 
-AllocatorState::AllocatorState() {}
+AllocatorState::AllocatorState() = default;
 
 AllocatorState::GetMetadataReturnType AllocatorState::GetMetadataForAddress(
     uintptr_t exception_address,
@@ -34,7 +36,7 @@ AllocatorState::GetMetadataReturnType AllocatorState::GetMetadataForAddress(
     return GetMetadataReturnType::kErrorBadSlot;
   }
 
-  AllocatorState::MetadataIdx index = slot_to_metadata[slot_idx];
+  AllocatorState::MetadataIdx index = UNSAFE_TODO(slot_to_metadata[slot_idx]);
   if (index == kInvalidMetadataIdx)
     return GetMetadataReturnType::kGwpAsanCrashWithMissingMetadata;
 
@@ -44,10 +46,10 @@ AllocatorState::GetMetadataReturnType AllocatorState::GetMetadataForAddress(
     return GetMetadataReturnType::kErrorBadMetadataIndex;
   }
 
-  if (GetNearestSlot(metadata_arr[index].alloc_ptr) != slot_idx) {
+  if (GetNearestSlot(UNSAFE_TODO(metadata_arr[index]).alloc_ptr) != slot_idx) {
     *error = base::StringPrintf(
         "Outdated metadata index %u: slot for %zx does not match %zx", index,
-        metadata_arr[index].alloc_ptr, exception_address);
+        UNSAFE_TODO(metadata_arr[index]).alloc_ptr, exception_address);
     return GetMetadataReturnType::kErrorOutdatedMetadataIndex;
   }
 
@@ -84,10 +86,6 @@ bool AllocatorState::IsValid() const {
 
   if (!metadata_addr || !slot_to_metadata_addr)
     return false;
-
-  if (num_lightweight_detector_metadata > kMaxLightweightMetadata) {
-    return false;
-  }
 
   return true;
 }
@@ -171,19 +169,7 @@ AllocatorState::SlotIdx AllocatorState::AddrToSlot(uintptr_t addr) const {
   return static_cast<SlotIdx>(slot);
 }
 
-AllocatorState::SlotMetadata::SlotMetadata() {}
-
-AllocatorState::SlotMetadata& AllocatorState::GetLightweightSlotMetadataById(
-    LightweightDetector::MetadataId id,
-    SlotMetadata* metadata_arr) {
-  return metadata_arr[id % num_lightweight_detector_metadata];
-}
-
-bool AllocatorState::HasLightweightMetadataForId(
-    LightweightDetector::MetadataId id,
-    SlotMetadata* metadata_arr) {
-  return GetLightweightSlotMetadataById(id, metadata_arr).lightweight_id == id;
-}
+AllocatorState::SlotMetadata::SlotMetadata() = default;
 
 }  // namespace internal
 }  // namespace gwp_asan

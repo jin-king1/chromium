@@ -5,14 +5,15 @@
 #include "google_apis/classroom/classroom_api_course_work_response_types.h"
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 
 #include "base/json/json_value_converter.h"
-#include "base/strings/string_piece.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "google_apis/common/parser_util.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "google_apis/common/time_util.h"
 #include "url/gurl.h"
 
 namespace google_apis::classroom {
@@ -20,10 +21,14 @@ namespace {
 
 constexpr char kApiResponseCourseWorkKey[] = "courseWork";
 constexpr char kApiResponseCourseWorkItemAlternateLinkKey[] = "alternateLink";
+constexpr char kApiResponseCourseWorkItemCreationTimeKey[] = "creationTime";
+constexpr char kApiResponseCourseWorkItemUpdateTimeKey[] = "updateTime";
 constexpr char kApiResponseCourseWorkItemDueDateKey[] = "dueDate";
 constexpr char kApiResponseCourseWorkItemDueTimeKey[] = "dueTime";
 constexpr char kApiResponseCourseWorkItemStateKey[] = "state";
 constexpr char kApiResponseCourseWorkItemTitleKey[] = "title";
+constexpr char kApiResponseCourseWorkItemMaterialsKey[] = "materials";
+constexpr char kApiResponseCourseWorkItemTypeKey[] = "workType";
 
 constexpr char kDueDateYearComponent[] = "year";
 constexpr char kDueDateMonthComponent[] = "month";
@@ -35,8 +40,13 @@ constexpr char kDueTimeSecondsComponent[] = "seconds";
 constexpr char kDueTimeNanosComponent[] = "nanos";
 
 constexpr char kPublishedCourseWorkItemState[] = "PUBLISHED";
+constexpr char kAssignmentCourseWorkItemType[] = "ASSIGNMENT";
+constexpr char kShortAnswerQuestionCourseWorkItemType[] =
+    "SHORT_ANSWER_QUESTION";
+constexpr char kMultipleChoiceQuestionCourseWorkItemType[] =
+    "MULTIPLE_CHOICE_QUESTION";
 
-bool ConvertCourseWorkItemState(base::StringPiece input,
+bool ConvertCourseWorkItemState(std::string_view input,
                                 CourseWorkItem::State* output) {
   *output = input == kPublishedCourseWorkItemState
                 ? CourseWorkItem::State::kPublished
@@ -44,13 +54,27 @@ bool ConvertCourseWorkItemState(base::StringPiece input,
   return true;
 }
 
-bool ConvertCourseWorkItemAlternateLink(base::StringPiece input, GURL* output) {
+bool ConvertCourseWorkItemType(std::string_view input,
+                               CourseWorkItem::Type* output) {
+  if (input == kAssignmentCourseWorkItemType) {
+    *output = CourseWorkItem::Type::kAssignment;
+  } else if (input == kShortAnswerQuestionCourseWorkItemType) {
+    *output = CourseWorkItem::Type::kShortAnswerQuestion;
+  } else if (input == kMultipleChoiceQuestionCourseWorkItemType) {
+    *output = CourseWorkItem::Type::kMultipleChoiceQuestion;
+  } else {
+    *output = CourseWorkItem::Type::kUnspecified;
+  }
+  return true;
+}
+
+bool ConvertCourseWorkItemAlternateLink(std::string_view input, GURL* output) {
   *output = GURL(input);
   return true;
 }
 
 base::TimeDelta GetCourseWorkItemDueTime(
-    const base::Value::Dict& raw_course_work_item) {
+    const base::DictValue& raw_course_work_item) {
   const auto* const time =
       raw_course_work_item.FindDict(kApiResponseCourseWorkItemDueTimeKey);
   if (!time) {
@@ -67,12 +91,12 @@ base::TimeDelta GetCourseWorkItemDueTime(
          base::Nanoseconds(nanos.value_or(0));
 }
 
-absl::optional<CourseWorkItem::DueDateTime> GetCourseWorkItemDueDateTime(
-    const base::Value::Dict& raw_course_work_item) {
+std::optional<CourseWorkItem::DueDateTime> GetCourseWorkItemDueDateTime(
+    const base::DictValue& raw_course_work_item) {
   const auto* const date =
       raw_course_work_item.FindDict(kApiResponseCourseWorkItemDueDateKey);
   if (!date) {
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   const auto year = date->FindInt(kDueDateYearComponent);
@@ -80,7 +104,7 @@ absl::optional<CourseWorkItem::DueDateTime> GetCourseWorkItemDueDateTime(
   const auto day = date->FindInt(kDueDateDayComponent);
 
   if (!year.has_value() && !month.has_value() && !day.has_value()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   return CourseWorkItem::DueDateTime{
@@ -110,13 +134,25 @@ void CourseWorkItem::RegisterJSONConverter(
   converter->RegisterCustomField<GURL>(
       kApiResponseCourseWorkItemAlternateLinkKey,
       &CourseWorkItem::alternate_link_, &ConvertCourseWorkItemAlternateLink);
+  converter->RegisterCustomField<base::Time>(
+      kApiResponseCourseWorkItemCreationTimeKey,
+      &CourseWorkItem::creation_time_, &util::GetTimeFromString);
+  converter->RegisterCustomField<base::Time>(
+      kApiResponseCourseWorkItemUpdateTimeKey, &CourseWorkItem::last_update_,
+      &util::GetTimeFromString);
+  converter->RegisterCustomField<CourseWorkItem::Type>(
+      kApiResponseCourseWorkItemTypeKey, &CourseWorkItem::type_,
+      &ConvertCourseWorkItemType);
+  converter->RegisterRepeatedCustomValue<Material>(
+      kApiResponseCourseWorkItemMaterialsKey, &CourseWorkItem::materials_,
+      &Material::ConvertMaterial);
 }
 
 // static
 bool CourseWorkItem::ConvertCourseWorkItem(const base::Value* input,
                                            CourseWorkItem* output) {
   base::JSONValueConverter<CourseWorkItem> converter;
-  const base::Value::Dict* dict = input->GetIfDict();
+  const base::DictValue* dict = input->GetIfDict();
   if (!dict || !converter.Convert(*dict, output)) {
     return false;
   }
@@ -134,6 +170,7 @@ CourseWork::~CourseWork() = default;
 // static
 void CourseWork::RegisterJSONConverter(
     base::JSONValueConverter<CourseWork>* converter) {
+  // TODO(crbug.com/40911919): Handle base::DictValue here.
   converter->RegisterRepeatedCustomValue<CourseWorkItem>(
       kApiResponseCourseWorkKey, &CourseWork::items_,
       &CourseWorkItem::ConvertCourseWorkItem);

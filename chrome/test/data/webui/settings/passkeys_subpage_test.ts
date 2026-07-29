@@ -6,7 +6,8 @@
  * @fileoverview Tests for the passkeys subpage.
  */
 
-import {Passkey, PasskeysBrowserProxy, PasskeysBrowserProxyImpl, SettingsPasskeysSubpageElement, SettingsSimpleConfirmationDialogElement} from 'chrome://settings/lazy_load.js';
+import type {Passkey, PasskeysBrowserProxy, SettingsPasskeysSubpageElement, SettingsSimpleConfirmationDialogElement} from 'chrome://settings/lazy_load.js';
+import {PasskeysBrowserProxyImpl} from 'chrome://settings/lazy_load.js';
 import {assertDeepEquals, assertEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
@@ -64,7 +65,7 @@ class TestPasskeysBrowserProxy extends TestBrowserProxy implements
 function getUsernamesFromList(list: HTMLElement): string[] {
   const inputs = Array.from(list.shadowRoot!.querySelectorAll<HTMLElement>(
       '.list-item .username-column'));
-  return inputs.slice(1).map(input => input.textContent!.trim());
+  return inputs.slice(1).map(input => input.textContent.trim());
 }
 
 /**
@@ -104,7 +105,7 @@ suite('PasskeysSubpage', function() {
     },
   ];
 
-  setup(async function() {
+  setup(function() {
     browserProxy = new TestPasskeysBrowserProxy();
     PasskeysBrowserProxyImpl.setInstance(browserProxy);
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
@@ -168,9 +169,6 @@ suite('PasskeysSubpage', function() {
 
     clickDots(page, 0);
 
-    browserProxy.whenCalled('delete').then((name: string) => {
-      assertEquals(name, testPasskeys[0].credentialId);
-    });
     clickButton(page, 'delete');
     await flushTasks();
 

@@ -9,10 +9,12 @@
 #include <vector>
 
 #include "ash/ash_export.h"
+#include "ash/events/peripheral_customization_event_rewriter.h"
 #include "ash/public/cpp/event_rewriter_controller.h"
 #include "base/memory/raw_ptr.h"
 #include "ui/aura/env_observer.h"
 #include "ui/events/ash/event_rewriter_ash.h"
+#include "ui/events/keycodes/keyboard_codes_posix.h"
 
 namespace ui {
 class EventRewriter;
@@ -21,7 +23,10 @@ class EventRewriter;
 namespace ash {
 
 class AccessibilityEventRewriter;
+class DisableTouchpadEventRewriter;
+class FilterKeysEventRewriter;
 class KeyboardDrivenEventRewriter;
+class PrerewrittenEventForwarder;
 
 // Owns ui::EventRewriters and ensures that they are added to each root window
 // EventSource, current and future, in the order that they are added to this.
@@ -47,6 +52,11 @@ class ASH_EXPORT EventRewriterControllerImpl : public EventRewriterController,
       std::unique_ptr<ui::Event> event) override;
   void CaptureAllKeysForSpokenFeedback(bool capture) override;
   void SetSendMouseEvents(bool value) override;
+  void ProcessPendingSpokenFeedbackEvent(unsigned int id,
+                                         bool propagate,
+                                         int64_t session_id) override;
+  void SetSpokenFeedbackMv3KeyHandlingEnabled(bool enabled,
+                                              int64_t session_id) override;
 
   // aura::EnvObserver:
   void OnHostInitialized(aura::WindowTreeHost* host) override;
@@ -59,18 +69,32 @@ class ASH_EXPORT EventRewriterControllerImpl : public EventRewriterController,
     return event_rewriter_ash_delegate_;
   }
 
+  PeripheralCustomizationEventRewriter*
+  peripheral_customization_event_rewriter() {
+    return peripheral_customization_event_rewriter_;
+  }
+
+  PrerewrittenEventForwarder* prerewritten_event_forwarder() {
+    return prerewritten_event_forwarder_;
+  }
+
  private:
   // The |EventRewriter|s managed by this controller.
   std::vector<std::unique_ptr<ui::EventRewriter>> rewriters_;
 
   // Owned by |rewriters_|.
-  raw_ptr<AccessibilityEventRewriter, ExperimentalAsh>
-      accessibility_event_rewriter_ = nullptr;
-  raw_ptr<KeyboardDrivenEventRewriter, ExperimentalAsh>
-      keyboard_driven_event_rewriter_ = nullptr;
-  raw_ptr<ui::EventRewriterAsh, ExperimentalAsh> event_rewriter_ash_ = nullptr;
-  raw_ptr<ui::EventRewriterAsh::Delegate, ExperimentalAsh>
-      event_rewriter_ash_delegate_ = nullptr;
+  raw_ptr<AccessibilityEventRewriter> accessibility_event_rewriter_ = nullptr;
+  raw_ptr<DisableTouchpadEventRewriter> disable_touchpad_event_rewriter_ =
+      nullptr;
+  raw_ptr<FilterKeysEventRewriter> filter_keys_event_rewriter_ = nullptr;
+  raw_ptr<PeripheralCustomizationEventRewriter>
+      peripheral_customization_event_rewriter_ = nullptr;
+  raw_ptr<PrerewrittenEventForwarder> prerewritten_event_forwarder_ = nullptr;
+  raw_ptr<KeyboardDrivenEventRewriter> keyboard_driven_event_rewriter_ =
+      nullptr;
+  raw_ptr<ui::EventRewriterAsh> event_rewriter_ash_ = nullptr;
+  raw_ptr<ui::EventRewriterAsh::Delegate> event_rewriter_ash_delegate_ =
+      nullptr;
 };
 
 }  // namespace ash

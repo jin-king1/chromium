@@ -13,8 +13,9 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_type.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/animation/animation_builder.h"
+#include "ui/views/border.h"
 #include "ui/views/layout/fill_layout.h"
 
 namespace ash {
@@ -22,7 +23,7 @@ namespace {
 
 // The animation spec says 40 dips up over 250ms, but the opacity animation
 // renders the view invisible after 50ms, so animate the visible fraction.
-constexpr int kHideAnimationVerticalOffset = -40 * 250 / 50;
+constexpr int kHideAnimationVerticalOffset = -40 * 50 / 250;
 
 // Duration for the hide animation (both transform and opacity).
 constexpr base::TimeDelta kHideAnimationDuration = base::Milliseconds(50);
@@ -45,7 +46,7 @@ AppListBubbleSearchPage::~AppListBubbleSearchPage() = default;
 
 void AppListBubbleSearchPage::AnimateShowPage() {
   // If skipping animations, just update visibility.
-  if (ui::ScopedAnimationDurationScaleMode::is_zero()) {
+  if (gfx::ScopedAnimationDurationScaleMode::is_zero()) {
     SetVisible(true);
     return;
   }
@@ -72,7 +73,7 @@ void AppListBubbleSearchPage::AnimateShowPage() {
 
 void AppListBubbleSearchPage::AnimateHidePage() {
   // If skipping animations, just update visibility.
-  if (ui::ScopedAnimationDurationScaleMode::is_zero()) {
+  if (gfx::ScopedAnimationDurationScaleMode::is_zero()) {
     SetVisible(false);
     return;
   }
@@ -114,7 +115,7 @@ ui::Layer* AppListBubbleSearchPage::GetPageAnimationLayerForTest() {
   return search_view_->GetPageAnimationLayer();
 }
 
-BEGIN_METADATA(AppListBubbleSearchPage, views::View)
+BEGIN_METADATA(AppListBubbleSearchPage)
 END_METADATA
 
 }  // namespace ash

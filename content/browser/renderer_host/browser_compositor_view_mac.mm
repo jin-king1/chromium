@@ -12,17 +12,15 @@
 
 #include "base/command_line.h"
 #include "base/containers/circular_deque.h"
-#include "base/lazy_instance.h"
+#include "base/no_destructor.h"
 #include "base/trace_event/trace_event.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/surfaces/local_surface_id.h"
 #include "content/browser/compositor/image_transport_factory.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/context_factory.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/accelerated_widget_mac/accelerated_widget_mac.h"
 #include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
-#include "ui/base/layout.h"
 #include "ui/compositor/recyclable_compositor_mac.h"
 #include "ui/gfx/geometry/dip_util.h"
 #include "ui/gfx/geometry/size_conversions.h"
@@ -38,8 +36,10 @@ namespace {
 //   signals to shut down will come in very late, long after things that the
 //   ui::Compositor depend on have been destroyed).
 //   https://crbug.com/805726
-base::LazyInstance<std::set<BrowserCompositorMac*>>::Leaky
-    g_browser_compositors;
+std::set<BrowserCompositorMac*>& GetBrowserCompositors() {
+  static base::NoDestructor<std::set<BrowserCompositorMac*>> instance;
+  return *instance.get();
+}
 
 }  // namespace
 
@@ -54,12 +54,12 @@ BrowserCompositorMac::BrowserCompositorMac(
     : client_(client),
       accelerated_widget_mac_ns_view_(accelerated_widget_mac_ns_view),
       weak_factory_(this) {
-  g_browser_compositors.Get().insert(this);
+  GetBrowserCompositors().insert(this);
 
-  root_layer_ = std::make_unique<ui::Layer>(ui::LAYER_SOLID_COLOR);
+  root_layer_ = std::make_unique<ui::LayerSolidColor>();
   // Ensure that this layer draws nothing when it does not not have delegated
   // content (otherwise this solid color will be flashed during navigation).
-  root_layer_->SetColor(SK_ColorTRANSPARENT);
+  root_layer_->SetColor(SkColors::kTransparent);
   delegated_frame_host_ = std::make_unique<DelegatedFrameHost>(
       frame_sink_id, this, true /* should_register_frame_sink_id */);
 
@@ -75,12 +75,12 @@ BrowserCompositorMac::~BrowserCompositorMac() {
   delegated_frame_host_.reset();
   root_layer_.reset();
 
-  size_t num_erased = g_browser_compositors.Get().erase(this);
-  DCHECK_EQ(1u, num_erased);
+  size_t num_erased = GetBrowserCompositors().erase(this);
+  CHECK_EQ(1u, num_erased, base::NotFatalUntil::M152);
 }
 
 DelegatedFrameHost* BrowserCompositorMac::GetDelegatedFrameHost() {
-  DCHECK(delegated_frame_host_);
+  CHECK(delegated_frame_host_, base::NotFatalUntil::M152);
   return delegated_frame_host_.get();
 }
 
@@ -116,7 +116,6 @@ void BrowserCompositorMac::UpdateSurfaceFromNSView(
     const gfx::Size& new_size_dip) {
   display::ScreenInfo current = client_->GetCurrentScreenInfo();
 
-  bool is_resize = !dfh_size_dip_.IsEmpty() && new_size_dip != dfh_size_dip_;
   bool needs_new_surface_id =
       new_size_dip != dfh_size_dip_ ||
       current.device_scale_factor != dfh_device_scale_factor_;
@@ -134,13 +133,13 @@ void BrowserCompositorMac::UpdateSurfaceFromNSView(
     dfh_local_surface_id_allocator_.GenerateId();
     delegated_frame_host_->EmbedSurface(
         dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceId(),
-        dfh_size_dip_, GetDeadlinePolicy(is_resize));
+        dfh_size_dip_, cc::DeadlinePolicy::UseSpecifiedDeadline(0u));
   }
 
   if (recyclable_compositor_) {
-    recyclable_compositor_->UpdateSurface(dfh_size_pixels_,
-                                          current.device_scale_factor,
-                                          current.display_color_spaces);
+    recyclable_compositor_->UpdateSurface(
+        dfh_size_pixels_, current.device_scale_factor,
+        current.display_color_spaces, current.display_id);
   }
 }
 
@@ -160,14 +159,14 @@ void BrowserCompositorMac::UpdateSurfaceFromChild(
       dfh_device_scale_factor_ = new_device_scale_factor;
       root_layer_->SetBounds(gfx::Rect(dfh_size_dip_));
       if (recyclable_compositor_) {
-        recyclable_compositor_->UpdateSurface(dfh_size_pixels_,
-                                              current.device_scale_factor,
-                                              current.display_color_spaces);
+        recyclable_compositor_->UpdateSurface(
+            dfh_size_pixels_, current.device_scale_factor,
+            current.display_color_spaces, current.display_id);
       }
     }
     delegated_frame_host_->EmbedSurface(
         dfh_local_surface_id_allocator_.GetCurrentLocalSurfaceId(),
-        dfh_size_dip_, GetDeadlinePolicy(true /* is_resize */));
+        dfh_size_dip_, cc::DeadlinePolicy::UseDefaultDeadline());
   }
   client_->OnBrowserCompositorSurfaceIdChanged();
 }
@@ -176,11 +175,25 @@ void BrowserCompositorMac::SetRenderWidgetHostIsHidden(bool hidden) {
   render_widget_host_is_hidden_ = hidden;
   UpdateState();
   if (state_ == UseParentLayerCompositor) {
-    // UpdateState might not call WasShown when showing a frame using the same
-    // ParentLayerCompositor, since it returns early on a no-op state
-    // transition.
-    delegated_frame_host_->WasShown(GetRendererLocalSurfaceId(), dfh_size_dip_,
-                                    {} /* record_tab_switch_time_request */);
+    if (!hidden) {
+      // UpdateState might not call WasShown when showing a frame using the same
+      // ParentLayerCompositor, since it returns early on a no-op state
+      // transition.
+      delegated_frame_host_->WasShown(GetRendererLocalSurfaceId(),
+                                      dfh_size_dip_,
+                                      {} /* record_tab_switch_time_request */);
+    } else {
+      // A WebContents might be hidden without being detached from its
+      // parent layer (e.g. Omnibox popup with DetachWebContentsOnHide
+      // disabled). On Mac, when this happens, UpdateState transitions to
+      // UseParentLayerCompositor which is a no-op, skipping WasHidden(). We
+      // must explicitly call it here to ensure the frame is unlocked from the
+      // compositor cache.
+      if (base::FeatureList::IsEnabled(features::kHideDelegatedFrameHostMac)) {
+        delegated_frame_host_->WasHidden(
+            DelegatedFrameHost::HiddenCause::kOther);
+      }
+    }
   }
 }
 
@@ -220,7 +233,7 @@ void BrowserCompositorMac::TransitionToState(State new_state) {
   // First, detach from the current compositor, if there is one.
   delegated_frame_host_->DetachFromCompositor();
   if (state_ == UseParentLayerCompositor) {
-    DCHECK(root_layer_->parent());
+    CHECK(root_layer_->parent(), base::NotFatalUntil::M152);
     state_ = HasNoCompositor;
     root_layer_->parent()->RemoveObserver(this);
     root_layer_->parent()->Remove(root_layer_.get());
@@ -243,7 +256,7 @@ void BrowserCompositorMac::TransitionToState(State new_state) {
 
   // Attach to the new compositor.
   if (new_state == UseParentLayerCompositor) {
-    DCHECK(parent_ui_layer_);
+    CHECK(parent_ui_layer_, base::NotFatalUntil::M152);
     parent_ui_layer_->Add(root_layer_.get());
     parent_ui_layer_->AddObserver(this);
     state_ = UseParentLayerCompositor;
@@ -252,9 +265,9 @@ void BrowserCompositorMac::TransitionToState(State new_state) {
     recyclable_compositor_ = std::make_unique<ui::RecyclableCompositorMac>(
         content::GetContextFactory());
     display::ScreenInfo current = client_->GetCurrentScreenInfo();
-    recyclable_compositor_->UpdateSurface(dfh_size_pixels_,
-                                          current.device_scale_factor,
-                                          current.display_color_spaces);
+    recyclable_compositor_->UpdateSurface(
+        dfh_size_pixels_, current.device_scale_factor,
+        current.display_color_spaces, current.display_id);
     recyclable_compositor_->compositor()->SetRootLayer(root_layer_.get());
     recyclable_compositor_->compositor()->SetBackgroundColor(background_color_);
     recyclable_compositor_->widget()->SetNSView(
@@ -262,7 +275,7 @@ void BrowserCompositorMac::TransitionToState(State new_state) {
     recyclable_compositor_->Unsuspend();
     state_ = HasOwnCompositor;
   }
-  DCHECK_EQ(state_, new_state);
+  CHECK_EQ(state_, new_state, base::NotFatalUntil::M152);
   delegated_frame_host_->AttachToCompositor(GetCompositor());
   delegated_frame_host_->WasShown(GetRendererLocalSurfaceId(), dfh_size_dip_,
                                   {} /* record_tab_switch_time_request */);
@@ -273,9 +286,8 @@ void BrowserCompositorMac::DisableRecyclingForShutdown() {
   // Ensure that the client has destroyed its BrowserCompositorViewMac before
   // it dependencies are destroyed.
   // https://crbug.com/805726
-  while (!g_browser_compositors.Get().empty()) {
-    BrowserCompositorMac* browser_compositor =
-        *g_browser_compositors.Get().begin();
+  while (!GetBrowserCompositors().empty()) {
+    BrowserCompositorMac* browser_compositor = *GetBrowserCompositors().begin();
     browser_compositor->client_->DestroyCompositorForShutdown();
   }
 }
@@ -315,13 +327,43 @@ void BrowserCompositorMac::InvalidateLocalSurfaceIdOnEviction() {
   dfh_local_surface_id_allocator_.Invalidate();
 }
 
-std::vector<viz::SurfaceId>
+viz::FrameEvictorClient::EvictIds
 BrowserCompositorMac::CollectSurfaceIdsForEviction() {
-  return client_->CollectSurfaceIdsForEviction();
+  viz::FrameEvictorClient::EvictIds ids;
+  ids.embedded_ids = client_->CollectSurfaceIdsForEviction();
+  return ids;
 }
 
 bool BrowserCompositorMac::ShouldShowStaleContentOnEviction() {
   return false;
+}
+
+cc::DeadlinePolicy BrowserCompositorMac::GetResizeDeadlinePolicy() const {
+  // For remote windows (PWA app shim), use the default deadline to give the
+  // renderer time to produce a correctly-sized frame. With deadline=0, the
+  // compositor immediately shows stale content, which is highly visible
+  // because the entire window area is web content.
+  // https://crbug.com/493708175
+  //
+  // For in-process windows (regular browser tabs, content shell, popups),
+  // use deadline=0 to produce new content as quickly as possible.
+  if (client_->ShouldUseDefaultDeadlineOnResize()) {
+    return cc::DeadlinePolicy::UseDefaultDeadline();
+  }
+  return cc::DeadlinePolicy::UseSpecifiedDeadline(0u);
+}
+
+void BrowserCompositorMac::DidNavigateMainFramePreCommit() {
+  delegated_frame_host_->DidNavigateMainFramePreCommit();
+}
+
+void BrowserCompositorMac::DidEnterBackForwardCache() {
+  dfh_local_surface_id_allocator_.GenerateId();
+  delegated_frame_host_->DidEnterBackForwardCache();
+}
+
+void BrowserCompositorMac::ActivatedOrEvictedFromBackForwardCache() {
+  delegated_frame_host_->ActivatedOrEvictedFromBackForwardCache();
 }
 
 void BrowserCompositorMac::DidNavigate() {
@@ -348,15 +390,15 @@ void BrowserCompositorMac::DidNavigate() {
 
 void BrowserCompositorMac::SetParentUiLayer(ui::Layer* new_parent_ui_layer) {
   if (new_parent_ui_layer)
-    DCHECK(new_parent_ui_layer->GetCompositor());
+    CHECK(new_parent_ui_layer->GetCompositor(), base::NotFatalUntil::M152);
 
   // Set |parent_ui_layer_| to the new value, which potentially not match the
   // value of |root_layer_->parent()|. The call to UpdateState will re-parent
   // |root_layer_|.
-  DCHECK_EQ(root_layer_->parent(), parent_ui_layer_);
+  CHECK_EQ(root_layer_->parent(), parent_ui_layer_, base::NotFatalUntil::M152);
   parent_ui_layer_ = new_parent_ui_layer;
   UpdateState();
-  DCHECK_EQ(root_layer_->parent(), parent_ui_layer_);
+  CHECK_EQ(root_layer_->parent(), parent_ui_layer_, base::NotFatalUntil::M152);
 }
 
 void BrowserCompositorMac::ForceNewSurfaceForTesting() {
@@ -388,7 +430,7 @@ void BrowserCompositorMac::TransformPointToRootSurface(gfx::PointF* point) {
 }
 
 void BrowserCompositorMac::LayerDestroyed(ui::Layer* layer) {
-  DCHECK_EQ(layer, parent_ui_layer_);
+  CHECK_EQ(layer, parent_ui_layer_, base::NotFatalUntil::M152);
   SetParentUiLayer(nullptr);
 }
 
@@ -400,19 +442,9 @@ ui::Compositor* BrowserCompositorMac::GetCompositor() const {
   return nullptr;
 }
 
-cc::DeadlinePolicy BrowserCompositorMac::GetDeadlinePolicy(
-    bool is_resize) const {
-  // Determined empirically for smoothness. Don't wait for non-resize frames,
-  // as it can cause jank at new tab creation.
-  // https://crbug.com/855364
-  uint32_t frames_to_wait = is_resize ? 8 : 0;
-
-  // When using the RecyclableCompositor, never wait for frames to arrive
-  // (surface sync is managed by the Suspend/Unsuspend lock).
-  if (recyclable_compositor_)
-    frames_to_wait = 0;
-
-  return cc::DeadlinePolicy::UseSpecifiedDeadline(frames_to_wait);
+void BrowserCompositorMac::InvalidateSurfaceAllocationGroup() {
+  dfh_local_surface_id_allocator_.Invalidate(
+      /*also_invalidate_allocation_group=*/true);
 }
 
 }  // namespace content

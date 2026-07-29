@@ -4,10 +4,10 @@
 
 #include "chrome/browser/notifications/scheduler/internal/icon_store.h"
 
+#include <algorithm>
 #include <map>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/uuid.h"
 #include "chrome/browser/notifications/scheduler/internal/icon_entry.h"
 #include "chrome/browser/notifications/scheduler/internal/proto_conversion.h"
@@ -32,7 +32,7 @@ namespace notifications {
 namespace {
 bool HasKeyInDb(const std::vector<std::string>& key_dict,
                 const std::string& key) {
-  return base::Contains(key_dict, key);
+  return std::ranges::contains(key_dict, key);
 }
 }  // namespace
 
@@ -155,7 +155,6 @@ void IconProtoDbStore::OnIconsEncoded(
     std::vector<IconType> icons_type,
     std::vector<std::string> icons_uuid,
     std::unique_ptr<EncodeResult> encode_result) {
-  stats::LogPngIconConverterEncodeResult(encode_result->success);
   IconTypeUuidMap icons_uuid_map;
   if (!encode_result->success) {
     std::move(callback).Run(std::move(icons_uuid_map), false);
@@ -181,7 +180,6 @@ void IconProtoDbStore::OnIconsDecoded(
     LoadIconsCallback callback,
     std::vector<std::string> icons_uuid,
     std::unique_ptr<DecodeResult> decoded_result) {
-  stats::LogPngIconConverterDecodeResult(decoded_result->success);
   if (!decoded_result->success) {
     std::move(callback).Run(false, LoadedIconsMap{});
     return;

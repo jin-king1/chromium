@@ -4,11 +4,13 @@
 
 #include "components/safe_browsing/core/browser/db/v4_get_hash_protocol_manager.h"
 
+#include <algorithm>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/base64url.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
@@ -17,7 +19,6 @@
 #include "base/timer/timer.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
-#include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/utils.h"
 #include "net/base/load_flags.h"
@@ -43,6 +44,8 @@ void RecordGetHashResult(safe_browsing::V4OperationResult result) {
 // Record a backoff error count
 void RecordBackoffErrorCountResult(size_t count) {
   base::UmaHistogramCounts100("SafeBrowsing.V4GetHash.Result.BackoffErrorCount",
+                              count);
+  base::UmaHistogramCounts100("SafeBrowsing.SBGetHash.Result.BackoffErrorCount",
                               count);
 }
 
@@ -133,14 +136,6 @@ void RecordV4GetHashCheckResult(V4GetHashCheckResultType result_type) {
 }
 
 const char kPermission[] = "permission";
-const char kPhaPatternType[] = "pha_pattern_type";
-const char kMalwareThreatType[] = "malware_threat_type";
-const char kSePatternType[] = "se_pattern_type";
-const char kLanding[] = "LANDING";
-const char kDistribution[] = "DISTRIBUTION";
-const char kSocialEngineeringAds[] = "SOCIAL_ENGINEERING_ADS";
-const char kSocialEngineeringLanding[] = "SOCIAL_ENGINEERING_LANDING";
-const char kPhishing[] = "PHISHING";
 
 }  // namespace
 
@@ -150,14 +145,14 @@ namespace safe_browsing {
 class V4GetHashProtocolManagerFactoryImpl
     : public V4GetHashProtocolManagerFactory {
  public:
-  V4GetHashProtocolManagerFactoryImpl() {}
+  V4GetHashProtocolManagerFactoryImpl() = default;
 
   V4GetHashProtocolManagerFactoryImpl(
       const V4GetHashProtocolManagerFactoryImpl&) = delete;
   V4GetHashProtocolManagerFactoryImpl& operator=(
       const V4GetHashProtocolManagerFactoryImpl&) = delete;
 
-  ~V4GetHashProtocolManagerFactoryImpl() override {}
+  ~V4GetHashProtocolManagerFactoryImpl() override = default;
   std::unique_ptr<V4GetHashProtocolManager> CreateProtocolManager(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
       const StoresToCheck& stores_to_check,
@@ -169,16 +164,16 @@ class V4GetHashProtocolManagerFactoryImpl
 
 // ----------------------------------------------------------------
 
-CachedHashPrefixInfo::CachedHashPrefixInfo() {}
+CachedHashPrefixInfo::CachedHashPrefixInfo() = default;
 
 CachedHashPrefixInfo::CachedHashPrefixInfo(const CachedHashPrefixInfo& other) =
     default;
 
-CachedHashPrefixInfo::~CachedHashPrefixInfo() {}
+CachedHashPrefixInfo::~CachedHashPrefixInfo() = default;
 
 // ----------------------------------------------------------------
 
-FullHashCallbackInfo::FullHashCallbackInfo() {}
+FullHashCallbackInfo::FullHashCallbackInfo() = default;
 
 FullHashCallbackInfo::FullHashCallbackInfo(
     const std::vector<FullHashInfo>& cached_full_hash_infos,
@@ -187,19 +182,16 @@ FullHashCallbackInfo::FullHashCallbackInfo(
     const FullHashToStoreAndHashPrefixesMap&
         full_hash_to_store_and_hash_prefixes,
     FullHashCallback callback,
-    const base::Time& network_start_time,
-    MechanismExperimentHashDatabaseCache mechanism_experiment_cache_selection)
+    const base::Time& network_start_time)
     : cached_full_hash_infos(cached_full_hash_infos),
       callback(std::move(callback)),
       loader(std::move(loader)),
       full_hash_to_store_and_hash_prefixes(
           full_hash_to_store_and_hash_prefixes),
       network_start_time(network_start_time),
-      prefixes_requested(prefixes_requested),
-      mechanism_experiment_cache_selection(
-          mechanism_experiment_cache_selection) {}
+      prefixes_requested(prefixes_requested) {}
 
-FullHashCallbackInfo::~FullHashCallbackInfo() {}
+FullHashCallbackInfo::~FullHashCallbackInfo() = default;
 
 // ----------------------------------------------------------------
 
@@ -212,16 +204,7 @@ FullHashInfo::FullHashInfo(const FullHashStr& full_hash,
 
 FullHashInfo::FullHashInfo(const FullHashInfo& other) = default;
 
-FullHashInfo::~FullHashInfo() {}
-
-bool FullHashInfo::operator==(const FullHashInfo& other) const {
-  return full_hash == other.full_hash && list_id == other.list_id &&
-         positive_expiry == other.positive_expiry && metadata == other.metadata;
-}
-
-bool FullHashInfo::operator!=(const FullHashInfo& other) const {
-  return !operator==(other);
-}
+FullHashInfo::~FullHashInfo() = default;
 
 // V4GetHashProtocolManager implementation --------------------------------
 
@@ -252,7 +235,7 @@ V4GetHashProtocolManager::V4GetHashProtocolManager(
     const V4ProtocolConfig& config)
     : gethash_error_count_(0),
       gethash_back_off_mult_(1),
-      next_gethash_time_(Time::FromDoubleT(0)),
+      next_gethash_time_(Time::FromSecondsSinceUnixEpoch(0)),
       config_(config),
       url_loader_factory_(url_loader_factory),
       clock_(base::DefaultClock::GetInstance()) {
@@ -279,18 +262,18 @@ void V4GetHashProtocolManager::GetFullHashes(
     const FullHashToStoreAndHashPrefixesMap
         full_hash_to_store_and_hash_prefixes,
     const std::vector<std::string>& list_client_states,
-    FullHashCallback callback,
-    MechanismExperimentHashDatabaseCache mechanism_experiment_cache_selection) {
+    FullHashCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(!full_hash_to_store_and_hash_prefixes.empty());
 
   std::vector<HashPrefixStr> prefixes_to_request;
   std::vector<FullHashInfo> cached_full_hash_infos;
   GetFullHashCachedResults(full_hash_to_store_and_hash_prefixes, Time::Now(),
-                           &prefixes_to_request, &cached_full_hash_infos,
-                           mechanism_experiment_cache_selection);
+                           &prefixes_to_request, &cached_full_hash_infos);
 
   base::UmaHistogramBoolean("SafeBrowsing.V4GetHash.CacheFullyHit",
+                            prefixes_to_request.empty());
+  base::UmaHistogramBoolean("SafeBrowsing.SBGetHash.CacheHitAllPrefixes",
                             prefixes_to_request.empty());
   if (prefixes_to_request.empty()) {
     // 100% cache hits (positive or negative) so we can call the callback right
@@ -366,38 +349,38 @@ void V4GetHashProtocolManager::GetFullHashes(
 
   pending_hash_requests_[loader] = std::make_unique<FullHashCallbackInfo>(
       cached_full_hash_infos, prefixes_to_request, std::move(owned_loader),
-      full_hash_to_store_and_hash_prefixes, std::move(callback), clock_->Now(),
-      mechanism_experiment_cache_selection);
+      full_hash_to_store_and_hash_prefixes, std::move(callback), clock_->Now());
   UMA_HISTOGRAM_COUNTS_100("SafeBrowsing.V4GetHash.CountOfPrefixes",
                            prefixes_to_request.size());
+  base::UmaHistogramCounts100("SafeBrowsing.SBGetHash.Request.CountOfPrefixes",
+                              prefixes_to_request.size());
 }
 
-void V4GetHashProtocolManager::GetFullHashesWithApis(
+void V4GetHashProtocolManager::GetFullHashesForNotificationAbuse(
     const GURL& url,
     const std::vector<std::string>& list_client_states,
-    ThreatMetadataForApiCallback api_callback) {
+    NotificationAbuseCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   DCHECK(url.SchemeIs(url::kHttpScheme) || url.SchemeIs(url::kHttpsScheme));
 
   std::vector<FullHashStr> full_hashes;
-  V4ProtocolManagerUtil::UrlToFullHashes(url.DeprecatedGetOriginAsURL(),
+  SBProtocolManagerUtil::UrlToFullHashes(url.DeprecatedGetOriginAsURL(),
                                          &full_hashes);
 
   FullHashToStoreAndHashPrefixesMap full_hash_to_store_and_hash_prefixes;
   for (const FullHashStr& full_hash : full_hashes) {
     HashPrefixStr prefix;
     bool result =
-        V4ProtocolManagerUtil::FullHashToSmallestHashPrefix(full_hash, &prefix);
+        SBProtocolManagerUtil::FullHashToSmallestHashPrefix(full_hash, &prefix);
     DCHECK(result);
     full_hash_to_store_and_hash_prefixes[full_hash].emplace_back(
         GetChromeUrlApiId(), prefix);
   }
 
-  GetFullHashes(full_hash_to_store_and_hash_prefixes, list_client_states,
-                base::BindOnce(&V4GetHashProtocolManager::OnFullHashForApi,
-                               base::Unretained(this), std::move(api_callback),
-                               full_hashes),
-                MechanismExperimentHashDatabaseCache::kNoExperiment);
+  GetFullHashes(
+      full_hash_to_store_and_hash_prefixes, list_client_states,
+      base::BindOnce(&V4GetHashProtocolManager::OnFullHashForNotificationAbuse,
+                     base::Unretained(this), std::move(callback), full_hashes));
 }
 
 void V4GetHashProtocolManager::GetFullHashCachedResults(
@@ -405,8 +388,7 @@ void V4GetHashProtocolManager::GetFullHashCachedResults(
         full_hash_to_store_and_hash_prefixes,
     const Time& now,
     std::vector<HashPrefixStr>* prefixes_to_request,
-    std::vector<FullHashInfo>* cached_full_hash_infos,
-    MechanismExperimentHashDatabaseCache mechanism_experiment_cache_selection) {
+    std::vector<FullHashInfo>* cached_full_hash_infos) {
   DCHECK(!full_hash_to_store_and_hash_prefixes.empty());
   DCHECK(prefixes_to_request->empty());
   DCHECK(cached_full_hash_infos->empty());
@@ -440,33 +422,6 @@ void V4GetHashProtocolManager::GetFullHashCachedResults(
   //   cache entry if they expire AND their expire time is after the negative
   //   cache expire time.
 
-  // See comments above MechanismExperimentHashDatabaseCache's definition for
-  // more context.
-  //  - Outside the context of the experiment, always read from the main cache.
-  //  - Inside the context of the experiment, read from the cache corresponding
-  //    to the specific mechanism.
-  FullHashCache& full_hash_cache = full_hash_cache_;
-  DCHECK(is_lookup_mechanism_experiment_enabled_ ||
-         mechanism_experiment_cache_selection ==
-             MechanismExperimentHashDatabaseCache::kNoExperiment);
-  switch (mechanism_experiment_cache_selection) {
-    case MechanismExperimentHashDatabaseCache::kNoExperiment:
-    case MechanismExperimentHashDatabaseCache::kUrlRealTimeOnly:
-      full_hash_cache = full_hash_cache_;
-      break;
-    case MechanismExperimentHashDatabaseCache::kHashRealTimeOnly:
-      full_hash_cache =
-          lookup_mechanism_experiment_hash_realtime_full_hash_cache_;
-      break;
-    case MechanismExperimentHashDatabaseCache::kHashDatabaseOnly:
-      full_hash_cache =
-          lookup_mechanism_experiment_hash_database_full_hash_cache_;
-      break;
-    default:
-      NOTREACHED();
-      break;
-  }
-
   std::unordered_set<HashPrefixStr> unique_prefixes_to_request;
   for (const auto& it : full_hash_to_store_and_hash_prefixes) {
     const FullHashStr& full_hash = it.first;
@@ -474,8 +429,8 @@ void V4GetHashProtocolManager::GetFullHashCachedResults(
     for (const StoreAndHashPrefix& matched_it : matched) {
       const ListIdentifier& list_id = matched_it.list_id;
       const HashPrefixStr& prefix = matched_it.hash_prefix;
-      auto prefix_entry = full_hash_cache.find(prefix);
-      if (prefix_entry != full_hash_cache.end()) {
+      auto prefix_entry = full_hash_cache_.find(prefix);
+      if (prefix_entry != full_hash_cache_.end()) {
         // Case 1.
         const CachedHashPrefixInfo& cached_prefix_info = prefix_entry->second;
         bool found_full_hash = false;
@@ -530,7 +485,7 @@ std::string V4GetHashProtocolManager::GetHashRequest(
 
   FindFullHashesRequest req;
 
-  V4ProtocolManagerUtil::SetClientInfoFromConfig(req.mutable_client(), config_);
+  SBProtocolManagerUtil::SetClientInfoFromConfig(req.mutable_client(), config_);
 
   for (const auto& client_state : list_client_states) {
     req.add_client_states(client_state);
@@ -562,30 +517,32 @@ void V4GetHashProtocolManager::GetHashUrlAndHeaders(
     const std::string& req_base64,
     GURL* gurl,
     net::HttpRequestHeaders* headers) const {
-  V4ProtocolManagerUtil::GetRequestUrlAndHeaders(req_base64, "fullHashes:find",
+  SBProtocolManagerUtil::GetRequestUrlAndHeaders(req_base64, "fullHashes:find",
                                                  config_, gurl, headers);
 }
 
 void V4GetHashProtocolManager::HandleGetHashError(const Time& now) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  base::TimeDelta next = V4ProtocolManagerUtil::GetNextBackOffInterval(
+  base::TimeDelta next = SBProtocolManagerUtil::GetNextBackOffInterval(
       &gethash_error_count_, &gethash_back_off_mult_);
   next_gethash_time_ = now + next;
 }
 
-void V4GetHashProtocolManager::OnFullHashForApi(
-    ThreatMetadataForApiCallback api_callback,
+void V4GetHashProtocolManager::OnFullHashForNotificationAbuse(
+    NotificationAbuseCallback callback,
     const std::vector<FullHashStr>& full_hashes,
     const std::vector<FullHashInfo>& full_hash_infos) {
-  ThreatMetadata md;
+  bool is_abusive = false;
   for (const FullHashInfo& full_hash_info : full_hash_infos) {
     DCHECK_EQ(GetChromeUrlApiId(), full_hash_info.list_id);
-    DCHECK(base::Contains(full_hashes, full_hash_info.full_hash));
-    md.api_permissions.insert(full_hash_info.metadata.api_permissions.begin(),
-                              full_hash_info.metadata.api_permissions.end());
+    DCHECK(std::ranges::contains(full_hashes, full_hash_info.full_hash));
+    if (full_hash_info.is_notification_abusive) {
+      is_abusive = true;
+      break;
+    }
   }
 
-  std::move(api_callback).Run(md);
+  std::move(callback).Run(is_abusive);
 }
 
 bool V4GetHashProtocolManager::ParseHashResponse(
@@ -634,9 +591,10 @@ bool V4GetHashProtocolManager::ParseHashResponse(
 
     ListIdentifier list_id(match.platform_type(), match.threat_entry_type(),
                            match.threat_type());
-    if (!base::Contains(platform_types_, list_id.platform_type()) ||
-        !base::Contains(threat_entry_types_, list_id.threat_entry_type()) ||
-        !base::Contains(threat_types_, list_id.threat_type())) {
+    if (!std::ranges::contains(platform_types_, list_id.platform_type()) ||
+        !std::ranges::contains(threat_entry_types_,
+                               list_id.threat_entry_type()) ||
+        !std::ranges::contains(threat_types_, list_id.threat_type())) {
       // The server may send a ThreatMatch response for lists that we didn't ask
       // for so ignore those ThreatMatch responses.
       continue;
@@ -652,7 +610,7 @@ bool V4GetHashProtocolManager::ParseHashResponse(
     }
     FullHashInfo full_hash_info(match.threat().hash(), list_id,
                                 positive_expiry);
-    ParseMetadata(match, &full_hash_info.metadata);
+    ParseMetadata(match, &full_hash_info);
     TRACE_EVENT2("safe_browsing", "V4GetHashProtocolManager::ParseHashResponse",
                  "threat_type", full_hash_info.list_id.threat_type(),
                  "metadata", full_hash_info.metadata.ToTracedValue());
@@ -663,7 +621,7 @@ bool V4GetHashProtocolManager::ParseHashResponse(
 
 // static
 void V4GetHashProtocolManager::ParseMetadata(const ThreatMatch& match,
-                                             ThreatMetadata* metadata) {
+                                             FullHashInfo* full_hash_info) {
   // Different threat types will handle the metadata differently.
   if (match.threat_type() == API_ABUSE) {
     if (!match.has_platform_type()) {
@@ -675,52 +633,15 @@ void V4GetHashProtocolManager::ParseMetadata(const ThreatMatch& match,
       RecordParseGetHashResult(NO_METADATA_ERROR);
       return;
     }
-    // For API Abuse, store a list of the returned permissions.
+    // For API Abuse, check if the returned permissions contain NOTIFICATIONS.
     for (const ThreatEntryMetadata::MetadataEntry& m :
          match.threat_entry_metadata().entries()) {
       if (m.key() != kPermission) {
         RecordParseGetHashResult(UNEXPECTED_METADATA_VALUE_ERROR);
         return;
       }
-      metadata->api_permissions.insert(m.value());
-    }
-  } else if (match.threat_type() == MALWARE_THREAT ||
-             match.threat_type() == POTENTIALLY_HARMFUL_APPLICATION) {
-    for (const ThreatEntryMetadata::MetadataEntry& m :
-         match.threat_entry_metadata().entries()) {
-      if (m.key() == kPhaPatternType || m.key() == kMalwareThreatType) {
-        if (m.value() == kLanding) {
-          metadata->threat_pattern_type = ThreatPatternType::MALWARE_LANDING;
-          break;
-        } else if (m.value() == kDistribution) {
-          metadata->threat_pattern_type =
-              ThreatPatternType::MALWARE_DISTRIBUTION;
-          break;
-        } else {
-          RecordParseGetHashResult(UNEXPECTED_METADATA_VALUE_ERROR);
-          return;
-        }
-      }
-    }
-  } else if (match.threat_type() == SOCIAL_ENGINEERING) {
-    for (const ThreatEntryMetadata::MetadataEntry& m :
-         match.threat_entry_metadata().entries()) {
-      if (m.key() == kSePatternType) {
-        if (m.value() == kSocialEngineeringAds) {
-          metadata->threat_pattern_type =
-              ThreatPatternType::SOCIAL_ENGINEERING_ADS;
-          break;
-        } else if (m.value() == kSocialEngineeringLanding) {
-          metadata->threat_pattern_type =
-              ThreatPatternType::SOCIAL_ENGINEERING_LANDING;
-          break;
-        } else if (m.value() == kPhishing) {
-          metadata->threat_pattern_type = ThreatPatternType::PHISHING;
-          break;
-        } else {
-          RecordParseGetHashResult(UNEXPECTED_METADATA_VALUE_ERROR);
-          return;
-        }
+      if (m.value() == "NOTIFICATIONS") {
+        full_hash_info->is_notification_abusive = true;
       }
     }
   } else if (match.threat_type() == SUBRESOURCE_FILTER) {
@@ -733,10 +654,12 @@ void V4GetHashProtocolManager::ParseMetadata(const ThreatMatch& match,
                                : SubresourceFilterLevel::ENFORCE;
       };
       if (m.key() == "sf_absv") {
-        metadata->subresource_filter_match[SubresourceFilterType::ABUSIVE] =
+        full_hash_info->metadata
+            .subresource_filter_match[SubresourceFilterType::ABUSIVE] =
             get_enforcement(m.value());
       } else if (m.key() == "sf_bas") {
-        metadata->subresource_filter_match[SubresourceFilterType::BETTER_ADS] =
+        full_hash_info->metadata
+            .subresource_filter_match[SubresourceFilterType::BETTER_ADS] =
             get_enforcement(m.value());
       }
     }
@@ -760,8 +683,7 @@ void V4GetHashProtocolManager::SetClockForTests(base::Clock* clock) {
 void V4GetHashProtocolManager::UpdateCache(
     const std::vector<HashPrefixStr>& prefixes_requested,
     const std::vector<FullHashInfo>& full_hash_infos,
-    const Time& negative_cache_expire,
-    MechanismExperimentHashDatabaseCache mechanism_experiment_cache_selection) {
+    const Time& negative_cache_expire) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // If negative_cache_expire is null, don't cache the results since it's not
@@ -770,64 +692,18 @@ void V4GetHashProtocolManager::UpdateCache(
     return;
   }
 
-  auto update_individual_cache =
-      [prefixes_requested, negative_cache_expire,
-       full_hash_infos](FullHashCache& full_hash_cache) {
-        for (const HashPrefixStr& prefix : prefixes_requested) {
-          // Create or reset the cached result for this prefix.
-          CachedHashPrefixInfo& chpi = full_hash_cache[prefix];
-          chpi.full_hash_infos.clear();
-          chpi.negative_expiry = negative_cache_expire;
+  for (const HashPrefixStr& prefix : prefixes_requested) {
+    // Create or reset the cached result for this prefix.
+    CachedHashPrefixInfo& chpi = full_hash_cache_[prefix];
+    chpi.full_hash_infos.clear();
+    chpi.negative_expiry = negative_cache_expire;
 
-          for (const FullHashInfo& full_hash_info : full_hash_infos) {
-            if (V4ProtocolManagerUtil::FullHashMatchesHashPrefix(
-                    full_hash_info.full_hash, prefix)) {
-              chpi.full_hash_infos.push_back(full_hash_info);
-            }
-          }
-        }
-      };
-
-  // See comments above MechanismExperimentHashDatabaseCache's definition for
-  // more context.
-  if (is_lookup_mechanism_experiment_enabled_) {
-    switch (mechanism_experiment_cache_selection) {
-      // If this request is outside the scope of the experiment, update all
-      // three caches. We still want to update the experiment's backgrounded
-      // caches because there may be cache entries added outside the experiment
-      // that end up helping with the experiment's cache hits.
-      case MechanismExperimentHashDatabaseCache::kNoExperiment:
-        update_individual_cache(full_hash_cache_);
-        update_individual_cache(
-            lookup_mechanism_experiment_hash_realtime_full_hash_cache_);
-        update_individual_cache(
-            lookup_mechanism_experiment_hash_database_full_hash_cache_);
-        break;
-      // If this request is in the scope of the experiment and it's for the main
-      // request, we only want to update the main cache.
-      case MechanismExperimentHashDatabaseCache::kUrlRealTimeOnly:
-        update_individual_cache(full_hash_cache_);
-        break;
-      // If this request is in the scope of the experiment and it's for the
-      // backgrounded hash real-time request, we only want to update that
-      // backgrounded cache.
-      case MechanismExperimentHashDatabaseCache::kHashRealTimeOnly:
-        update_individual_cache(
-            lookup_mechanism_experiment_hash_realtime_full_hash_cache_);
-        break;
-      // If this request is in the scope of the experiment and it's for the
-      // backgrounded hash database request, we only want to update that
-      // backgrounded cache.
-      case MechanismExperimentHashDatabaseCache::kHashDatabaseOnly:
-        update_individual_cache(
-            lookup_mechanism_experiment_hash_database_full_hash_cache_);
-        break;
-      default:
-        NOTREACHED();
-        break;
+    for (const FullHashInfo& full_hash_info : full_hash_infos) {
+      if (SBProtocolManagerUtil::FullHashMatchesHashPrefix(
+              full_hash_info.full_hash, prefix)) {
+        chpi.full_hash_infos.push_back(full_hash_info);
+      }
     }
-  } else {
-    update_individual_cache(full_hash_cache_);
   }
 }
 
@@ -862,19 +738,15 @@ void V4GetHashProtocolManager::MergeResults(
 // SafeBrowsing request responses are handled here.
 void V4GetHashProtocolManager::OnURLLoaderComplete(
     network::SimpleURLLoader* url_loader,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   int response_code = 0;
   if (url_loader->ResponseInfo() && url_loader->ResponseInfo()->headers)
     response_code = url_loader->ResponseInfo()->headers->response_code();
 
-  std::string data;
-  if (response_body)
-    data = *response_body;
-
   OnURLLoaderCompleteInternal(url_loader, url_loader->NetError(), response_code,
-                              data);
+                              std::move(response_body).value_or(""));
 }
 
 void V4GetHashProtocolManager::OnURLLoaderCompleteInternal(
@@ -883,23 +755,14 @@ void V4GetHashProtocolManager::OnURLLoaderCompleteInternal(
     int response_code,
     const std::string& data) {
   auto it = pending_hash_requests_.find(url_loader);
-  DCHECK(it != pending_hash_requests_.end()) << "Request not found";
+  CHECK(it != pending_hash_requests_.end()) << "Request not found";
   RecordHttpResponseOrErrorCode("SafeBrowsing.V4GetHash.Network.Result",
+                                net_error, response_code);
+  RecordHttpResponseOrErrorCode("SafeBrowsing.SBGetHash.Network.Result",
                                 net_error, response_code);
 
   std::vector<FullHashInfo> full_hash_infos;
   Time negative_cache_expire;
-
-  if (net_error == net::ERR_INTERNET_DISCONNECTED) {
-    base::UmaHistogramSparse(
-        "SafeBrowsing.V4GetHash.Network.HttpResponseCode.InternetDisconnected",
-        response_code);
-  }
-  if (net_error == net::ERR_NETWORK_CHANGED) {
-    base::UmaHistogramSparse(
-        "SafeBrowsing.V4GetHash.Network.HttpResponseCode.NetworkChanged",
-        response_code);
-  }
 
   if (net_error == net::OK && response_code == net::HTTP_OK) {
     RecordGetHashResult(V4OperationResult::STATUS_200);
@@ -933,8 +796,9 @@ void V4GetHashProtocolManager::OnURLLoaderCompleteInternal(
   const std::unique_ptr<FullHashCallbackInfo>& fhci = it->second;
   UMA_HISTOGRAM_LONG_TIMES("SafeBrowsing.V4GetHash.Network.Time",
                            clock_->Now() - fhci->network_start_time);
-  UpdateCache(fhci->prefixes_requested, full_hash_infos, negative_cache_expire,
-              fhci->mechanism_experiment_cache_selection);
+  base::UmaHistogramLongTimes("SafeBrowsing.SBGetHash.Network.Time",
+                              clock_->Now() - fhci->network_start_time);
+  UpdateCache(fhci->prefixes_requested, full_hash_infos, negative_cache_expire);
   MergeResults(fhci->full_hash_to_store_and_hash_prefixes, full_hash_infos,
                &fhci->cached_full_hash_infos);
 
@@ -952,14 +816,14 @@ void V4GetHashProtocolManager::CollectFullHashCacheInfo(
         full_hash_cache_info->add_full_hash_cache();
     full_hash_cache->set_hash_prefix(it.first);
     full_hash_cache->mutable_cached_hash_prefix_info()->set_negative_expiry(
-        it.second.negative_expiry.ToJavaTime());
+        it.second.negative_expiry.InMillisecondsSinceUnixEpoch());
 
     for (const auto& full_hash_infos_it : it.second.full_hash_infos) {
       FullHashCacheInfo::FullHashCache::CachedHashPrefixInfo::FullHashInfo*
           full_hash_info = full_hash_cache->mutable_cached_hash_prefix_info()
                                ->add_full_hash_info();
       full_hash_info->set_positive_expiry(
-          full_hash_infos_it.positive_expiry.ToJavaTime());
+          full_hash_infos_it.positive_expiry.InMillisecondsSinceUnixEpoch());
       full_hash_info->set_full_hash(full_hash_infos_it.full_hash);
 
       full_hash_info->mutable_list_identifier()->set_platform_type(
@@ -972,16 +836,11 @@ void V4GetHashProtocolManager::CollectFullHashCacheInfo(
   }
 }
 
-void V4GetHashProtocolManager::SetLookupMechanismExperimentIsEnabled() {
-  is_lookup_mechanism_experiment_enabled_ = true;
-}
-
 #ifndef DEBUG
 std::ostream& operator<<(std::ostream& os, const FullHashInfo& fhi) {
   os << "{full_hash: " << fhi.full_hash << "; list_id: " << fhi.list_id
      << "; positive_expiry: " << fhi.positive_expiry
-     << "; metadata.api_permissions.size(): "
-     << fhi.metadata.api_permissions.size() << "}";
+     << "; is_notification_abusive: " << fhi.is_notification_abusive << "}";
   return os;
 }
 #endif

@@ -13,7 +13,7 @@
 #include "ui/display/types/display_snapshot.h"
 #include "ui/events/platform/platform_event_dispatcher.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/ozone/platform/drm/host/gpu_thread_observer.h"
 #include "ui/platform_window/platform_window.h"
 #include "ui/platform_window/platform_window_delegate.h"
@@ -91,7 +91,8 @@ class DrmWindowHost : public PlatformWindow,
                       const gfx::ImageSkia& app_icon) override;
   void SizeConstraintsChanged() override;
 
-  void OnMouseEnter();
+  void OnCursorUpdate();
+  void SynthesizeMouseMove(const gfx::PointF& location);
 
   // PlatformEventDispatcher:
   bool CanDispatchEvent(const PlatformEvent& event) override;
@@ -105,16 +106,12 @@ class DrmWindowHost : public PlatformWindow,
  private:
   void SendBoundsChange();
 
-  const raw_ptr<PlatformWindowDelegate, ExperimentalAsh>
-      delegate_;                                             // Not owned.
-  const raw_ptr<GpuThreadAdapter, ExperimentalAsh> sender_;  // Not owned.
-  const raw_ptr<EventFactoryEvdev, ExperimentalAsh>
-      event_factory_;                                 // Not owned.
-  const raw_ptr<DrmCursor, ExperimentalAsh> cursor_;  // Not owned.
-  const raw_ptr<DrmWindowHostManager, ExperimentalAsh>
-      window_manager_;  // Not owned.
-  const raw_ptr<DrmDisplayHostManager, ExperimentalAsh>
-      display_manager_;  // Not owned.
+  const raw_ptr<PlatformWindowDelegate> delegate_;        // Not owned.
+  const raw_ptr<GpuThreadAdapter> sender_;                // Not owned.
+  const raw_ptr<EventFactoryEvdev> event_factory_;        // Not owned.
+  const raw_ptr<DrmCursor> cursor_;                       // Not owned.
+  const raw_ptr<DrmWindowHostManager> window_manager_;    // Not owned.
+  const raw_ptr<DrmDisplayHostManager> display_manager_;  // Not owned.
 
   gfx::Rect bounds_;
   const gfx::AcceleratedWidget widget_;

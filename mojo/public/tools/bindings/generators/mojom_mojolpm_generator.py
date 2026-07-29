@@ -4,9 +4,10 @@
 """Generates C++ source files from a mojom.Module."""
 import os
 import sys
+from functools import partial
 from generators.mojom_cpp_generator import _NameFormatter as CppNameFormatter
 from generators.mojom_cpp_generator import Generator as CppGenerator
-from generators.mojom_cpp_generator import IsNativeOnlyKind, NamespaceToArray
+from generators.mojom_cpp_generator import IsNativeOnlyKind, NamespaceToArray, UseCustomSerializer
 import mojom.generate.generator as generator
 import mojom.generate.module as mojom
 import mojom.generate.pack as pack
@@ -24,6 +25,17 @@ _kind_to_proto_type = {
     mojom.INT64: "int64",
     mojom.UINT64: "uint64",
     mojom.DOUBLE: "double",
+    mojom.NULLABLE_BOOL: "bool",
+    mojom.NULLABLE_INT8: "int32",
+    mojom.NULLABLE_UINT8: "uint32",
+    mojom.NULLABLE_INT16: "int32",
+    mojom.NULLABLE_UINT16: "uint32",
+    mojom.NULLABLE_INT32: "int32",
+    mojom.NULLABLE_UINT32: "uint32",
+    mojom.NULLABLE_FLOAT: "float",
+    mojom.NULLABLE_INT64: "int64",
+    mojom.NULLABLE_UINT64: "uint64",
+    mojom.NULLABLE_DOUBLE: "double",
 }
 
 _kind_to_cpp_proto_type = {
@@ -38,6 +50,17 @@ _kind_to_cpp_proto_type = {
     mojom.INT64: "::google::protobuf::int64",
     mojom.UINT64: "::google::protobuf::int64",
     mojom.DOUBLE: "double",
+    mojom.NULLABLE_BOOL: "bool",
+    mojom.NULLABLE_INT8: "::google::protobuf::int32",
+    mojom.NULLABLE_UINT8: "::google::protobuf::uint32",
+    mojom.NULLABLE_INT16: "::google::protobuf::int32",
+    mojom.NULLABLE_UINT16: "::google::protobuf::uint32",
+    mojom.NULLABLE_INT32: "::google::protobuf::int32",
+    mojom.NULLABLE_UINT32: "::google::protobuf::uint32",
+    mojom.NULLABLE_FLOAT: "float",
+    mojom.NULLABLE_INT64: "::google::protobuf::int64",
+    mojom.NULLABLE_UINT64: "::google::protobuf::int64",
+    mojom.NULLABLE_DOUBLE: "double",
 }
 
 
@@ -79,8 +102,7 @@ class Generator(CppGenerator):
       if (mojom.IsIntegralKind(kind) or mojom.IsStringKind(kind)
           or mojom.IsDoubleKind(kind) or mojom.IsFloatKind(kind)
           or mojom.IsAnyHandleKind(kind) or mojom.IsInterfaceKind(kind)
-          or mojom.IsInterfaceRequestKind(kind) or mojom.IsAssociatedKind(kind)
-          or mojom.IsPendingRemoteKind(kind)
+          or mojom.IsAssociatedKind(kind) or mojom.IsPendingRemoteKind(kind)
           or mojom.IsPendingReceiverKind(kind)):
         pass
       elif mojom.IsArrayKind(kind):
@@ -103,6 +125,13 @@ class Generator(CppGenerator):
 
     for kind in self.module.enums + self.module.structs + self.module.unions:
       AddKind(kind)
+
+    parameters = (param for interface in self.module.interfaces
+                  for method in interface.methods
+                  for param in (method.parameters +
+                                (method.response_parameters or [])))
+    for parameter in parameters:
+      AddKind(parameter.kind)
 
     return all_typemaps
 
@@ -135,11 +164,7 @@ class Generator(CppGenerator):
         seen_types.add(name)
         if kind.module in all_imports:
           seen_imports.add(kind.module)
-      elif (mojom.IsInterfaceRequestKind(kind)
-            or mojom.IsAssociatedInterfaceKind(kind)
-            or mojom.IsAssociatedInterfaceRequestKind(kind)
-            or mojom.IsPendingRemoteKind(kind)
-            or mojom.IsPendingReceiverKind(kind)
+      elif (mojom.IsPendingRemoteKind(kind) or mojom.IsPendingReceiverKind(kind)
             or mojom.IsPendingAssociatedRemoteKind(kind)
             or mojom.IsPendingAssociatedReceiverKind(kind)):
         AddKind(kind.kind)
@@ -211,11 +236,16 @@ class Generator(CppGenerator):
         "is_array_kind": mojom.IsArrayKind,
         "is_bool_kind": mojom.IsBoolKind,
         "is_default_constructible": self._IsDefaultConstructible,
+        "is_value_kind": mojom.IsValueKind,
         "is_enum_kind": mojom.IsEnumKind,
         "is_double_kind": mojom.IsDoubleKind,
         "is_float_kind": mojom.IsFloatKind,
         "is_integral_kind": mojom.IsIntegralKind,
         "is_interface_kind": mojom.IsInterfaceKind,
+        "is_nullable_value_kind_packed_field":
+        pack.IsNullableValueKindPackedField,
+        "is_primary_nullable_value_kind_packed_field":
+        pack.IsPrimaryNullableValueKindPackedField,
         "is_receiver_kind": self._IsReceiverKind,
         "is_pending_associated_receiver_kind":
         mojom.IsPendingAssociatedReceiverKind,
@@ -224,7 +254,6 @@ class Generator(CppGenerator):
         mojom.IsPendingAssociatedRemoteKind,
         "is_pending_remote_kind": mojom.IsPendingRemoteKind,
         "is_platform_handle_kind": mojom.IsPlatformHandleKind,
-        "is_associated_interface_kind": mojom.IsAssociatedInterfaceKind,
         "is_native_only_kind": IsNativeOnlyKind,
         "is_any_handle_kind": mojom.IsAnyHandleKind,
         "is_any_interface_kind": mojom.IsAnyInterfaceKind,
@@ -234,6 +263,7 @@ class Generator(CppGenerator):
         "is_hashable": self._IsHashableKind,
         "is_map_kind": mojom.IsMapKind,
         "is_move_only_kind": self._IsMoveOnlyKind,
+        "is_non_const_ref_kind": self._IsNonConstRefKind,
         "is_nullable_kind": mojom.IsNullableKind,
         "is_object_kind": mojom.IsObjectKind,
         "is_reference_kind": mojom.IsReferenceKind,
@@ -241,7 +271,9 @@ class Generator(CppGenerator):
         "is_struct_kind": mojom.IsStructKind,
         "is_typemapped_kind": self._IsTypemappedKind,
         "is_union_kind": mojom.IsUnionKind,
-        "under_to_camel": self._UnderToCamel,
+        "to_unnullable_kind": self._ToUnnullableKind,
+        "under_to_camel": partial(self._UnderToCamel, digits_split=True),
+        "use_custom_serializer": UseCustomSerializer,
     }
     return cpp_filters
 
@@ -339,6 +371,11 @@ class Generator(CppGenerator):
       return True
     return False
 
+  def _IsNonConstRefKind(self, kind):
+    if self._IsTypemappedKind(kind):
+      return self.typemap[self._GetFullMojomNameForKind(kind)]["non_const_ref"]
+    return False
+
   def _GetCppWrapperProtoType(self, kind, add_same_module_namespaces=False):
     if (mojom.IsEnumKind(kind) or mojom.IsStructKind(kind)
         or mojom.IsUnionKind(kind)):
@@ -367,7 +404,7 @@ class Generator(CppGenerator):
       raise Exception("Unrecognized kind %s" % kind.spec)
     return _kind_to_cpp_proto_type[kind]
 
-  def _GetProtoFieldType(self, kind, quantified=True):
+  def _GetProtoFieldType(self, kind, quantified=True, field=None):
     # TODO(markbrand): This will not handle array<array> or array<map>
     # TODO(markbrand): This also will not handle array<x, 10>
     unquantified = ''
@@ -402,7 +439,8 @@ class Generator(CppGenerator):
     else:
       unquantified = _kind_to_proto_type[kind]
 
-    if quantified and mojom.IsNullableKind(kind):
+    if quantified and (mojom.IsNullableKind(kind) or
+                       (field and field.default is not None)):
       return 'optional %s' % unquantified
     elif quantified:
       return 'required %s' % unquantified
@@ -440,6 +478,8 @@ class Generator(CppGenerator):
       return False
     if mojom.IsStringKind(kind):
       return False
+    if mojom.IsValueKind(kind):
+      return False
     return True
 
   def _EnumHasDuplicateValues(self, kind):
@@ -470,9 +510,9 @@ class Generator(CppGenerator):
     return False
 
   def _DefaultConstructorArgs(self, kind):
-    if not self._IsDefaultConstructible(kind):
-      return "mojo::internal::DefaultConstructTag()"
-    return ""
+    if mojom.IsNullableKind(kind) or self._IsDefaultConstructible(kind):
+      return ""
+    return "mojo::internal::DefaultConstructTag()"
 
   def _EnumFieldName(self, name, kind):
     # The WebFeature enum has entries that differ only by the casing of the
@@ -489,3 +529,7 @@ class Generator(CppGenerator):
         field_names[field.name] = new_field_name
       self.enum_name_cache[kind] = field_names
     return self.enum_name_cache[kind][name]
+
+  def _ToUnnullableKind(self, kind):
+    assert mojom.IsNullableKind(kind)
+    return kind.MakeUnnullableKind()

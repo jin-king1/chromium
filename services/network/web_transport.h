@@ -6,13 +6,19 @@
 #define SERVICES_NETWORK_WEB_TRANSPORT_H_
 
 #include <memory>
+#include <string_view>
 
 #include "base/containers/queue.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
+#include "net/base/completion_once_callback.h"
+#include "net/log/net_log_with_source.h"
 #include "net/quic/web_transport_client.h"
+#include "services/network/public/mojom/client_security_state.mojom.h"
+#include "services/network/public/mojom/network_context.mojom.h"
+#include "services/network/public/mojom/url_loader_network_service_observer.mojom.h"
 #include "services/network/public/mojom/web_transport.mojom.h"
 
 class GURL;
@@ -49,8 +55,17 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
       const net::NetworkAnonymizationKey& key,
       const std::vector<mojom::WebTransportCertificateFingerprintPtr>&
           fingerprints,
+      const std::vector<std::string>& application_protocols,
+      mojom::WebTransportCongestionControl congestion_control,
+      std::optional<uint16_t>
+          anticipated_concurrent_incoming_unidirectional_streams,
+      std::optional<uint16_t>
+          anticipated_concurrent_incoming_bidirectional_streams,
       NetworkContext* context,
-      mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client);
+      mojo::PendingRemote<mojom::WebTransportHandshakeClient> handshake_client,
+      mojo::PendingRemote<mojom::URLLoaderNetworkServiceObserver>
+          url_loader_network_observer,
+      mojom::ClientSecurityStatePtr client_security_state);
   ~WebTransport() override;
 
   // mojom::WebTransport implementation:
@@ -58,6 +73,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
                     base::OnceCallback<void(bool)> callback) override;
   void CreateStream(mojo::ScopedDataPipeConsumerHandle readable,
                     mojo::ScopedDataPipeProducerHandle writable,
+                    mojom::WebTransportStreamPriorityPtr priority,
                     base::OnceCallback<void(bool, uint32_t)> callback) override;
   void AcceptBidirectionalStream(
       BidirectionalStreamAcceptanceCallback callback) override;
@@ -67,21 +83,26 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
   void AbortStream(uint32_t stream_id, uint8_t code) override;
   void StopSending(uint32_t stream_id, uint8_t code) override;
   void SetOutgoingDatagramExpirationDuration(base::TimeDelta duration) override;
+  void GetStats(GetStatsCallback callback) override;
   void Close(mojom::WebTransportCloseInfoPtr close_info) override;
 
   // WebTransportClientVisitor implementation:
+  void OnLocalNetworkAccessCheck(const net::IPEndPoint& server_address,
+                                 const net::NetLogWithSource& net_log,
+                                 net::CompletionOnceCallback callback) override;
+  void OnBeforeConnect(const net::IPEndPoint& server_address) override;
   void OnConnected(
       scoped_refptr<net::HttpResponseHeaders> response_headers) override;
   void OnConnectionFailed(const net::WebTransportError& error) override;
   void OnClosed(
-      const absl::optional<net::WebTransportCloseInfo>& close_info) override;
+      const std::optional<net::WebTransportCloseInfo>& close_info) override;
   void OnError(const net::WebTransportError& error) override;
   void OnIncomingBidirectionalStreamAvailable() override;
   void OnIncomingUnidirectionalStreamAvailable() override;
-  void OnDatagramReceived(base::StringPiece datagram) override;
+  void OnDatagramReceived(std::string_view datagram) override;
   void OnCanCreateNewOutgoingBidirectionalStream() override;
   void OnCanCreateNewOutgoingUnidirectionalStream() override;
-  void OnDatagramProcessed(absl::optional<quic::MessageStatus> status) override;
+  void OnDatagramProcessed(std::optional<quic::DatagramStatus> status) override;
 
   bool torn_down() const { return torn_down_; }
 
@@ -90,8 +111,15 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
   void Dispose();
 
   const std::unique_ptr<net::WebTransportClient> transport_;
+  const GURL url_;
+  const url::Origin origin_;
   const raw_ptr<NetworkContext> context_;  // outlives |this|.
 
+  bool closing_ = false;
+  bool torn_down_ = false;
+
+  // Destroy `streams_` before `closing_` and `torn_down_`; its destructor
+  // calls back into `WebTransport` to check those flags.
   std::map<uint32_t, std::unique_ptr<Stream>> streams_;
 
   // These callbacks must be destroyed after |client_| because of mojo callback
@@ -104,10 +132,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WebTransport final
   mojo::Receiver<mojom::WebTransport> receiver_;
   mojo::Remote<mojom::WebTransportHandshakeClient> handshake_client_;
   mojo::Remote<mojom::WebTransportClient> client_;
+  mojo::Remote<mojom::URLLoaderNetworkServiceObserver>
+      url_loader_network_observer_;
+  mojom::ClientSecurityStatePtr client_security_state_;
   base::queue<base::OnceCallback<void(bool)>> datagram_callbacks_;
-
-  bool closing_ = false;
-  bool torn_down_ = false;
 
   // This must be the last member.
   base::WeakPtrFactory<WebTransport> weak_factory_{this};

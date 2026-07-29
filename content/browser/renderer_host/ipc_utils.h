@@ -5,8 +5,10 @@
 #ifndef CONTENT_BROWSER_RENDERER_HOST_IPC_UTILS_H_
 #define CONTENT_BROWSER_RENDERER_HOST_IPC_UTILS_H_
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
+#include "content/common/content_export.h"
 #include "content/common/frame.mojom.h"
+#include "content/public/browser/render_process_host.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom-forward.h"
@@ -55,7 +57,21 @@ bool VerifyOpenURLParams(RenderFrameHostImpl* current_rfh,
 // This function has to be called on the UI thread.
 bool VerifyBeginNavigationCommonParams(
     const RenderFrameHostImpl& current_rfh,
-    blink::mojom::CommonNavigationParams* common_params);
+    blink::mojom::CommonNavigationParams* common_params,
+    std::optional<blink::LocalFrameToken>& initiator_frame_token);
+
+// Verifies that the CreateNewWindowParams are valid and can be accessed by
+// `current_rfh`'s process.
+//
+// Returns true if the CreateNewWindowParams are valid.
+//
+// Terminates `current_rfh`'s process and returns false if the
+// CreateNewWindowParams are invalid.
+//
+// This function has to be called on the UI thread.
+CONTENT_EXPORT bool VerifyCreateNewWindowParams(
+    const RenderFrameHostImpl& current_rfh,
+    const mojom::CreateNewWindowParams& params);
 
 // Verify that the initiator frame identified by `initiator_frame_token` and
 // `initiator_process_id` can navigate `current_rfh`.
@@ -70,8 +86,18 @@ bool VerifyBeginNavigationCommonParams(
 // This function has to be called on the UI thread.
 bool VerifyNavigationInitiator(
     RenderFrameHostImpl* current_rfh,
-    const absl::optional<blink::LocalFrameToken>& initiator_frame_token,
-    int initiator_process_id);
+    const std::optional<blink::LocalFrameToken>& initiator_frame_token,
+    ChildProcessId initiator_process_id);
+
+// Verifies that |headers| are valid for a navigation request initiated by
+// |process|. For now, this always returns true, indicating that the |headers|
+// are valid. TODO(https://crbug.com/487795397): Later, after evaluating debug
+// data, this will be converted to terminate |process| and return false if
+// |headers| are invalid.
+//
+// This function has to be called on the UI thread.
+bool VerifyNavigationHeaders(RenderProcessHost* process,
+                             const std::string& headers);
 
 }  // namespace content
 

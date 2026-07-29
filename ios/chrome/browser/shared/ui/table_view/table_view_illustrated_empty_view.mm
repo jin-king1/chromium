@@ -7,10 +7,6 @@
 #import "ios/chrome/browser/shared/ui/table_view/table_view_constants.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace {
 // The StackView vertical spacing between the image, the title and the subtitle.
 const CGFloat kStackViewVerticalSpacingPt = 12.0;
@@ -63,7 +59,7 @@ NSAttributedString* GetAttributedMessage(NSString* message) {
                         image:(UIImage*)image
                         title:(NSString*)title
            attributedSubtitle:(NSAttributedString*)attributedSubtitle {
-  if (self = [super initWithFrame:frame]) {
+  if ((self = [super initWithFrame:frame])) {
     _title = title;
     _subtitle = attributedSubtitle;
     _image = image;
@@ -121,13 +117,15 @@ NSAttributedString* GetAttributedMessage(NSString* message) {
 
 #pragma mark - UITextViewDelegate
 
-- (BOOL)textView:(UITextView*)textView
-    shouldInteractWithURL:(NSURL*)URL
-                  inRange:(NSRange)characterRange
-              interaction:(UITextItemInteraction)interaction {
-  [self.delegate tableViewIllustratedEmptyView:self didTapSubtitleLink:URL];
-
-  return NO;
+- (UIAction*)textView:(UITextView*)textView
+    primaryActionForTextItem:(UITextItem*)textItem
+               defaultAction:(UIAction*)defaultAction {
+  __weak __typeof(self) weakSelf = self;
+  NSURL* URL = textItem.link;
+  return [UIAction actionWithHandler:^(UIAction* action) {
+    [weakSelf.delegate tableViewIllustratedEmptyView:weakSelf
+                                  didTapSubtitleLink:URL];
+  }];
 }
 
 - (void)textViewDidChangeSelection:(UITextView*)textView {
@@ -173,6 +171,7 @@ NSAttributedString* GetAttributedMessage(NSString* message) {
 
   if ([self.subtitle length]) {
     UITextView* subtitleTextView = [[UITextView alloc] init];
+    subtitleTextView.editable = NO;
     subtitleTextView.isAccessibilityElement = NO;
     subtitleTextView.attributedText = self.subtitle;
     subtitleTextView.delegate = self;

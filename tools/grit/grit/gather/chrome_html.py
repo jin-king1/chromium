@@ -18,7 +18,6 @@ referencing all available images.
 import os
 import re
 
-from grit import lazy_re
 from grit import util
 from grit.format import html_inline
 from grit.gather import interface
@@ -29,27 +28,27 @@ DIST_SUBSTR = '%DISTRIBUTION%'
 
 
 # Matches a chrome theme source URL.
-_THEME_SOURCE = lazy_re.compile(
+_THEME_SOURCE = re.compile(
     r'(?P<baseurl>chrome://theme/IDR_[A-Z0-9_]*)(?P<query>\?.*)?')
 # Pattern for matching CSS url() function.
 _CSS_URL_PATTERN = r'url\((?P<quote>"|\'|)(?P<filename>[^"\'()]*)(?P=quote)\)'
 # Matches CSS url() functions with the capture group 'filename'.
-_CSS_URL = lazy_re.compile(_CSS_URL_PATTERN)
+_CSS_URL = re.compile(_CSS_URL_PATTERN)
 # Matches one or more CSS image urls used in given properties.
-_CSS_IMAGE_URLS = lazy_re.compile(
+_CSS_IMAGE_URLS = re.compile(
     r'(?P<attribute>content|background|[\w-]*-image):\s*'
         r'(?P<urls>(' + _CSS_URL_PATTERN + r'\s*,?\s*)+)')
 # Matches CSS image sets.
-_CSS_IMAGE_SETS = lazy_re.compile(
+_CSS_IMAGE_SETS = re.compile(
     r'(?P<attribute>content|background|[\w-]*-image):[ ]*'
-        r'-webkit-image-set\((?P<images>'
+        r'(-webkit-)?image-set\((?P<images>'
         r'(\s*,?\s*url\((?P<quote>"|\'|)[^"\'()]*(?P=quote)\)[ ]*[0-9.]*x)*)\)',
     re.MULTILINE)
 # Matches a single image in a CSS image set with the capture group scale.
-_CSS_IMAGE_SET_IMAGE = lazy_re.compile(r'\s*,?\s*'
+_CSS_IMAGE_SET_IMAGE = re.compile(r'\s*,?\s*'
     r'url\((?P<quote>"|\'|)[^"\'()]*(?P=quote)\)[ ]*(?P<scale>[0-9.]*x)',
     re.MULTILINE)
-_HTML_IMAGE_SRC = lazy_re.compile(
+_HTML_IMAGE_SRC = re.compile(
     r'<img[^>]+src=\"(?P<filename>[^">]*)\"[^>]*>')
 
 def GetImageList(
@@ -111,7 +110,7 @@ def GetImageList(
 
 
 def GenerateImageSet(images, quote):
-  """Generates a -webkit-image-set for the provided list of images.
+  """Generates a image-set for the provided list of images.
 
   Args:
     images: an array of tuples giving scale factor and file path
@@ -119,26 +118,25 @@ def GenerateImageSet(images, quote):
     quote: a string giving the quotation character to use (i.e. "'")
 
   Returns:
-    string giving a -webkit-image-set rule referencing the provided images.
-        (i.e. '-webkit-image-set(url('image.png') 1x, url('2x/image.png') 2x)')
+    string giving a image-set rule referencing the provided images.
+        (i.e. 'image-set(url('image.png') 1x, url('2x/image.png') 2x)')
   """
   imageset = []
   for (scale_factor, filename) in images:
     imageset.append("url(%s%s%s) %s" % (quote, filename, quote, scale_factor))
-  return "-webkit-image-set(%s)" % (', '.join(imageset))
+  return "image-set(%s)" % (', '.join(imageset))
 
 
 def UrlToImageSet(
     src_match, base_path, scale_factors, distribution,
     filename_expansion_function=None):
-  """Regex replace function which replaces url() with -webkit-image-set.
+  """Regex replace function which replaces url() with image-set.
 
   Takes a regex match for url('path'). If the file is local, checks for
   files of the same name in folders corresponding to the supported scale
   factors. If the file is from a chrome://theme/ source, inserts the
   supported @Nx scale factor request. In either case inserts a
-  -webkit-image-set rule to fetch the appropriate image for the current
-  scale factor.
+  image-set rule to fetch the appropriate image for the current scale factor.
 
   Args:
     src_match: regex match object from _CSS_URLS
@@ -165,7 +163,7 @@ def UrlToImageSet(
 def InsertImageSet(
     src_match, base_path, scale_factors, distribution,
     filename_expansion_function=None):
-  """Regex replace function which inserts -webkit-image-set rules.
+  """Regex replace function which inserts image-set rules.
 
   Takes a regex match for `property: url('path')[, url('path')]+`.
   Replaces one or more occurances of the match with image set rules.
@@ -247,7 +245,7 @@ def RemoveImagesNotIn(scale_factors, src_match):
   images = _CSS_IMAGE_SET_IMAGE.sub(
       lambda m: m.group(0) if m.group('scale') in scale_factors else '',
       src_match.group('images'))
-  return "%s: -webkit-image-set(%s)" % (attr, images)
+  return "%s: image-set(%s)" % (attr, images)
 
 
 def RemoveImageSetImages(text, scale_factors):

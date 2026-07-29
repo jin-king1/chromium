@@ -120,7 +120,7 @@ def CollectAliasesByAddress(elf_path):
     #   nm --no-sort --defined-only libchrome.so > nm.out
     #   grep -v '\$' nm.out | grep ' r ' | sort | cut -d' ' -f1 > addrs
     #   wc -l < addrs; uniq < addrs | wc -l
-    if section not in 'tTW' or not _IsRelevantNmName(mangled_name):
+    if section not in 'tTWrRdD' or not _IsRelevantNmName(mangled_name):
       continue
 
     address = int(address_str, 16)
@@ -351,12 +351,14 @@ def RunNmOnIntermediates(target, output_directory):
   # llvm-nm can print 'no symbols' to stderr. Capture and count the number of
   # lines, to be returned to the caller.
   stdout, stderr = proc.communicate()
-  assert proc.returncode == 0, 'NM failed: ' + ' '.join(args)
+  assert proc.returncode == 0, (
+      f'NM returncode={proc.returncode}.\nstderr={stderr}\nstdout={stdout}\n'
+      'cmd=' + ' '.join(args))
   num_no_symbols = len(stderr.splitlines())
   lines = stdout.splitlines()
   # Empty .a file has no output.
   if not lines:
-    return parallel.EMPTY_ENCODED_DICT, parallel.EMPTY_ENCODED_DICT
+    return parallel.EMPTY_ENCODED_DICT, parallel.EMPTY_ENCODED_DICT, 0
   is_multi_file = not lines[0]
   lines = iter(lines)
   if is_multi_file:

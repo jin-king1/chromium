@@ -5,16 +5,13 @@
 #include "media/gpu/v4l2/test/video_decoder.h"
 
 #include <linux/videodev2.h>
+
 #include <algorithm>
 #include <vector>
 
 #include "base/bits.h"
-#include "base/containers/contains.h"
-#include "base/files/file.h"
-#include "base/files/file_path.h"
-#include "base/files/file_util.h"
+#include "base/compiler_specific.h"
 #include "base/logging.h"
-#include "base/strings/pattern.h"
 #include "media/base/video_types.h"
 #include "media/gpu/v4l2/test/upstream_pix_fmt.h"
 #include "third_party/libyuv/include/libyuv.h"
@@ -43,25 +40,7 @@ uint32_t FileFourccToDriverFourcc(uint32_t header_fourcc) {
 VideoDecoder::VideoDecoder(std::unique_ptr<V4L2IoctlShim> v4l2_ioctl,
                            gfx::Size display_resolution)
     : v4l2_ioctl_(std::move(v4l2_ioctl)),
-      display_resolution_(display_resolution) {
-  // TODO(b/278748005): Remove |cur_val_is_supported_| when all drivers
-  // fully support |V4L2_CTRL_WHICH_CUR_VAL|
-
-  // On kernel version 5.4 the MTK driver for MT8192 does not correctly support
-  // |V4L2_CTRL_WHICH_CUR_VAL|. This parameter is used when calling
-  // VIDIOC_S_EXT_CTRLS to indicate that the call should be executed
-  // immediately instead of putting it in a queue. Making sure the first
-  // buffer is processed immediately is only necessary for codecs that
-  // support 10 bit profiles. When processing a 10 bit profile the parameters
-  // need to be processed before the format can be determined. There are no
-  // chipsets that are on kernels older 5.10 and produce 10 bit output.
-  constexpr base::StringPiece kKernelVersion5dot4 = "Linux version 5.4*";
-  std::string kernel_version;
-  ReadFileToString(base::FilePath("/proc/version"), &kernel_version);
-
-  cur_val_is_supported_ =
-      !base::MatchPattern(kernel_version, kKernelVersion5dot4);
-}
+      display_resolution_(display_resolution) {}
 
 VideoDecoder::~VideoDecoder() = default;
 
@@ -69,9 +48,7 @@ void VideoDecoder::NegotiateCAPTUREFormat() {
   constexpr uint32_t kPreferredFormats[] = {
       V4L2_PIX_FMT_NV12, V4L2_PIX_FMT_MM21, V4L2_PIX_FMT_MT2T};
 
-  struct v4l2_format fmt;
-
-  memset(&fmt, 0, sizeof(fmt));
+  struct v4l2_format fmt = {};
   fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 
   v4l2_ioctl_->GetFmt(&fmt);
@@ -81,7 +58,7 @@ void VideoDecoder::NegotiateCAPTUREFormat() {
   // may prefer a different format than what is needed. If
   // not, negotiations need to be done to see if the preferred format can
   // be used.
-  if (!base::Contains(kPreferredFormats, fourcc)) {
+  if (!std::ranges::contains(kPreferredFormats, fourcc)) {
     bool format_found = false;
     for (const auto& preferred_fourcc : kPreferredFormats) {
       VLOG(1) << "Trying to see if preferred format ("
@@ -131,12 +108,11 @@ void VideoDecoder::CreateOUTPUTQueue(uint32_t compressed_fourcc) {
   // (fd) & buffer with the output queue for 4K60 requirement.
   // https://buganizer.corp.google.com/issues/202214561#comment31
   OUTPUT_queue_ = std::make_unique<V4L2Queue>(
-      V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, display_resolution_, V4L2_MEMORY_MMAP,
-      kNumberOfBuffersInOutputQueue);
+      V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE, display_resolution_, V4L2_MEMORY_MMAP);
   OUTPUT_queue_->set_fourcc(compressed_fourcc);
 
   v4l2_ioctl_->SetFmt(OUTPUT_queue_);
-  v4l2_ioctl_->ReqBufs(OUTPUT_queue_);
+  v4l2_ioctl_->ReqBufs(OUTPUT_queue_, kNumberOfBuffersInOutputQueue);
   v4l2_ioctl_->QueryAndMmapQueueBuffers(OUTPUT_queue_);
 
   int media_request_fd;
@@ -152,8 +128,7 @@ void VideoDecoder::CreateCAPTUREQueue(uint32_t num_buffers) {
   // |num_planes| represents separate memory buffers, not planes for Y, U, V.
   // https://www.kernel.org/doc/html/v5.10/userspace-api/media/v4l/pixfmt-v4l2-mplane.html#c.V4L.v4l2_plane_pix_format
   CAPTURE_queue_ = std::make_unique<V4L2Queue>(
-      V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, gfx::Size(0, 0), V4L2_MEMORY_MMAP,
-      num_buffers);
+      V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE, gfx::Size(0, 0), V4L2_MEMORY_MMAP);
 
   NegotiateCAPTUREFormat();
 
@@ -161,7 +136,7 @@ void VideoDecoder::CreateCAPTUREQueue(uint32_t num_buffers) {
                  .Contains(gfx::Rect(OUTPUT_queue_->resolution())))
       << "Display size is not contained within the coded size. DRC?";
 
-  v4l2_ioctl_->ReqBufs(CAPTURE_queue_);
+  v4l2_ioctl_->ReqBufs(CAPTURE_queue_, num_buffers);
   v4l2_ioctl_->QueryAndMmapQueueBuffers(CAPTURE_queue_);
   // Only 1 CAPTURE buffer is needed for 1st key frame decoding. Remaining
   // CAPTURE buffers will be queued after that.
@@ -186,7 +161,7 @@ void VideoDecoder::HandleDynamicResolutionChange(
 
   // Free all CAPTURE buffers from the driver side by calling VIDIOC_REQBUFS()
   // on the CAPTURE queue with a buffer count of zero.
-  v4l2_ioctl_->ReqBufsWithCount(CAPTURE_queue_, 0);
+  v4l2_ioctl_->ReqBufs(CAPTURE_queue_, 0);
 
   // Free queued CAPTURE buffer indexes that are tracked by the client side.
   CAPTURE_queue_->DequeueAllBufferIds();
@@ -198,7 +173,7 @@ void VideoDecoder::HandleDynamicResolutionChange(
 
   NegotiateCAPTUREFormat();
 
-  v4l2_ioctl_->ReqBufsWithCount(CAPTURE_queue_, num_buffers);
+  v4l2_ioctl_->ReqBufs(CAPTURE_queue_, num_buffers);
   v4l2_ioctl_->QueryAndMmapQueueBuffers(CAPTURE_queue_);
 
   // Only 1 CAPTURE buffer is needed for 1st key frame decoding. Remaining
@@ -211,13 +186,15 @@ void VideoDecoder::HandleDynamicResolutionChange(
   v4l2_ioctl_->StreamOn(CAPTURE_queue_->type());
 }
 
-void VideoDecoder::ConvertToYUV(std::vector<uint8_t>& dest_y,
-                                std::vector<uint8_t>& dest_u,
-                                std::vector<uint8_t>& dest_v,
-                                const gfx::Size& dest_size,
-                                const MmappedBuffer::MmappedPlanes& planes,
-                                const gfx::Size& src_size,
-                                uint32_t fourcc) {
+// static
+VideoDecoder::BitDepth VideoDecoder::ConvertToYUV(
+    std::vector<uint8_t>& dest_y,
+    std::vector<uint8_t>& dest_u,
+    std::vector<uint8_t>& dest_v,
+    const gfx::Size& dest_size,
+    const MmappedBuffer::MmappedPlanes& planes,
+    const gfx::Size& src_size,
+    uint32_t fourcc) {
   const gfx::Size half_dest_size((dest_size.width() + 1) / 2,
                                  (dest_size.height() + 1) / 2);
   const uint32_t dest_full_stride = dest_size.width();
@@ -231,29 +208,48 @@ void VideoDecoder::ConvertToYUV(std::vector<uint8_t>& dest_y,
     CHECK_EQ(planes.size(), 1u)
         << "NV12 should have exactly 1 plane but CAPTURE queue does not.";
 
-    const uint8_t* src = static_cast<uint8_t*>(planes[0].start_addr);
-    const uint8_t* src_uv = src + src_size.width() * src_size.height();
+    // In standard single-planar NV12, both the luma (Y) and interleaved chroma
+    // (UV) planes are packed sequentially into one contiguous memory buffer.
+    // Due to 4:2:0 subsampling, the UV data is subsampled by a factor of 2
+    // horizontally and vertically. Because U and V are interleaved, the UV
+    // plane maintains the exact same stride (bytes per line) as the Y plane,
+    // but requires only half the number of rows.
+    //
+    // Corresponding sizes:
+    // - Y Plane Size:  src_size.width() * src_size.height()
+    // - UV Plane Size: src_size.width() * (src_size.height() / 2)
+    //
+    // See:
+    // https://www.kernel.org/doc/html/v4.10/media/uapi/v4l/pixfmt-nv12.html
+    const size_t kYPlaneSize = src_size.width() * src_size.height();
+    const size_t kUVPlaneSize =
+        src_size.width() * ((src_size.height() + 1) / 2);
+    base::span<const uint8_t> src_y = planes[0].buffer.first(kYPlaneSize);
+    base::span<const uint8_t> src_uv =
+        planes[0].buffer.subspan(kYPlaneSize, kUVPlaneSize);
 
-    libyuv::NV12ToI420(src, src_size.width(), src_uv, src_size.width(),
-                       &dest_y[0], dest_full_stride, &dest_u[0],
-                       dest_half_stride, &dest_v[0], dest_half_stride,
-                       dest_size.width(), dest_size.height());
+    libyuv::NV12ToI420(src_y.data(), src_size.width(), src_uv.data(),
+                       src_size.width(), &dest_y[0], dest_full_stride,
+                       &dest_u[0], dest_half_stride, &dest_v[0],
+                       dest_half_stride, dest_size.width(), dest_size.height());
+    return BitDepth::Depth8;
   } else if (fourcc == V4L2_PIX_FMT_MM21) {
     CHECK_EQ(planes.size(), 2u)
         << "MM21 should have exactly 2 planes but CAPTURE queue does not.";
-    const uint8_t* src_y = static_cast<uint8_t*>(planes[0].start_addr);
-    const uint8_t* src_uv = static_cast<uint8_t*>(planes[1].start_addr);
+    const uint8_t* src_y = planes[0].buffer.data();
+    const uint8_t* src_uv = planes[1].buffer.data();
 
     libyuv::MM21ToI420(src_y, src_size.width(), src_uv, src_size.width(),
                        &dest_y[0], dest_full_stride, &dest_u[0],
                        dest_half_stride, &dest_v[0], dest_half_stride,
                        dest_size.width(), dest_size.height());
+    return BitDepth::Depth8;
   } else if (fourcc == V4L2_PIX_FMT_MT2T) {
     CHECK_EQ(planes.size(), 2u)
         << "MT2T should have exactly 2 planes but CAPTURE queue does not.";
 
-    const uint8_t* src_y = static_cast<uint8_t*>(planes[0].start_addr);
-    const uint8_t* src_uv = static_cast<uint8_t*>(planes[1].start_addr);
+    const uint8_t* src_y = planes[0].buffer.data();
+    const uint8_t* src_uv = planes[1].buffer.data();
 
     dest_y.resize(dest_size.GetArea() * 2);
     dest_u.resize(half_dest_size.GetArea() * 2);
@@ -276,6 +272,7 @@ void VideoDecoder::ConvertToYUV(std::vector<uint8_t>& dest_y,
         reinterpret_cast<uint16_t*>(&dest_v[0]), dest_half_stride,
         dest_size.width(), dest_size.height());
 
+    return BitDepth::Depth16;
   } else {
     LOG(FATAL) << "Unsupported CAPTURE queue format";
   }
@@ -284,31 +281,43 @@ void VideoDecoder::ConvertToYUV(std::vector<uint8_t>& dest_y,
 std::vector<uint8_t> VideoDecoder::ConvertYUVToPNG(uint8_t* y_plane,
                                                    uint8_t* u_plane,
                                                    uint8_t* v_plane,
-                                                   const gfx::Size& size) {
+                                                   const gfx::Size& size,
+                                                   BitDepth bit_depth) {
   const size_t argb_stride = size.width() * 4;
   auto argb_data = std::make_unique<uint8_t[]>(argb_stride * size.height());
 
   size_t u_plane_padded_width, v_plane_padded_width;
   u_plane_padded_width = v_plane_padded_width =
-      base::bits::AlignUp(size.width(), 2) / 2;
+      base::bits::AlignUpDeprecatedDoNotUse(size.width(), 2) / 2;
 
-  // Note that we use J420ToARGB instead of I420ToARGB so that the
-  // kYuvJPEGConstants YUV-to-RGB conversion matrix is used.
-  const int convert_to_argb_result = libyuv::J420ToARGB(
-      y_plane, size.width(), u_plane, u_plane_padded_width, v_plane,
-      v_plane_padded_width, argb_data.get(),
-      base::checked_cast<int>(argb_stride), size.width(), size.height());
+  if (bit_depth == BitDepth::Depth8) {
+    // Note that we use J420ToARGB instead of I420ToARGB so that the
+    // kYuvJPEGConstants YUV-to-RGB conversion matrix is used.
+    const int convert_to_argb_result = libyuv::J420ToARGB(
+        y_plane, size.width(), u_plane, u_plane_padded_width, v_plane,
+        v_plane_padded_width, argb_data.get(),
+        base::checked_cast<int>(argb_stride), size.width(), size.height());
 
-  LOG_ASSERT(convert_to_argb_result == 0) << "Failed to convert to ARGB";
+    LOG_ASSERT(convert_to_argb_result == 0) << "Failed to convert to ARGB";
+  } else if (bit_depth == BitDepth::Depth16) {
+    const int convert_to_argb_result = libyuv::I010ToARGB(
+        reinterpret_cast<const uint16_t*>(y_plane), size.width(),
+        reinterpret_cast<const uint16_t*>(u_plane), u_plane_padded_width,
+        reinterpret_cast<const uint16_t*>(v_plane), v_plane_padded_width,
+        argb_data.get(), base::checked_cast<int>(argb_stride), size.width(),
+        size.height());
 
-  std::vector<uint8_t> image_buffer;
-  const bool encode_to_png_result = gfx::PNGCodec::Encode(
+    LOG_ASSERT(convert_to_argb_result == 0) << "Failed to convert to ARGB";
+  } else {
+    LOG(FATAL) << bit_depth << " is not a valid number of bits / pixel";
+  }
+
+  std::optional<std::vector<uint8_t>> image_buffer = gfx::PNGCodec::Encode(
       argb_data.get(), gfx::PNGCodec::FORMAT_BGRA, size, argb_stride,
-      true /*discard_transparency*/, std::vector<gfx::PNGCodec::Comment>(),
-      &image_buffer);
-  LOG_ASSERT(encode_to_png_result) << "Failed to encode to PNG";
+      /*discard_transparency=*/true, std::vector<gfx::PNGCodec::Comment>());
+  LOG_ASSERT(image_buffer) << "Failed to encode to PNG";
 
-  return image_buffer;
+  return image_buffer.value();
 }
 }  // namespace v4l2_test
 }  // namespace media

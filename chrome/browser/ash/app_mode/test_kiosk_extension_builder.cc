@@ -28,7 +28,7 @@ TestKioskExtensionBuilder::TestKioskExtensionBuilder(
 
 TestKioskExtensionBuilder& TestKioskExtensionBuilder::AddSecondaryExtension(
     const std::string& id) {
-  secondary_extensions_.emplace_back(id, absl::nullopt);
+  secondary_extensions_.emplace_back(id, std::nullopt);
   return *this;
 }
 
@@ -37,26 +37,26 @@ TestKioskExtensionBuilder::AddSecondaryExtensionWithEnabledOnLaunch(
     const std::string& id,
     bool enabled_on_launch) {
   secondary_extensions_.emplace_back(id,
-                                     absl::optional<bool>(enabled_on_launch));
+                                     std::optional<bool>(enabled_on_launch));
   return *this;
 }
 
 scoped_refptr<const extensions::Extension> TestKioskExtensionBuilder::Build()
     const {
-  auto manifest_builder = base::Value::Dict()
+  auto manifest_builder = base::DictValue()
                               .Set("name", "Test kiosk app")
                               .Set("version", version_)
                               .Set("manifest_version", 2);
 
-  base::Value background = base::Value(base::Value::Dict().Set(
-      "scripts", base::Value(base::Value::List().Append("background.js"))));
+  base::Value background = base::Value(base::DictValue().Set(
+      "scripts", base::Value(base::ListValue().Append("background.js"))));
 
   switch (type_) {
-    case extensions::Manifest::TYPE_PLATFORM_APP:
+    case extensions::Manifest::Type::kPlatformApp:
       manifest_builder.Set(
-          "app", base::Value::Dict().Set("background", std::move(background)));
+          "app", base::DictValue().Set("background", std::move(background)));
       break;
-    case extensions::Manifest::TYPE_EXTENSION:
+    case extensions::Manifest::Type::kExtension:
       manifest_builder.Set("background", std::move(background));
       break;
     default:
@@ -71,10 +71,10 @@ scoped_refptr<const extensions::Extension> TestKioskExtensionBuilder::Build()
   manifest_builder.Set("offline_enabled", offline_enabled_);
 
   if (!secondary_extensions_.empty()) {
-    base::Value::List secondary_extension_list_builder;
+    base::ListValue secondary_extension_list_builder;
     for (const auto& secondary_extension : secondary_extensions_) {
-      base::Value::Dict secondary_extension_builder;
-      secondary_extension_builder.Set("id", secondary_extension.id);
+      auto secondary_extension_builder =
+          base::DictValue().Set("id", secondary_extension.id);
       if (secondary_extension.enabled_on_launch.has_value()) {
         secondary_extension_builder.Set(
             "enabled_on_launch", secondary_extension.enabled_on_launch.value());

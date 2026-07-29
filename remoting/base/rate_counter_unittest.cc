@@ -7,23 +7,26 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
+
 #include "base/test/simple_test_tick_clock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace remoting {
 
-static const int64_t kTestValues[] = {10, 20, 30, 10, 25, 16, 15};
+constexpr auto kTestValues =
+    std::to_array<int64_t>({10, 20, 30, 10, 25, 16, 15});
 
 // One second window and one sample per second, so rate equals each sample.
 TEST(RateCounterTest, OneSecondWindow) {
   base::SimpleTestTickClock tick_clock;
   RateCounter rate_counter(base::Seconds(1), &tick_clock);
-  EXPECT_EQ(0, rate_counter.Rate());
+  EXPECT_EQ(rate_counter.Rate(), 0);
 
   for (size_t i = 0; i < std::size(kTestValues); ++i) {
     tick_clock.Advance(base::Seconds(1));
     rate_counter.Record(kTestValues[i]);
-    EXPECT_EQ(static_cast<double>(kTestValues[i]), rate_counter.Rate());
+    EXPECT_EQ(rate_counter.Rate(), static_cast<double>(kTestValues[i]));
   }
 }
 
@@ -31,7 +34,7 @@ TEST(RateCounterTest, OneSecondWindow) {
 TEST(RateCounterTest, OneSecondWindowAllSamples) {
   base::SimpleTestTickClock tick_clock;
   RateCounter rate_counter(base::Seconds(1), &tick_clock);
-  EXPECT_EQ(0, rate_counter.Rate());
+  EXPECT_EQ(rate_counter.Rate(), 0);
 
   double expected = 0.0;
   for (size_t i = 0; i < std::size(kTestValues); ++i) {
@@ -39,7 +42,7 @@ TEST(RateCounterTest, OneSecondWindowAllSamples) {
     expected += kTestValues[i];
   }
 
-  EXPECT_EQ(expected, rate_counter.Rate());
+  EXPECT_EQ(rate_counter.Rate(), expected);
 }
 
 // Two second window, one sample per second.  For all but the first sample, the
@@ -48,7 +51,7 @@ TEST(RateCounterTest, OneSecondWindowAllSamples) {
 TEST(RateCounterTest, TwoSecondWindow) {
   base::SimpleTestTickClock tick_clock;
   RateCounter rate_counter(base::Seconds(2), &tick_clock);
-  EXPECT_EQ(0, rate_counter.Rate());
+  EXPECT_EQ(rate_counter.Rate(), 0);
 
   for (size_t i = 0; i < std::size(kTestValues); ++i) {
     tick_clock.Advance(base::Seconds(1));
@@ -58,7 +61,7 @@ TEST(RateCounterTest, TwoSecondWindow) {
       expected += kTestValues[i - 1];
     }
     expected /= 2;
-    EXPECT_EQ(expected, rate_counter.Rate());
+    EXPECT_EQ(rate_counter.Rate(), expected);
   }
 }
 
@@ -69,7 +72,7 @@ TEST(RateCounterTest, LongWindow) {
 
   base::SimpleTestTickClock tick_clock;
   RateCounter rate_counter(base::Seconds(kWindowSeconds), &tick_clock);
-  EXPECT_EQ(0, rate_counter.Rate());
+  EXPECT_EQ(rate_counter.Rate(), 0);
 
   double expected = 0.0;
   for (size_t i = 0; i < std::size(kTestValues); ++i) {
@@ -81,7 +84,7 @@ TEST(RateCounterTest, LongWindow) {
   }
   expected /= kWindowSeconds;
 
-  EXPECT_EQ(expected, rate_counter.Rate());
+  EXPECT_EQ(rate_counter.Rate(), expected);
 }
 
 }  // namespace remoting

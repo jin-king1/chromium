@@ -34,13 +34,13 @@ void FakePrintRenderFrame::SetPrintPreviewUI(
     mojo::PendingAssociatedRemote<mojom::PrintPreviewUI> preview) {}
 
 void FakePrintRenderFrame::InitiatePrintPreview(
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     mojo::PendingAssociatedRemote<mojom::PrintRenderer> print_renderer,
 #endif
     bool has_selection) {
 }
 
-void FakePrintRenderFrame::PrintPreview(base::Value::Dict settings) {}
+void FakePrintRenderFrame::PrintPreview(base::DictValue settings) {}
 
 void FakePrintRenderFrame::OnPrintPreviewDialogClosed() {}
 
@@ -53,11 +53,6 @@ void FakePrintRenderFrame::PrintingDone(bool success) {}
 void FakePrintRenderFrame::ConnectToPdfRenderer() {}
 
 void FakePrintRenderFrame::PrintNodeUnderContextMenu() {}
-
-#if BUILDFLAG(ENABLE_PRINT_CONTENT_ANALYSIS)
-void FakePrintRenderFrame::SnapshotForContentAnalysis(
-    SnapshotForContentAnalysisCallback callback) {}
-#endif  // BUILDFLAG(ENABLE_PRINT_CONTENT_ANALYSIS)
 
 void FakePrintRenderFrame::BindPrintRenderFrameReceiver(
     mojo::ScopedInterfaceEndpointHandle handle) {

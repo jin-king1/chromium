@@ -12,12 +12,12 @@
 
 #include <memory>
 
-#include "base/notreached.h"
+#include "base/compiler_specific.h"
+#include "base/notimplemented.h"
 #include "media/base/win/mf_helpers.h"
 #include "media/cdm/win/test/media_foundation_clear_key_activate.h"
 #include "media/cdm/win/test/media_foundation_clear_key_decryptor.h"
 #include "media/cdm/win/test/media_foundation_clear_key_guids.h"
-#include "media/cdm/win/test/media_foundation_clear_key_output_policy.h"
 
 namespace media {
 
@@ -93,14 +93,8 @@ STDMETHODIMP MediaFoundationClearKeyInputTrustAuthority::GetPolicy(
   DVLOG_FUNC(1);
   RETURN_IF_FAILED(GetShutdownStatus());
 
+  // For testing purpose, we don't need to set the output policy for now.
   *policy = nullptr;
-
-  ComPtr<IMFOutputPolicy> output_policy;
-  RETURN_IF_FAILED(
-      (MakeAndInitialize<MediaFoundationClearKeyOutputPolicy, IMFOutputPolicy>(
-          &output_policy, action)));
-
-  *policy = output_policy.Detach();
 
   return S_OK;
 }
@@ -115,7 +109,8 @@ STDMETHODIMP MediaFoundationClearKeyInputTrustAuthority::BindAccess(
   }
 
   for (DWORD i = 0; i < params->cActions; ++i) {
-    MFPOLICYMANAGER_ACTION action = params->rgOutputActions[i].Action;
+    MFPOLICYMANAGER_ACTION action =
+        UNSAFE_TODO(params->rgOutputActions[i]).Action;
     if (action != PEACTION_PLAY && action != PEACTION_EXTRACT &&
         action != PEACTION_NO) {
       return MF_E_UNEXPECTED;

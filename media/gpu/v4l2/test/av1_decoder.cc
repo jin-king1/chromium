@@ -2,17 +2,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+
 #include "media/gpu/v4l2/test/av1_decoder.h"
 
-#include <linux/media/av1-ctrls.h>
+#include <linux/v4l2-controls.h>
+#include <linux/videodev2.h>
 
 #include "base/logging.h"
 #include "base/memory/ptr_util.h"
 #include "base/notreached.h"
 #include "media/base/video_types.h"
-#include "media/filters/ivf_parser.h"
 #include "media/gpu/macros.h"
 #include "media/gpu/v4l2/test/upstream_pix_fmt.h"
+#include "media/parsers/ivf_parser.h"
+#include "third_party/libgav1/src/src/utils/common.h"
 #include "third_party/libgav1/src/src/warp_prediction.h"
 
 namespace media {
@@ -53,14 +56,17 @@ const gfx::Size GetResolutionFromBitstream(
   media::IvfParser ivf_parser{};
   media::IvfFileHeader ivf_file_header{};
 
-  if (!ivf_parser.Initialize(stream.data(), stream.length(), &ivf_file_header))
+  if (!ivf_parser.Initialize(stream.bytes(), &ivf_file_header)) {
     LOG(FATAL) << "Couldn't initialize IVF parser.";
+  }
 
   IvfFrameHeader ivf_frame_header{};
-  const uint8_t* ivf_frame_data = nullptr;
+  base::span<const uint8_t> ivf_frame_data =
+      ivf_parser.ParseNextFrame(&ivf_frame_header);
 
-  if (!ivf_parser.ParseNextFrame(&ivf_frame_header, &ivf_frame_data))
+  if (ivf_frame_data.empty()) {
     LOG(FATAL) << "Failed to parse the first frame with IVF parser.";
+  }
 
   VLOG(2) << "Ivf file header: " << ivf_file_header.width << " x "
           << ivf_file_header.height;
@@ -71,7 +77,7 @@ const gfx::Size GetResolutionFromBitstream(
                                   libgav1::ReleaseInternalFrameBuffer,
                                   &buffer_list);
   libgav1::DecoderState decoder_state;
-  libgav1::ObuParser av1_parser(ivf_frame_data, ivf_frame_header.frame_size, 0,
+  libgav1::ObuParser av1_parser(ivf_frame_data.data(), ivf_frame_data.size(), 0,
                                 &buffer_pool, &decoder_state);
   libgav1::RefCountedBufferPtr first_frame;
 
@@ -92,7 +98,7 @@ const gfx::Size GetResolutionFromBitstream(
 // https://aomediacodec.github.io/av1-spec/av1-spec.pdf
 void FillSequenceParams(
     struct v4l2_ctrl_av1_sequence* v4l2_seq_params,
-    const absl::optional<libgav1::ObuSequenceHeader>& seq_header) {
+    const std::optional<libgav1::ObuSequenceHeader>& seq_header) {
   conditionally_set_u32_flags(&v4l2_seq_params->flags,
                               seq_header->still_picture,
                               V4L2_AV1_SEQUENCE_FLAG_STILL_PICTURE);
@@ -232,7 +238,7 @@ void FillQuantizationParams(struct v4l2_av1_quantization* v4l2_quant,
 // Section 5.9.17. Quantizer index delta parameters syntax
 void FillQuantizerIndexDeltaParams(
     struct v4l2_av1_quantization* v4l2_quant,
-    const absl::optional<libgav1::ObuSequenceHeader>& seq_header,
+    const std::optional<libgav1::ObuSequenceHeader>& seq_header,
     const libgav1::ObuFrameHeader& frm_header) {
   // |diff_uv_delta| in the spec doesn't exist in libgav1,
   // because libgav1 infers it using the following logic.
@@ -290,9 +296,7 @@ void FillSegmentationParams(struct v4l2_av1_segmentation* v4l2_seg,
 void FillCdefParams(struct v4l2_av1_cdef* v4l2_cdef,
                     const libgav1::Cdef& cdef,
                     uint8_t color_bitdepth) {
-  // Damping value parsed in libgav1 is from the spec + (bitdepth - 8).
-  // All the strength values parsed in libgav1 are from the spec and left
-  // shifted by (bitdepth - 8).
+  // Damping value parsed in libgav1 is from the spec + (|color_bitdepth| - 8).
   CHECK_GE(color_bitdepth, 8u);
   const uint8_t coeff_shift = color_bitdepth - 8u;
 
@@ -321,6 +325,16 @@ void FillCdefParams(struct v4l2_av1_cdef* v4l2_cdef,
   SafeArrayMemcpy(v4l2_cdef->y_sec_strength, cdef.y_secondary_strength);
   SafeArrayMemcpy(v4l2_cdef->uv_pri_strength, cdef.uv_primary_strength);
   SafeArrayMemcpy(v4l2_cdef->uv_sec_strength, cdef.uv_secondary_strength);
+
+  // All the strength values parsed in libgav1 are from the AV1 spec and left
+  // shifted by (|color_bitdepth| - 8). So these values need to be right shifted
+  // by (|color_bitdepth| - 8) before passing to a driver.
+  for (size_t i = 0; i < libgav1::kMaxCdefStrengths; i++) {
+    v4l2_cdef->y_pri_strength[i] >>= coeff_shift;
+    v4l2_cdef->y_sec_strength[i] >>= coeff_shift;
+    v4l2_cdef->uv_pri_strength[i] >>= coeff_shift;
+    v4l2_cdef->uv_sec_strength[i] >>= coeff_shift;
+  }
 }
 
 // 5.9.20. Loop restoration params syntax
@@ -558,7 +572,7 @@ std::unique_ptr<Av1Decoder> Av1Decoder::Create(
   auto ivf_parser = std::make_unique<media::IvfParser>();
   media::IvfFileHeader file_header{};
 
-  if (!ivf_parser->Initialize(stream.data(), stream.length(), &file_header)) {
+  if (!ivf_parser->Initialize(stream.bytes(), &file_header)) {
     LOG(ERROR) << "Couldn't initialize IVF parser";
     return nullptr;
   }
@@ -575,12 +589,6 @@ std::unique_ptr<Av1Decoder> Av1Decoder::Create(
 
   auto v4l2_ioctl = std::make_unique<V4L2IoctlShim>(kDriverCodecFourcc);
 
-  if (!v4l2_ioctl->VerifyCapabilities(kDriverCodecFourcc)) {
-    LOG(ERROR) << "Device doesn't support "
-               << media::FourccToString(kDriverCodecFourcc) << ".";
-    return nullptr;
-  }
-
   const gfx::Size bitstream_coded_size = GetResolutionFromBitstream(stream);
 
   return base::WrapUnique(new Av1Decoder(
@@ -590,8 +598,10 @@ std::unique_ptr<Av1Decoder> Av1Decoder::Create(
 Av1Decoder::ParsingResult Av1Decoder::ReadNextFrame(
     libgav1::RefCountedBufferPtr& current_frame) {
   if (!obu_parser_ || !obu_parser_->HasData()) {
-    if (!ivf_parser_->ParseNextFrame(&ivf_frame_header_, &ivf_frame_data_))
+    ivf_frame_data_ = ivf_parser_->ParseNextFrame(&ivf_frame_header_);
+    if (ivf_frame_data_.empty()) {
       return ParsingResult::kEOStream;
+    }
 
     // The ObuParser has run out of data or did not exist in the first place. It
     // has no "replace the current buffer with a new buffer of a different size"
@@ -599,8 +609,8 @@ Av1Decoder::ParsingResult Av1Decoder::ReadNextFrame(
     // (std::nothrow) is required for the base class Allocable of
     // libgav1::ObuParser
     obu_parser_ = base::WrapUnique(new (std::nothrow) libgav1::ObuParser(
-        ivf_frame_data_, ivf_frame_header_.frame_size, /*operating_point=*/0,
-        buffer_pool_.get(), state_.get()));
+        ivf_frame_data_.data(), ivf_frame_data_.size(),
+        /*operating_point=*/0, buffer_pool_.get(), state_.get()));
     if (current_sequence_header_)
       obu_parser_->set_sequence_header(*current_sequence_header_);
   }
@@ -623,14 +633,13 @@ void Av1Decoder::CopyFrameData(const libgav1::ObuFrameHeader& frame_hdr,
 
   scoped_refptr<MmappedBuffer> buffer = queue->GetBuffer(0);
 
-  buffer->mmapped_planes()[0].CopyIn(ivf_frame_data_,
-                                     ivf_frame_header_.frame_size);
+  buffer->mmapped_planes()[0].CopyIn(ivf_frame_data_);
 }
 
 // 5.9.2. Uncompressed header syntax
 void Av1Decoder::SetupFrameParams(
     struct v4l2_ctrl_av1_frame* v4l2_frame_params,
-    const absl::optional<libgav1::ObuSequenceHeader>& seq_header,
+    const std::optional<libgav1::ObuSequenceHeader>& seq_header,
     const libgav1::ObuFrameHeader& frm_header) {
   FillLoopFilterParams(&v4l2_frame_params->loop_filter, frm_header.loop_filter);
 
@@ -695,9 +704,6 @@ void Av1Decoder::SetupFrameParams(
   conditionally_set_u32_flags(&v4l2_frame_params->flags,
                               !frm_header.enable_frame_end_update_cdf,
                               V4L2_AV1_FRAME_FLAG_DISABLE_FRAME_END_UPDATE_CDF);
-  conditionally_set_u32_flags(&v4l2_frame_params->flags,
-                              frm_header.tile_info.uniform_spacing,
-                              V4L2_AV1_FRAME_FLAG_UNIFORM_TILE_SPACING);
   conditionally_set_u32_flags(&v4l2_frame_params->flags,
                               frm_header.allow_warped_motion,
                               V4L2_AV1_FRAME_FLAG_ALLOW_WARPED_MOTION);
@@ -949,11 +955,12 @@ void Av1Decoder::QueueReusableBuffersInCaptureQueue(
   }
 }
 
-VideoDecoder::Result Av1Decoder::DecodeNextFrame(std::vector<uint8_t>& y_plane,
+VideoDecoder::Result Av1Decoder::DecodeNextFrame(const int frame_number,
+                                                 std::vector<uint8_t>& y_plane,
                                                  std::vector<uint8_t>& u_plane,
                                                  std::vector<uint8_t>& v_plane,
                                                  gfx::Size& size,
-                                                 const int frame_number) {
+                                                 BitDepth& bit_depth) {
   libgav1::RefCountedBufferPtr current_frame;
   const ParsingResult parser_res = ReadNextFrame(current_frame);
 
@@ -985,8 +992,8 @@ VideoDecoder::Result Av1Decoder::DecodeNextFrame(std::vector<uint8_t>& y_plane,
 
   for (size_t i = 0; i < kAv1NumRefFrames; ++i) {
     if (state_->reference_frame[i] != nullptr && ref_frames_[i] == nullptr) {
-      LOG_ASSERT(false) << "The state of the reference frames are different "
-                           "between |ref_frames_| and |state_|";
+      LOG(FATAL) << "The state of the reference frames are different "
+                    "between |ref_frames_| and |state_|";
     }
     if (state_->reference_frame[i] == nullptr && ref_frames_[i] != nullptr)
       ref_frames_[i].reset();
@@ -996,9 +1003,10 @@ VideoDecoder::Result Av1Decoder::DecodeNextFrame(std::vector<uint8_t>& y_plane,
     scoped_refptr<MmappedBuffer> repeated_frame_buffer =
         ref_frames_[current_frame_header.frame_to_show];
 
-    ConvertToYUV(y_plane, u_plane, v_plane, OUTPUT_queue_->resolution(),
-                 repeated_frame_buffer->mmapped_planes(),
-                 CAPTURE_queue_->resolution(), CAPTURE_queue_->fourcc());
+    bit_depth =
+        ConvertToYUV(y_plane, u_plane, v_plane, OUTPUT_queue_->resolution(),
+                     repeated_frame_buffer->mmapped_planes(),
+                     CAPTURE_queue_->resolution(), CAPTURE_queue_->fourcc());
 
     // Repeated frames normally don't need to update reference frames. But in
     // this special case when the repeated frame is pointing to a key frame, all
@@ -1051,10 +1059,9 @@ VideoDecoder::Result Av1Decoder::DecodeNextFrame(std::vector<uint8_t>& y_plane,
 
   std::vector<struct v4l2_ctrl_av1_tile_group_entry> tile_group_entry_vectors;
 
-  FillTileGroupParams(
-      &tile_group_entry_vectors,
-      base::make_span(ivf_frame_data_, ivf_frame_header_.frame_size),
-      current_frame_header.tile_info, obu_parser_->tile_buffers());
+  FillTileGroupParams(&tile_group_entry_vectors, ivf_frame_data_,
+                      current_frame_header.tile_info,
+                      obu_parser_->tile_buffers());
 
   ext_ctrl_vectors.push_back({.id = V4L2_CID_STATELESS_AV1_TILE_GROUP_ENTRY,
                               .size = base::checked_cast<__u32>(
@@ -1077,13 +1084,16 @@ VideoDecoder::Result Av1Decoder::DecodeNextFrame(std::vector<uint8_t>& y_plane,
     CreateCAPTUREQueue(kNumberOfBuffersInCaptureQueue);
   }
 
+  v4l2_ioctl_->WaitForRequestCompletion(OUTPUT_queue_);
+
   uint32_t buffer_id;
   v4l2_ioctl_->DQBuf(CAPTURE_queue_, &buffer_id);
 
   scoped_refptr<MmappedBuffer> buffer = CAPTURE_queue_->GetBuffer(buffer_id);
-  ConvertToYUV(y_plane, u_plane, v_plane, OUTPUT_queue_->resolution(),
-               buffer->mmapped_planes(), CAPTURE_queue_->resolution(),
-               CAPTURE_queue_->fourcc());
+  bit_depth =
+      ConvertToYUV(y_plane, u_plane, v_plane, OUTPUT_queue_->resolution(),
+                   buffer->mmapped_planes(), CAPTURE_queue_->resolution(),
+                   CAPTURE_queue_->fourcc());
 
   const std::set<int> reusable_buffer_ids = RefreshReferenceSlots(
       current_frame_header, current_frame, CAPTURE_queue_->GetBuffer(buffer_id),

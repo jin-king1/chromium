@@ -33,10 +33,12 @@
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/editing/inline_box_position.h"
 #include "third_party/blink/renderer/core/editing/ng_flat_tree_shorthands.h"
+#include "third_party/blink/renderer/core/editing/text_offset_mapping.h"
 #include "third_party/blink/renderer/core/editing/visible_position.h"
-#include "third_party/blink/renderer/core/layout/ng/inline/ng_caret_position.h"
-#include "third_party/blink/renderer/core/layout/ng/inline/ng_line_utils.h"
-#include "third_party/blink/renderer/core/layout/ng/inline/ng_offset_mapping.h"
+#include "third_party/blink/renderer/core/layout/inline/inline_caret_position.h"
+#include "third_party/blink/renderer/core/layout/inline/line_utils.h"
+#include "third_party/blink/renderer/core/layout/inline/offset_mapping.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -45,7 +47,7 @@ namespace {
 struct VisualOrdering;
 
 static PositionWithAffinity AdjustForSoftLineWrap(
-    const NGInlineCursorPosition& line_box,
+    const InlineCursorPosition& line_box,
     const PositionWithAffinity& position) {
   DCHECK(line_box.IsLineBox());
   if (position.IsNull())
@@ -54,10 +56,10 @@ static PositionWithAffinity AdjustForSoftLineWrap(
       !line_box.HasSoftWrapToNextLine())
     return position;
   // Returns a position after first space causing soft line wrap for editable.
-  if (!NGOffsetMapping::AcceptsPosition(position.GetPosition()))
+  if (!OffsetMapping::AcceptsPosition(position.GetPosition())) {
     return position;
-  const NGOffsetMapping* mapping =
-      NGOffsetMapping::GetFor(position.GetPosition());
+  }
+  const OffsetMapping* mapping = OffsetMapping::GetFor(position.GetPosition());
   if (!mapping) {
     // When |line_box| width has numeric overflow, |position| doesn't have
     // mapping. See http://crbug.com/1098795
@@ -82,6 +84,27 @@ static PositionWithAffinity AdjustForSoftLineWrap(
                               TextAffinity::kUpstreamIfPossible);
 }
 
+// Returns true for positions anchored at a block with inline children (e.g.
+// "div@0" before a leading <wbr> run in an editable <div>). |OffsetMapping|
+// cannot map such positions, and adjusting them may end up inside a nested
+// inline formatting context (e.g. an inline-flex atomic inline), resolving
+// the boundary of the wrong line. They need to be re-anchored to the
+// equivalent caret position first. See https://crbug.com/40765041.
+template <typename Strategy>
+static bool NeedsCaretNormalization(
+    const PositionTemplate<Strategy>& position) {
+  if (position.IsNull() || position.IsBeforeAnchor() ||
+      position.IsAfterAnchor()) {
+    return false;
+  }
+  const Node* const anchor = position.AnchorNode();
+  if (anchor->IsTextNode()) {
+    return false;
+  }
+  const LayoutObject* const layout_object = anchor->GetLayoutObject();
+  return layout_object && layout_object->IsLayoutBlockFlow();
+}
+
 template <typename Strategy, typename Ordering>
 static PositionWithAffinityTemplate<Strategy> EndPositionForLine(
     const PositionWithAffinityTemplate<Strategy>& c) {
@@ -90,23 +113,23 @@ static PositionWithAffinityTemplate<Strategy> EndPositionForLine(
   const PositionWithAffinityTemplate<Strategy> adjusted =
       ComputeInlineAdjustedPosition(c);
 
-  if (const LayoutBlockFlow* context =
-          NGInlineFormattingContextOf(adjusted.GetPosition())) {
+  if (NGInlineFormattingContextOf(adjusted.GetPosition())) {
     DCHECK((std::is_same<Ordering, VisualOrdering>::value) ||
            !RuntimeEnabledFeatures::BidiCaretAffinityEnabled())
         << "Logical line boundary for BidiCaretAffinity is not implemented yet";
 
-    const NGCaretPosition caret_position = ComputeNGCaretPosition(adjusted);
+    const InlineCaretPosition caret_position =
+        ComputeInlineCaretPosition(adjusted);
     if (caret_position.IsNull()) {
-      // TODO(crbug.com/947593): Support |ComputeNGCaretPosition()| on content
-      // hidden by 'text-overflow:ellipsis' so that we always have a non-null
-      // |caret_position| here.
+      // TODO(crbug.com/947593): Support |ComputeInlineCaretPosition()| on
+      // content hidden by 'text-overflow:ellipsis' so that we always have a
+      // non-null |caret_position| here.
       return PositionWithAffinityTemplate<Strategy>();
     }
-    NGInlineCursor line_box = caret_position.cursor;
+    InlineCursor line_box = caret_position.cursor;
     line_box.MoveToContainingLine();
     const PositionWithAffinity end_position = line_box.PositionForEndOfLine();
-    return FromPositionInDOMTree<Strategy>(
+    return FromPositionInDomTree<Strategy>(
         AdjustForSoftLineWrap(line_box.Current(), end_position));
   }
 
@@ -129,23 +152,23 @@ PositionWithAffinityTemplate<Strategy> StartPositionForLine(
   const PositionWithAffinityTemplate<Strategy> adjusted =
       ComputeInlineAdjustedPosition(c);
 
-  if (const LayoutBlockFlow* context =
-          NGInlineFormattingContextOf(adjusted.GetPosition())) {
+  if (NGInlineFormattingContextOf(adjusted.GetPosition())) {
     DCHECK((std::is_same<Ordering, VisualOrdering>::value) ||
            !RuntimeEnabledFeatures::BidiCaretAffinityEnabled())
         << "Logical line boundary for BidiCaretAffinity is not implemented yet";
 
-    const NGCaretPosition caret_position = ComputeNGCaretPosition(adjusted);
+    const InlineCaretPosition caret_position =
+        ComputeInlineCaretPosition(adjusted);
     if (caret_position.IsNull()) {
-      // TODO(crbug.com/947593): Support |ComputeNGCaretPosition()| on content
-      // hidden by 'text-overflow:ellipsis' so that we always have a non-null
-      // |caret_position| here.
+      // TODO(crbug.com/947593): Support |ComputeInlineCaretPosition()| on
+      // content hidden by 'text-overflow:ellipsis' so that we always have a
+      // non-null |caret_position| here.
       return PositionWithAffinityTemplate<Strategy>();
     }
-    NGInlineCursor line_box = caret_position.cursor;
+    InlineCursor line_box = caret_position.cursor;
     line_box.MoveToContainingLine();
     DCHECK(line_box.Current().IsLineBox()) << line_box;
-    return FromPositionInDOMTree<Strategy>(line_box.PositionForStartOfLine());
+    return FromPositionInDomTree<Strategy>(line_box.PositionForStartOfLine());
   }
 
   // There are VisiblePositions at offset 0 in blocks without line boxes, like
@@ -228,6 +251,13 @@ PositionWithAffinityTemplate<Strategy> StartOfLineAlgorithm(
       vis_pos, c.GetPosition());
 }
 
+bool IsInlineBlock(const LayoutBlockFlow* block_flow) {
+  if (!block_flow) {
+    return false;
+  }
+  return block_flow->StyleRef().Display() == EDisplay::kInlineBlock;
+}
+
 }  // namespace
 
 PositionWithAffinity StartOfLine(const PositionWithAffinity& current_position) {
@@ -258,10 +288,32 @@ static PositionWithAffinityTemplate<Strategy> LogicalStartOfLineAlgorithm(
     const PositionWithAffinityTemplate<Strategy>& c) {
   // TODO: this is the current behavior that might need to be fixed.
   // Please refer to https://bugs.webkit.org/show_bug.cgi?id=49107 for detail.
+  const PositionWithAffinityTemplate<Strategy> normalized =
+      NeedsCaretNormalization(c.GetPosition())
+          ? PositionWithAffinityTemplate<Strategy>(
+                MostBackwardCaretPosition(c.GetPosition()), c.Affinity())
+          : c;
   PositionWithAffinityTemplate<Strategy> vis_pos =
-      StartPositionForLine<Strategy, LogicalOrdering>(c);
+      StartPositionForLine<Strategy, LogicalOrdering>(normalized);
 
   if (ContainerNode* editable_root = HighestEditableRoot(c.GetPosition())) {
+    if (vis_pos.IsNull()) {
+      // When the start-of-line position cannot be determined (e.g., because the
+      // caret is in an empty inline element with no layout information), fall
+      // back to the start of the enclosing block rather than the start of the
+      // entire editable root. See https://crbug.com/41053053.
+      Node* node = c.GetPosition().ComputeContainerNode();
+      while (node && node != editable_root) {
+        if (node->GetLayoutObject() &&
+            node->GetLayoutObject()->IsLayoutBlock()) {
+          return PositionWithAffinityTemplate<Strategy>(
+              PositionTemplate<Strategy>::FirstPositionInNode(*node));
+        }
+        node = Strategy::Parent(*node);
+      }
+      return PositionWithAffinityTemplate<Strategy>(
+          PositionTemplate<Strategy>::FirstPositionInNode(*editable_root));
+    }
     if (!editable_root->contains(
             vis_pos.GetPosition().ComputeContainerNode())) {
       return PositionWithAffinityTemplate<Strategy>(
@@ -332,8 +384,14 @@ static PositionWithAffinityTemplate<Strategy> LogicalEndOfLineAlgorithm(
     const PositionWithAffinityTemplate<Strategy>& current_position) {
   // TODO(yosin) this is the current behavior that might need to be fixed.
   // Please refer to https://bugs.webkit.org/show_bug.cgi?id=49107 for detail.
+  const PositionWithAffinityTemplate<Strategy> normalized =
+      NeedsCaretNormalization(current_position.GetPosition())
+          ? PositionWithAffinityTemplate<Strategy>(
+                MostForwardCaretPosition(current_position.GetPosition()),
+                current_position.Affinity())
+          : current_position;
   const PositionWithAffinityTemplate<Strategy> candidate_position =
-      EndPositionForLine<Strategy, LogicalOrdering>(current_position);
+      EndPositionForLine<Strategy, LogicalOrdering>(normalized);
 
   if (ContainerNode* editable_root =
           HighestEditableRoot(current_position.GetPosition())) {
@@ -385,11 +443,23 @@ static bool InSameLineAlgorithm(
   const LayoutBlockFlow* block2 =
       NGInlineFormattingContextOf(position2.GetPosition());
   if (block1 || block2) {
-    if (block1 != block2) {
-      return false;
-    }
-    if (!InSameNGLineBox(position1, position2)) {
-      return false;
+    if (IsInlineBlock(block1) || IsInlineBlock(block2)) {
+      const TextOffsetMapping::InlineContents inline_contents1 =
+          TextOffsetMapping::FindForwardInlineContents(
+              ToPositionInFlatTree(position1.GetPosition()));
+      const TextOffsetMapping::InlineContents inline_contents2 =
+          TextOffsetMapping::FindForwardInlineContents(
+              ToPositionInFlatTree(position2.GetPosition()));
+      if (inline_contents1 != inline_contents2) {
+        return false;
+      }
+    } else {
+      if (block1 != block2) {
+        return false;
+      }
+      if (!InSameNGLineBox(position1, position2)) {
+        return false;
+      }
     }
     // See (ParameterizedVisibleUnitsLineTest.InSameLineWithMixedEditability
     return RootEditableElementOf(position1.GetPosition()) ==
@@ -450,6 +520,12 @@ bool IsStartOfLine(const VisiblePositionInFlatTree& p) {
   return IsStartOfLineAlgorithm<EditingInFlatTreeStrategy>(p);
 }
 
+bool IsStartOfLine(const Position& p, TextAffinity affinity) {
+  PositionWithAffinity pos(p, affinity);
+  return pos.IsNotNull() &&
+         p == StartOfLine(pos).GetPosition();
+}
+
 template <typename Strategy>
 static bool IsEndOfLineAlgorithm(
     const VisiblePositionTemplate<Strategy>& visible_position) {
@@ -467,6 +543,11 @@ bool IsEndOfLine(const VisiblePosition& p) {
 
 bool IsEndOfLine(const VisiblePositionInFlatTree& p) {
   return IsEndOfLineAlgorithm<EditingInFlatTreeStrategy>(p);
+}
+
+bool IsEndOfLine(const Position& p, TextAffinity affinity) {
+  PositionWithAffinity pos(p, affinity);
+  return pos.IsNotNull() && p == EndOfLine(pos).GetPosition();
 }
 
 template <typename Strategy>

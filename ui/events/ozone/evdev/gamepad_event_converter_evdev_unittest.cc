@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+
 #include "ui/events/ozone/evdev/gamepad_event_converter_evdev.h"
 
 #include <errno.h>
@@ -9,14 +10,15 @@
 #include <linux/input.h>
 #include <unistd.h>
 
+#include <array>
 #include <memory>
 #include <queue>
 #include <utility>
 #include <vector>
 
-#include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/run_loop.h"
 #include "base/time/time.h"
@@ -51,7 +53,8 @@ member class=ui::InputDevice id=1
  name="Microsoft X-Box 360 pad"
  phys=""
  enabled=0
- suspected_imposter=0
+ suspected_keyboard_imposter=0
+ suspected_mouse_imposter=0
  sys_path=""
  vendor_id=045E
  product_id=028E
@@ -173,7 +176,7 @@ TEST_F(GamepadEventConverterEvdevTest, XboxGamepadEvents) {
   std::unique_ptr<ui::TestGamepadEventConverterEvdev> dev =
       CreateDevice(kXboxGamepad);
 
-  struct input_event mock_kernel_queue[] = {
+  auto mock_kernel_queue = std::to_array<input_event>({
       {{1493076826, 766851}, EV_ABS, 0, 19105},
       {{1493076826, 766851}, EV_SYN, SYN_REPORT},
       {{1493076826, 774849}, EV_ABS, 0, 17931},
@@ -206,13 +209,14 @@ TEST_F(GamepadEventConverterEvdevTest, XboxGamepadEvents) {
       {{1493076832, 526871}, EV_SYN, SYN_REPORT},
       {{1493076832, 750860}, EV_MSC, 4, 90004},
       {{1493076832, 750860}, EV_KEY, 307, 1},
-      {{1493076832, 750860}, EV_SYN, SYN_REPORT}};
+      {{1493076832, 750860}, EV_SYN, SYN_REPORT},
+  });
 
   // Advance test tick clock so the above events are strictly in the past.
   ui::test::ScopedEventTestTickClock clock;
   clock.SetNowSeconds(1493076833);
 
-  struct ExpectedEvent expected_events[] = {
+  auto expected_events = std::to_array<ExpectedEvent>({
       {GamepadEventType::AXIS, 0, 19105}, {GamepadEventType::FRAME, 0, 0},
       {GamepadEventType::AXIS, 0, 17931}, {GamepadEventType::FRAME, 0, 0},
       {GamepadEventType::AXIS, 0, 17398}, {GamepadEventType::FRAME, 0, 0},
@@ -225,7 +229,7 @@ TEST_F(GamepadEventConverterEvdevTest, XboxGamepadEvents) {
       {GamepadEventType::BUTTON, 306, 1}, {GamepadEventType::FRAME, 0, 0},
       {GamepadEventType::BUTTON, 306, 0}, {GamepadEventType::FRAME, 0, 0},
       {GamepadEventType::BUTTON, 307, 1}, {GamepadEventType::FRAME, 0, 0},
-  };
+  });
 
   for (unsigned i = 0; i < std::size(mock_kernel_queue); ++i) {
     dev->ProcessEvent(mock_kernel_queue[i]);
@@ -277,7 +281,7 @@ TEST_F(GamepadEventConverterEvdevTest, XboxGamepadHasKeys) {
   const std::vector<uint64_t> key_bits = dev->GetGamepadKeyBits();
 
   // BTN_A should be supported.
-  EXPECT_TRUE(EvdevBitUint64IsSet(key_bits.data(), 305));
+  EXPECT_TRUE(EvdevBitUint64IsSet(key_bits, 305));
 }
 
 TEST_F(GamepadEventConverterEvdevTest, DescribeStateForLog) {

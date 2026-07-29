@@ -5,18 +5,21 @@
 #include "ash/system/hotspot/hotspot_tray_view.h"
 
 #include "ash/public/cpp/hotspot_config_service.h"
-#include "ash/resources/vector_icons/vector_icons.h"
 #include "ash/session/session_controller_impl.h"
 #include "ash/shell.h"
 #include "ash/strings/grit/ash_strings.h"
-#include "ash/style/ash_color_provider.h"
+#include "ash/system/hotspot/hotspot_icon.h"
+#include "ash/system/hotspot/hotspot_icon_animation.h"
 #include "ash/system/tray/tray_constants.h"
+#include "base/strings/string_number_conversions.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/chromeos/devicetype_utils.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/paint_vector_icon.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/image_view.h"
 
 namespace ash {
@@ -55,33 +58,23 @@ HotspotTrayView::HotspotTrayView(Shelf* shelf) : TrayItemView(shelf) {
       remote_cros_hotspot_config_.BindNewPipeAndPassReceiver());
   remote_cros_hotspot_config_->AddObserver(
       hotspot_config_observer_receiver_.BindNewPipeAndPassRemote());
+
+  GetViewAccessibility().SetRole(ax::mojom::Role::kImage);
+  UpdateAccessibleName();
 }
 
 HotspotTrayView::~HotspotTrayView() {
   Shell::Get()->session_controller()->RemoveObserver(this);
-}
-
-const char* HotspotTrayView::GetClassName() const {
-  return "HotspotTrayView";
-}
-
-void HotspotTrayView::GetAccessibleNodeData(ui::AXNodeData* node_data) {
-  // A valid role must be set prior to setting the name.
-  node_data->role = ax::mojom::Role::kImage;
-  node_data->SetName(tooltip_);
+  Shell::Get()->hotspot_icon_animation()->RemoveObserver(this);
 }
 
 std::u16string HotspotTrayView::GetAccessibleNameString() const {
-  return tooltip_;
+  return GetTooltipText();
 }
 
 views::View* HotspotTrayView::GetTooltipHandlerForPoint(
     const gfx::Point& point) {
   return GetLocalBounds().Contains(point) ? this : nullptr;
-}
-
-std::u16string HotspotTrayView::GetTooltipText(const gfx::Point& p) const {
-  return tooltip_;
 }
 
 void HotspotTrayView::OnThemeChanged() {
@@ -91,6 +84,11 @@ void HotspotTrayView::OnThemeChanged() {
 
 void HotspotTrayView::HandleLocaleChange() {
   UpdateIconVisibilityAndTooltip();
+}
+
+void HotspotTrayView::UpdateLabelOrImageViewColor(bool active) {
+  TrayItemView::UpdateLabelOrImageViewColor(active);
+  UpdateIconImage();
 }
 
 void HotspotTrayView::OnSessionStateChanged(
@@ -112,25 +110,44 @@ void HotspotTrayView::UpdateIconVisibilityAndTooltip() {
 }
 
 void HotspotTrayView::UpdateIconImage() {
-  SkColor color;
-  if (chromeos::features::IsJellyEnabled()) {
-    color = GetColorProvider()->GetColor(cros_tokens::kCrosSysPrimary);
-  } else {
-    color = AshColorProvider::Get()->GetContentLayerColor(
-        AshColorProvider::ContentLayerType::kIconColorPrimary);
-  }
-  image_view()->SetImage(
-      gfx::CreateVectorIcon(kHotspotOnIcon, kUnifiedTrayIconSize, color));
+  image_view()->SetImage(ui::ImageModel::FromVectorIcon(
+      hotspot_icon::GetIconForHotspot(state_),
+      GetColorProvider()->GetColor(
+          is_active() ? cros_tokens::kCrosSysSystemOnPrimaryContainer
+                      : cros_tokens::kCrosSysOnSurface),
+      kUnifiedTrayIconSize));
+}
+
+void HotspotTrayView::HotspotIconChanged() {
+  UpdateIconImage();
 }
 
 void HotspotTrayView::OnGetHotspotInfo(HotspotInfoPtr hotspot_info) {
-  if (hotspot_info->state != HotspotState::kEnabled) {
+  if (hotspot_info->state == HotspotState::kDisabled) {
     SetVisible(false);
     return;
   }
 
   SetVisible(true);
-  tooltip_ = ComputeHotspotTooltip(hotspot_info->client_count);
+  SetTooltipText(ComputeHotspotTooltip(hotspot_info->client_count));
+  UpdateAccessibleName();
+
+  if (hotspot_info->state == HotspotState::kEnabling) {
+    Shell::Get()->hotspot_icon_animation()->AddObserver(this);
+  } else if (state_ == HotspotState::kEnabling) {
+    Shell::Get()->hotspot_icon_animation()->RemoveObserver(this);
+  }
+  if (state_ != hotspot_info->state) {
+    state_ = hotspot_info->state;
+    UpdateIconImage();
+  }
 }
+
+void HotspotTrayView::UpdateAccessibleName() {
+  GetViewAccessibility().SetName(GetTooltipText());
+}
+
+BEGIN_METADATA(HotspotTrayView)
+END_METADATA
 
 }  // namespace ash

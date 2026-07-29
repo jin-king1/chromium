@@ -12,10 +12,6 @@
 #import "ios/web/web_state/ui/crw_web_controller.h"
 #import "ios/web/web_state/web_state_impl.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace web {
 
 namespace {
@@ -45,13 +41,11 @@ NavigationJavaScriptFeature::NavigationJavaScriptFeature()
                FeatureScript::InjectionTime::kDocumentStart,
                FeatureScript::TargetFrames::kMainFrame,
                FeatureScript::ReinjectionBehavior::
-                   kReinjectOnDocumentRecreation)},
-          {web::java_script_features::GetCommonJavaScriptFeature(),
-           web::java_script_features::GetMessageJavaScriptFeature()}) {}
+                   kReinjectOnDocumentRecreation)}) {}
 
 NavigationJavaScriptFeature::~NavigationJavaScriptFeature() = default;
 
-absl::optional<std::string>
+std::optional<std::string>
 NavigationJavaScriptFeature::GetScriptMessageHandlerName() const {
   return kScriptHandlerName;
 }
@@ -59,11 +53,11 @@ NavigationJavaScriptFeature::GetScriptMessageHandlerName() const {
 void NavigationJavaScriptFeature::ScriptMessageReceived(
     web::WebState* web_state,
     const web::ScriptMessage& message) {
-  if (!message.body()) {
+  if (!message.legacy_body()) {
     // Ignore malformed responses.
     return;
   }
-  auto* dict = message.body()->GetIfDict();
+  auto* dict = message.legacy_body()->GetIfDict();
   if (!dict) {
     // Ignore malformed responses.
     return;

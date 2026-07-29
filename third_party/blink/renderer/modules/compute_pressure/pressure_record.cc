@@ -28,12 +28,12 @@ DOMHighResTimeStamp PressureRecord::time() const {
   return time_;
 }
 
-ScriptValue PressureRecord::toJSON(ScriptState* script_state) const {
+ScriptObject PressureRecord::toJSON(ScriptState* script_state) const {
   V8ObjectBuilder result(script_state);
-  result.Add("source", source());
-  result.Add("state", state());
-  result.Add("time", time());
-  return result.GetScriptValue();
+  result.AddString("source", source().AsCStr());
+  result.AddString("state", state().AsCStr());
+  result.AddNumber("time", time());
+  return result.ToScriptObject();
 }
 
 }  // namespace blink

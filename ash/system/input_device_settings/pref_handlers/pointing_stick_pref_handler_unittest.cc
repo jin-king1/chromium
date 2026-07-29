@@ -2,16 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/public/mojom/input_device_settings.mojom-forward.h"
 #include "ash/system/input_device_settings/pref_handlers/pointing_stick_pref_handler_impl.h"
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/public/mojom/input_device_settings.mojom.h"
 #include "ash/shell.h"
 #include "ash/system/input_device_settings/input_device_settings_defaults.h"
 #include "ash/system/input_device_settings/input_device_settings_pref_names.h"
 #include "ash/system/input_device_settings/input_device_tracker.h"
+#include "ash/system/input_device_settings/settings_updated_metrics_info.h"
 #include "ash/test/ash_test_base.h"
 #include "base/test/scoped_feature_list.h"
 #include "components/account_id/account_id.h"
@@ -69,8 +68,6 @@ class PointingStickPrefHandlerTest : public AshTestBase {
 
   // testing::Test:
   void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(
-        features::kInputDeviceSettingsSplit);
     AshTestBase::SetUp();
     InitializePrefService();
     pref_handler_ = std::make_unique<PointingStickPrefHandlerImpl>();
@@ -88,6 +85,11 @@ class PointingStickPrefHandlerTest : public AshTestBase {
 
     pref_service_->registry()->RegisterDictionaryPref(
         prefs::kPointingStickDeviceSettingsDictPref);
+    pref_service_->registry()->RegisterDictionaryPref(
+        prefs::kPointingStickInternalSettings);
+    pref_service_->registry()->RegisterDictionaryPref(
+        prefs::kPointingStickUpdateSettingsMetricInfo);
+
     pref_service_->registry()->RegisterIntegerPref(
         prefs::kPointingStickSensitivity, kDefaultSensitivity);
     pref_service_->registry()->RegisterBooleanPref(
@@ -105,7 +107,7 @@ class PointingStickPrefHandlerTest : public AshTestBase {
 
   void CheckPointingStickSettingsAndDictAreEqual(
       const mojom::PointingStickSettings& settings,
-      const base::Value::Dict& settings_dict) {
+      const base::DictValue& settings_dict) {
     const auto sensitivity =
         settings_dict.FindInt(prefs::kPointingStickSettingSensitivity);
     if (sensitivity.has_value()) {
@@ -141,10 +143,12 @@ class PointingStickPrefHandlerTest : public AshTestBase {
 
   void CallUpdatePointingStickSettings(
       const std::string& device_key,
-      const mojom::PointingStickSettings& settings) {
+      const mojom::PointingStickSettings& settings,
+      bool is_external = true) {
     mojom::PointingStickPtr pointing_stick = mojom::PointingStick::New();
     pointing_stick->settings = settings.Clone();
     pointing_stick->device_key = device_key;
+    pointing_stick->is_external = is_external;
 
     pref_handler_->UpdatePointingStickSettings(pref_service_.get(),
                                                *pointing_stick);
@@ -161,9 +165,11 @@ class PointingStickPrefHandlerTest : public AshTestBase {
   }
 
   mojom::PointingStickSettingsPtr CallInitializePointingStickSettings(
-      const std::string& device_key) {
+      const std::string& device_key,
+      bool is_external = true) {
     mojom::PointingStickPtr pointing_stick = mojom::PointingStick::New();
     pointing_stick->device_key = device_key;
+    pointing_stick->is_external = is_external;
 
     pref_handler_->InitializePointingStickSettings(pref_service_.get(),
                                                    pointing_stick.get());
@@ -181,7 +187,12 @@ class PointingStickPrefHandlerTest : public AshTestBase {
     return std::move(pointing_stick_ptr->settings);
   }
 
-  const base::Value::Dict* GetSettingsDict(const std::string& device_key) {
+  const base::DictValue* GetSettingsDict(const std::string& device_key,
+                                         bool is_external = true) {
+    if (!is_external) {
+      return &pref_service_->GetDict(prefs::kPointingStickInternalSettings);
+    }
+
     const auto& devices_dict =
         pref_service_->GetDict(prefs::kPointingStickDeviceSettingsDictPref);
     EXPECT_EQ(1u, devices_dict.size());
@@ -207,7 +218,7 @@ class PointingStickPrefHandlerTest : public AshTestBase {
     return dict && dict->is_dict();
   }
 
-  base::Value::Dict GetInternalLoginScreenSettingsDict(AccountId account_id) {
+  base::DictValue GetInternalLoginScreenSettingsDict(AccountId account_id) {
     return known_user()
         .FindPath(account_id,
                   prefs::kPointingStickLoginScreenInternalSettingsPref)
@@ -216,7 +227,6 @@ class PointingStickPrefHandlerTest : public AshTestBase {
   }
 
  protected:
-  base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<PointingStickPrefHandlerImpl> pref_handler_;
   std::unique_ptr<TestingPrefServiceSimple> pref_service_;
 };
@@ -251,22 +261,6 @@ TEST_F(PointingStickPrefHandlerTest, UpdateLoginScreenPointingStickSettings) {
       GetInternalLoginScreenSettingsDict(account_id_1);
   CheckPointingStickSettingsAndDictAreEqual(updated_settings,
                                             updated_settings_dict);
-}
-
-TEST_F(PointingStickPrefHandlerTest,
-       LoginScreenPrefsNotPersistedWhenFlagIsDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(features::kInputDeviceSettingsSplit);
-  mojom::PointingStick pointing_stick1;
-  pointing_stick1.device_key = kPointingStickKey1;
-  pointing_stick1.is_external = false;
-  mojom::PointingStick pointing_stick2;
-  pointing_stick2.device_key = kPointingStickKey2;
-  pointing_stick2.is_external = true;
-  CallInitializeLoginScreenPointingStickSettings(account_id_1, pointing_stick1);
-  CallInitializeLoginScreenPointingStickSettings(account_id_1, pointing_stick2);
-  EXPECT_FALSE(HasInternalLoginScreenSettingsDict(account_id_1));
-  EXPECT_FALSE(HasExternalLoginScreenSettingsDict(account_id_1));
 }
 
 TEST_F(PointingStickPrefHandlerTest, MultipleDevices) {
@@ -316,6 +310,33 @@ TEST_F(PointingStickPrefHandlerTest, PreservesOldSettings) {
   EXPECT_EQ(kDictFakeValue, *value);
 }
 
+TEST_F(PointingStickPrefHandlerTest, LastUpdated) {
+  CallUpdatePointingStickSettings(kPointingStickKey1, kPointingStickSettings1,
+                                  /*is_external=*/true);
+  auto devices_dict =
+      pref_service_->GetDict(prefs::kPointingStickDeviceSettingsDictPref)
+          .Clone();
+  auto* settings_dict = devices_dict.FindDict(kPointingStickKey1);
+  ASSERT_NE(nullptr, settings_dict);
+  auto* time_stamp1 = settings_dict->Find(prefs::kLastUpdatedKey);
+  ASSERT_NE(nullptr, time_stamp1);
+
+  mojom::PointingStickSettingsPtr updated_settings =
+      kPointingStickSettings1.Clone();
+  updated_settings->swap_right = !updated_settings->swap_right;
+  CallUpdatePointingStickSettings(kPointingStickKey1, *updated_settings);
+
+  const auto& updated_devices_dict =
+      pref_service_->GetDict(prefs::kPointingStickDeviceSettingsDictPref);
+  const auto* updated_settings_dict =
+      updated_devices_dict.FindDict(kPointingStickKey1);
+  ASSERT_NE(nullptr, updated_settings_dict);
+  auto* updated_time_stamp1 =
+      updated_settings_dict->Find(prefs::kLastUpdatedKey);
+  ASSERT_NE(nullptr, updated_time_stamp1);
+  ASSERT_NE(time_stamp1, updated_time_stamp1);
+}
+
 TEST_F(PointingStickPrefHandlerTest, UpdateSettings) {
   CallUpdatePointingStickSettings(kPointingStickKey1, kPointingStickSettings1);
   CallUpdatePointingStickSettings(kPointingStickKey2, kPointingStickSettings2);
@@ -355,6 +376,28 @@ TEST_F(PointingStickPrefHandlerTest, UpdateSettings) {
                                             *unchanged_settings_dict);
 }
 
+TEST_F(PointingStickPrefHandlerTest, UpdateSettingsInternal) {
+  CallUpdatePointingStickSettings(kPointingStickKey1, kPointingStickSettings1,
+                                  /*is_external=*/false);
+
+  const auto& settings_dict =
+      pref_service_->GetDict(prefs::kPointingStickInternalSettings);
+  CheckPointingStickSettingsAndDictAreEqual(kPointingStickSettings1,
+                                            settings_dict);
+
+  mojom::PointingStickSettings updated_settings = kPointingStickSettings1;
+  updated_settings.swap_right = !updated_settings.swap_right;
+
+  // Update the settings again and verify the settings are updated in place.
+  CallUpdatePointingStickSettings(kPointingStickKey1, updated_settings,
+                                  /*is_external=*/false);
+
+  const auto& updated_settings_dict =
+      pref_service_->GetDict(prefs::kPointingStickInternalSettings);
+  CheckPointingStickSettingsAndDictAreEqual(updated_settings,
+                                            updated_settings_dict);
+}
+
 TEST_F(PointingStickPrefHandlerTest, NewSettingAddedRoundTrip) {
   mojom::PointingStickSettings test_settings = kPointingStickSettings1;
   test_settings.swap_right = !kDefaultSwapRight;
@@ -379,6 +422,33 @@ TEST_F(PointingStickPrefHandlerTest, NewSettingAddedRoundTrip) {
   // Reset "new settings" to the values that match `test_settings` and check
   // that the rest of the fields are equal.
   settings->swap_right = !kDefaultSwapRight;
+  EXPECT_EQ(test_settings, *settings);
+}
+
+TEST_F(PointingStickPrefHandlerTest, NewSettingAddedRoundTripInternal) {
+  mojom::PointingStickSettings test_settings = kPointingStickSettings1;
+  test_settings.swap_right = !kDefaultSwapRight;
+
+  CallUpdatePointingStickSettings(kPointingStickKey1, test_settings,
+                                  /*is_external=*/false);
+  auto settings_dict =
+      pref_service_->GetDict(prefs::kPointingStickInternalSettings).Clone();
+
+  // Remove key from the dict to mock adding a new setting in the future.
+  settings_dict.Remove(prefs::kPointingStickSettingSwapRight);
+  pref_service_->SetDict(prefs::kPointingStickInternalSettings,
+                         std::move(settings_dict));
+
+  // Initialize PointingStick settings for the device and check that
+  // "new settings" match their default values.
+  mojom::PointingStickSettingsPtr settings =
+      CallInitializePointingStickSettings(kPointingStickKey1,
+                                          /*is_external=*/false);
+  EXPECT_EQ(kDefaultReverseScrolling, settings->swap_right);
+
+  // Reset "new settings" to the values that match `test_settings` and check
+  // that the rest of the fields are equal.
+  settings->swap_right = !kDefaultReverseScrolling;
   EXPECT_EQ(test_settings, *settings);
 }
 
@@ -411,49 +481,16 @@ TEST_F(PointingStickPrefHandlerTest, NewPointingStickDefaultSettings) {
                                             *settings_dict);
 }
 
-TEST_F(PointingStickPrefHandlerTest,
-       PointingStickObserveredInTransitionPeriod) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(features::kInputDeviceSettingsSplit);
-  mojom::PointingStick pointing_stick;
-  pointing_stick.device_key = kPointingStickKey1;
-  Shell::Get()->input_device_tracker()->OnPointingStickConnected(
-      pointing_stick);
-  // Initialize PointingStick settings for the device and check that the global
-  // prefs were used as defaults.
+TEST_F(PointingStickPrefHandlerTest, NewPointingStickDefaultSettingsInternal) {
   mojom::PointingStickSettingsPtr settings =
-      CallInitializePointingStickSettings(pointing_stick.device_key);
-  ASSERT_EQ(settings->sensitivity, kTestSensitivity);
-  ASSERT_EQ(settings->swap_right, kTestSwapRight);
-  ASSERT_EQ(settings->acceleration_enabled, kTestAccelerationEnabled);
-}
+      CallInitializePointingStickSettings(kPointingStickKey1,
+                                          /*is_external=*/false);
+  EXPECT_EQ(*settings, kPointingStickSettingsDefault);
 
-TEST_F(PointingStickPrefHandlerTest,
-       TransitionPeriodSettingsPersistedWhenUserChosen) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(features::kInputDeviceSettingsSplit);
-  mojom::PointingStick pointing_stick;
-  pointing_stick.device_key = kPointingStickKey1;
-  Shell::Get()->input_device_tracker()->OnPointingStickConnected(
-      pointing_stick);
-
-  pref_service_->SetUserPref(prefs::kPointingStickSensitivity,
-                             base::Value(kDefaultSensitivity));
-  pref_service_->SetUserPref(prefs::kPrimaryPointingStickButtonRight,
-                             base::Value(kDefaultSwapRight));
-  pref_service_->SetUserPref(prefs::kPointingStickAcceleration,
-                             base::Value(kDefaultAccelerationEnabled));
-  mojom::PointingStickSettingsPtr settings =
-      CallInitializePointingStickSettings(pointing_stick.device_key);
-  EXPECT_EQ(kPointingStickSettingsDefault, *settings);
-
-  const auto* settings_dict = GetSettingsDict(pointing_stick.device_key);
-  EXPECT_TRUE(settings_dict->contains(prefs::kPointingStickSettingSensitivity));
-  EXPECT_TRUE(
-      settings_dict->contains(prefs::kPointingStickSettingAcceleration));
-  EXPECT_TRUE(settings_dict->contains(prefs::kPointingStickSettingSwapRight));
+  auto& settings_dict =
+      pref_service_->GetDict(prefs::kPointingStickInternalSettings);
   CheckPointingStickSettingsAndDictAreEqual(kPointingStickSettingsDefault,
-                                            *settings_dict);
+                                            settings_dict);
 }
 
 TEST_F(PointingStickPrefHandlerTest, DefaultNotPersistedUntilUpdated) {
@@ -488,6 +525,46 @@ TEST_F(PointingStickPrefHandlerTest, DefaultNotPersistedUntilUpdated) {
   EXPECT_TRUE(settings_dict->contains(prefs::kPointingStickSettingSwapRight));
   CheckPointingStickSettingsAndDictAreEqual(kPointingStickSettingsDefault,
                                             *settings_dict);
+}
+
+TEST_F(PointingStickPrefHandlerTest, SettingsUpdateMetricTest) {
+  const auto settings1 =
+      CallInitializePointingStickSettings(kPointingStickKey1);
+
+  // When its the first device of the type the category should be kFirstEver.
+  {
+    const auto& metric_dict =
+        pref_service_->GetDict(prefs::kPointingStickUpdateSettingsMetricInfo);
+    ASSERT_TRUE(metric_dict.contains(kPointingStickKey1));
+
+    auto metrics_info = SettingsUpdatedMetricsInfo::FromDict(
+        *metric_dict.FindDict(kPointingStickKey1));
+    ASSERT_TRUE(metrics_info);
+    EXPECT_EQ(SettingsUpdatedMetricsInfo::Category::kFirstEver,
+              metrics_info->category());
+  }
+
+  // When its taken from synced prefs on a different device, category should
+  // match.
+  {
+    auto devices_dict =
+        pref_service_->GetDict(prefs::kPointingStickDeviceSettingsDictPref)
+            .Clone();
+    devices_dict.Set(kPointingStickKey2, base::DictValue());
+    pref_service_->SetDict(prefs::kPointingStickDeviceSettingsDictPref,
+                           std::move(devices_dict));
+
+    CallInitializePointingStickSettings(kPointingStickKey2);
+    const auto& metric_dict =
+        pref_service_->GetDict(prefs::kPointingStickUpdateSettingsMetricInfo);
+    ASSERT_TRUE(metric_dict.contains(kPointingStickKey2));
+
+    auto metrics_info = SettingsUpdatedMetricsInfo::FromDict(
+        *metric_dict.FindDict(kPointingStickKey2));
+    ASSERT_TRUE(metrics_info);
+    EXPECT_EQ(SettingsUpdatedMetricsInfo::Category::kSynced,
+              metrics_info->category());
+  }
 }
 
 class PointingStickSettingsPrefConversionTest
@@ -530,6 +607,15 @@ TEST_P(PointingStickSettingsPrefConversionTest, CheckConversion) {
   auto* settings_dict = devices_dict.FindDict(device_key_);
   ASSERT_NE(nullptr, settings_dict);
 
+  CheckPointingStickSettingsAndDictAreEqual(settings_, *settings_dict);
+}
+
+TEST_P(PointingStickSettingsPrefConversionTest, CheckConversionInternal) {
+  CallUpdatePointingStickSettings(device_key_, settings_,
+                                  /*is_external=*/false);
+
+  const auto* settings_dict =
+      GetSettingsDict(device_key_, /*is_external=*/false);
   CheckPointingStickSettingsAndDictAreEqual(settings_, *settings_dict);
 }
 

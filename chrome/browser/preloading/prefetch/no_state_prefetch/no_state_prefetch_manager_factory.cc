@@ -13,7 +13,8 @@
 #include "components/no_state_prefetch/browser/no_state_prefetch_manager.h"
 #include "extensions/buildflags/buildflags.h"
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+#include "extensions/browser/api/declarative/rules_registry_service.h"
 #include "extensions/browser/extension_system_provider.h"
 #include "extensions/browser/extensions_browser_client.h"
 #endif
@@ -30,7 +31,8 @@ NoStatePrefetchManager* NoStatePrefetchManagerFactory::GetForBrowserContext(
 
 // static
 NoStatePrefetchManagerFactory* NoStatePrefetchManagerFactory::GetInstance() {
-  return base::Singleton<NoStatePrefetchManagerFactory>::get();
+  static base::NoDestructor<NoStatePrefetchManagerFactory> instance;
+  return instance.get();
 }
 
 NoStatePrefetchManagerFactory::NoStatePrefetchManagerFactory()
@@ -38,13 +40,19 @@ NoStatePrefetchManagerFactory::NoStatePrefetchManagerFactory()
           "NoStatePrefetchManager",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOwnInstance)
-              // TODO(crbug.com/1418376): Check if this service is needed in
+              // TODO(crbug.com/40257657): Check if this service is needed in
               // Guest mode.
               .WithGuest(ProfileSelection::kOwnInstance)
+              // TODO(crbug.com/41488885): Check if this service is needed for
+              // Ash Internals.
+              .WithAshInternals(ProfileSelection::kOwnInstance)
               .Build()) {
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   DependsOn(
       extensions::ExtensionsBrowserClient::Get()->GetExtensionSystemFactory());
+  // NoStatePrefetchService has an indirect dependency on the
+  // RulesRegistryService through extensions::TabHelper::WebContentsDestroyed.
+  DependsOn(extensions::RulesRegistryService::GetFactoryInstance());
 #endif
   // PrerenderLocalPredictor observers the history visit DB.
   DependsOn(HistoryServiceFactory::GetInstance());
@@ -52,11 +60,12 @@ NoStatePrefetchManagerFactory::NoStatePrefetchManagerFactory()
   DependsOn(SyncServiceFactory::GetInstance());
 }
 
-NoStatePrefetchManagerFactory::~NoStatePrefetchManagerFactory() {}
+NoStatePrefetchManagerFactory::~NoStatePrefetchManagerFactory() = default;
 
-KeyedService* NoStatePrefetchManagerFactory::BuildServiceInstanceFor(
+std::unique_ptr<KeyedService>
+NoStatePrefetchManagerFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* browser_context) const {
-  return new NoStatePrefetchManager(
+  return std::make_unique<NoStatePrefetchManager>(
       Profile::FromBrowserContext(browser_context),
       std::make_unique<ChromeNoStatePrefetchManagerDelegate>(
           Profile::FromBrowserContext(browser_context)));

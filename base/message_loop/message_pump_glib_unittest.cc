@@ -6,9 +6,10 @@
 
 #include <glib.h>
 #include <math.h>
-#include "build/build_config.h"
 
 #include <algorithm>
+#include <memory>
+#include <string_view>
 #include <vector>
 
 #include "base/files/file_util.h"
@@ -28,8 +29,10 @@
 #include "base/task/single_thread_task_executor.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/task_environment.h"
-#include "base/test/trace_event_analyzer.h"
+#include "base/test/tracing/trace_event_analyzer.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "base/threading/thread.h"
+#include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace base {
@@ -40,7 +43,7 @@ namespace {
 // GLib source runs at the same priority).
 class EventInjector {
  public:
-  EventInjector() : processed_events_(0) {
+  EventInjector() {
     source_ = static_cast<Source*>(g_source_new(&SourceFuncs, sizeof(Source)));
     source_->injector = this;
     g_source_attach(source_, nullptr);
@@ -57,28 +60,32 @@ class EventInjector {
 
   int HandlePrepare() {
     // If the queue is empty, block.
-    if (events_.empty())
+    if (events_.empty()) {
       return -1;
+    }
     TimeDelta delta = events_[0].time - Time::NowFromSystemTime();
     return std::max(0, static_cast<int>(ceil(delta.InMillisecondsF())));
   }
 
   bool HandleCheck() {
-    if (events_.empty())
+    if (events_.empty()) {
       return false;
+    }
     return events_[0].time <= Time::NowFromSystemTime();
   }
 
   void HandleDispatch() {
-    if (events_.empty())
+    if (events_.empty()) {
       return;
+    }
     Event event = std::move(events_[0]);
     events_.erase(events_.begin());
     ++processed_events_;
-    if (!event.callback.is_null())
+    if (!event.callback.is_null()) {
       std::move(event.callback).Run();
-    else if (!event.task.is_null())
+    } else if (!event.task.is_null()) {
       std::move(event.task).Run();
+    }
   }
 
   // Adds an event to the queue. When "handled", executes |callback|.
@@ -115,10 +122,11 @@ class EventInjector {
 
   void AddEventHelper(int delay_ms, OnceClosure callback, OnceClosure task) {
     Time last_time;
-    if (!events_.empty())
-      last_time = (events_.end()-1)->time;
-    else
+    if (!events_.empty()) {
+      last_time = (events_.end() - 1)->time;
+    } else {
       last_time = Time::NowFromSystemTime();
+    }
 
     Time future = last_time + Milliseconds(delay_ms);
     EventInjector::Event event = {future, std::move(callback), std::move(task)};
@@ -141,17 +149,28 @@ class EventInjector {
     return TRUE;
   }
 
+  static void Finalize(GSource* source) {
+    // Since the Source object memory is managed by glib, Source implicit
+    // destructor is never called, and thus Source's raw_ptr never release its
+    // internal reference on the pump pointer. This leads to adding pressure to
+    // the BackupRefPtr quarantine.
+    static_cast<Source*>(source)->injector = nullptr;
+  }
+
   raw_ptr<Source> source_;
   std::vector<Event> events_;
-  int processed_events_;
+  int processed_events_ = 0;
   static GSourceFuncs SourceFuncs;
 };
 
-GSourceFuncs EventInjector::SourceFuncs = {EventInjector::Prepare,
-                                           EventInjector::Check,
-                                           EventInjector::Dispatch, nullptr};
+GSourceFuncs EventInjector::SourceFuncs = {
+    EventInjector::Prepare,
+    EventInjector::Check,
+    EventInjector::Dispatch,
+    EventInjector::Finalize,
+};
 
-void IncrementInt(int *value) {
+void IncrementInt(int* value) {
   ++*value;
 }
 
@@ -308,7 +327,7 @@ namespace {
 // This class is a helper for the concurrent events / posted tasks test below.
 // It will quit the main loop once enough tasks and events have been processed,
 // while making sure there is always work to do and events in the queue.
-class ConcurrentHelper : public RefCounted<ConcurrentHelper>  {
+class ConcurrentHelper : public RefCounted<ConcurrentHelper> {
  public:
   ConcurrentHelper(EventInjector* injector, OnceClosure done_closure)
       : injector_(injector),
@@ -346,7 +365,7 @@ class ConcurrentHelper : public RefCounted<ConcurrentHelper>  {
  private:
   friend class RefCounted<ConcurrentHelper>;
 
-  ~ConcurrentHelper() {}
+  ~ConcurrentHelper() = default;
 
   static const int kStartingEventCount = 20;
   static const int kStartingTaskCount = 20;
@@ -422,7 +441,7 @@ namespace {
 // Helper class that lets us run the GLib message loop.
 class GLibLoopRunner : public RefCounted<GLibLoopRunner> {
  public:
-  GLibLoopRunner() : quit_(false) { }
+  GLibLoopRunner() = default;
 
   void RunGLib() {
     while (!quit_) {
@@ -436,20 +455,16 @@ class GLibLoopRunner : public RefCounted<GLibLoopRunner> {
     }
   }
 
-  void Quit() {
-    quit_ = true;
-  }
+  void Quit() { quit_ = true; }
 
-  void Reset() {
-    quit_ = false;
-  }
+  void Reset() { quit_ = false; }
 
  private:
   friend class RefCounted<GLibLoopRunner>;
 
-  ~GLibLoopRunner() {}
+  ~GLibLoopRunner() = default;
 
-  bool quit_;
+  bool quit_ = false;
 };
 
 void TestGLibLoopInternal(EventInjector* injector, OnceClosure done) {
@@ -558,6 +573,8 @@ class NestedEventAnalyzer {
                                     trace_analyzer::Query::String("Nested"),
                                 &events);
   }
+
+  base::test::TracingEnvironment tracing_environment_;
 };
 
 }  // namespace
@@ -621,10 +638,12 @@ class MessagePumpGLibFdWatchTest : public testing::Test {
     // Wait for the IO thread to exit before closing FDs which may have been
     // passed to it.
     io_thread_.Stop();
-    if (IGNORE_EINTR(close(pipefds_[0])) < 0)
+    if (IGNORE_EINTR(close(pipefds_[0])) < 0) {
       PLOG(ERROR) << "close";
-    if (IGNORE_EINTR(close(pipefds_[1])) < 0)
+    }
+    if (IGNORE_EINTR(close(pipefds_[1])) < 0) {
       PLOG(ERROR) << "close";
+    }
   }
 
   void WaitUntilIoThreadStarted() {
@@ -642,6 +661,7 @@ class MessagePumpGLibFdWatchTest : public testing::Test {
   }
 
   int pipefds_[2];
+  static constexpr char null_byte_ = 0;
 
  private:
   Thread io_thread_;
@@ -736,8 +756,9 @@ class QuitWatcher : public DeleteWatcher {
 
   void OnFileCanReadWithoutBlocking(int fd) override {
     ClearController();
-    if (quit_closure_)
+    if (quit_closure_) {
       std::move(quit_closure_).Run();
+    }
   }
 
  private:
@@ -748,7 +769,7 @@ void WriteFDWrapper(const int fd,
                     const char* buf,
                     int size,
                     WaitableEvent* event) {
-  ASSERT_TRUE(WriteFileDescriptor(fd, StringPiece(buf, size)));
+  ASSERT_TRUE(WriteFileDescriptor(fd, std::string_view(buf, size)));
 }
 
 }  // namespace
@@ -775,7 +796,7 @@ TEST_F(MessagePumpGLibFdWatchTest, DeleteWatcher) {
 // called for a READ_WRITE event, when the watcher calls
 // StopWatchingFileDescriptor in OnFileCanWriteWithoutBlocking callback.
 TEST_F(MessagePumpGLibFdWatchTest, StopWatcher) {
-  std::unique_ptr<MessagePumpGlib> pump(new MessagePumpGlib);
+  auto pump = std::make_unique<MessagePumpGlib>();
   MessagePumpGlib::FdWatchController controller(FROM_HERE);
   StopWatcher watcher(&controller);
   pump->WatchFileDescriptor(pipefds_[1], false,
@@ -789,7 +810,7 @@ TEST_F(MessagePumpGLibFdWatchTest, StopWatcher) {
 TEST_F(MessagePumpGLibFdWatchTest, NestedPumpWatcher) {
   test::SingleThreadTaskEnvironment task_environment(
       test::SingleThreadTaskEnvironment::MainThreadType::UI);
-  std::unique_ptr<MessagePumpGlib> pump(new MessagePumpGlib);
+  auto pump = std::make_unique<MessagePumpGlib>();
   NestedPumpWatcher watcher;
   MessagePumpGlib::FdWatchController controller(FROM_HERE);
   pump->WatchFileDescriptor(pipefds_[1], false, MessagePumpGlib::WATCH_READ,
@@ -814,11 +835,10 @@ TEST_F(MessagePumpGLibFdWatchTest, QuitWatcher) {
                             controller, &delegate);
 
   // Make the IO thread wait for |event| before writing to pipefds[1].
-  const char buf = 0;
   WaitableEvent event;
   auto watcher = std::make_unique<WaitableEventWatcher>();
   WaitableEventWatcher::EventCallback write_fd_task =
-      BindOnce(&WriteFDWrapper, pipefds_[1], &buf, 1);
+      BindOnce(&WriteFDWrapper, pipefds_[1], &null_byte_, 1);
   io_runner()->PostTask(
       FROM_HERE, BindOnce(IgnoreResult(&WaitableEventWatcher::StartWatching),
                           Unretained(watcher.get()), &event,

@@ -17,6 +17,7 @@
  *     indicate this is a leaf node. Null values are placeholders to indicate
  *     children that haven't been loaded in yet.
  * @property {?TreeNode} parent - Parent tree node, null if this is a root node.
+ * @property {string} id - Unique identifier of a node.
  * @property {string} idPath - Full path to this node.
  * @property {string} objPath - Path to the object file containing this symbol.
  * @property {string} srcPath - Path to the source containing this symbol.
@@ -34,6 +35,10 @@
  * @property {number|undefined} address - Start address of this node.
  * @property {number} flags - A bit field to store symbol properties.
  * @property {number} numAliases - Number of aliases for the symbol.
+ * @property {number|undefined} beforeNumAliases - Diff mode only: Number of aliases in
+ *     "before" binary.
+ * @property {number|undefined} afterNumAliases - Diff mode only: Number of aliases in "after"
+ *      binary.
  * @property {string} type - Type of this node. If this node has children, the
  *     string may have a second character to denote the most common child.
  * @property {_DIFF_STATUSES} diffStatus
@@ -73,6 +78,11 @@
  * Properties loaded from .size / .sizediff files.
  * @typedef {Object} SizeProperties
  * @property {boolean} isMultiContainer - Whether multiple containers exist.
+ */
+
+/**
+ * @typedef {Object} QueryAncestryResults
+ * @property {!Array<number>} ancestorIds
  */
 
 /**

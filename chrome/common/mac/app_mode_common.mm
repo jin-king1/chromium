@@ -14,25 +14,7 @@
 #include "components/version_info/version_info.h"
 #include "mojo/core/embedder/embedder.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace app_mode {
-
-const char kAppShimBootstrapNameFragment[] = "apps";
-
-const char kRunningChromeVersionSymlinkName[] = "RunningChromeVersion";
-
-const char kLaunchedByChromeProcessId[] = "launched-by-chrome-process-id";
-const char kLaunchedByChromeBundlePath[] = "launched-by-chrome-bundle-path";
-const char kLaunchedByChromeFrameworkBundlePath[] =
-    "launched-by-chrome-framework-bundle-path";
-const char kLaunchedByChromeFrameworkDylibPath[] =
-    "launched-by-chrome-framework-dylib-path";
-const char kLaunchedForTest[] = "launched-for-test";
-const char kLaunchedAfterRebuild[] = "launched-after-rebuild";
-const char kIsNormalLaunch[] = "is-normal-launch";
 
 NSString* const kCFBundleDocumentTypesKey = @"CFBundleDocumentTypes";
 NSString* const kCFBundleTypeExtensionsKey = @"CFBundleTypeExtensions";
@@ -59,6 +41,7 @@ NSString* const kCrAppModeProfileDirKey = @"CrAppModeProfileDir";
 NSString* const kCrAppModeProfileNameKey = @"CrAppModeProfileName";
 NSString* const kCrAppModeMajorVersionKey = @"CrAppModeMajorVersionKey";
 NSString* const kCrAppModeMinorVersionKey = @"CrAppModeMinorVersionKey";
+NSString* const kCrAppModeIsAdHocSignedKey = @"CrAppModeIsAdhocSigned";
 
 NSString* const kLastRunAppBundlePathPrefsKey = @"LastRunAppBundlePath";
 
@@ -93,7 +76,7 @@ static_assert(
 // static
 ChromeConnectionConfig ChromeConnectionConfig::GenerateForCurrentProcess() {
   return {
-      .framework_version = version_info::GetVersionNumber(),
+      .framework_version = std::string(version_info::GetVersionNumber()),
       .is_mojo_ipcz_enabled = mojo::core::IsMojoIpczEnabled(),
   };
 }

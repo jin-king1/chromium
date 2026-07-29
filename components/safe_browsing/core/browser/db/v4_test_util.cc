@@ -30,22 +30,24 @@ V4ProtocolConfig GetTestV4ProtocolConfig(bool disable_auto_update) {
 }
 
 std::ostream& operator<<(std::ostream& os, const ThreatMetadata& meta) {
-  os << "{threat_pattern_type=" << static_cast<int>(meta.threat_pattern_type)
-     << ", api_permissions=[";
-  for (auto p : meta.api_permissions)
-    os << p << ",";
-  os << "subresource_filter_match=[";
-  for (auto t : meta.subresource_filter_match)
+  os << "{subresource_filter_match=[";
+  for (auto t : meta.subresource_filter_match) {
     os << static_cast<int>(t.first) << ":" << static_cast<int>(t.second) << ",";
-  return os << "], population_id=" << meta.population_id << "}";
+  }
+  return os << "]}";
 }
 
 TestV4Store::TestV4Store(
     const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-    const base::FilePath& store_path)
+    const base::FilePath& store_path,
+    PrefixSize v5_prefix_size,
+    bool is_eligible_for_migration,
+    bool is_extensions_blocklist)
     : V4Store(task_runner,
               store_path,
-              std::make_unique<InMemoryHashPrefixMap>()) {}
+              v5_prefix_size,
+              is_eligible_for_migration,
+              is_extensions_blocklist) {}
 
 TestV4Store::~TestV4Store() = default;
 
@@ -56,31 +58,37 @@ bool TestV4Store::HasValidData() {
 void TestV4Store::MarkPrefixAsBad(HashPrefixStr prefix) {
   auto& vec = mock_prefixes_[prefix.size()];
   vec.insert(std::upper_bound(vec.begin(), vec.end(), prefix), prefix);
-  hash_prefix_map_->Clear();
-  hash_prefix_map_->Append(prefix.size(), base::StrCat(vec));
 }
 
 void TestV4Store::SetPrefixes(std::vector<HashPrefixStr> prefixes,
                               PrefixSize size) {
   std::sort(prefixes.begin(), prefixes.end());
   mock_prefixes_[size] = prefixes;
-  hash_prefix_map_->Clear();
-  hash_prefix_map_->Append(size, base::StrCat(prefixes));
 }
 
-TestV4Database::TestV4Database(
+HashPrefixStr TestV4Store::GetMatchingHashPrefix(const FullHashStr& full_hash) {
+  for (const auto& [size, prefixes] : mock_prefixes_) {
+    HashPrefixStr prefix = full_hash.substr(0, size);
+    if (std::find(prefixes.begin(), prefixes.end(), prefix) != prefixes.end()) {
+      return prefix;
+    }
+  }
+  return HashPrefixStr();
+}
+
+TestSBDatabase::TestSBDatabase(
     const scoped_refptr<base::SequencedTaskRunner>& db_task_runner,
     std::unique_ptr<StoreMap> store_map)
-    : V4Database(db_task_runner, std::move(store_map)) {}
+    : SBDatabase(db_task_runner, std::move(store_map)) {}
 
-void TestV4Database::MarkPrefixAsBad(ListIdentifier list_id,
+void TestSBDatabase::MarkPrefixAsBad(ListIdentifier list_id,
                                      HashPrefixStr prefix) {
-  V4Store* base_store = store_map_->at(list_id).get();
+  SBStore* base_store = store_map_->at(list_id).get();
   TestV4Store* test_store = static_cast<TestV4Store*>(base_store);
   test_store->MarkPrefixAsBad(prefix);
 }
 
-int64_t TestV4Database::GetStoreSizeInBytes(const ListIdentifier& store) const {
+int64_t TestSBDatabase::GetStoreSizeInBytes(const ListIdentifier& store) const {
   return kDefaultStoreFileSizeInBytes;
 }
 
@@ -88,32 +96,47 @@ TestV4StoreFactory::TestV4StoreFactory() = default;
 
 TestV4StoreFactory::~TestV4StoreFactory() = default;
 
-std::unique_ptr<V4Store> TestV4StoreFactory::CreateV4Store(
+V4StorePtr TestV4StoreFactory::CreateV4Store(
     const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-    const base::FilePath& store_path) {
-  auto new_store = std::make_unique<TestV4Store>(task_runner, store_path);
+    const base::FilePath& store_path,
+    PrefixSize v5_prefix_size,
+    bool is_eligible_for_migration,
+    bool is_extensions_blocklist) {
+  V4StorePtr new_store(
+      new TestV4Store(task_runner, store_path, v5_prefix_size,
+                      is_eligible_for_migration, is_extensions_blocklist),
+      SBStoreDeleter(task_runner));
   new_store->Initialize();
-  return std::move(new_store);
+  return new_store;
 }
 
-TestV4DatabaseFactory::TestV4DatabaseFactory() = default;
+TestSBDatabaseFactory::TestSBDatabaseFactory() = default;
 
-TestV4DatabaseFactory::~TestV4DatabaseFactory() = default;
+TestSBDatabaseFactory::~TestSBDatabaseFactory() = default;
 
-std::unique_ptr<V4Database, base::OnTaskRunnerDeleter>
-TestV4DatabaseFactory::Create(
+std::unique_ptr<SBDatabase, base::OnTaskRunnerDeleter>
+TestSBDatabaseFactory::Create(
     const scoped_refptr<base::SequencedTaskRunner>& db_task_runner,
     std::unique_ptr<StoreMap> store_map) {
-  auto v4_db = std::unique_ptr<TestV4Database, base::OnTaskRunnerDeleter>(
-      new TestV4Database(db_task_runner, std::move(store_map)),
+  auto sb_db = std::unique_ptr<TestSBDatabase, base::OnTaskRunnerDeleter>(
+      new TestSBDatabase(db_task_runner, std::move(store_map)),
       base::OnTaskRunnerDeleter(db_task_runner));
-  v4_db_ = v4_db.get();
-  return std::move(v4_db);
+  sb_db_ = sb_db.get();
+  return std::move(sb_db);
 }
 
-void TestV4DatabaseFactory::MarkPrefixAsBad(ListIdentifier list_id,
+bool TestSBDatabaseFactory::IsReady() {
+  // sb_db_ is created on a base threadpool thread.
+  // It might not be ready by the time it is used.
+  // Ideally, this should be handled better, but this is a quick way
+  // of checking if it has been constructed.
+  return sb_db_ != nullptr;
+}
+
+void TestSBDatabaseFactory::MarkPrefixAsBad(ListIdentifier list_id,
                                             HashPrefixStr prefix) {
-  v4_db_->MarkPrefixAsBad(list_id, prefix);
+  CHECK(sb_db_);
+  sb_db_->MarkPrefixAsBad(list_id, prefix);
 }
 
 TestV4GetHashProtocolManager::TestV4GetHashProtocolManager(
@@ -184,7 +207,7 @@ std::string GetV4HashResponse(
 }
 
 FullHashInfo GetFullHashInfo(const GURL& url, const ListIdentifier& list_id) {
-  return FullHashInfo(V4ProtocolManagerUtil::GetFullHash(url), list_id,
+  return FullHashInfo(SBProtocolManagerUtil::GetFullHash(url), list_id,
                       base::Time::Now() + base::Minutes(5));
 }
 

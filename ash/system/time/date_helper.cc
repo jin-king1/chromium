@@ -11,6 +11,8 @@
 #include "ash/system/time/calendar_utils.h"
 #include "base/i18n/unicodestring.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/singleton.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "third_party/icu/source/common/unicode/dtintrv.h"
 #include "third_party/icu/source/i18n/unicode/dtitvfmt.h"
@@ -31,7 +33,7 @@ const std::vector<std::u16string> kDefaultWeekTitle = {u"S", u"M", u"T", u"W",
                                                        u"T", u"F", u"S"};
 
 UDate TimeToUDate(const base::Time& time) {
-  return static_cast<UDate>(time.ToDoubleT() *
+  return static_cast<UDate>(time.InSecondsFSinceUnixEpoch() *
                             base::Time::kMillisecondsPerSecond);
 }
 
@@ -41,33 +43,32 @@ icu::UnicodeString getHoursPattern(const icu::UnicodeString& unicode_pattern) {
   std::string pattern;
   unicode_pattern.toUTF8String(pattern);
 
-  if (pattern.find("hh") != std::string::npos) {
+  if (pattern.contains("hh")) {
     return icu::UnicodeString("hh");
   }
-  if (pattern.find("h") != std::string::npos) {
+  if (pattern.contains("h")) {
     return icu::UnicodeString("h");
   }
-  if (pattern.find("HH") != std::string::npos) {
+  if (pattern.contains("HH")) {
     return icu::UnicodeString("HH");
   }
-  if (pattern.find("H") != std::string::npos) {
+  if (pattern.contains("H")) {
     return icu::UnicodeString("H");
   }
-  if (pattern.find("KK") != std::string::npos) {
+  if (pattern.contains("KK")) {
     return icu::UnicodeString("KK");
   }
-  if (pattern.find("K") != std::string::npos) {
+  if (pattern.contains("K")) {
     return icu::UnicodeString("K");
   }
-  if (pattern.find("kk") != std::string::npos) {
+  if (pattern.contains("kk")) {
     return icu::UnicodeString("kk");
   }
-  if (pattern.find("k") != std::string::npos) {
+  if (pattern.contains("k")) {
     return icu::UnicodeString("k");
   }
 
   NOTREACHED() << "Hours pattern not found.";
-  return icu::UnicodeString("HH");
 }
 
 }  // namespace
@@ -126,7 +127,16 @@ icu::SimpleDateFormat DateHelper::CreateHoursFormatter(const char* pattern) {
   icu::UnicodeString generated_pattern =
       generator->getBestPattern(icu::UnicodeString(pattern), status);
   DCHECK(U_SUCCESS(status));
-
+  // Since ICU 74, getBestPattern can return a gibberish pattern ""H
+  // ├'Minute': m┤ ├'Dayperiod': a┤"" if the locale resource is missing. Instead
+  // of using the gibberish pattern, this should fallback to the proposed
+  // pattern.
+  std::string gen_string;
+  generated_pattern.toUTF8String(gen_string);
+  if (gen_string.contains("├")) {
+    // Fallback to the suggested pattern.
+    generated_pattern = icu::UnicodeString(pattern);
+  }
   // Extract the hours from the generated pattern.
   icu::UnicodeString hours_pattern = getHoursPattern(generated_pattern);
   icu::SimpleDateFormat formatter(hours_pattern, status);
@@ -232,7 +242,9 @@ DateHelper::DateHelper()
 
   // Not using a scoped observer since the Shell can be destructed before this
   // `DateHelper` instance gets destructed.
-  Shell::Get()->locale_update_controller()->AddObserver(this);
+  if (Shell::HasInstance()) {
+    Shell::Get()->locale_update_controller()->AddObserver(this);
+  }
 }
 
 DateHelper::~DateHelper() {
@@ -301,8 +313,6 @@ void DateHelper::CalculateLocalWeekTitles() {
     if (safe_index == calendar_utils::kDateInOneWeek) {
       NOTREACHED() << "Should already find the first day within 7 times, since "
                       "there are only 7 days in a week";
-      week_titles_ = kDefaultWeekTitle;
-      return;
     }
   }
 
@@ -324,6 +334,7 @@ void DateHelper::TimezoneChanged(const icu::TimeZone& timezone) {
 }
 
 void DateHelper::OnLocaleChanged() {
+  ResetFormatters();
   CalculateLocalWeekTitles();
 }
 

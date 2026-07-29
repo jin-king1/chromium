@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/threading/thread_checker.h"
 #include "chrome/browser/ash/policy/uploading/upload_job.h"
 #include "google_apis/gaia/oauth2_access_token_manager.h"
@@ -143,14 +143,13 @@ class UploadJobImpl : public UploadJob,
   const CoreAccountId account_id_;
 
   // The token manager used to retrieve the access token.
-  const raw_ptr<OAuth2AccessTokenManager, ExperimentalAsh>
-      access_token_manager_;
+  const raw_ptr<OAuth2AccessTokenManager> access_token_manager_;
 
   // This is used to initialize the network::SimpleURLLoader object.
   const scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
 
   // The delegate to be notified of events.
-  const raw_ptr<Delegate, ExperimentalAsh> delegate_;
+  const raw_ptr<Delegate> delegate_;
 
   // An implementation of MimeBoundaryGenerator. This instance will be used to
   // generate MIME boundaries when assembling the multipart request in

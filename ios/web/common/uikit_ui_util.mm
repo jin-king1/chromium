@@ -6,20 +6,17 @@
 
 #import <UIKit/UIKit.h>
 
-#import "base/mac/foundation_util.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+#import "base/apple/foundation_util.h"
 
 UIWindow* GetAnyKeyWindow() {
   for (UIScene* scene in UIApplication.sharedApplication.connectedScenes) {
     UIWindowScene* windowScene =
-        base::mac::ObjCCastStrict<UIWindowScene>(scene);
+        base::apple::ObjCCastStrict<UIWindowScene>(scene);
     // Find a key window if it exists.
     for (UIWindow* window in windowScene.windows) {
-      if (window.isKeyWindow)
+      if (window.keyWindow) {
         return window;
+      }
     }
   }
 
@@ -27,5 +24,9 @@ UIWindow* GetAnyKeyWindow() {
 }
 
 UIInterfaceOrientation GetInterfaceOrientation() {
-  return GetAnyKeyWindow().windowScene.interfaceOrientation;
+  if (@available(iOS 16.0, *)) {
+    return GetAnyKeyWindow().windowScene.effectiveGeometry.interfaceOrientation;
+  } else {
+    return GetAnyKeyWindow().windowScene.interfaceOrientation;
+  }
 }

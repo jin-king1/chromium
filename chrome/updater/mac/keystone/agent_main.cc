@@ -4,13 +4,16 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 
 #include "base/at_exit.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -20,7 +23,6 @@
 #include "base/message_loop/message_pump_type.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
-#include "base/ranges/algorithm.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_executor.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
@@ -31,7 +33,6 @@
 #include "chrome/updater/update_service.h"
 #include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/util.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace updater {
 
@@ -52,8 +53,8 @@ std::map<std::string, std::string> ParseCommandLine(int argc,
   std::map<std::string, std::string> result;
   std::string key;
   for (int i = 1; i < argc; ++i) {
-    std::string arg(argv[i]);
-    if (base::StartsWith(arg, "-")) {
+    std::string arg(UNSAFE_TODO(argv[i]));
+    if (arg.starts_with('-')) {
       key = arg.substr(1);
       result[key] = "";
     } else {
@@ -113,19 +114,16 @@ void KSAgentApp::ChooseServiceForApp(
          base::OnceCallback<void(UpdaterScope)> callback,
          const std::vector<updater::UpdateService::AppState>& states) {
         std::move(callback).Run(
-            base::ranges::find_if(
-                states,
-                [&app_id](const updater::UpdateService::AppState& state) {
-                  return base::EqualsCaseInsensitiveASCII(state.app_id, app_id);
-                }) == std::end(states)
-                ? UpdaterScope::kUser
-                : UpdaterScope::kSystem);
+            std::ranges::contains(states, base::ToLowerASCII(app_id),
+                                  &updater::UpdateService::AppState::app_id)
+                ? UpdaterScope::kSystem
+                : UpdaterScope::kUser);
       },
       app_id, std::move(callback)));
 }
 
 bool KSAgentApp::HasSwitch(const std::string& arg) const {
-  return base::Contains(switches_, arg);
+  return switches_.contains(arg);
 }
 
 std::string KSAgentApp::SwitchValue(const std::string& arg) const {
@@ -181,24 +179,22 @@ void KSAgentApp::DoUpdate(const std::string& app_id, UpdaterScope scope) {
                                                    : user_service_proxy_;
   service_proxy->Update(
       app_id, "", UpdateService::Priority::kForeground,
-      UpdateService::PolicySameVersionUpdate::kNotAllowed,
+      UpdateService::PolicySameVersionUpdate::kNotAllowed, /*language=*/{},
       base::BindRepeating(&KSAgentApp::RecordUpdateResult, this),
       base::BindOnce(&KSAgentApp::PrintUpdateResultAndShutDown, this));
 }
 
 void KSAgentApp::Wake() {
   for (UpdaterScope scope : {UpdaterScope::kSystem, UpdaterScope::kUser}) {
-    absl::optional<base::FilePath> path = GetUpdaterExecutablePath(scope);
+    std::optional<base::FilePath> path = GetUpdaterExecutablePath(scope);
     if (!path) {
       continue;
     }
     base::CommandLine command(*path);
-    command.AppendSwitch(kWakeSwitch);
+    command.AppendSwitch(kWakeAllSwitch);
     if (scope == UpdaterScope::kSystem) {
       command.AppendSwitch(kSystemSwitch);
     }
-    command.AppendSwitch(kEnableLoggingSwitch);
-    command.AppendSwitchNative(kLoggingModuleSwitch, kLoggingModuleSwitchValue);
     VLOG(0) << "Launching " << command.GetCommandLineString();
     base::Process process = base::LaunchProcess(command, {});
     if (process.IsValid()) {
@@ -229,8 +225,9 @@ int KSAgentAppMain(int argc, const char* argv[]) {
   updater::InitLogging(Scope());
   InitializeThreadPool("keystone");
   const base::ScopedClosureRunner shutdown_thread_pool(
-      base::BindOnce([]() { base::ThreadPoolInstance::Get()->Shutdown(); }));
-  base::SingleThreadTaskExecutor main_task_executor(base::MessagePumpType::UI);
+      base::BindOnce([] { base::ThreadPoolInstance::Get()->Shutdown(); }));
+  base::SingleThreadTaskExecutor main_task_executor(
+      base::MessagePumpType::DEFAULT, true);
 
   return base::MakeRefCounted<KSAgentApp>(ParseCommandLine(argc, argv))->Run();
 }

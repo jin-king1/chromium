@@ -7,12 +7,12 @@
 
 #include "base/android/scoped_java_ref.h"
 #include "base/functional/callback.h"
-#include "base/memory/weak_ptr.h"
 #include "gpu/ipc/common/surface_handle.h"
+#include "services/network/public/cpp/renderer_process_id.h"
 #include "ui/display/display.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace ui {
 class WindowAndroid;
@@ -41,7 +41,9 @@ using SurfaceTouchCallback =
                                  bool touching,
                                  int32_t pointer_id,
                                  const gfx::PointF& location)>;
-using SurfaceDestroyedCallback = base::OnceClosure;
+using JavaShutdownCallback = base::OnceClosure;
+
+using XrSessionButtonTouchedCallback = base::OnceClosure;
 
 // The purpose of this interface is to allow for dependency injection of code
 // that needs to talk Java Code in the WebXR component, which otherwise cannot
@@ -55,22 +57,31 @@ class XrJavaCoordinator {
   virtual bool EnsureARCoreLoaded() = 0;
   virtual base::android::ScopedJavaLocalRef<jobject>
   GetCurrentActivityContext() = 0;
+  virtual base::android::ScopedJavaLocalRef<jobject> GetActivityFrom(
+      network::RendererProcessId render_process_id,
+      int render_frame_id) = 0;
   virtual void RequestArSession(
-      int render_process_id,
+      network::RendererProcessId render_process_id,
       int render_frame_id,
       bool use_overlay,
       bool can_render_dom_content,
       const CompositorDelegateProvider& compositor_delegate_provider,
       SurfaceReadyCallback ready_callback,
       SurfaceTouchCallback touch_callback,
-      SurfaceDestroyedCallback destroyed_callback) = 0;
+      JavaShutdownCallback destroyed_callback) = 0;
   virtual void RequestVrSession(
-      int render_process_id,
+      network::RendererProcessId render_process_id,
       int render_frame_id,
       const CompositorDelegateProvider& compositor_delegate_provider,
-      device::SurfaceReadyCallback ready_callback,
-      device::SurfaceTouchCallback touch_callback,
-      device::SurfaceDestroyedCallback destroyed_callback) = 0;
+      SurfaceReadyCallback ready_callback,
+      SurfaceTouchCallback touch_callback,
+      JavaShutdownCallback destroyed_callback,
+      XrSessionButtonTouchedCallback button_touched_callback) = 0;
+
+  // `shutdown_callback` may optionally be provided to override the previously
+  // supplied `destroyed_callback`. Default constructed callbacks are considered
+  // null, so this is not wrapped in std::optional.
+  virtual void EndSession(JavaShutdownCallback shutdown_callback) = 0;
   virtual void EndSession() = 0;
 };
 

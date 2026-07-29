@@ -6,29 +6,34 @@
 
 #include <algorithm>
 
+#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/json/values_util.h"
+#include "base/task/single_thread_task_runner.h"
+#include "chrome/browser/enterprise/idle/idle_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/common/chrome_switches.h"
+#include "components/enterprise/idle/idle_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "ui/base/idle/idle.h"
 #include "ui/base/idle/idle_polling_service.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_list_observer.h"
+#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/idle_bubble.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 namespace enterprise_idle {
 
 #if !BUILDFLAG(IS_ANDROID)
-// Observes OnBrowserSetLastActive(). If the kIdleTimeoutShowBubbleOnStartup
+// Observes OnBrowserActivated(). If the kIdleTimeoutShowBubbleOnStartup
 // pref is true, it shows a bubble when a browser comes into focus. See
 // ShowBubbleAction.
-class IdleService::BrowserObserver : public BrowserListObserver {
+class IdleService::BrowserObserver : public BrowserCollectionObserver {
  public:
   explicit BrowserObserver(Profile* profile) : profile_(profile) {
     CHECK_EQ(profile_->GetOriginalProfile(), profile_);
@@ -36,39 +41,60 @@ class IdleService::BrowserObserver : public BrowserListObserver {
 
   void StartObserving() {
     if (!observation_.IsObserving()) {
-      observation_.Observe(BrowserList::GetInstance());
-      if (Browser* last_active = BrowserList::GetInstance()->GetLastActive()) {
-        OnBrowserSetLastActive(last_active);
+      if (profile_->AllowsBrowserWindows()) {
+        observation_.Observe(ProfileBrowserCollection::GetForProfile(profile_));
+      }
+      if (BrowserWindowInterface* const bwi =
+              GetLastActiveBrowserWindowInterfaceWithAnyProfile()) {
+        OnBrowserActivatedInternal(bwi);
       }
     }
   }
 
   void StopObserving() { observation_.Reset(); }
 
-  // BrowserListObserver:
-  void OnBrowserSetLastActive(Browser* browser) override {
-    Profile* profile = browser->profile();
-    auto* prefs = profile->GetPrefs();
-    if (profile == profile_ &&
-        prefs->GetBoolean(prefs::kIdleTimeoutShowBubbleOnStartup)) {
-      ShowIdleBubble(browser, base::Minutes(5), GetActionSet(prefs));
-      prefs->SetBoolean(prefs::kIdleTimeoutShowBubbleOnStartup, false);
-    }
+  // BrowserCollectionObserver:
+  void OnBrowserActivated(BrowserWindowInterface* browser) override {
+    OnBrowserActivatedInternal(browser);
   }
 
  private:
+  void OnBrowserActivatedInternal(BrowserWindowInterface* bwi) {
+    CHECK(bwi);
+    Profile* const profile = bwi->GetProfile();
+    auto* prefs = profile->GetPrefs();
+    if (bwi->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+        profile == profile_ &&
+        prefs->GetBoolean(prefs::kIdleTimeoutShowBubbleOnStartup)) {
+      const base::TimeDelta timeout =
+          IdleServiceFactory::GetForBrowserContext(profile)->GetTimeout();
+      ShowIdleBubble(bwi, timeout, GetActionSet(prefs),
+                     base::BindOnce(&IdleService::BrowserObserver::OnClose,
+                                    bwi->GetWeakPtr()));
+    }
+  }
+
+  static void OnClose(base::WeakPtr<BrowserWindowInterface> bwi) {
+    if (!bwi) {
+      return;
+    }
+    bwi->GetProfile()->GetPrefs()->SetBoolean(
+        prefs::kIdleTimeoutShowBubbleOnStartup, false);
+  }
+
   IdleDialog::ActionSet GetActionSet(PrefService* prefs) {
     std::vector<ActionType> actions;
-    base::ranges::transform(prefs->GetList(prefs::kIdleTimeoutActions),
-                            std::back_inserter(actions),
-                            [](const base::Value& action) {
-                              return static_cast<ActionType>(action.GetInt());
-                            });
+    std::ranges::transform(prefs->GetList(prefs::kIdleTimeoutActions),
+                           std::back_inserter(actions),
+                           [](const base::Value& action) {
+                             return static_cast<ActionType>(action.GetInt());
+                           });
     return ActionsToActionSet(base::flat_set<ActionType>(std::move(actions)));
   }
 
   const raw_ptr<Profile> profile_;
-  base::ScopedObservation<BrowserList, BrowserListObserver> observation_{this};
+  base::ScopedObservation<ProfileBrowserCollection, BrowserCollectionObserver>
+      observation_{this};
 };
 #else
 // BrowserObserver for Android, to minimize #ifdef hell.
@@ -98,8 +124,7 @@ IdleService::IdleService(Profile* profile)
 IdleService::~IdleService() = default;
 
 void IdleService::OnIdleTimeoutPrefChanged() {
-  base::TimeDelta timeout =
-      profile_->GetPrefs()->GetTimeDelta(prefs::kIdleTimeout);
+  base::TimeDelta timeout = GetTimeout();
   if (timeout.is_positive()) {
     // `is_idle_` will auto-update in 1 second, no need to set it here.
     idle_threshold_ = timeout;
@@ -114,6 +139,13 @@ void IdleService::OnIdleTimeoutPrefChanged() {
     polling_service_observation_.Reset();
     browser_observer_->StopObserving();
   }
+}
+
+base::TimeDelta IdleService::GetTimeout() const {
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+             switches::kSimulateIdleTimeout)
+             ? base::Seconds(5)
+             : profile_->GetPrefs()->GetTimeDelta(prefs::kIdleTimeout);
 }
 
 void IdleService::OnIdleStateChange(

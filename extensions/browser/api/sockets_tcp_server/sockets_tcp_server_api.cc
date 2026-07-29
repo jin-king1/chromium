@@ -5,7 +5,6 @@
 #include "extensions/browser/api/sockets_tcp_server/sockets_tcp_server_api.h"
 
 #include <memory>
-#include <unordered_set>
 #include <vector>
 
 #include "base/functional/bind.h"
@@ -17,6 +16,7 @@
 #include "extensions/common/permissions/socket_permission.h"
 #include "net/base/net_errors.h"
 #include "net/base/sys_addrinfo.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 using content::SocketPermissionRequest;
 using extensions::ResumableTCPServerSocket;
@@ -83,7 +83,7 @@ SocketsTcpServerCreateFunction::SocketsTcpServerCreateFunction() = default;
 SocketsTcpServerCreateFunction::~SocketsTcpServerCreateFunction() = default;
 
 ExtensionFunction::ResponseAction SocketsTcpServerCreateFunction::Work() {
-  absl::optional<sockets_tcp_server::Create::Params> params =
+  std::optional<sockets_tcp_server::Create::Params> params =
       sockets_tcp_server::Create::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
 
@@ -104,7 +104,7 @@ SocketsTcpServerUpdateFunction::SocketsTcpServerUpdateFunction() = default;
 SocketsTcpServerUpdateFunction::~SocketsTcpServerUpdateFunction() = default;
 
 ExtensionFunction::ResponseAction SocketsTcpServerUpdateFunction::Work() {
-  absl::optional<sockets_tcp_server::Update::Params> params =
+  std::optional<sockets_tcp_server::Update::Params> params =
       sockets_tcp_server::Update::Params::Create(args());
 
   ResumableTCPServerSocket* socket = GetTcpSocket(params->socket_id);
@@ -123,7 +123,7 @@ SocketsTcpServerSetPausedFunction::~SocketsTcpServerSetPausedFunction() =
     default;
 
 ExtensionFunction::ResponseAction SocketsTcpServerSetPausedFunction::Work() {
-  absl::optional<sockets_tcp_server::SetPaused::Params> params =
+  std::optional<sockets_tcp_server::SetPaused::Params> params =
       api::sockets_tcp_server::SetPaused::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
 
@@ -216,7 +216,7 @@ SocketsTcpServerDisconnectFunction::~SocketsTcpServerDisconnectFunction() =
     default;
 
 ExtensionFunction::ResponseAction SocketsTcpServerDisconnectFunction::Work() {
-  absl::optional<sockets_tcp_server::Disconnect::Params> params =
+  std::optional<sockets_tcp_server::Disconnect::Params> params =
       sockets_tcp_server::Disconnect::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
 
@@ -234,7 +234,7 @@ SocketsTcpServerCloseFunction::SocketsTcpServerCloseFunction() = default;
 SocketsTcpServerCloseFunction::~SocketsTcpServerCloseFunction() = default;
 
 ExtensionFunction::ResponseAction SocketsTcpServerCloseFunction::Work() {
-  absl::optional<sockets_tcp_server::Close::Params> params =
+  std::optional<sockets_tcp_server::Close::Params> params =
       sockets_tcp_server::Close::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
 
@@ -252,7 +252,7 @@ SocketsTcpServerGetInfoFunction::SocketsTcpServerGetInfoFunction() = default;
 SocketsTcpServerGetInfoFunction::~SocketsTcpServerGetInfoFunction() = default;
 
 ExtensionFunction::ResponseAction SocketsTcpServerGetInfoFunction::Work() {
-  absl::optional<sockets_tcp_server::GetInfo::Params> params =
+  std::optional<sockets_tcp_server::GetInfo::Params> params =
       sockets_tcp_server::GetInfo::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
 
@@ -275,7 +275,7 @@ SocketsTcpServerGetSocketsFunction::~SocketsTcpServerGetSocketsFunction() =
 
 ExtensionFunction::ResponseAction SocketsTcpServerGetSocketsFunction::Work() {
   std::vector<sockets_tcp_server::SocketInfo> socket_infos;
-  std::unordered_set<int>* resource_ids = GetSocketIds();
+  absl::flat_hash_set<int>* resource_ids = GetSocketIds();
   if (resource_ids) {
     for (int socket_id : *resource_ids) {
       ResumableTCPServerSocket* socket = GetTcpSocket(socket_id);

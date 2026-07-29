@@ -8,13 +8,9 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/vsync_provider.h"
 #include "ui/ozone/public/swap_completion_callback.h"
-
-namespace gfx {
-class ColorSpace;
-}  // namespace gfx
 
 namespace ui {
 
@@ -38,12 +34,10 @@ class DrmWindowProxy {
 
   bool SupportsGpuFences() const;
 
-  void SetColorSpace(const gfx::ColorSpace& color_space) const;
-
  private:
   const gfx::AcceleratedWidget widget_;
 
-  const raw_ptr<DrmThread, ExperimentalAsh> drm_thread_;
+  const raw_ptr<DrmThread> drm_thread_;
 };
 
 }  // namespace ui

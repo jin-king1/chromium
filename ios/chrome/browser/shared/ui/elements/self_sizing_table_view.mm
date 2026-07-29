@@ -4,15 +4,12 @@
 
 #import "ios/chrome/browser/shared/ui/elements/self_sizing_table_view.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 @implementation SelfSizingTableView
 
 - (void)setContentSize:(CGSize)contentSize {
   [super setContentSize:contentSize];
   [self invalidateIntrinsicContentSize];
+  [self.contentSizeDelegate tableViewContentSizeDidChange:contentSize];
 }
 
 - (CGSize)intrinsicContentSize {

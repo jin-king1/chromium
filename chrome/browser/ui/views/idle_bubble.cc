@@ -7,12 +7,14 @@
 #include <string>
 #include <utility>
 
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+#include "chrome/browser/ui/views/interaction/browser_elements_views.h"
+#include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-#include "chrome/grit/chromium_strings.h"
+#include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -22,18 +24,50 @@
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/view_class_properties.h"
 
-DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kIdleBubbleLabelElementId);
+DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kIdleBubbleElementId);
 
-void ShowIdleBubble(Browser* browser,
+namespace {
+
+// Wrapper around IdleBubbleDialogDelegate that focuses the X button on
+// activation. This lets the user focus the dialog with Alt+Shift+A or F6.
+class IdleBubbleDialogDelegate : public views::BubbleDialogModelHost {
+ public:
+  IdleBubbleDialogDelegate(std::unique_ptr<ui::DialogModel> model,
+                           views::BubbleAnchor anchor,
+                           views::BubbleBorder::Arrow arrow)
+      : views::BubbleDialogModelHost(std::move(model), anchor, arrow) {}
+
+  // views::WidgetDelegate:
+  void OnWidgetInitialized() override {
+    views::BubbleDialogModelHost::OnWidgetInitialized();
+    if (views::BubbleFrameView* frame = GetBubbleFrameView()) {
+      frame->SetProperty(views::kElementIdentifierKey, kIdleBubbleElementId);
+    }
+  }
+
+  // views::BubbleDialogDelegate:
+  views::View* GetInitiallyFocusedView() override {
+    views::BubbleFrameView* frame = GetBubbleFrameView();
+    return frame ? frame->close_button() : nullptr;
+  }
+};
+
+}  // namespace
+
+void ShowIdleBubble(BrowserWindowInterface* bwi,
                     base::TimeDelta idle_threshold,
-                    IdleDialog::ActionSet actions) {
-  if (!browser || !browser->tab_strip_model()->GetActiveWebContents()) {
+                    IdleDialog::ActionSet actions,
+                    base::OnceClosure on_close) {
+  if (!bwi || !bwi->GetTabStripModel()->GetActiveWebContents() ||
+      GetIdleBubble(bwi)) {
     return;
   }
 
-  views::View* anchor_view = BrowserView::GetBrowserViewForBrowser(browser)
-                                 ->toolbar_button_provider()
-                                 ->GetAppMenuButton();
+  auto* control = BrowserView::GetBrowserViewForBrowser(bwi)
+                      ->toolbar_button_provider()
+                      ->GetAppMenuControl();
+  views::BubbleAnchor anchor =
+      control ? control->GetAnchor() : views::BubbleAnchor();
 
   int bubble_title_id =
       actions.close ? IDS_IDLE_BUBBLE_TITLE_CLOSE : IDS_IDLE_BUBBLE_TITLE_CLEAR;
@@ -49,22 +83,22 @@ void ShowIdleBubble(Browser* browser,
   ui::DialogModel::Builder dialog_builder;
   dialog_builder.SetTitle(l10n_util::GetStringUTF16(bubble_title_id))
       .AddParagraph(ui::DialogModelLabel(l10n_util::GetStringFUTF16(
-                        bubble_message_id,
-                        ui::TimeFormat::Simple(ui::TimeFormat::FORMAT_DURATION,
-                                               ui::TimeFormat::LENGTH_LONG,
-                                               idle_threshold))),
-                    std::u16string(), kIdleBubbleLabelElementId);
+          bubble_message_id,
+          ui::TimeFormat::Simple(ui::TimeFormat::FORMAT_DURATION,
+                                 ui::TimeFormat::LENGTH_LONG, idle_threshold))))
+      .SetIsAlertDialog()
+      .SetCloseActionCallback(std::move(on_close));
 
-  auto bubble = std::make_unique<views::BubbleDialogModelHost>(
-      dialog_builder.Build(), anchor_view, views::BubbleBorder::TOP_RIGHT);
-  bubble->set_close_on_deactivate(true);
+  auto bubble = std::make_unique<IdleBubbleDialogDelegate>(
+      dialog_builder.Build(), anchor, views::BubbleBorder::TOP_RIGHT);
+  bubble->set_close_on_deactivate(false);
 
-  views::BubbleDialogDelegate::CreateBubble(std::move(bubble))->Show();
+  views::BubbleDialogDelegate::CreateBubbleDeprecated(
+      std::move(bubble), views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET)
+      ->ShowInactive();
 }
 
-bool IsIdleBubbleOpenForTesting(Browser* browser) {
-  ui::ElementContext context = browser->window()->GetElementContext();
-  return nullptr !=
-         ui::ElementTracker::GetElementTracker()->GetFirstMatchingElement(
-             kIdleBubbleLabelElementId, context);
+views::BubbleFrameView* GetIdleBubble(BrowserWindowInterface* bwi) {
+  return BrowserElementsViews::From(bwi)->GetViewAs<views::BubbleFrameView>(
+      kIdleBubbleElementId);
 }

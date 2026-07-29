@@ -26,7 +26,6 @@
 #include "third_party/blink/renderer/core/layout/layout_media.h"
 
 #include "third_party/blink/public/mojom/scroll/scrollbar_mode.mojom-blink.h"
-#include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/visual_viewport.h"
@@ -74,15 +73,19 @@ bool LayoutMedia::IsChildAllowed(LayoutObject* child,
   // internal.
   if (child->GetNode()->IsMediaControls()) {
     // LayoutObject::IsInline() doesn't work at this timing.
-    DCHECK(!child->GetNode()->GetComputedStyle()->IsDisplayInlineType());
-    return child->IsFlexibleBoxIncludingNG();
+    DCHECK(!To<Element>(child->GetNode())
+                ->GetComputedStyle()
+                ->IsDisplayInlineType());
+    return child->IsFlexibleBox();
   }
 
   if (child->GetNode()->IsTextTrackContainer() ||
       child->GetNode()->IsMediaRemotingInterstitial() ||
       child->GetNode()->IsPictureInPictureInterstitial()) {
     // LayoutObject::IsInline() doesn't work at this timing.
-    DCHECK(!child->GetNode()->GetComputedStyle()->IsDisplayInlineType());
+    DCHECK(!To<Element>(child->GetNode())
+                ->GetComputedStyle()
+                ->IsDisplayInlineType());
     return true;
   }
 
@@ -94,7 +97,8 @@ void LayoutMedia::PaintReplaced(const PaintInfo&,
   NOT_DESTROYED();
 }
 
-LayoutUnit LayoutMedia::ComputePanelWidth(const LayoutRect& media_rect) const {
+LayoutUnit LayoutMedia::ComputePanelWidth(
+    const PhysicalRect& media_rect) const {
   NOT_DESTROYED();
   // TODO(mlamouri): we don't know if the main frame has an horizontal scrollbar
   // if it is out of process. See https://crbug.com/662480
@@ -137,11 +141,11 @@ LayoutUnit LayoutMedia::ComputePanelWidth(const LayoutRect& media_rect) const {
   const LayoutUnit visible_width(page->GetVisualViewport().VisibleWidth());
   // The bottom left corner of the video.
   const gfx::PointF bottom_left_point(
-      LocalToAbsolutePoint(gfx::PointF(media_rect.X(), media_rect.MaxY()),
+      LocalToAbsolutePoint(gfx::PointF(media_rect.X(), media_rect.Bottom()),
                            kTraverseDocumentBoundaries));
   // The bottom right corner of the video.
   const gfx::PointF bottom_right_point(
-      LocalToAbsolutePoint(gfx::PointF(media_rect.MaxX(), media_rect.MaxY()),
+      LocalToAbsolutePoint(gfx::PointF(media_rect.Right(), media_rect.Bottom()),
                            kTraverseDocumentBoundaries));
 
   const bool bottom_left_corner_visible = bottom_left_point.x() < visible_width;
@@ -182,8 +186,9 @@ LayoutUnit LayoutMedia::ComputePanelWidth(const LayoutRect& media_rect) const {
   return LayoutUnit((edge_intersection_point - bottom_left_point).Length());
 }
 
-RecalcLayoutOverflowResult LayoutMedia::RecalcLayoutOverflow() {
-  return RecalcLayoutOverflowNG();
+RecalcScrollableOverflowResult LayoutMedia::RecalcScrollableOverflow() {
+  NOT_DESTROYED();
+  return RecalcScrollableOverflowNG();
 }
 
 }  // namespace blink

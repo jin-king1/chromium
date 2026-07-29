@@ -6,33 +6,32 @@ package org.chromium.chrome.browser.tab.state;
 
 import static org.mockito.Mockito.doReturn;
 
-import org.chromium.base.test.BaseRobolectricTestRunner;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 
 import java.util.concurrent.TimeUnit;
 
-/**
- * Test relating to {@link PriceDropMetricsLogger}
- */
+/** Test relating to {@link PriceDropMetricsLogger} */
 @RunWith(BaseRobolectricTestRunner.class)
 public class PriceDropMetricsLoggerTest {
-    @Mock
-    private ShoppingPersistedTabData mShoppingPersistedTabData;
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Mock private ShoppingPersistedTabData mShoppingPersistedTabData;
 
     private PriceDropMetricsLogger mPriceDropMetricsLogger;
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
         doReturn("offer-id").when(mShoppingPersistedTabData).getMainOfferId();
         doReturn(true).when(mShoppingPersistedTabData).hasPriceMicros();
         doReturn(true).when(mShoppingPersistedTabData).hasPreviousPriceMicros();
@@ -42,15 +41,20 @@ public class PriceDropMetricsLoggerTest {
     @SmallTest
     @Test
     public void testTabUsageStatus() {
-        Assert.assertEquals(PriceDropMetricsLogger.TabUsageStatus.ABANDONED,
+        Assert.assertEquals(
+                PriceDropMetricsLogger.TabUsageStatus.ABANDONED,
                 PriceDropMetricsLogger.getTabUsageStatus(TimeUnit.DAYS.toMillis(100)));
-        Assert.assertEquals(PriceDropMetricsLogger.TabUsageStatus.ABANDONED,
+        Assert.assertEquals(
+                PriceDropMetricsLogger.TabUsageStatus.ABANDONED,
                 PriceDropMetricsLogger.getTabUsageStatus(TimeUnit.DAYS.toMillis(90)));
-        Assert.assertEquals(PriceDropMetricsLogger.TabUsageStatus.STALE,
+        Assert.assertEquals(
+                PriceDropMetricsLogger.TabUsageStatus.STALE,
                 PriceDropMetricsLogger.getTabUsageStatus(TimeUnit.DAYS.toMillis(45)));
-        Assert.assertEquals(PriceDropMetricsLogger.TabUsageStatus.STALE,
+        Assert.assertEquals(
+                PriceDropMetricsLogger.TabUsageStatus.STALE,
                 PriceDropMetricsLogger.getTabUsageStatus(TimeUnit.DAYS.toMillis(1)));
-        Assert.assertEquals(PriceDropMetricsLogger.TabUsageStatus.ACTIVE,
+        Assert.assertEquals(
+                PriceDropMetricsLogger.TabUsageStatus.ACTIVE,
                 PriceDropMetricsLogger.getTabUsageStatus(TimeUnit.HOURS.toMillis(12)));
     }
 

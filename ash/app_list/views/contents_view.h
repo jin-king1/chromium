@@ -15,6 +15,7 @@
 #include "ash/public/cpp/pagination/pagination_model.h"
 #include "ash/public/cpp/pagination/pagination_model_observer.h"
 #include "base/memory/raw_ptr.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/view.h"
 
 namespace gfx {
@@ -30,10 +31,8 @@ namespace ash {
 
 class AppListPage;
 class AppListView;
-class ApplicationDragAndDropHost;
 class AppListMainView;
 class AppsContainerView;
-class AssistantPageView;
 class SearchBoxView;
 class SearchResultPageView;
 
@@ -44,6 +43,8 @@ class SearchResultPageView;
 // between them.
 class ASH_EXPORT ContentsView : public views::View,
                                 public PaginationModelObserver {
+  METADATA_HEADER(ContentsView, views::View)
+
  public:
   // Used to SetActiveState without animations.
   class ScopedSetActiveStateAnimationDisabler {
@@ -63,7 +64,7 @@ class ASH_EXPORT ContentsView : public views::View,
     }
 
    private:
-    ContentsView* const contents_view_;
+    const raw_ptr<ContentsView> contents_view_;
   };
 
   explicit ContentsView(AppListView* app_list_view);
@@ -87,11 +88,6 @@ class ASH_EXPORT ContentsView : public views::View,
   // The app list gets closed and drag and drop operations need to be cancelled.
   void CancelDrag();
 
-  // If |drag_and_drop| is not nullptr it will be called upon drag and drop
-  // operations outside the application list.
-  void SetDragAndDropHostOfCurrentAppList(
-      ApplicationDragAndDropHost* drag_and_drop_host);
-
   // Called when the target state of AppListView changes.
   void OnAppListViewTargetStateChanged(AppListViewState target_state);
 
@@ -100,12 +96,6 @@ class ASH_EXPORT ContentsView : public views::View,
   // ShowSearchResults(true) was invoked.
   void ShowSearchResults(bool show);
   bool IsShowingSearchResults() const;
-
-  // Shows/hides the Assistant page. Hiding the Assistant page will
-  // cause the app list to return to the page that was displayed before
-  // ShowSearchResults(true) was invoked.
-  void ShowEmbeddedAssistantUI(bool show);
-  bool IsShowingEmbeddedAssistantUI() const;
 
   // Sets the active launcher page and animates the pages into place.
   void SetActiveState(AppListState state);
@@ -146,9 +136,7 @@ class ASH_EXPORT ContentsView : public views::View,
 
   // Returns the pagination model for the ContentsView.
   const PaginationModel& pagination_model() { return pagination_model_; }
-  raw_ptr<PaginationModel> pagination_model_for_testing() {
-    return &pagination_model_;
-  }
+  PaginationModel* pagination_model_for_testing() { return &pagination_model_; }
 
   // Returns the search box bounds to use for a given app list (pagination)
   // state (in the current app list view state).
@@ -163,8 +151,7 @@ class ASH_EXPORT ContentsView : public views::View,
   bool Back();
 
   // Overridden from views::View:
-  void Layout() override;
-  const char* GetClassName() const override;
+  void Layout(PassKey) override;
 
   // Overridden from PaginationModelObserver:
   void TotalPagesChanged(int previous_page_count, int new_page_count) override;
@@ -196,9 +183,6 @@ class ASH_EXPORT ContentsView : public views::View,
                                 AppListState current_state,
                                 AppListState target_state);
 
-  // Updates search box visibility based on the current state.
-  void UpdateSearchBoxVisibility(AppListState current_state);
-
   // Adds |view| as a new page to the end of the list of launcher pages. The
   // view is inserted as a child of the ContentsView. The page is associated
   // with the name |state|. Returns a pointer to the instance of the new page.
@@ -223,16 +207,14 @@ class ASH_EXPORT ContentsView : public views::View,
   gfx::Rect ConvertRectToWidgetWithoutTransform(const gfx::Rect& rect);
 
   // Sub-views of the ContentsView. All owned by the views hierarchy.
-  raw_ptr<AssistantPageView, ExperimentalAsh> assistant_page_view_ = nullptr;
-  raw_ptr<AppsContainerView, ExperimentalAsh> apps_container_view_ = nullptr;
-  raw_ptr<SearchResultPageView, ExperimentalAsh> search_result_page_view_ =
-      nullptr;
+  raw_ptr<AppsContainerView> apps_container_view_ = nullptr;
+  raw_ptr<SearchResultPageView> search_result_page_view_ = nullptr;
 
   // The child page views. Owned by the views hierarchy.
-  std::vector<AppListPage*> app_list_pages_;
+  std::vector<raw_ptr<AppListPage, VectorExperimental>> app_list_pages_;
 
   // Owned by the views hierarchy.
-  const raw_ptr<AppListView, ExperimentalAsh> app_list_view_;
+  const raw_ptr<AppListView> app_list_view_;
 
   // Maps State onto |view_model_| indices.
   std::map<AppListState, int> state_to_view_;

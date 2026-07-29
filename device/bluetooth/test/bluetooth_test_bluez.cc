@@ -35,7 +35,7 @@ namespace {
 void GetValueCallback(
     base::OnceClosure quit_closure,
     BluetoothLocalGattService::Delegate::ValueCallback value_callback,
-    absl::optional<BluetoothGattService::GattErrorCode> error_code,
+    std::optional<BluetoothGattService::GattErrorCode> error_code,
     const std::vector<uint8_t>& value) {
   std::move(value_callback).Run(error_code, value);
   std::move(quit_closure).Run();
@@ -96,10 +96,6 @@ void BluetoothTestBlueZ::TearDown() {
   fake_bluetooth_device_client_ = nullptr;
   bluez::BluezDBusManager::Shutdown();
   BluetoothTestBase::TearDown();
-}
-
-bool BluetoothTestBlueZ::PlatformSupportsLowEnergy() {
-  return true;
 }
 
 void BluetoothTestBlueZ::InitWithFakeAdapter() {

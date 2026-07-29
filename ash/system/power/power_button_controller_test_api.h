@@ -59,8 +59,15 @@ class PowerButtonControllerTestApi {
   // GetMenuBoundsInScreen.
   PowerButtonMenuView* GetPowerButtonMenuView() const;
 
+  // Gets the layer associated with the `controller_`'s menu background
+  // (a `PowerButtonMenuBackgroundView`).
+  ui::Layer* GetPowerButtonMenuBackgroundLayer() const;
+
   // True if the menu is opened.
   bool IsMenuOpened() const;
+
+  // True if |controller_|'s menu has a power off item.
+  bool MenuHasPowerOffItem() const;
 
   // True if |controller_|'s menu has a sign out item.
   bool MenuHasSignOutItem() const;
@@ -68,12 +75,13 @@ class PowerButtonControllerTestApi {
   // True if |controller_|'s menu has a lock screen item.
   bool MenuHasLockScreenItem() const;
 
+  // True if |controller_|'s menu has a capture mode item.
+  bool MenuHasCaptureModeItem() const;
+
   // True if |controller_|'s menu has a feedback item.
   bool MenuHasFeedbackItem() const;
 
   PowerButtonScreenshotController* GetScreenshotController();
-
-  void SetPowerButtonType(PowerButtonController::ButtonType button_type);
 
   void SetTickClock(const base::TickClock* tick_clock);
 
@@ -83,8 +91,7 @@ class PowerButtonControllerTestApi {
   bool ShowMenuAnimationDone() const;
 
  private:
-  raw_ptr<PowerButtonController, DanglingUntriaged | ExperimentalAsh>
-      controller_;  // Not owned.
+  raw_ptr<PowerButtonController, DanglingUntriaged> controller_;  // Not owned.
 };
 
 }  // namespace ash

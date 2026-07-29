@@ -8,8 +8,10 @@
 
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/strings/string_number_conversions.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/sessions/content/navigation_task_id.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/test/navigation_simulator.h"
 #include "content/public/test/web_contents_tester.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -46,6 +48,11 @@ class TaskTabHelperUnitTest : public ChromeRenderViewHostTestHarness {
     MockTaskTabHelper::CreateForWebContents(web_contents());
     task_tab_helper_ = MockTaskTabHelper::FromWebContents(web_contents());
     NavigateAndCommit(kSearchURL);
+  }
+
+  void TearDown() override {
+    task_tab_helper_ = nullptr;
+    ChromeRenderViewHostTestHarness::TearDown();
   }
 
   void GoBack() { content::NavigationSimulator::GoBack(web_contents()); }

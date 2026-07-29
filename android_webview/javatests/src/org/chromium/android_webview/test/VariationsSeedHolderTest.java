@@ -7,11 +7,12 @@ package org.chromium.android_webview.test;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
-import static org.chromium.android_webview.test.OnlyRunIn.ProcessMode.SINGLE_PROCESS;
+import static org.chromium.android_webview.test.OnlyRunIn.ProcessMode.EITHER_PROCESS;
 
 import android.os.ParcelFileDescriptor;
 
 import androidx.test.filters.MediumTest;
+import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Assert;
@@ -21,9 +22,12 @@ import org.junit.runner.RunWith;
 
 import org.chromium.android_webview.common.VariationsFastFetchModeUtils;
 import org.chromium.android_webview.common.variations.VariationsUtils;
+import org.chromium.android_webview.proto.AwVariationsSeedOuterClass.AwVariationsSeed;
+import org.chromium.android_webview.services.AwEntropyState;
 import org.chromium.android_webview.services.VariationsSeedHolder;
 import org.chromium.android_webview.test.util.VariationsTestUtils;
 import org.chromium.base.test.util.CallbackHelper;
+import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.components.variations.firstrun.VariationsSeedFetcher.SeedInfo;
 
 import java.io.File;
@@ -35,13 +39,12 @@ import java.util.Date;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
-/**
- * Test VariationsSeedHolder.
- */
+/** Test VariationsSeedHolder. */
 @RunWith(AwJUnit4ClassRunner.class)
-@OnlyRunIn(SINGLE_PROCESS)
+@OnlyRunIn(EITHER_PROCESS) // These tests don't use the renderer process
+@DoNotBatch(reason = "Requires process restart for each test.")
 public class VariationsSeedHolderTest {
-    private class TestHolder extends VariationsSeedHolder {
+    private static class TestHolder extends VariationsSeedHolder {
         private final CallbackHelper mWriteFinished; // notified after each writeSeedIfNewer
         private final CallbackHelper mUpdateFinished; // notified after each updateSeed
 
@@ -79,7 +82,7 @@ public class VariationsSeedHolderTest {
 
         public void updateSeedBlocking(SeedInfo newSeed) throws TimeoutException {
             int calls = mUpdateFinished.getCallCount();
-            updateSeed(newSeed, /*onFinished=*/() -> mUpdateFinished.notifyCalled());
+            updateSeed(newSeed, /* onFinished= */ () -> mUpdateFinished.notifyCalled());
             mUpdateFinished.waitForCallback(calls);
         }
     }
@@ -92,6 +95,18 @@ public class VariationsSeedHolderTest {
     @After
     public void tearDown() throws IOException {
         VariationsTestUtils.deleteSeeds();
+    }
+
+    @Test
+    @SmallTest
+    public void testConstructorInitializesEntropySource() {
+        new TestHolder();
+
+        // Verify the entropy source exist.
+        int source = AwEntropyState.getLowEntropySource();
+        Assert.assertTrue("Entropy source should be non-negative, but was " + source, source >= 0);
+        Assert.assertTrue(
+                "Entropy source should be less than 8000, but was " + source, source < 8000);
     }
 
     // Request that the seed holder write its current seed to a file when the holder has no seed. No
@@ -182,6 +197,7 @@ public class VariationsSeedHolderTest {
 
     @Test
     @MediumTest
+    @SuppressWarnings("Finally")
     public void testConcurrentUpdatesAndWrites()
             throws IOException, FileNotFoundException, TimeoutException {
         ArrayList<File> files = new ArrayList<>();
@@ -210,7 +226,7 @@ public class VariationsSeedHolderTest {
                 for (int i = 0; i < mockSeeds.length; i++) {
                     callbacksExpected++;
                     holder.updateSeed(
-                            mockSeeds[i], /*onFinished=*/() -> callbackHelper.notifyCalled());
+                            mockSeeds[i], /* onFinished= */ () -> callbackHelper.notifyCalled());
 
                     // Between each "download", schedule a few (3 chosen arbitrarily) requests for
                     // the seed, creating a new file to receive each request.
@@ -218,8 +234,9 @@ public class VariationsSeedHolderTest {
                         File file = File.createTempFile("seed", null, null);
                         files.add(file);
 
-                        ParcelFileDescriptor fd = ParcelFileDescriptor.open(
-                                file, ParcelFileDescriptor.MODE_WRITE_ONLY);
+                        ParcelFileDescriptor fd =
+                                ParcelFileDescriptor.open(
+                                        file, ParcelFileDescriptor.MODE_WRITE_ONLY);
                         fds.add(fd);
 
                         callbacksExpected++;
@@ -246,8 +263,11 @@ public class VariationsSeedHolderTest {
                             break;
                         }
                     }
-                    Assert.assertTrue("Seed data " + Arrays.toString(readSeed.seedData)
-                                    + " read from seed index " + i
+                    Assert.assertTrue(
+                            "Seed data "
+                                    + Arrays.toString(readSeed.seedData)
+                                    + " read from seed index "
+                                    + i
                                     + " does not match any written data",
                             match);
                 }
@@ -283,7 +303,8 @@ public class VariationsSeedHolderTest {
             Assert.assertFalse("Stamp file already exists", seedFile.exists());
             Assert.assertTrue("Failed to create stamp file", seedFile.createNewFile());
             Assert.assertTrue("Failed to set stamp time", seedFile.setLastModified(startingTime));
-            Assert.assertTrue("Seed fetch should be marked as completed since the "
+            Assert.assertTrue(
+                    "Seed fetch should be marked as completed since the "
                             + "seed timestamp was just updated",
                     VariationsSeedHolder.getInstance().isSeedFileFresh());
         } finally {
@@ -309,7 +330,8 @@ public class VariationsSeedHolderTest {
 
             // With no variations seed recently fetched, the seed fetch completion decision should
             // fall to the timestamp of the seed file.
-            Assert.assertFalse("Seed fetch should not be marked as completed since the "
+            Assert.assertFalse(
+                    "Seed fetch should not be marked as completed since the "
                             + "seed timestamp was set to larger than the ",
                     VariationsSeedHolder.getInstance().isSeedFileFresh());
         } finally {
@@ -338,11 +360,57 @@ public class VariationsSeedHolderTest {
 
             // With no variations seed recently fetched, the seed fetch completion decision should
             // fall to the timestamp of the seed file.
-            Assert.assertFalse("Seed fetch should not be marked as completed since the "
+            Assert.assertFalse(
+                    "Seed fetch should not be marked as completed since the "
                             + "seed timestamp was set to larger than the ",
                     VariationsSeedHolder.getInstance().isSeedFileFresh());
         } finally {
             VariationsTestUtils.deleteSeeds(); // Remove the stamp file.
+        }
+    }
+
+    // Test that updateSeed() saves the seed to the service's internal storage
+    // without the low entropy source, as this is added when serving the seed.
+    @Test
+    @MediumTest
+    public void testUpdateSeed_NoEntropy() throws IOException, TimeoutException {
+        TestHolder holder = new TestHolder();
+        holder.updateSeedBlocking(VariationsTestUtils.createMockSeed());
+
+        File internalSeedFile = VariationsUtils.getSeedFile();
+        Assert.assertTrue("Internal seed file should exist", internalSeedFile.exists());
+        AwVariationsSeed readProto = VariationsTestUtils.readProtoFromFile(internalSeedFile);
+
+        // The internal file should NOT have the entropy source.
+        Assert.assertFalse(
+                "Internal seed file should not contain low entropy source",
+                readProto.hasLowEntropySource());
+    }
+
+    // Test that writeSeedIfNewer() serves the seed to the app with the low
+    // entropy source included.
+    @Test
+    @MediumTest
+    public void testWriteSeed_HasEntropy() throws IOException, TimeoutException {
+        TestHolder holder = new TestHolder();
+        int expectedEntropy = AwEntropyState.getLowEntropySource();
+        Assert.assertTrue(expectedEntropy >= 0);
+        holder.updateSeedBlocking(VariationsTestUtils.createMockSeed());
+
+        File appSeedFile = null;
+        try {
+            appSeedFile = File.createTempFile("seed", null, null);
+
+            holder.writeSeedIfNewerBlocking(appSeedFile, Long.MIN_VALUE);
+
+            // The file written for the app should have the entropy source.
+            AwVariationsSeed readProto = VariationsTestUtils.readProtoFromFile(appSeedFile);
+            Assert.assertEquals(
+                    "App seed file has wrong entropy source",
+                    expectedEntropy,
+                    readProto.getLowEntropySource());
+        } finally {
+            if (appSeedFile != null) appSeedFile.delete();
         }
     }
 }

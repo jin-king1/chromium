@@ -138,12 +138,17 @@ def FindExcludedFiles(files, options):
         return True
     return False
 
+  def IsWebPageReplayThirdParty(path_string):
+    normalized_path = path_string.replace('\\', '/')
+    return 'third_party/webpagereplay/third_party/' in normalized_path
+
   # Collect filters we're going to use to exclude files.
   exclude_conditions = [
       IsHidden,
       IsPyc,
       IsInCloudStorage,
       MatchesExcludeOptions,
+      IsWebPageReplayThirdParty,
   ]
 
   # Check all the files against the filters.
@@ -153,6 +158,9 @@ def FindExcludedFiles(files, options):
 
 
 def FindDependencies(target_paths, options):
+  path_util.AddPyUtilsToPath()
+  from py_utils import GetWebPageReplayDir  # pylint: disable=import-outside-toplevel
+
   # Verify arguments.
   for target_path in target_paths:
     if not os.path.exists(target_path):
@@ -171,6 +179,8 @@ def FindDependencies(target_paths, options):
                    'telemetry', 'testing', 'run_tests.py')))
 
   # Add dependencies.
+  dependencies.add(os.path.realpath(GetWebPageReplayDir()))
+
   for target_path in target_paths:
     base_dir = os.path.dirname(os.path.realpath(target_path))
 
@@ -214,25 +224,31 @@ def ZipDependencies(target_paths, dependencies, options):
       zip_file.writestr(link_info, link_script)
 
 
-class FindDependenciesCommand(command_line.OptparseCommand):
+class FindDependenciesCommand(command_line.Command):
   """Prints all dependencies"""
 
   @classmethod
-  def AddCommandLineArgs(cls, parser, _):
-    parser.add_option(
-        '-v', '--verbose', action='count', dest='verbosity', default=0,
-        help='Increase verbosity level (repeat as needed).')
+  def AddCommandLineArgs(cls, parser):
+    parser.add_argument('-v',
+                        '--verbose',
+                        action='count',
+                        dest='verbosity',
+                        default=0,
+                        help='Increase verbosity level (repeat as needed).')
 
-    parser.add_option(
-        '-e', '--exclude', action='append', default=[],
+    parser.add_argument(
+        '-e',
+        '--exclude',
+        action='append',
+        default=[],
         help='Exclude paths matching EXCLUDE. Can be used multiple times.')
 
-    parser.add_option(
-        '-z', '--zip',
-        help='Store files in a zip archive at ZIP.')
+    parser.add_argument('-z',
+                        '--zip',
+                        help='Store files in a zip archive at ZIP.')
 
   @classmethod
-  def ProcessCommandLineArgs(cls, parser, args, _):
+  def ProcessCommandLineArgs(cls, parser, args):
     if args.verbosity >= 2:
       logging.getLogger().setLevel(logging.DEBUG)
     elif args.verbosity:

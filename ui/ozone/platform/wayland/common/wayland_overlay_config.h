@@ -6,10 +6,12 @@
 #define UI_OZONE_PLATFORM_WAYLAND_COMMON_WAYLAND_OVERLAY_CONFIG_H_
 
 #include <memory>
+#include <variant>
 
 #include "ui/gfx/color_space.h"
 #include "ui/gfx/gpu_fence.h"
 #include "ui/gfx/gpu_fence_handle.h"
+#include "ui/gfx/hdr_metadata.h"
 #include "ui/gfx/overlay_plane_data.h"
 #include "ui/gfx/overlay_priority_hint.h"
 #include "ui/gfx/overlay_transform.h"
@@ -34,7 +36,9 @@ struct WaylandOverlayConfig {
   int z_order = 0;
 
   // Specifies how the buffer is to be transformed during composition.
-  gfx::OverlayTransform transform =
+  // Note: A |gfx::OverlayTransform| transforms the buffer within its bounds and
+  // does not affect |bounds_rect|.
+  std::variant<gfx::OverlayTransform, gfx::Transform> transform =
       gfx::OverlayTransform::OVERLAY_TRANSFORM_NONE;
 
   // Specifies if alpha blending, with premultiplied alpha should be applied at
@@ -62,8 +66,8 @@ struct WaylandOverlayConfig {
   // This sets the source rectangle of Wayland Viewport.
   gfx::RectF crop_rect = {1.f, 1.f};
 
-  // Describes the changed region of the buffer. Optional to hint a partial
-  // swap.
+  // Damage in viz::Display space, the same space as |bounds_rect|. Optional
+  // to hint a partial swap.
   gfx::Rect damage_region;
 
   // Opacity of the overlay independent of buffer alpha.
@@ -75,20 +79,11 @@ struct WaylandOverlayConfig {
   // compositing.
   gfx::GpuFenceHandle access_fence_handle;
 
-  // Specifies the color space data of the wayland config.
-  absl::optional<gfx::ColorSpace> color_space;
-
-  // Specifies rounded clip bounds of the overlay if delegated composition is
-  // supported and enabled.
-  absl::optional<gfx::RRectF> rounded_clip_bounds;
-
-  // Optional: background color of this overlay plane.
-  absl::optional<SkColor4f> background_color;
-
-  // Optional: clip rect for this overlay.
-  absl::optional<gfx::Rect> clip_rect;
+  // Specifies the color space data and HDR metadata of the wayland config.
+  std::optional<gfx::ColorSpace> color_space;
+  gfx::HDRMetadata hdr_metadata;
 };
 
 }  // namespace wl
 
-#endif  // COMPONENTS_VIZ_COMMON_QUADS_COMPOSITOR_FRAME_H_
+#endif  // UI_OZONE_PLATFORM_WAYLAND_COMMON_WAYLAND_OVERLAY_CONFIG_H_

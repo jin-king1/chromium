@@ -6,9 +6,6 @@
 
 #include <tuple>
 
-#include "base/test/scoped_feature_list.h"
-#include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/platform/web_runtime_features.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_core.h"
 #include "third_party/blink/renderer/core/dom/abort_controller.h"
 #include "third_party/blink/renderer/core/dom/abort_signal_registry.h"
@@ -39,8 +36,10 @@ class AbortSignalTest : public PageTestBase {
 
   void SetUp() override {
     PageTestBase::SetUp();
+    NavigateTo(KURL("https://example.com/"));
 
-    controller_ = AbortController::Create(GetFrame().DomWindow());
+    ScriptState* script_state = ToScriptStateForMainWorld(&GetFrame());
+    controller_ = AbortController::Create(script_state);
     signal_ = controller_->signal();
   }
 
@@ -63,7 +62,7 @@ class AbortSignalTest : public PageTestBase {
 TEST_F(AbortSignalTest, AbortAlgorithmRuns) {
   int count = 0;
   abort_handle_ = signal_->AddAlgorithm(
-      WTF::BindOnce([](int* count) { ++(*count); }, WTF::Unretained(&count)));
+      BindOnce([](int* count) { ++(*count); }, Unretained(&count)));
 
   // GC should not affect whether or not the algorithm runs.
   ThreadState::Current()->CollectAllGarbageForTesting();
@@ -79,7 +78,7 @@ TEST_F(AbortSignalTest, AbortAlgorithmRuns) {
 TEST_F(AbortSignalTest, AbortAlgorithmHandleRemoved) {
   int count = 0;
   abort_handle_ = signal_->AddAlgorithm(
-      WTF::BindOnce([](int* count) { ++(*count); }, WTF::Unretained(&count)));
+      BindOnce([](int* count) { ++(*count); }, Unretained(&count)));
 
   signal_->RemoveAlgorithm(abort_handle_.Get());
 
@@ -90,7 +89,7 @@ TEST_F(AbortSignalTest, AbortAlgorithmHandleRemoved) {
 TEST_F(AbortSignalTest, AbortAlgorithmHandleGCed) {
   int count = 0;
   abort_handle_ = signal_->AddAlgorithm(
-      WTF::BindOnce([](int* count) { ++(*count); }, WTF::Unretained(&count)));
+      BindOnce([](int* count) { ++(*count); }, Unretained(&count)));
 
   abort_handle_.Clear();
   ThreadState::Current()->CollectAllGarbageForTesting();
@@ -105,7 +104,7 @@ TEST_F(AbortSignalTest, RegisteredSignalAlgorithmRuns) {
       MakeGarbageCollected<TestEventListener>();
   {
     auto* handle = signal_->AddAlgorithm(
-        WTF::BindOnce([](int* count) { ++(*count); }, WTF::Unretained(&count)));
+        BindOnce([](int* count) { ++(*count); }, Unretained(&count)));
     GetRegistry()->RegisterAbortAlgorithm(listener.Get(), handle);
   }
 
@@ -122,7 +121,7 @@ TEST_F(AbortSignalTest, RegisteredSignalAlgorithmListenerGCed) {
       MakeGarbageCollected<TestEventListener>();
   {
     auto* handle = signal_->AddAlgorithm(
-        WTF::BindOnce([](int* count) { ++(*count); }, WTF::Unretained(&count)));
+        BindOnce([](int* count) { ++(*count); }, Unretained(&count)));
     GetRegistry()->RegisterAbortAlgorithm(listener.Get(), handle);
   }
 
@@ -133,59 +132,30 @@ TEST_F(AbortSignalTest, RegisteredSignalAlgorithmListenerGCed) {
   EXPECT_EQ(count, 0);
 }
 
-namespace {
-
-enum class TestType { kCompositionEnabled, kNoFeatures };
-
-const char* TestTypeToString(TestType test_type) {
-  switch (test_type) {
-    case TestType::kCompositionEnabled:
-      return "CompositionEnabled";
-    case TestType::kNoFeatures:
-      return "NoFeatures";
-  }
-}
-
-}  // namespace
-
-class AbortSignalCompositionTest
-    : public AbortSignalTest,
-      public ::testing::WithParamInterface<TestType> {
- public:
-  AbortSignalCompositionTest() {
-    switch (GetParam()) {
-      case TestType::kCompositionEnabled:
-        feature_list_.InitWithFeatures({features::kAbortSignalComposition}, {});
-        break;
-      case TestType::kNoFeatures:
-        feature_list_.InitWithFeatures({}, {features::kAbortSignalComposition});
-        break;
-    }
-    WebRuntimeFeatures::UpdateStatusFromBaseFeatures();
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-TEST_P(AbortSignalCompositionTest, CanAbort) {
+TEST_F(AbortSignalTest, CanAbort) {
   EXPECT_TRUE(signal_->CanAbort());
   SignalAbort();
   EXPECT_FALSE(signal_->CanAbort());
 }
 
-TEST_P(AbortSignalCompositionTest, CanAbortAfterGC) {
+TEST_F(AbortSignalTest, CanAbortAfterGC) {
   controller_.Clear();
   ThreadState::Current()->CollectAllGarbageForTesting();
-  EXPECT_EQ(signal_->CanAbort(), GetParam() == TestType::kNoFeatures);
+  EXPECT_FALSE(signal_->CanAbort());
 }
 
-INSTANTIATE_TEST_SUITE_P(,
-                         AbortSignalCompositionTest,
-                         testing::Values(TestType::kCompositionEnabled,
-                                         TestType::kNoFeatures),
-                         [](const testing::TestParamInfo<TestType>& info) {
-                           return TestTypeToString(info.param);
-                         });
+TEST_F(AbortSignalTest, TimeoutTaskCanceledOnDetach) {
+  WeakPersistent<AbortSignal> timeout_signal =
+      AbortSignal::timeout(ToScriptStateForMainWorld(&GetFrame()), 10000);
+  ThreadState::Current()->CollectAllGarbageForTesting();
+  // The signal should be kept alive by the pending timeout task.
+  EXPECT_TRUE(timeout_signal);
+
+  NavigateTo(KURL("https://example2.com/"));
+  ThreadState::Current()->CollectAllGarbageForTesting();
+  // Navigating should cause the signal's context to detach, which should cancel
+  // the pending timeout task, removing the last strong reference to the signal.
+  EXPECT_FALSE(timeout_signal);
+}
 
 }  // namespace blink

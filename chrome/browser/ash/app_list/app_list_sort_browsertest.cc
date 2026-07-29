@@ -2,23 +2,29 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ash/app_list/app_list_controller_impl.h"
 #include "ash/app_list/app_list_model_provider.h"
 #include "ash/app_list/views/app_list_item_view.h"
 #include "ash/app_list/views/apps_grid_view.h"
 #include "ash/constants/ash_features.h"
+#include "ash/constants/ash_pref_names.h"
+#include "ash/drag_drop/drag_drop_controller.h"
 #include "ash/public/cpp/accelerators.h"
 #include "ash/public/cpp/app_list/app_list_model_delegate.h"
 #include "ash/public/cpp/tablet_mode.h"
 #include "ash/public/cpp/test/app_list_test_api.h"
 #include "ash/public/cpp/test/shell_test_api.h"
 #include "ash/shell.h"
-#include "ash/wm/tablet_mode/tablet_mode_controller.h"
+#include "ash/wm/tablet_mode/tablet_mode_controller_test_api.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_util.h"
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
 #include "base/strings/safe_sprintf.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "build/build_config.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/app_list/app_list_client_impl.h"
@@ -27,18 +33,18 @@
 #include "chrome/browser/ash/app_list/test/chrome_app_list_test_support.h"
 #include "chrome/browser/ash/login/login_manager_test.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
-#include "chrome/browser/ash/login/ui/user_adding_screen.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
-#include "chrome/common/pref_names.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "components/prefs/pref_service.h"
 #include "components/services/app_service/public/cpp/icon_loader.h"
 #include "content/public/test/browser_test.h"
+#include "skia/ext/codec_utils.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkData.h"
 #include "third_party/skia/include/core/SkImage.h"
 #include "third_party/skia/include/core/SkRefCnt.h"
-#include "third_party/skia/include/encode/SkPngEncoder.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/test/layer_animation_stopped_waiter.h"
 #include "ui/compositor/test/test_utils.h"
@@ -90,8 +96,7 @@ class FakeIconLoader : public apps::IconLoader {
   }
 
   std::unique_ptr<apps::IconLoader::Releaser> LoadIconFromIconKey(
-      apps::AppType app_type,
-      const std::string& app_id,
+      const std::string& id,
       const apps::IconKey& icon_key,
       apps::IconType icon_type,
       int32_t size_hint_in_dip,
@@ -99,8 +104,7 @@ class FakeIconLoader : public apps::IconLoader {
       apps::LoadIconCallback callback) override {
     auto iv = std::make_unique<apps::IconValue>();
     iv->icon_type = icon_type;
-    iv->uncompressed =
-        CreateImageSkia(16, 16, GetIconColor(app_id, SK_ColorWHITE));
+    iv->uncompressed = CreateImageSkia(16, 16, GetIconColor(id, SK_ColorWHITE));
     iv->is_placeholder_icon = false;
 
     std::move(callback).Run(std::move(iv));
@@ -125,7 +129,9 @@ class FakeIconLoader : public apps::IconLoader {
 
 class AppListSortBrowserTest : public extensions::ExtensionBrowserTest {
  public:
-  AppListSortBrowserTest() = default;
+  AppListSortBrowserTest() {
+    ash::AppListControllerImpl::SetSunfishNudgeDisabledForTest(true);
+  }
   AppListSortBrowserTest(const AppListSortBrowserTest&) = delete;
   AppListSortBrowserTest& operator=(const AppListSortBrowserTest&) = delete;
   ~AppListSortBrowserTest() override = default;
@@ -161,7 +167,7 @@ class AppListSortBrowserTest : public extensions::ExtensionBrowserTest {
   // switching to the clamshell mode. The tablet mode changes synchronously on
   // animation start to avoid the race condition between the fade out animation
   // completion and the task to change the tablet mode state.
-  // See https://crbug.com/1302924
+  // See https://crbug.com/40217187
   void RegisterModeSwitchClosureOnFadeOutStarted(bool tablet_mode_enabled) {
     auto switch_mode_closure = base::BindOnce(
         [](bool tablet_mode_enabled) {
@@ -215,7 +221,7 @@ class AppListSortBrowserTest : public extensions::ExtensionBrowserTest {
 
   ash::AppListSortOrder GetPermanentSortingOrder() {
     return static_cast<ash::AppListSortOrder>(
-        profile()->GetPrefs()->GetInteger(prefs::kAppListPreferredOrder));
+        profile()->GetPrefs()->GetInteger(ash::prefs::kAppListPreferredOrder));
   }
 
   // extensions::ExtensionBrowserTest:
@@ -238,13 +244,9 @@ class AppListSortBrowserTest : public extensions::ExtensionBrowserTest {
 
     const int default_app_count = app_list_test_api_.GetTopListItemCount();
 
-    if (base::FeatureList::IsEnabled(ash::features::kLacrosSupport)) {
-      // Assume that there are three default apps, one being the Lacros browser.
-      ASSERT_EQ(3, app_list_test_api_.GetTopListItemCount());
-    } else {
-      // Assume that there are two default apps.
-      ASSERT_EQ(2, app_list_test_api_.GetTopListItemCount());
-    }
+    // Assume that there are two default apps.
+    ASSERT_EQ(2, app_list_test_api_.GetTopListItemCount());
+
     apps::AppServiceProxyFactory::GetForProfile(profile())
         ->OverrideInnerIconLoaderForTesting(&icon_loader_);
 
@@ -274,8 +276,12 @@ class AppListSortBrowserTest : public extensions::ExtensionBrowserTest {
   void SetTestAppIconColor(const std::string& app_id, SkColor color) {
     icon_loader_.SetAppIconColor(app_id, color);
     // Force icon reload after setting the test color.
+    // We cannot call LoadAppIcon directly because we need to invalidate the
+    // icon color cache. So we use `IncrementIconVersion()` to remove the
+    // icon color cache entry and trigger icon loading.
     test::GetModelUpdater(AppListClientImpl::GetInstance())
-        ->LoadAppIcon(app_id);
+        ->FindItem(app_id)
+        ->IncrementIconVersion();
   }
 
   // Helps to prevent flakiness due to conflicting animations (`AppListView`
@@ -331,6 +337,9 @@ IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest, ContextMenuSortItemsInTopLevel) {
 // Verifies that clearing pref order by moving an item works as expected.
 IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest, ClearPrefOrderByItemMove) {
   ash::ShellTestApi().SetTabletModeEnabledForTest(false);
+  ash::ShellTestApi().drag_drop_controller()->SetDisableNestedLoopForTesting(
+      true);
+
   WaitForAppListTransitionAnimation();
   ash::AcceleratorController::Get()->PerformActionIfEnabled(
       AcceleratorAction::kToggleAppList, {});
@@ -364,7 +373,7 @@ IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest, ClearPrefOrderByItemMove) {
 // or sorted by the apps' icon colors using the context menu in apps grid view.
 // TODO(crbug.com/1267369): Also add a test that verifies the behavior in tablet
 // mode.
-// Flaky. See https://crbug.com/1423200
+// Flaky. See https://crbug.com/40897358
 IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest,
                        DISABLED_ContextMenuSortItemsInFolder) {
   ash::ShellTestApi().SetTabletModeEnabledForTest(false);
@@ -753,8 +762,8 @@ IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest, UndoTemporarySortingClamshell) {
   // Wait for one additional frame so that the metric data is collected.
   ui::Compositor* compositor =
       app_list_test_api_.GetTopLevelAppsGridView()->layer()->GetCompositor();
-  base::IgnoreResult(
-      ui::WaitForNextFrameToBePresented(compositor, base::Milliseconds(300)));
+  std::ignore =
+      ui::WaitForNextFrameToBePresented(compositor, base::Milliseconds(300));
 
   histograms.ExpectTotalCount(
       ash::kClamshellReorderAnimationSmoothnessHistogram, 1);
@@ -770,8 +779,8 @@ IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest, UndoTemporarySortingClamshell) {
       event_generator_.get());
 
   // Wait for the metric data to be collected.
-  base::IgnoreResult(
-      ui::WaitForNextFrameToBePresented(compositor, base::Milliseconds(300)));
+  std::ignore =
+      ui::WaitForNextFrameToBePresented(compositor, base::Milliseconds(300));
 
   // Smoothness of the reorder animation triggered by undo button is recorded.
   histograms.ExpectTotalCount(
@@ -814,8 +823,8 @@ IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest, UndoTemporarySortingTablet) {
   // Wait for one additional frame so that the metric data is collected.
   ui::Compositor* compositor =
       app_list_test_api_.GetTopLevelAppsGridView()->layer()->GetCompositor();
-  base::IgnoreResult(
-      ui::WaitForNextFrameToBePresented(compositor, base::Milliseconds(300)));
+  std::ignore =
+      ui::WaitForNextFrameToBePresented(compositor, base::Milliseconds(300));
 
   histograms.ExpectTotalCount(ash::kTabletReorderAnimationSmoothnessHistogram,
                               1);
@@ -831,8 +840,8 @@ IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest, UndoTemporarySortingTablet) {
   EXPECT_EQ(ash::AppListToastType::kNone, app_list_test_api_.GetToastType());
 
   // Wait for the metric data to be collected.
-  base::IgnoreResult(
-      ui::WaitForNextFrameToBePresented(compositor, base::Milliseconds(300)));
+  std::ignore =
+      ui::WaitForNextFrameToBePresented(compositor, base::Milliseconds(300));
 
   // Smoothness of the reorder animation triggered by undo button is recorded.
   histograms.ExpectTotalCount(ash::kTabletReorderAnimationSmoothnessHistogram,
@@ -980,7 +989,7 @@ IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest,
 
 // Verify that switching to clamshell mode when the fade out animation in tablet
 // mode is running works as expected.
-// TODO(crbug.com/1302924): Flaky.
+// TODO(crbug.com/40217187): Flaky.
 IN_PROC_BROWSER_TEST_F(
     AppListSortBrowserTest,
     DISABLED_TransitionToClamshellModeDuringFadeOutAnimation) {
@@ -1154,7 +1163,7 @@ IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest,
 // expected.
 IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest,
                        TransitionToClamshellModeDuringAbortedFadeInAnimation) {
-  ash::Shell::Get()->tablet_mode_controller()->SetEnabledForTest(true);
+  ash::TabletModeControllerTestApi().EnterTabletMode();
 
   ash::AcceleratorController::Get()->PerformActionIfEnabled(
       AcceleratorAction::kToggleAppList, {});
@@ -1177,7 +1186,7 @@ IN_PROC_BROWSER_TEST_F(AppListSortBrowserTest,
   EXPECT_EQ(GetAppIdsInOrdinalOrder(),
             std::vector<std::string>({app1_id_, app2_id_, app3_id_}));
 
-  ash::Shell::Get()->tablet_mode_controller()->SetEnabledForTest(false);
+  ash::TabletModeControllerTestApi().LeaveTabletMode();
 
   // Progress tablet mode animation to the end before item fade in animation
   // completes - this should hide the tablet mode app list and abort the fade in
@@ -1454,8 +1463,10 @@ class AppListSortColorOrderBrowserTest : public AppListSortBrowserTest {
         icon_size / 2, icon_color, icon);
     const sk_sp<SkImage> image = SkImages::RasterFromBitmap(*icon.bitmap());
     const sk_sp<SkData> png_data =
-        SkPngEncoder::Encode(nullptr, image.get(), {});
-    icon_file.Write(0, (const char*)png_data->data(), png_data->size());
+        skia::EncodePngAsSkData(nullptr, image.get());
+    // SAFETY: png_data->bytes() points to a buffer of size png_data->size().
+    icon_file.Write(0, base::as_bytes(UNSAFE_BUFFERS(
+                           base::span(png_data->bytes(), png_data->size()))));
     icon_file.Close();
 
     // Prepare the app manifest file.
@@ -1470,9 +1481,10 @@ class AppListSortColorOrderBrowserTest : public AppListSortBrowserTest {
     base::strings::SafeSPrintf(json_buffer, icon_json, icon_size,
                                icon_file_name);
     char manifest_buffer[300];
-    int count = base::strings::SafeSPrintf(manifest_buffer, kManifestData,
-                                           app_name.c_str(), json_buffer);
-    EXPECT_EQ(count, manifest_file.Write(0, manifest_buffer, count));
+    size_t count = base::strings::SafeSPrintf(manifest_buffer, kManifestData,
+                                              app_name.c_str(), json_buffer);
+    EXPECT_TRUE(manifest_file.WriteAndCheck(
+        0, base::as_byte_span(manifest_buffer).first(count)));
     manifest_file.Close();
 
     return extension_path;
@@ -1554,7 +1566,15 @@ IN_PROC_BROWSER_TEST_P(AppListSortLoginTest,
 
 // Verifies that the app list sort discovery duration after the education nudge
 // shows is recorded as expected.
-IN_PROC_BROWSER_TEST_P(AppListSortLoginTest, VerifySortAfterNudgeShowMetric) {
+// TODO(crbug.com/328928228): Re-enable this test
+#if BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)
+#define MAYBE_VerifySortAfterNudgeShowMetric \
+  DISABLED_VerifySortAfterNudgeShowMetric
+#else
+#define MAYBE_VerifySortAfterNudgeShowMetric VerifySortAfterNudgeShowMetric
+#endif
+IN_PROC_BROWSER_TEST_P(AppListSortLoginTest,
+                       MAYBE_VerifySortAfterNudgeShowMetric) {
   LoginUser(account_id1_);
 
   ash::AcceleratorController::Get()->PerformActionIfEnabled(
@@ -1610,7 +1630,7 @@ class AppListSortLoginTalbetTest : public ash::LoginManagerTest {
   ash::LoginManagerMixin login_mixin_{&mixin_host_};
 };
 
-// TODO(https://crbug.com/1411204): Flaky test.
+// TODO(crbug.com/40890115): Flaky test.
 IN_PROC_BROWSER_TEST_F(AppListSortLoginTalbetTest,
                        DISABLED_PRE_SwitchUnderTemporarySort) {
   LoginUser(account_id1_);
@@ -1635,7 +1655,7 @@ IN_PROC_BROWSER_TEST_F(AppListSortLoginTalbetTest,
 // Verifies that the active account switch works as expected when the app list
 // is under temporary sort.
 //
-// TODO(https://crbug.com/1411204): Flaky test.
+// TODO(crbug.com/40890115): Flaky test.
 IN_PROC_BROWSER_TEST_F(AppListSortLoginTalbetTest,
                        DISABLED_SwitchUnderTemporarySort) {
   LoginUser(account_id1_);

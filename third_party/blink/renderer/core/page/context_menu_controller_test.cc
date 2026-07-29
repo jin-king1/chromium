@@ -6,20 +6,25 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <utility>
+#include <vector>
 
+#include "base/barrier_closure.h"
+#include "base/functional/callback.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
+#include "mojo/public/cpp/bindings/receiver_set.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/common/context_menu_data/context_menu_data.h"
 #include "third_party/blink/public/common/context_menu_data/edit_flags.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/input/web_keyboard_event.h"
-#include "third_party/blink/public/common/input/web_menu_source_type.h"
 #include "third_party/blink/public/mojom/context_menu/context_menu.mojom-blink.h"
 #include "third_party/blink/public/web/web_plugin.h"
 #include "third_party/blink/renderer/core/dom/events/native_event_listener.h"
@@ -33,8 +38,12 @@
 #include "third_party/blink/renderer/core/frame/web_frame_widget_impl.h"
 #include "third_party/blink/renderer/core/frame/web_local_frame_impl.h"
 #include "third_party/blink/renderer/core/geometry/dom_rect.h"
+#include "third_party/blink/renderer/core/html/forms/html_input_element.h"
 #include "third_party/blink/renderer/core/html/html_anchor_element.h"
+#include "third_party/blink/renderer/core/html/html_area_element.h"
 #include "third_party/blink/renderer/core/html/html_document.h"
+#include "third_party/blink/renderer/core/html/html_embed_element.h"
+#include "third_party/blink/renderer/core/html/html_image_element.h"
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
 #include "third_party/blink/renderer/core/input/context_menu_allowed_scope.h"
 #include "third_party/blink/renderer/core/layout/layout_embedded_content.h"
@@ -46,11 +55,16 @@
 #include "third_party/blink/renderer/platform/mediastream/media_stream_descriptor.h"
 #include "third_party/blink/renderer/platform/testing/empty_web_media_player.h"
 #include "third_party/blink/renderer/platform/testing/scoped_mocked_url.h"
+#include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/url_loader_mock.h"
 #include "third_party/blink/renderer/platform/testing/url_loader_mock_factory_impl.h"
 #include "third_party/blink/renderer/platform/testing/url_test_helpers.h"
+#include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "ui/base/mojom/menu_source_type.mojom-blink.h"
 #include "ui/gfx/geometry/rect.h"
 
 using testing::Return;
@@ -104,12 +118,12 @@ class TestWebFrameClientImpl : public frame_test_helpers::TestWebFrameClient {
 
   void UpdateContextMenuDataForTesting(
       const ContextMenuData& data,
-      const absl::optional<gfx::Point>& host_context_menu_location) override {
+      const std::optional<gfx::Point>& host_context_menu_location) override {
     context_menu_data_ = data;
     host_context_menu_location_ = host_context_menu_location;
   }
 
-  WebMediaPlayer* CreateMediaPlayer(
+  std::unique_ptr<WebMediaPlayer> CreateMediaPlayer(
       const WebMediaPlayerSource&,
       WebMediaPlayerClient*,
       blink::MediaInspectorContext*,
@@ -118,20 +132,20 @@ class TestWebFrameClientImpl : public frame_test_helpers::TestWebFrameClient {
       const WebString& sink_id,
       const cc::LayerTreeSettings* settings,
       scoped_refptr<base::TaskRunner> compositor_worker_task_runner) override {
-    return new MockWebMediaPlayerForContextMenu();
+    return std::make_unique<MockWebMediaPlayerForContextMenu>();
   }
 
   const ContextMenuData& GetContextMenuData() const {
     return context_menu_data_;
   }
 
-  const absl::optional<gfx::Point>& host_context_menu_location() const {
+  const std::optional<gfx::Point>& host_context_menu_location() const {
     return host_context_menu_location_;
   }
 
  private:
   ContextMenuData context_menu_data_;
-  absl::optional<gfx::Point> host_context_menu_location_;
+  std::optional<gfx::Point> host_context_menu_location_;
 };
 
 void RegisterMockedImageURLLoad(const String& url) {
@@ -166,7 +180,7 @@ class ContextMenuControllerTest : public testing::Test {
   }
 
   bool ShowContextMenu(const PhysicalOffset& location,
-                       WebMenuSourceType source) {
+                       ui::mojom::blink::MenuSourceType source) {
     bool success =
         web_view_helper_.GetWebView()
             ->GetPage()
@@ -176,8 +190,9 @@ class ContextMenuControllerTest : public testing::Test {
     return success;
   }
 
-  bool ShowContextMenuForElement(Element* element, WebMenuSourceType source) {
-    const DOMRect* rect = element->getBoundingClientRect();
+  bool ShowContextMenuForElement(Element* element,
+                                 ui::mojom::blink::MenuSourceType source) {
+    const DOMRect* rect = element->GetBoundingClientRect();
     PhysicalOffset location(LayoutUnit((rect->left() + rect->right()) / 2),
                             LayoutUnit((rect->top() + rect->bottom()) / 2));
     ContextMenuAllowedScope context_menu_allowed_scope;
@@ -200,6 +215,8 @@ class ContextMenuControllerTest : public testing::Test {
     return web_frame_client_;
   }
 
+  TestWebFrameClientImpl& GetWebFrameClient() { return web_frame_client_; }
+
   void DurationChanged(HTMLVideoElement* video) { video->DurationChanged(); }
 
   void SetReadyState(HTMLVideoElement* video,
@@ -208,6 +225,7 @@ class ContextMenuControllerTest : public testing::Test {
   }
 
  protected:
+  test::TaskEnvironment task_environment_;
   base::test::ScopedFeatureList feature_list_;
   TestWebFrameClientImpl web_frame_client_;
   frame_test_helpers::WebViewHelper web_view_helper_;
@@ -228,7 +246,7 @@ TEST_F(ContextMenuControllerTest, CopyFromPlugin) {
   Document* document = GetDocument();
   ASSERT_TRUE(IsA<HTMLDocument>(document));
 
-  Element* embed_element = document->getElementById("embed");
+  Element* embed_element = document->getElementById(AtomicString("embed"));
   ASSERT_TRUE(IsA<HTMLEmbedElement>(embed_element));
 
   auto* embedded =
@@ -243,7 +261,8 @@ TEST_F(ContextMenuControllerTest, CopyFromPlugin) {
   test_plugin->SetAttributesForTesting(
       {/*can_copy=*/true, /*selected_text=*/""});
 
-  ASSERT_TRUE(ShowContextMenuForElement(embed_element, kMenuSourceMouse));
+  ASSERT_TRUE(ShowContextMenuForElement(
+      embed_element, ui::mojom::blink::MenuSourceType::kMouse));
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(context_menu_data.media_type,
             mojom::blink::ContextMenuDataMediaType::kPlugin);
@@ -254,7 +273,8 @@ TEST_F(ContextMenuControllerTest, CopyFromPlugin) {
   // The plugin has copy permission and some text is selected.
   test_plugin->SetAttributesForTesting({/*can_copy=*/true,
                                         /*selected_text=*/"some text"});
-  ASSERT_TRUE(ShowContextMenuForElement(embed_element, kMenuSourceMouse));
+  ASSERT_TRUE(ShowContextMenuForElement(
+      embed_element, ui::mojom::blink::MenuSourceType::kMouse));
   context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(context_menu_data.media_type,
             mojom::blink::ContextMenuDataMediaType::kPlugin);
@@ -265,7 +285,8 @@ TEST_F(ContextMenuControllerTest, CopyFromPlugin) {
   // The plugin does not have copy permission and no text is selected.
   test_plugin->SetAttributesForTesting({/*can_copy=*/false,
                                         /*selected_text=*/""});
-  ASSERT_TRUE(ShowContextMenuForElement(embed_element, kMenuSourceMouse));
+  ASSERT_TRUE(ShowContextMenuForElement(
+      embed_element, ui::mojom::blink::MenuSourceType::kMouse));
   context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(context_menu_data.media_type,
             mojom::blink::ContextMenuDataMediaType::kPlugin);
@@ -276,7 +297,8 @@ TEST_F(ContextMenuControllerTest, CopyFromPlugin) {
   // The plugin does not have copy permission but some text is selected.
   test_plugin->SetAttributesForTesting({/*can_copy=*/false,
                                         /*selected_text=*/"some text"});
-  ASSERT_TRUE(ShowContextMenuForElement(embed_element, kMenuSourceMouse));
+  ASSERT_TRUE(ShowContextMenuForElement(
+      embed_element, ui::mojom::blink::MenuSourceType::kMouse));
   context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(context_menu_data.media_type,
             mojom::blink::ContextMenuDataMediaType::kPlugin);
@@ -288,7 +310,7 @@ TEST_F(ContextMenuControllerTest, CopyFromPlugin) {
 TEST_F(ContextMenuControllerTest, VideoNotLoaded) {
   ContextMenuAllowedScope context_menu_allowed_scope;
   HitTestResult hit_test_result;
-  const char video_url[] = "https://example.com/foo.webm";
+  AtomicString video_url("https://example.com/foo.webm");
 
   // Make sure Picture-in-Picture is enabled.
   GetDocument()->GetSettings()->SetPictureInPictureEnabled(true);
@@ -307,16 +329,17 @@ TEST_F(ContextMenuControllerTest, VideoNotLoaded) {
               HasVideo())
       .WillRepeatedly(Return(false));
 
-  DOMRect* rect = video->getBoundingClientRect();
+  DOMRect* rect = video->GetBoundingClientRect();
   PhysicalOffset location(LayoutUnit((rect->left() + rect->right()) / 2),
                           LayoutUnit((rect->top() + rect->bottom()) / 2));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceMouse));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kMouse));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kVideo,
             context_menu_data.media_type);
-  EXPECT_EQ(video_url, context_menu_data.src_url.spec());
+  EXPECT_EQ(video_url, context_menu_data.src_url.spec().c_str());
 
   const Vector<std::pair<ContextMenuData::MediaFlags, bool>>
       expected_media_flags = {
@@ -345,7 +368,7 @@ TEST_F(ContextMenuControllerTest, VideoNotLoaded) {
 TEST_F(ContextMenuControllerTest, VideoWithAudioOnly) {
   ContextMenuAllowedScope context_menu_allowed_scope;
   HitTestResult hit_test_result;
-  const char video_url[] = "https://example.com/foo.webm";
+  AtomicString video_url("https://example.com/foo.webm");
 
   // Make sure Picture-in-Picture is enabled.
   GetDocument()->GetSettings()->SetPictureInPictureEnabled(true);
@@ -368,16 +391,17 @@ TEST_F(ContextMenuControllerTest, VideoWithAudioOnly) {
               HasAudio())
       .WillRepeatedly(Return(true));
 
-  DOMRect* rect = video->getBoundingClientRect();
+  DOMRect* rect = video->GetBoundingClientRect();
   PhysicalOffset location(LayoutUnit((rect->left() + rect->right()) / 2),
                           LayoutUnit((rect->top() + rect->bottom()) / 2));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceMouse));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kMouse));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kAudio,
             context_menu_data.media_type);
-  EXPECT_EQ(video_url, context_menu_data.src_url.spec());
+  EXPECT_EQ(video_url, context_menu_data.src_url.spec().c_str());
 
   const Vector<std::pair<ContextMenuData::MediaFlags, bool>>
       expected_media_flags = {
@@ -409,7 +433,7 @@ TEST_F(ContextMenuControllerTest, PictureInPictureEnabledVideoLoaded) {
 
   ContextMenuAllowedScope context_menu_allowed_scope;
   HitTestResult hit_test_result;
-  const char video_url[] = "https://example.com/foo.webm";
+  AtomicString video_url("https://example.com/foo.webm");
 
   // Setup video element.
   Persistent<HTMLVideoElement> video =
@@ -425,16 +449,17 @@ TEST_F(ContextMenuControllerTest, PictureInPictureEnabledVideoLoaded) {
               HasVideo())
       .WillRepeatedly(Return(true));
 
-  DOMRect* rect = video->getBoundingClientRect();
+  DOMRect* rect = video->GetBoundingClientRect();
   PhysicalOffset location(LayoutUnit((rect->left() + rect->right()) / 2),
                           LayoutUnit((rect->top() + rect->bottom()) / 2));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceMouse));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kMouse));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kVideo,
             context_menu_data.media_type);
-  EXPECT_EQ(video_url, context_menu_data.src_url.spec());
+  EXPECT_EQ(video_url, context_menu_data.src_url.spec().c_str());
 
   const Vector<std::pair<ContextMenuData::MediaFlags, bool>>
       expected_media_flags = {
@@ -466,7 +491,7 @@ TEST_F(ContextMenuControllerTest, PictureInPictureDisabledVideoLoaded) {
 
   ContextMenuAllowedScope context_menu_allowed_scope;
   HitTestResult hit_test_result;
-  const char video_url[] = "https://example.com/foo.webm";
+  AtomicString video_url("https://example.com/foo.webm");
 
   // Setup video element.
   Persistent<HTMLVideoElement> video =
@@ -482,16 +507,17 @@ TEST_F(ContextMenuControllerTest, PictureInPictureDisabledVideoLoaded) {
               HasVideo())
       .WillRepeatedly(Return(true));
 
-  DOMRect* rect = video->getBoundingClientRect();
+  DOMRect* rect = video->GetBoundingClientRect();
   PhysicalOffset location(LayoutUnit((rect->left() + rect->right()) / 2),
                           LayoutUnit((rect->top() + rect->bottom()) / 2));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceMouse));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kMouse));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kVideo,
             context_menu_data.media_type);
-  EXPECT_EQ(video_url, context_menu_data.src_url.spec());
+  EXPECT_EQ(video_url, context_menu_data.src_url.spec().c_str());
 
   const Vector<std::pair<ContextMenuData::MediaFlags, bool>>
       expected_media_flags = {
@@ -541,10 +567,11 @@ TEST_F(ContextMenuControllerTest, MediaStreamVideoLoaded) {
               HasVideo())
       .WillRepeatedly(Return(true));
 
-  DOMRect* rect = video->getBoundingClientRect();
+  DOMRect* rect = video->GetBoundingClientRect();
   PhysicalOffset location(LayoutUnit((rect->left() + rect->right()) / 2),
                           LayoutUnit((rect->top() + rect->bottom()) / 2));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceMouse));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kMouse));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -581,7 +608,7 @@ TEST_F(ContextMenuControllerTest, InfiniteDurationVideoLoaded) {
 
   ContextMenuAllowedScope context_menu_allowed_scope;
   HitTestResult hit_test_result;
-  const char video_url[] = "https://example.com/foo.webm";
+  AtomicString video_url("https://example.com/foo.webm");
 
   // Setup video element.
   Persistent<HTMLVideoElement> video =
@@ -603,16 +630,17 @@ TEST_F(ContextMenuControllerTest, InfiniteDurationVideoLoaded) {
       .WillRepeatedly(Return(std::numeric_limits<double>::infinity()));
   DurationChanged(video.Get());
 
-  DOMRect* rect = video->getBoundingClientRect();
+  DOMRect* rect = video->GetBoundingClientRect();
   PhysicalOffset location(LayoutUnit((rect->left() + rect->right()) / 2),
                           LayoutUnit((rect->top() + rect->bottom()) / 2));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceMouse));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kMouse));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kVideo,
             context_menu_data.media_type);
-  EXPECT_EQ(video_url, context_menu_data.src_url.spec());
+  EXPECT_EQ(video_url, context_menu_data.src_url.spec().c_str());
 
   const Vector<std::pair<ContextMenuData::MediaFlags, bool>>
       expected_media_flags = {
@@ -644,7 +672,7 @@ TEST_F(ContextMenuControllerTest, HitTestVideoChildElements) {
 
   ContextMenuAllowedScope context_menu_allowed_scope;
   HitTestResult hit_test_result;
-  const char video_url[] = "https://example.com/foo.webm";
+  AtomicString video_url("https://example.com/foo.webm");
 
   // Setup video element.
   Persistent<HTMLVideoElement> video =
@@ -652,20 +680,22 @@ TEST_F(ContextMenuControllerTest, HitTestVideoChildElements) {
   video->SetSrc(video_url);
   video->setAttribute(
       html_names::kStyleAttr,
-      "position: absolute; left: 0; top: 0; width: 200px; height: 200px");
+      AtomicString(
+          "position: absolute; left: 0; top: 0; width: 200px; height: 200px"));
   GetDocument()->body()->AppendChild(video);
   test::RunPendingTasks();
   SetReadyState(video.Get(), HTMLMediaElement::kHaveMetadata);
   test::RunPendingTasks();
 
   auto check_location = [&](PhysicalOffset location) {
-    EXPECT_TRUE(ShowContextMenu(location, kMenuSourceMouse));
+    EXPECT_TRUE(
+        ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kMouse));
 
     ContextMenuData context_menu_data =
         GetWebFrameClient().GetContextMenuData();
     EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kVideo,
               context_menu_data.media_type);
-    EXPECT_EQ(video_url, context_menu_data.src_url.spec());
+    EXPECT_EQ(video_url, context_menu_data.src_url.spec().c_str());
   };
 
   // Center of video.
@@ -697,13 +727,14 @@ TEST_F(ContextMenuControllerTest, EditingActionsEnabledInSVGDocument) {
   Document* document = GetDocument();
   ASSERT_TRUE(document->IsSVGDocument());
 
-  Element* text_element = document->getElementById("t");
+  Element* text_element = document->getElementById(AtomicString("t"));
   document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   FrameSelection& selection = document->GetFrame()->Selection();
 
   // <text> element
   selection.SelectSubString(*text_element, 4, 8);
-  EXPECT_TRUE(ShowContextMenuForElement(text_element, kMenuSourceMouse));
+  EXPECT_TRUE(ShowContextMenuForElement(
+      text_element, ui::mojom::blink::MenuSourceType::kMouse));
 
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(context_menu_data.media_type,
@@ -712,9 +743,10 @@ TEST_F(ContextMenuControllerTest, EditingActionsEnabledInSVGDocument) {
   EXPECT_EQ(context_menu_data.selected_text, "able tex");
 
   // <div contenteditable=true>
-  Element* editable_element = document->getElementById("e");
+  Element* editable_element = document->getElementById(AtomicString("e"));
   selection.SelectSubString(*editable_element, 0, 42);
-  EXPECT_TRUE(ShowContextMenuForElement(editable_element, kMenuSourceMouse));
+  EXPECT_TRUE(ShowContextMenuForElement(
+      editable_element, ui::mojom::blink::MenuSourceType::kMouse));
 
   context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(context_menu_data.media_type,
@@ -741,12 +773,13 @@ TEST_F(ContextMenuControllerTest, EditingActionsEnabledInXMLDocument) {
   ASSERT_TRUE(IsA<XMLDocument>(document));
   ASSERT_FALSE(IsA<HTMLDocument>(document));
 
-  Element* text_element = document->getElementById("t");
+  Element* text_element = document->getElementById(AtomicString("t"));
   document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   FrameSelection& selection = document->GetFrame()->Selection();
 
   selection.SelectAll();
-  EXPECT_TRUE(ShowContextMenuForElement(text_element, kMenuSourceMouse));
+  EXPECT_TRUE(ShowContextMenuForElement(
+      text_element, ui::mojom::blink::MenuSourceType::kMouse));
 
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(context_menu_data.media_type,
@@ -756,15 +789,15 @@ TEST_F(ContextMenuControllerTest, EditingActionsEnabledInXMLDocument) {
 }
 
 TEST_F(ContextMenuControllerTest, ShowNonLocatedContextMenuEvent) {
-  GetDocument()->documentElement()->setInnerHTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<input id='sample' type='text' size='5' value='Sample Input Text'>");
 
   Document* document = GetDocument();
-  Element* input_element = document->getElementById("sample");
+  Element* input_element = document->getElementById(AtomicString("sample"));
   document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
 
   // Select the 'Sample' of |input|.
-  DOMRect* rect = input_element->getBoundingClientRect();
+  DOMRect* rect = input_element->GetBoundingClientRect();
   WebGestureEvent gesture_event(
       WebInputEvent::Type::kGestureLongPress, WebInputEvent::kNoModifiers,
       base::TimeTicks::Now(), WebGestureDevice::kTouchscreen);
@@ -780,7 +813,7 @@ TEST_F(ContextMenuControllerTest, ShowNonLocatedContextMenuEvent) {
                           (rect->top() + rect->bottom()) / 2);
   LocalMainFrame()->MoveRangeSelectionExtent(middle_point);
   LocalMainFrame()->LocalRootFrameWidget()->ShowContextMenu(
-      ui::mojom::MenuSourceType::TOUCH_HANDLE, middle_point);
+      ui::mojom::blink::MenuSourceType::kTouchHandle, middle_point);
 
   context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_NE(context_menu_data.selected_text, "");
@@ -793,7 +826,7 @@ TEST_F(ContextMenuControllerTest, ShowNonLocatedContextMenuEvent) {
   LocalMainFrame()->MoveRangeSelectionExtent(
       gfx::Point(rect->right(), rect->bottom()));
   LocalMainFrame()->LocalRootFrameWidget()->ShowContextMenu(
-      ui::mojom::MenuSourceType::TOUCH_HANDLE,
+      ui::mojom::blink::MenuSourceType::kTouchHandle,
       gfx::Point(rect->right() / 2, rect->bottom() / 2));
 
   context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -804,12 +837,13 @@ TEST_F(ContextMenuControllerTest, ShowNonLocatedContextMenuEvent) {
 // Mac has no way to open a context menu based on a keyboard event.
 TEST_F(ContextMenuControllerTest,
        ValidateNonLocatedContextMenuOnLargeImageElement) {
-  GetDocument()->documentElement()->setInnerHTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<img src=\"http://example.test/cat.jpg\" id=\"sample_image\" "
       "width=\"200\" height=\"10000\" tabindex=\"-1\" />");
 
   Document* document = GetDocument();
-  Element* image_element = document->getElementById("sample_image");
+  Element* image_element =
+      document->getElementById(AtomicString("sample_image"));
   // Set focus on the image element.
   image_element->Focus();
   document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
@@ -832,17 +866,45 @@ TEST_F(ContextMenuControllerTest,
 }
 #endif
 
+TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestSVGImageElement) {
+  RegisterMockedImageURLLoad("http://test.png");
+  Document* document = GetDocument();
+
+  ContextMenuAllowedScope context_menu_allowed_scope;
+  document->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <svg>
+      <image id="target" href="http://test.png" width="100" height="100"/>
+    </svg>
+  )HTML");
+
+  // Flush the image-loading microtask.
+  base::RunLoop().RunUntilIdle();
+
+  url_test_helpers::ServeAsynchronousRequests();
+
+  Element* image = document->getElementById(AtomicString("target"));
+  EXPECT_TRUE(ShowContextMenuForElement(
+      image, ui::mojom::blink::MenuSourceType::kLongPress));
+
+  ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ("http://test.png/", context_menu_data.src_url.spec());
+  EXPECT_EQ(mojom::blink::ContextMenuDataMediaType::kImage,
+            context_menu_data.media_type);
+  EXPECT_TRUE(context_menu_data.has_image_contents);
+}
+
 TEST_F(ContextMenuControllerTest, SelectionRectClipped) {
-  GetDocument()->documentElement()->setInnerHTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(
       "<textarea id='text-area' cols=6 rows=2>Sample editable text</textarea>");
 
   Document* document = GetDocument();
-  Element* editable_element = document->getElementById("text-area");
+  Element* editable_element =
+      document->getElementById(AtomicString("text-area"));
   document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
   FrameSelection& selection = document->GetFrame()->Selection();
 
   // Select the 'Sample' of |textarea|.
-  DOMRect* rect = editable_element->getBoundingClientRect();
+  DOMRect* rect = editable_element->GetBoundingClientRect();
   WebGestureEvent gesture_event(
       WebInputEvent::Type::kGestureLongPress, WebInputEvent::kNoModifiers,
       base::TimeTicks::Now(), WebGestureDevice::kTouchscreen);
@@ -869,7 +931,8 @@ TEST_F(ContextMenuControllerTest, SelectionRectClipped) {
 
   // Select all the content of |textarea|.
   selection.SelectAll();
-  EXPECT_TRUE(ShowContextMenuForElement(editable_element, kMenuSourceMouse));
+  EXPECT_TRUE(ShowContextMenuForElement(
+      editable_element, ui::mojom::blink::MenuSourceType::kMouse));
 
   context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(context_menu_data.selected_text, "Sample editable text");
@@ -905,7 +968,7 @@ TEST_F(ContextMenuControllerTest,
 
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -924,7 +987,8 @@ TEST_F(ContextMenuControllerTest,
   base::HistogramTester histograms;
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -957,7 +1021,7 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestSucceededPenetrating) {
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -985,7 +1049,8 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestSucceededPenetrating) {
   base::HistogramTester histograms;
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -1017,7 +1082,7 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestSucceededPenetrating) {
 TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestStandardCanvas) {
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1036,7 +1101,8 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestStandardCanvas) {
   base::HistogramTester histograms;
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -1068,7 +1134,7 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestOpaqueNodeBlocking) {
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1107,7 +1173,8 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageHitTestOpaqueNodeBlocking) {
   base::HistogramTester histograms;
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -1141,7 +1208,7 @@ TEST_F(ContextMenuControllerTest,
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1179,12 +1246,13 @@ TEST_F(ContextMenuControllerTest,
       MakeGarbageCollected<MockEventListener>();
   base::HistogramTester histograms;
 
-  Element* target_image = GetDocument()->getElementById("target");
+  Element* target_image = GetDocument()->getElementById(AtomicString("target"));
   target_image->addEventListener(event_type_names::kContextmenu,
                                  event_listener);
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -1217,7 +1285,7 @@ TEST_F(ContextMenuControllerTest,
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1247,12 +1315,13 @@ TEST_F(ContextMenuControllerTest,
       MakeGarbageCollected<MockEventListener>();
   base::HistogramTester histograms;
 
-  Element* target_image = GetDocument()->getElementById("target");
+  Element* target_image = GetDocument()->getElementById(AtomicString("target"));
   target_image->addEventListener(event_type_names::kContextmenu,
                                  event_listener);
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -1285,7 +1354,7 @@ TEST_F(ContextMenuControllerTest,
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1314,11 +1383,12 @@ TEST_F(ContextMenuControllerTest,
       MakeGarbageCollected<MockEventListener>();
   base::HistogramTester histograms;
 
-  Element* target_image = GetDocument()->getElementById("target");
+  Element* target_image = GetDocument()->getElementById(AtomicString("target"));
   target_image->addEventListener(event_type_names::kClick, event_listener);
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -1351,7 +1421,7 @@ TEST_F(ContextMenuControllerTest,
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #hiddenancestor {
@@ -1381,14 +1451,16 @@ TEST_F(ContextMenuControllerTest,
       MakeGarbageCollected<MockEventListener>();
   base::HistogramTester histograms;
 
-  Element* hidden_ancestor = GetDocument()->getElementById("hiddenancestor");
+  Element* hidden_ancestor =
+      GetDocument()->getElementById(AtomicString("hiddenancestor"));
   hidden_ancestor->addEventListener(event_type_names::kContextmenu,
                                     event_listener);
 
   // This hit test would miss the node with the listener if it was not an
   // ancestor.
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -1421,7 +1493,7 @@ TEST_F(ContextMenuControllerTest,
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1460,12 +1532,14 @@ TEST_F(ContextMenuControllerTest,
       MakeGarbageCollected<MockEventListener>();
   base::HistogramTester histograms;
 
-  Element* hidden_ancestor = GetDocument()->getElementById("hiddenancestor");
+  Element* hidden_ancestor =
+      GetDocument()->getElementById(AtomicString("hiddenancestor"));
   hidden_ancestor->addEventListener(event_type_names::kContextmenu,
                                     event_listener);
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Context menu info are sent to the WebLocalFrameClient.
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
@@ -1497,7 +1571,7 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageRetrievalCachedImageFound) {
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1524,7 +1598,8 @@ TEST_F(ContextMenuControllerTest, ContextMenuImageRetrievalCachedImageFound) {
   base::HistogramTester histograms;
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceLongPress));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kLongPress));
 
   Node* image_node =
       web_view_helper_.GetWebView()
@@ -1553,7 +1628,7 @@ TEST_F(ContextMenuControllerTest,
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1607,7 +1682,7 @@ TEST_F(ContextMenuControllerTest,
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1635,10 +1710,12 @@ TEST_F(ContextMenuControllerTest,
   base::HistogramTester histograms;
 
   PhysicalOffset location_with_image(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location_with_image, kMenuSourceLongPress));
+  EXPECT_TRUE(ShowContextMenu(location_with_image,
+                              ui::mojom::blink::MenuSourceType::kLongPress));
 
   PhysicalOffset location_with_link(LayoutUnit(105), LayoutUnit(105));
-  ShowContextMenu(location_with_link, kMenuSourceLongPress);
+  ShowContextMenu(location_with_link,
+                  ui::mojom::blink::MenuSourceType::kLongPress);
 
   Node* image_node =
       web_view_helper_.GetWebView()
@@ -1667,7 +1744,7 @@ TEST_F(ContextMenuControllerTest,
   RegisterMockedImageURLLoad("http://test.png");
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <style>
         #target {
@@ -1694,7 +1771,8 @@ TEST_F(ContextMenuControllerTest,
   base::HistogramTester histograms;
 
   PhysicalOffset location_with_image(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location_with_image, kMenuSourceLongPress));
+  EXPECT_TRUE(ShowContextMenu(location_with_image,
+                              ui::mojom::blink::MenuSourceType::kLongPress));
 
   // Pass in nullptr for frame reference as a way of simulating a different
   // frame being passed in.
@@ -1717,7 +1795,7 @@ TEST_F(ContextMenuControllerTest,
       1);
 }
 
-TEST_F(ContextMenuControllerTest, OpenedFromHighlight) {
+TEST_F(ContextMenuControllerTest, AnnotationType) {
   WebURL url = url_test_helpers::ToKURL("http://www.test.com/");
   frame_test_helpers::LoadHTMLString(LocalMainFrame(),
                                      R"(<html><head><style>body
@@ -1726,6 +1804,8 @@ TEST_F(ContextMenuControllerTest, OpenedFromHighlight) {
       <p id="two">This is a test page two</p>
       <p id="three">This is a test page three</p>
       <p id="four">This is a test page four</p>
+      <p id="five">This is a test page five</p>
+      <p id="six">This is a test page six</p>
       </html>
       )",
                                      url);
@@ -1733,36 +1813,86 @@ TEST_F(ContextMenuControllerTest, OpenedFromHighlight) {
   Document* document = GetDocument();
   ASSERT_TRUE(IsA<HTMLDocument>(document));
 
-  Element* first_element = document->getElementById("one");
-  Element* middle_element = document->getElementById("one");
-  Element* third_element = document->getElementById("three");
-  Element* last_element = document->getElementById("four");
+  Element* first_element = document->getElementById(AtomicString("one"));
+  Element* second_element = document->getElementById(AtomicString("one"));
+  Element* third_element = document->getElementById(AtomicString("three"));
+  Element* fourth_element = document->getElementById(AtomicString("four"));
+  Element* fifth_element = document->getElementById(AtomicString("five"));
+  Element* last_element = document->getElementById(AtomicString("six"));
 
   // Install a text fragment marker from the beginning of <p> one to near the
-  // end of <p> three.
+  // end of <p> four.
   EphemeralRange dom_range =
       EphemeralRange(Position(first_element->firstChild(), 0),
-                     Position(third_element->firstChild(), 22));
+                     Position(fourth_element->firstChild(), 21));
   document->Markers().AddTextFragmentMarker(dom_range);
+
+  // Install a glic marker from the beginning of <p> four to near the end of
+  // of <p> five.
+  dom_range = EphemeralRange(Position(fourth_element->firstChild(), 0),
+                             Position(fifth_element->firstChild(), 21));
+  document->Markers().AddGlicMarker(dom_range);
+
   document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
 
   // Opening the context menu from the last <p> should not set
-  // |opened_from_highlight|.
-  EXPECT_TRUE(ShowContextMenuForElement(last_element, kMenuSourceMouse));
+  // `annotation_type`.
+  EXPECT_TRUE(ShowContextMenuForElement(
+      last_element, ui::mojom::blink::MenuSourceType::kMouse));
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
-  EXPECT_FALSE(context_menu_data.opened_from_highlight);
+  EXPECT_EQ(context_menu_data.annotation_type, std::nullopt);
 
-  // Opening the context menu from the second <p> should set
-  // |opened_from_highlight|.
-  EXPECT_TRUE(ShowContextMenuForElement(middle_element, kMenuSourceMouse));
+  // Opening the context menu from the second <p> should set `annotation_type`.
+  EXPECT_TRUE(ShowContextMenuForElement(
+      second_element, ui::mojom::blink::MenuSourceType::kMouse));
   context_menu_data = GetWebFrameClient().GetContextMenuData();
-  EXPECT_TRUE(context_menu_data.opened_from_highlight);
+  EXPECT_EQ(context_menu_data.annotation_type,
+            mojom::AnnotationType::kSharedHighlight);
 
   // Opening the context menu from the middle of the third <p> should set
-  // |opened_from_highlight|.
-  EXPECT_TRUE(ShowContextMenuForElement(third_element, kMenuSourceMouse));
+  // `annotation_type`.
+  EXPECT_TRUE(ShowContextMenuForElement(
+      third_element, ui::mojom::blink::MenuSourceType::kMouse));
   context_menu_data = GetWebFrameClient().GetContextMenuData();
-  EXPECT_TRUE(context_menu_data.opened_from_highlight);
+  EXPECT_EQ(context_menu_data.annotation_type,
+            mojom::AnnotationType::kSharedHighlight);
+
+  // Opening the context menu from fifth <p> should set `annotation_type` to
+  // kGlic.
+  EXPECT_TRUE(ShowContextMenuForElement(
+      fifth_element, ui::mojom::blink::MenuSourceType::kMouse));
+  context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(context_menu_data.annotation_type, mojom::AnnotationType::kGlic);
+
+  // Opening the context menu from fourth <p> should set `annotation_type` to
+  // kGlic (even though there's also an overlapping annotation of type
+  // kSharedHighlight).
+  EXPECT_TRUE(ShowContextMenuForElement(
+      fourth_element, ui::mojom::blink::MenuSourceType::kMouse));
+  context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(context_menu_data.annotation_type, mojom::AnnotationType::kGlic);
+}
+
+TEST_F(ContextMenuControllerTest, SelectAllEnabledForEditContext) {
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
+    <body>
+      <div id=target>123</div>
+    </body>
+  )HTML");
+  Element* target = GetDocument()->getElementById(AtomicString("target"));
+  // Attach `EditContext` to the target.
+  Element* script = GetDocument()->CreateRawElement(html_names::kScriptTag);
+  script->SetInnerHTMLWithoutTrustedTypes(
+      "document.getElementById('target').editContext = new EditContext()");
+  GetDocument()->body()->AppendChild(script);
+  target->Focus();
+
+  EXPECT_TRUE(target->editContext());
+  EXPECT_TRUE(ShowContextMenuForElement(
+      target, ui::mojom::blink::MenuSourceType::kMouse));
+  ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_TRUE(!!(context_menu_data.edit_flags &
+                 ContextMenuDataEditFlags::kCanSelectAll));
 }
 
 // Test that opening context menu with keyboard does not change text selection.
@@ -1770,18 +1900,19 @@ TEST_F(ContextMenuControllerTest,
        KeyboardTriggeredContextMenuPreservesSelection) {
   ContextMenuAllowedScope context_menu_allowed_scope;
 
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <p id='first'>This is a sample text."</p>
     </body>
   )HTML");
 
-  Node* first_paragraph = GetDocument()->getElementById("first")->firstChild();
+  Node* first_paragraph =
+      GetDocument()->getElementById(AtomicString("first"))->firstChild();
   const auto& selected_start = Position(first_paragraph, 5);
   const auto& selected_end = Position(first_paragraph, 9);
 
   GetDocument()->GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder()
+      SelectionInDomTree::Builder()
           .SetBaseAndExtent(selected_start, selected_end)
           .Build(),
       SetSelectionOptions());
@@ -1789,7 +1920,8 @@ TEST_F(ContextMenuControllerTest,
   EXPECT_EQ(GetDocument()->GetFrame()->Selection().SelectedText(), "is a");
 
   PhysicalOffset location(LayoutUnit(5), LayoutUnit(5));
-  EXPECT_TRUE(ShowContextMenu(location, kMenuSourceKeyboard));
+  EXPECT_TRUE(
+      ShowContextMenu(location, ui::mojom::blink::MenuSourceType::kKeyboard));
   EXPECT_EQ(GetDocument()->GetFrame()->Selection().SelectedText(), "is a");
 }
 
@@ -1817,150 +1949,44 @@ TEST_F(ContextMenuControllerTest, CheckRendererIdFromContextMenuOnTextField) {
   ASSERT_TRUE(IsA<HTMLDocument>(document));
 
   // field_id, is_form_renderer_id_present, is_field_renderer_id_present,
-  // input_field_type
+  // form_control_type
   std::vector<std::tuple<AtomicString, bool, bool,
-                         mojom::ContextMenuDataInputFieldType>>
-      expectations = {
-          // Input Text Field
-          {"name", true, true,
-           mojom::ContextMenuDataInputFieldType::kPlainText},
-          // Text Area Field
-          {"address", true, true,
-           mojom::ContextMenuDataInputFieldType::kPlainText},
-          // Non form element
-          {"one", false, false, mojom::ContextMenuDataInputFieldType::kNone},
-          // Formless Input field
-          {"two", false, true,
-           mojom::ContextMenuDataInputFieldType::kPlainText},
-          // Formless text area field
-          {"three", false, true,
-           mojom::ContextMenuDataInputFieldType::kPlainText}};
+                         std::optional<mojom::FormControlType>>>
+      expectations = {// Input Text Field
+                      {AtomicString("name"), true, true,
+                       mojom::FormControlType::kInputText},
+                      // Text Area Field
+                      {AtomicString("address"), true, true,
+                       mojom::FormControlType::kTextArea},
+                      // Non form element
+                      {AtomicString("one"), false, false, std::nullopt},
+                      // Formless Input field
+                      {AtomicString("two"), false, true,
+                       mojom::FormControlType::kInputText},
+                      // Formless text area field
+                      {AtomicString("three"), false, true,
+                       mojom::FormControlType::kTextArea}};
 
   for (const auto& expectation : expectations) {
     auto [field_id, is_form_renderer_id_present, is_field_renderer_id_present,
-          input_field_type] = expectation;
+          form_control_type] = expectation;
     Element* form_element = document->getElementById(field_id);
-    EXPECT_TRUE(ShowContextMenuForElement(form_element, kMenuSourceMouse));
+    EXPECT_TRUE(ShowContextMenuForElement(
+        form_element, ui::mojom::blink::MenuSourceType::kMouse));
     ContextMenuData context_menu_data =
         GetWebFrameClient().GetContextMenuData();
-    EXPECT_EQ(context_menu_data.form_renderer_id.has_value(),
+    EXPECT_EQ(!context_menu_data.form_renderer_id.is_null(),
               is_form_renderer_id_present);
-    EXPECT_EQ(context_menu_data.field_renderer_id.has_value(),
+    EXPECT_EQ(!context_menu_data.field_renderer_id.is_null(),
               is_field_renderer_id_present);
-    EXPECT_EQ(context_menu_data.input_field_type, input_field_type);
-  }
-}
-
-TEST_F(ContextMenuControllerTest, AttributionSrc) {
-  // The context must be secure for attributionsrc to work at all.
-  frame_test_helpers::LoadHTMLString(
-      LocalMainFrame(), R"(<html><body>)",
-      url_test_helpers::ToKURL("https://test.com/"));
-
-  static constexpr char kSecureURL[] = "https://a.com/";
-  static constexpr char kInsecureURL[] = "http://b.com/";
-
-  const struct {
-    const char* href;
-    const char* attributionsrc;
-    bool impression_expected;
-  } kTestCases[] = {
-      {
-          .href = nullptr,
-          .attributionsrc = nullptr,
-          .impression_expected = false,
-      },
-      {
-          .href = nullptr,
-          .attributionsrc = "",
-          .impression_expected = false,
-      },
-      {
-          .href = nullptr,
-          .attributionsrc = kInsecureURL,
-          .impression_expected = false,
-      },
-      {
-          .href = nullptr,
-          .attributionsrc = kSecureURL,
-          .impression_expected = false,
-      },
-      {
-          .href = kInsecureURL,
-          .attributionsrc = nullptr,
-          .impression_expected = false,
-      },
-      {
-          .href = kInsecureURL,
-          .attributionsrc = "",
-          .impression_expected = false,
-      },
-      {
-          .href = kInsecureURL,
-          .attributionsrc = kInsecureURL,
-          .impression_expected = false,
-      },
-      {
-          .href = kInsecureURL,
-          .attributionsrc = kSecureURL,
-          .impression_expected = false,
-      },
-      {
-          .href = kSecureURL,
-          .attributionsrc = nullptr,
-          .impression_expected = false,
-      },
-      {
-          .href = kSecureURL,
-          .attributionsrc = "",
-          .impression_expected = true,
-      },
-      {
-          .href = kSecureURL,
-          .attributionsrc = kInsecureURL,
-          .impression_expected = true,
-      },
-      {
-          .href = kSecureURL,
-          .attributionsrc = kSecureURL,
-          .impression_expected = true,
-      },
-  };
-
-  for (const auto& test_case : kTestCases) {
-    Persistent<HTMLAnchorElement> anchor =
-        MakeGarbageCollected<HTMLAnchorElement>(*GetDocument());
-    anchor->setInnerText("abc");
-
-    if (test_case.href)
-      anchor->SetHref(test_case.href);
-
-    if (test_case.attributionsrc) {
-      anchor->setAttribute(html_names::kAttributionsrcAttr,
-                           test_case.attributionsrc);
-    }
-
-    GetDocument()->body()->AppendChild(anchor);
-    ASSERT_TRUE(ShowContextMenuForElement(anchor, kMenuSourceMouse));
-
-    url_test_helpers::ServeAsynchronousRequests();
-
-    ContextMenuData context_menu_data =
-        GetWebFrameClient().GetContextMenuData();
-
-    EXPECT_EQ(context_menu_data.impression.has_value(),
-              test_case.impression_expected);
-    if (context_menu_data.impression.has_value()) {
-      EXPECT_EQ(context_menu_data.impression->nav_type,
-                mojom::blink::AttributionNavigationType::kContextMenu);
-    }
+    EXPECT_EQ(context_menu_data.form_control_type, form_control_type);
   }
 }
 
 // Test that if text selection contains unselectable content, the opened context
 // menu should omit the unselectable content.
 TEST_F(ContextMenuControllerTest, SelectUnselectableContent) {
-  GetDocument()->documentElement()->setInnerHTML(R"HTML(
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"HTML(
     <body>
       <p id="test">A <span style="user-select:none;">test_none <span>test_span
         </span><span style="user-select:all;">test_all</span></span> B</p>
@@ -1968,20 +1994,34 @@ TEST_F(ContextMenuControllerTest, SelectUnselectableContent) {
   )HTML");
 
   Document* document = GetDocument();
-  Element* element = document->getElementById("test");
+  Element* element = document->getElementById(AtomicString("test"));
 
   // Select text, which has nested unselectable and selectable content.
   const auto& start = Position(element->firstChild(), 0);
   const auto& end = Position(element->lastChild(), 2);
   document->GetFrame()->Selection().SetSelection(
-      SelectionInDOMTree::Builder().SetBaseAndExtent(start, end).Build(),
+      SelectionInDomTree::Builder().SetBaseAndExtent(start, end).Build(),
       SetSelectionOptions());
 
   // The context menu should omit the unselectable content from the selected
   // text.
-  EXPECT_TRUE(ShowContextMenuForElement(element, kMenuSourceMouse));
+  EXPECT_TRUE(ShowContextMenuForElement(
+      element, ui::mojom::blink::MenuSourceType::kMouse));
   ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
   EXPECT_EQ(context_menu_data.selected_text, "A test_all B");
+}
+
+// http://crbug.com/447973114
+TEST_F(ContextMenuControllerTest, FileInputSelectAllShowsContextMenuNoCrash) {
+  Document* document = GetDocument();
+  document->documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      "<input type=file id=test>");
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  document->GetFrame()->Selection().SelectAll();
+  Element* element = document->getElementById(AtomicString("test"));
+  // Passed without crashing.
+  EXPECT_TRUE(ShowContextMenuForElement(
+      element, ui::mojom::blink::MenuSourceType::kMouse));
 }
 
 class ContextMenuControllerRemoteParentFrameTest : public testing::Test {
@@ -2008,7 +2048,7 @@ class ContextMenuControllerRemoteParentFrameTest : public testing::Test {
 
   void ShowContextMenu(const gfx::Point& point) {
     child_frame_->LocalRootFrameWidget()->ShowContextMenu(
-        ui::mojom::MenuSourceType::MOUSE, point);
+        ui::mojom::blink::MenuSourceType::kMouse, point);
     base::RunLoop().RunUntilIdle();
   }
 
@@ -2017,6 +2057,7 @@ class ContextMenuControllerRemoteParentFrameTest : public testing::Test {
   }
 
  protected:
+  test::TaskEnvironment task_environment_;
   base::test::ScopedFeatureList feature_list_;
   TestWebFrameClientImpl child_web_frame_client_;
   frame_test_helpers::WebViewHelper web_view_helper_;
@@ -2027,10 +2068,186 @@ TEST_F(ContextMenuControllerRemoteParentFrameTest, ShowContextMenuInChild) {
   const gfx::Point kPoint(123, 234);
   ShowContextMenu(kPoint);
 
-  const absl::optional<gfx::Point>& host_context_menu_location =
+  const std::optional<gfx::Point>& host_context_menu_location =
       child_web_frame_client().host_context_menu_location();
   ASSERT_TRUE(host_context_menu_location.has_value());
   EXPECT_EQ(kPoint, host_context_menu_location.value());
+}
+
+class InterestForTouchscreenTest : public ContextMenuControllerTest {};
+
+TEST_F(InterestForTouchscreenTest, NoInterestFor) {
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"(
+    <button id=button>Button</button>
+    <a id=link>Link</a>
+    <div id=plain interestfor=popover>Plain div</button>
+    <div popover id=popover>Popover</div>
+    )");
+  Document* document = GetDocument();
+  Element* button = document->getElementById(AtomicString("button"));
+  Element* link = document->getElementById(AtomicString("link"));
+  Element* div = document->getElementById(AtomicString("plain"));
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+  // Long-press the button
+  gfx::PointF gesture_location = button->GetBoundingClientRect()->Center();
+  WebGestureEvent gesture_event(
+      WebInputEvent::Type::kGestureLongPress, WebInputEvent::kNoModifiers,
+      base::TimeTicks::Now(), WebGestureDevice::kTouchscreen);
+  gesture_event.SetPositionInWidget(gesture_location);
+  GetWebView()->MainFrameWidget()->HandleInputEvent(
+      WebCoalescedInputEvent(gesture_event, ui::LatencyInfo()));
+  ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_FALSE(context_menu_data.opened_from_interest_for);
+
+  // Long-press the link with interestfor
+  gesture_location = link->GetBoundingClientRect()->Center();
+  WebGestureEvent gesture_event_link(
+      WebInputEvent::Type::kGestureLongPress, WebInputEvent::kNoModifiers,
+      base::TimeTicks::Now(), WebGestureDevice::kTouchscreen);
+  gesture_event_link.SetPositionInWidget(gesture_location);
+  GetWebView()->MainFrameWidget()->HandleInputEvent(
+      WebCoalescedInputEvent(gesture_event_link, ui::LatencyInfo()));
+  ContextMenuData context_menu_data_link =
+      GetWebFrameClient().GetContextMenuData();
+  EXPECT_FALSE(context_menu_data_link.opened_from_interest_for);
+
+  // Long-press the plain div with interestfor
+  gesture_location = div->GetBoundingClientRect()->Center();
+  WebGestureEvent gesture_event_div(
+      WebInputEvent::Type::kGestureLongPress, WebInputEvent::kNoModifiers,
+      base::TimeTicks::Now(), WebGestureDevice::kTouchscreen);
+  gesture_event_div.SetPositionInWidget(gesture_location);
+  GetWebView()->MainFrameWidget()->HandleInputEvent(
+      WebCoalescedInputEvent(gesture_event_div, ui::LatencyInfo()));
+  ContextMenuData context_menu_data_div =
+      GetWebFrameClient().GetContextMenuData();
+  EXPECT_FALSE(context_menu_data_div.opened_from_interest_for);
+}
+
+TEST_F(InterestForTouchscreenTest, ButtonWithInterestFor) {
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"(
+    <button interestfor=target id=button type=button>Button</button>
+    <div id=target>Target</div>
+    )");
+  Document* document = GetDocument();
+  Element* button = document->getElementById(AtomicString("button"));
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(button->GetInterestState(), Element::InterestState::kNoInterest);
+
+  // Long-press the button
+  gfx::PointF gesture_location = button->GetBoundingClientRect()->Center();
+  WebGestureEvent gesture_event(
+      WebInputEvent::Type::kGestureLongPress, WebInputEvent::kNoModifiers,
+      base::TimeTicks::Now(), WebGestureDevice::kTouchscreen);
+  gesture_event.SetPositionInWidget(gesture_location);
+  GetWebView()->MainFrameWidget()->HandleInputEvent(
+      WebCoalescedInputEvent(gesture_event, ui::LatencyInfo()));
+
+  ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_TRUE(context_menu_data.opened_from_interest_for);
+  EXPECT_EQ(context_menu_data.link_text, "");
+  EXPECT_EQ(context_menu_data.selected_text, "");
+  EXPECT_EQ(context_menu_data.source_type,
+            ui::mojom::MenuSourceType::kLongPress);
+  // Interest is shown immediately for buttons.
+  EXPECT_EQ(button->GetInterestState(),
+            Element::InterestState::kExplicitInterest);
+
+  // Now simulate the pointerup that happens when the touch is released - this
+  // should not lose interest.
+  WebPointerEvent pointerup_event(
+      WebInputEvent::Type::kPointerUp,
+      WebPointerProperties(1, WebPointerProperties::PointerType::kTouch,
+                           WebPointerProperties::Button::kLeft,
+                           gesture_location, gesture_location),
+      1.0f, 1.0f);
+  GetWebView()->MainFrameWidget()->HandleInputEvent(
+      WebCoalescedInputEvent(pointerup_event, ui::LatencyInfo()));
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(button->GetInterestState(),
+            Element::InterestState::kExplicitInterest);
+}
+
+TEST_F(InterestForTouchscreenTest, LinkWithInterestFor) {
+  GetDocument()->documentElement()->SetInnerHTMLWithoutTrustedTypes(R"(
+    <a href="foo.html" interestfor=target id=link>Link</a>
+    <div target id=target popover>Target</div>
+
+    <!-- Without this, the bounding client rect of `<a id=link>` is 8,8 1.89062x1 -->
+    <style> a {display:block; width: 50px; height: 20px;} </style>
+    )");
+  Document* document = GetDocument();
+  Element* link = document->getElementById(AtomicString("link"));
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(link->GetInterestState(), Element::InterestState::kNoInterest);
+
+  // Long-press the link
+  gfx::PointF gesture_location = link->GetBoundingClientRect()->Center();
+  WebGestureEvent gesture_event(
+      WebInputEvent::Type::kGestureLongPress, WebInputEvent::kNoModifiers,
+      base::TimeTicks::Now(), WebGestureDevice::kTouchscreen);
+  gesture_event.SetPositionInWidget(gesture_location);
+  GetWebView()->MainFrameWidget()->HandleInputEvent(
+      WebCoalescedInputEvent(gesture_event, ui::LatencyInfo()));
+  ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_TRUE(context_menu_data.opened_from_interest_for);
+  EXPECT_EQ(context_menu_data.link_text, "Link");
+  EXPECT_EQ(context_menu_data.selected_text, "");
+  EXPECT_EQ(context_menu_data.source_type,
+            ui::mojom::MenuSourceType::kLongPress);
+  EXPECT_FALSE(context_menu_data.form_control_type.has_value());
+  // Interest is *not* shown immediately for links, because the context menu
+  // shows up.
+  EXPECT_EQ(link->GetInterestState(), Element::InterestState::kNoInterest);
+
+  // Simulate choosing the "Show details" context menu item
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(link->GetInterestState(), Element::InterestState::kNoInterest);
+  link->ShowInterestNow();
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  EXPECT_EQ(link->GetInterestState(),
+            Element::InterestState::kExplicitInterest);
+}
+
+TEST_F(ContextMenuControllerTest, MixedContentImageAutoupgrade) {
+  RegisterMockedImageURLLoad("https://example.com/image.png");
+
+  frame_test_helpers::LoadHTMLString(
+      LocalMainFrame(), "<img id='target' src='http://example.com/image.png'>",
+      url_test_helpers::ToKURL("https://example.com/"));
+
+  GetDocument()->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+
+  Element* img_element = GetDocument()->getElementById(AtomicString("target"));
+  ASSERT_TRUE(IsA<HTMLImageElement>(img_element));
+
+  ASSERT_TRUE(ShowContextMenuForElement(
+      img_element, ui::mojom::blink::MenuSourceType::kMouse));
+
+  ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(context_menu_data.media_type,
+            mojom::blink::ContextMenuDataMediaType::kImage);
+  EXPECT_EQ(context_menu_data.src_url.spec(), "https://example.com/image.png");
+}
+
+TEST_F(ContextMenuControllerTest, RevealedPasswordField) {
+  Document* document = GetDocument();
+  document->documentElement()->SetInnerHTMLWithoutTrustedTypes(
+      "<input type=text id=test>");
+  document->UpdateStyleAndLayout(DocumentUpdateReason::kTest);
+  document->GetFrame()->Selection().SelectAll();
+
+  Element* element = document->getElementById(AtomicString("test"));
+  HTMLInputElement* input_element = To<HTMLInputElement>(element);
+  ASSERT_TRUE(input_element);
+  input_element->MaybeSetHasBeenPasswordField();
+
+  ASSERT_TRUE(ShowContextMenuForElement(
+      element, ui::mojom::blink::MenuSourceType::kMouse));
+  ContextMenuData context_menu_data = GetWebFrameClient().GetContextMenuData();
+  EXPECT_EQ(context_menu_data.form_control_type,
+            mojom::blink::FormControlType::kInputPassword);
 }
 
 }  // namespace blink

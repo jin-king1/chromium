@@ -9,11 +9,11 @@
 #include <vector>
 
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/launch_result_type.h"
 #include "chrome/browser/apps/app_service/publishers/app_publisher.h"
 #include "chrome/browser/apps/app_service/publishers/guest_os_apps.h"
 #include "components/services/app_service/public/cpp/app_launch_util.h"
 #include "components/services/app_service/public/cpp/app_types.h"
+#include "components/services/app_service/public/cpp/launch_result.h"
 
 namespace apps {
 
@@ -34,12 +34,7 @@ class BruschettaApps : public GuestOSApps {
   guest_os::VmType VmType() const override;
 
   // apps::AppPublisher overrides.
-  void LoadIcon(const std::string& app_id,
-                const IconKey& icon_key,
-                IconType icon_type,
-                int32_t size_hint_in_dip,
-                bool allow_placeholder_icon,
-                apps::LoadIconCallback callback) override;
+  int DefaultIconResourceId() const override;
   void Launch(const std::string& app_id,
               int32_t event_flags,
               LaunchSource launch_source,
@@ -49,8 +44,6 @@ class BruschettaApps : public GuestOSApps {
                            IntentPtr intent,
                            LaunchSource launch_source,
                            WindowInfoPtr window_info,
-                           LaunchCallback callback) override;
-  void LaunchAppWithParams(AppLaunchParams&& params,
                            LaunchCallback callback) override;
   void GetMenuModel(const std::string& app_id,
                     MenuType menu_type,

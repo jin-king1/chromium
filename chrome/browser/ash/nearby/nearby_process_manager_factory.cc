@@ -30,8 +30,9 @@ NearbyProcessManager* NearbyProcessManagerFactory::GetForProfile(
 // static
 bool NearbyProcessManagerFactory::CanBeLaunchedForProfile(Profile* profile) {
   // We allow NearbyProcessManager to be used with the signin profile since it
-  // is required for OOBE Quick Start.
-  if (ProfileHelper::IsSigninProfile(profile)) {
+  // is required for OOBE Quick Start. See class documentation for more detail.
+  if (ProfileHelper::IsSigninProfile(profile) &&
+      profile->IsPrimaryOTRProfile()) {
     return true;
   }
 
@@ -51,7 +52,8 @@ bool NearbyProcessManagerFactory::CanBeLaunchedForProfile(Profile* profile) {
 
 // static
 NearbyProcessManagerFactory* NearbyProcessManagerFactory::GetInstance() {
-  return base::Singleton<NearbyProcessManagerFactory>::get();
+  static base::NoDestructor<NearbyProcessManagerFactory> instance;
+  return instance.get();
 }
 
 // static
@@ -66,16 +68,20 @@ NearbyProcessManagerFactory::NearbyProcessManagerFactory()
           "NearbyProcessManager",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOwnInstance)
-              // TODO(crbug.com/1418376): Check if this service is needed in
+              // TODO(crbug.com/40257657): Check if this service is needed in
               // Guest mode.
               .WithGuest(ProfileSelection::kOwnInstance)
+              // TODO(crbug.com/41488885): Check if this service is needed for
+              // Ash Internals.
+              .WithAshInternals(ProfileSelection::kOwnInstance)
               .Build()) {
   DependsOn(NearbyDependenciesProviderFactory::GetInstance());
 }
 
 NearbyProcessManagerFactory::~NearbyProcessManagerFactory() = default;
 
-KeyedService* NearbyProcessManagerFactory::BuildServiceInstanceFor(
+std::unique_ptr<KeyedService>
+NearbyProcessManagerFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* context) const {
   Profile* profile = Profile::FromBrowserContext(context);
 
@@ -85,8 +91,7 @@ KeyedService* NearbyProcessManagerFactory::BuildServiceInstanceFor(
   if (CanBeLaunchedForProfile(profile) ||
       g_bypass_primary_user_check_for_testing) {
     return NearbyProcessManagerImpl::Factory::Create(
-               NearbyDependenciesProviderFactory::GetForProfile(profile))
-        .release();
+        NearbyDependenciesProviderFactory::GetForProfile(profile));
   }
 
   return nullptr;

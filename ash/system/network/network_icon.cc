@@ -21,14 +21,15 @@
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chromeos/constants/chromeos_features.h"
 #include "chromeos/services/network_config/public/cpp/cros_network_config_util.h"
 #include "chromeos/services/network_config/public/mojom/cros_network_config.mojom.h"
 #include "components/onc/onc_constants.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_tokens_color_mappings.h"
 #include "ui/color/color_provider.h"
+#include "ui/gfx/color_palette.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
@@ -80,7 +81,7 @@ class NetworkIconImpl {
   void GenerateImage(const NetworkStateProperties* network);
 
   // Gets the color for the icon
-  raw_ptr<const ui::ColorProvider, ExperimentalAsh> color_provider_;
+  raw_ptr<const ui::ColorProvider, DanglingUntriaged> color_provider_;
 
   // Defines color theme and VPN badging
   const IconType icon_type_;
@@ -150,7 +151,7 @@ const int kNumFadeImages = 10;
 
 bool IsTrayIcon(IconType icon_type) {
   return icon_type == ICON_TYPE_TRAY_REGULAR ||
-         icon_type == ICON_TYPE_TRAY_OOBE;
+         icon_type == ICON_TYPE_TRAY_ACTIVE || icon_type == ICON_TYPE_TRAY_OOBE;
 }
 
 bool IconTypeHasVPNBadge(IconType icon_type) {
@@ -231,8 +232,8 @@ gfx::ImageSkia& ConnectingWirelessImage(const ui::ColorProvider* color_provider,
 gfx::ImageSkia ConnectingVpnImage(double animation) {
   float floored_animation_value =
       std::floor(animation * kNumFadeImages) / kNumFadeImages;
-  const SkColor icon_color = AshColorProvider::Get()->GetContentLayerColor(
-      AshColorProvider::ContentLayerType::kIconColorPrimary);
+  const SkColor icon_color =
+      AshColorProvider::Get()->GetColor(cros_tokens::kIconColorPrimary);
   return gfx::CreateVectorIcon(
       kNetworkVpnIcon,
       gfx::Tween::ColorValueBetween(
@@ -291,8 +292,12 @@ gfx::ImageSkia GetIcon(const ui::ColorProvider* color_provider,
                        IconType icon_type,
                        int strength_index) {
   if (network->type == NetworkType::kEthernet) {
+    // The system tray uses a smaller icon.
     return gfx::CreateVectorIcon(
-        vector_icons::kEthernetIcon,
+        IsTrayIcon(icon_type) ? kNetworkEthernetIcon
+        : ::features::IsRoundedIconsEnabled()
+            ? vector_icons::kSettingsEthernetIcon
+            : vector_icons::kEthernetOldIcon,
         GetDefaultColorForIconType(color_provider, icon_type));
   }
   if (network->type == NetworkType::kVPN) {
@@ -480,8 +485,7 @@ SkColor GetDefaultColorForIconType(const ui::ColorProvider* color_provider,
                                    IconType icon_type) {
   // If |color_provider| is null, AshColorProvider will be used
   // to fetch the color instead.
-  bool use_color_provider =
-      chromeos::features::IsJellyrollEnabled() && color_provider;
+  const bool use_color_provider = !!color_provider;
 
   auto* ash_color_provider = AshColorProvider::Get();
   switch (icon_type) {
@@ -492,15 +496,17 @@ SkColor GetDefaultColorForIconType(const ui::ColorProvider* color_provider,
     case ICON_TYPE_LIST:
       return use_color_provider
                  ? color_provider->GetColor(cros_tokens::kCrosSysOnSurface)
-                 : ash_color_provider->GetContentLayerColor(
-                       AshColorProvider::ContentLayerType::kButtonIconColor);
+                 : ash_color_provider->GetColor(cros_tokens::kColorPrimary);
+    case ICON_TYPE_TRAY_ACTIVE:
+      return use_color_provider
+                 ? color_provider->GetColor(
+                       cros_tokens::kCrosSysSystemOnPrimaryContainer)
+                 : ash_color_provider->GetColor(cros_tokens::kColorPrimary);
     case ICON_TYPE_FEATURE_POD_TOGGLED:
       return use_color_provider
                  ? color_provider->GetColor(
                        cros_tokens::kCrosSysSystemOnPrimaryContainer)
-                 : ash_color_provider->GetContentLayerColor(
-                       AshColorProvider::ContentLayerType::
-                           kButtonIconColorPrimary);
+                 : ash_color_provider->GetColor(cros_tokens::kColorPrimary);
     case ICON_TYPE_FEATURE_POD_DISABLED:
       return use_color_provider
                  ? color_provider->GetColor(cros_tokens::kCrosSysDisabled)
@@ -511,8 +517,7 @@ SkColor GetDefaultColorForIconType(const ui::ColorProvider* color_provider,
     default:
       return use_color_provider
                  ? color_provider->GetColor(cros_tokens::kCrosSysPrimary)
-                 : ash_color_provider->GetContentLayerColor(
-                       AshColorProvider::ContentLayerType::kIconColorPrimary);
+                 : ash_color_provider->GetColor(cros_tokens::kColorPrimary);
   }
 }
 
@@ -583,6 +588,14 @@ gfx::ImageSkia GetImageForPSimPendingActivationWhileLoggedOut(
       GetDefaultColorForIconType(color_provider, icon_type));
 }
 
+gfx::ImageSkia GetImageForCarrierLockedNetwork(
+    const ui::ColorProvider* color_provider,
+    IconType icon_type) {
+  return gfx::CreateVectorIcon(
+      kCarrierLockedIcon,
+      GetDefaultColorForIconType(color_provider, icon_type));
+}
+
 gfx::ImageSkia GetImageForWiFiEnabledState(
     const ui::ColorProvider* color_provider,
     bool enabled,
@@ -645,8 +658,9 @@ gfx::ImageSkia GetConnectedNetworkWithConnectingVpnImage(
 
 gfx::ImageSkia GetDisconnectedImageForNetworkType(
     const ui::ColorProvider* color_provider,
-    NetworkType network_type) {
-  return GetBasicImage(color_provider, ICON_TYPE_LIST, network_type,
+    NetworkType network_type,
+    IconType icon_type) {
+  return GetBasicImage(color_provider, icon_type, network_type,
                        false /* connected */);
 }
 

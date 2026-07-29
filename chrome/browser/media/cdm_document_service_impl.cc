@@ -7,12 +7,12 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/security_principal.h"
 #include "content/public/browser/web_contents.h"
-#include "media/cdm/media_foundation_cdm_data.h"
 #include "media/media_buildflags.h"
 
 #if BUILDFLAG(ENABLE_CDM_STORAGE_ID)
@@ -26,22 +26,16 @@
 #include "content/public/browser/render_frame_host.h"
 #endif
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
-#include "chrome/browser/ash/settings/cros_settings.h"
-#include "chromeos/ash/components/settings/cros_settings_names.h"
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
-
-#if BUILDFLAG(IS_CHROMEOS_LACROS)
-#include "chromeos/crosapi/mojom/content_protection.mojom.h"
-#include "chromeos/lacros/lacros_service.h"
-#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
-
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/media/platform_verification_chromeos.h"
+#include "chromeos/ash/components/settings/cros_settings.h"
+#include "chromeos/ash/components/settings/cros_settings_names.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
 #include <windows.h>
+
+#include <aclapi.h>
 
 #include "base/files/file_enumerator.h"
 #include "base/files/file_util.h"
@@ -53,6 +47,8 @@
 #include "base/win/sid.h"
 #include "chrome/browser/media/cdm_pref_service_helper.h"
 #include "chrome/browser/media/media_foundation_service_monitor.h"
+#include "content/public/browser/site_instance.h"
+#include "media/cdm/media_foundation_cdm_data.h"
 #include "media/cdm/win/media_foundation_cdm.h"
 #include "sandbox/policy/win/lpac_capability.h"
 #endif  // BUILDFLAG(IS_WIN)
@@ -88,6 +84,49 @@ base::FilePath GetCdmStorePathRootForProfile(
 }  // namespace
 
 #if BUILDFLAG(IS_WIN)
+bool RevokeAccess(const base::FilePath& path,
+                  const std::vector<base::win::Sid>& sids) {
+  if (sids.empty()) {
+    return true;
+  }
+
+  PACL old_dacl = nullptr;
+  PSECURITY_DESCRIPTOR sd = nullptr;
+
+  if (GetNamedSecurityInfoW(path.value().c_str(), SE_FILE_OBJECT,
+                            DACL_SECURITY_INFORMATION, nullptr, nullptr,
+                            &old_dacl, nullptr, &sd) != ERROR_SUCCESS) {
+    return false;
+  }
+
+  std::vector<EXPLICIT_ACCESS_W> explicit_access(sids.size());
+  for (size_t i = 0; i < sids.size(); ++i) {
+    explicit_access[i].grfAccessPermissions = 0;
+    explicit_access[i].grfAccessMode = REVOKE_ACCESS;
+    explicit_access[i].grfInheritance = NO_INHERITANCE;
+    explicit_access[i].Trustee.TrusteeForm = TRUSTEE_IS_SID;
+    explicit_access[i].Trustee.TrusteeType = TRUSTEE_IS_UNKNOWN;
+    explicit_access[i].Trustee.ptstrName =
+        reinterpret_cast<LPWSTR>(const_cast<void*>(sids[i].GetPSID()));
+  }
+
+  PACL new_dacl = nullptr;
+  if (SetEntriesInAclW(static_cast<ULONG>(sids.size()), explicit_access.data(),
+                       old_dacl, &new_dacl) != ERROR_SUCCESS) {
+    LocalFree(sd);
+    return false;
+  }
+
+  bool success =
+      SetNamedSecurityInfoW(const_cast<LPWSTR>(path.value().c_str()),
+                            SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr,
+                            nullptr, new_dacl, nullptr) == ERROR_SUCCESS;
+
+  LocalFree(new_dacl);
+  LocalFree(sd);
+  return success;
+}
+
 bool CreateCdmStorePathRootAndGrantAccessIfNeeded(
     const base::FilePath& cdm_store_path_root) {
   if (!media::MediaFoundationCdm::IsAvailable()) {
@@ -95,23 +134,45 @@ bool CreateCdmStorePathRootAndGrantAccessIfNeeded(
                    "Windows 10.";
     return false;
   }
-  // If the path exist, we can assume the right permission are already
-  // set on it.
-  if (base::PathExists(cdm_store_path_root))
-    return true;
+  auto sids = base::win::Sid::FromNamedCapabilityVector(
+      {sandbox::policy::kMediaFoundationCdmData});
 
-  base::File::Error file_error;
-  if (!base::CreateDirectoryAndGetError(cdm_store_path_root, &file_error)) {
-    DLOG(ERROR) << "Create CDM store path failed with " << file_error;
+  // Revoke the vulnerable `FILE_LIST_DIRECTORY` ACL on pre-existing folders
+  if (!base::PathExists(cdm_store_path_root)) {
+    base::File::Error file_error;
+    if (!base::CreateDirectoryAndGetError(cdm_store_path_root, &file_error)) {
+      DLOG(ERROR) << "Create CDM store path failed with " << file_error;
+      return false;
+    }
+  } else if (!RevokeAccess(cdm_store_path_root, sids)) {
+    DLOG(ERROR) << "Failed to revoke existing access to the root directory.";
     return false;
   }
 
-  auto sids = base::win::Sid::FromNamedCapabilityVector(
-      {sandbox::policy::kMediaFoundationCdmData});
+  // Grant traverse access to the root directory itself to allow processes to
+  // access known subdirectories but prevent directory listing.
+  if (!base::win::GrantAccessToPath(cdm_store_path_root, sids, FILE_TRAVERSE,
+                                    NO_INHERITANCE,
+                                    /*recursive=*/false)) {
+    DLOG(ERROR) << "Failed to grant traverse access to the root directory.";
+    return false;
+  }
+
+  // Grant full access to children via inheritance, so that subdirectories
+  // corresponding to specific origin IDs are accessible. Use recursive=true so
+  // the write goes through SetNamedSecurityInfoW, which triggers NTFS DACL
+  // auto-inheritance propagation. This is required to push the new inheritable
+  // ACE onto existing <origin_id>/ subdirectories whose inherited copy of this
+  // ACE was just stripped by RevokeAccess above. With recursive=false the
+  // write would go through SetSecurityInfo(SE_KERNEL_OBJECT), which does not
+  // propagate to existing children, leaving them inaccessible to the LPAC.
+  // The ACE applied to the root itself is identical in either case; only the
+  // propagation to existing children differs.
   return base::win::GrantAccessToPath(
       cdm_store_path_root, sids,
-      FILE_GENERIC_READ | FILE_GENERIC_WRITE | GENERIC_EXECUTE | DELETE,
-      CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE);
+      FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+      CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE | INHERIT_ONLY_ACE,
+      /*recursive=*/true);
 }
 
 std::unique_ptr<media::MediaFoundationCdmData>
@@ -124,7 +185,20 @@ GetMediaFoundationCdmDataInternal(const base::FilePath profile_path,
     return nullptr;
   }
 
-  std::unique_ptr<media::MediaFoundationCdmData> cdm_data;
+  // The root directory is only granted FILE_TRAVERSE access, which doesn't
+  // allow the utility process to create new subdirectories. So we should have
+  // the browser process pre-create the origin-specific subdirectory before
+  // passing the root path to the CDM. This way, the utility process never needs
+  // directory creation permissions at the root; it only accesses the explicit
+  // subdirectory made for it.
+  base::FilePath cdm_store_path =
+      cdm_store_path_root.AppendASCII(pref_data->origin_id().ToString());
+  base::File::Error file_error;
+  if (!base::CreateDirectoryAndGetError(cdm_store_path, &file_error)) {
+    DLOG(ERROR) << "Create CDM store path failed with " << file_error;
+    return nullptr;
+  }
+
   return std::make_unique<media::MediaFoundationCdmData>(
       pref_data->origin_id(), pref_data->client_token(), cdm_store_path_root);
 }
@@ -162,7 +236,7 @@ void CdmDocumentServiceImpl::ChallengePlatform(
   DVLOG(2) << __func__;
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  // TODO(crbug.com/676224). This should be commented out at the mojom
+  // TODO(crbug.com/40499115). This should be commented out at the mojom
   // level so that it's only available for ChromeOS.
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -172,26 +246,7 @@ void CdmDocumentServiceImpl::ChallengePlatform(
     std::move(callback).Run(false, std::string(), std::string(), std::string());
     return;
   }
-#endif
 
-#if BUILDFLAG(IS_CHROMEOS_LACROS)
-  auto* lacros_service = chromeos::LacrosService::Get();
-  if (lacros_service &&
-      lacros_service->IsAvailable<crosapi::mojom::ContentProtection>() &&
-      lacros_service
-              ->GetInterfaceVersion<crosapi::mojom::ContentProtection>() >=
-          static_cast<int>(crosapi::mojom::ContentProtection::
-                               kChallengePlatformMinVersion)) {
-    lacros_service->GetRemote<crosapi::mojom::ContentProtection>()
-        ->ChallengePlatform(
-            service_id, challenge,
-            base::BindOnce(&CdmDocumentServiceImpl::OnPlatformChallenged,
-                           weak_factory_.GetWeakPtr(), std::move(callback)));
-    return;
-  }
-#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
-
-#if BUILDFLAG(IS_CHROMEOS_ASH)
   if (!platform_verification_flow_)
     platform_verification_flow_ =
         base::MakeRefCounted<ash::attestation::PlatformVerificationFlow>();
@@ -204,10 +259,10 @@ void CdmDocumentServiceImpl::ChallengePlatform(
 #else
   // Not supported, so return failure.
   std::move(callback).Run(false, std::string(), std::string(), std::string());
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 void CdmDocumentServiceImpl::OnPlatformChallenged(
     ChallengePlatformCallback callback,
     PlatformVerificationResult result,
@@ -232,29 +287,14 @@ void CdmDocumentServiceImpl::OnPlatformChallenged(
   std::move(callback).Run(true, signed_data, signature,
                           platform_key_certificate);
 }
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
-
-#if BUILDFLAG(IS_CHROMEOS_LACROS)
-void CdmDocumentServiceImpl::OnPlatformChallenged(
-    ChallengePlatformCallback callback,
-    crosapi::mojom::ChallengePlatformResultPtr result) {
-  if (!result) {
-    LOG(ERROR) << "Platform verification failed.";
-    std::move(callback).Run(false, "", "", "");
-    return;
-  }
-  std::move(callback).Run(true, std::move(result->signed_data),
-                          std::move(result->signed_data_signature),
-                          std::move(result->platform_key_certificate));
-}
-#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 void CdmDocumentServiceImpl::GetStorageId(uint32_t version,
                                           GetStorageIdCallback callback) {
   DVLOG(2) << __func__ << " version: " << version;
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  // TODO(crbug.com/676224). This should be commented out at the mojom
+  // TODO(crbug.com/40499115). This should be commented out at the mojom
   // level so that it's only available if Storage Id is available.
 
 #if BUILDFLAG(ENABLE_CDM_STORAGE_ID)
@@ -297,25 +337,10 @@ void CdmDocumentServiceImpl::IsVerifiedAccessEnabled(
     return;
   }
 
-#if BUILDFLAG(IS_CHROMEOS_LACROS)
-  auto* lacros_service = chromeos::LacrosService::Get();
-  if (lacros_service &&
-      lacros_service->IsAvailable<crosapi::mojom::ContentProtection>() &&
-      lacros_service
-              ->GetInterfaceVersion<crosapi::mojom::ContentProtection>() >=
-          static_cast<int>(crosapi::mojom::ContentProtection::
-                               kIsVerifiedAccessEnabledMinVersion)) {
-    lacros_service->GetRemote<crosapi::mojom::ContentProtection>()
-        ->IsVerifiedAccessEnabled(std::move(callback));
-  } else {
-    std::move(callback).Run(false);
-  }
-#else   // BUILDFLAG(IS_CHROMEOS_LACROS)
   bool enabled_for_device = false;
   ash::CrosSettings::Get()->GetBoolean(
       ash::kAttestationForContentProtectionEnabled, &enabled_for_device);
   std::move(callback).Run(enabled_for_device);
-#endif  // else BUILDFLAG(IS_CHROMEOS_LACROS)
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
@@ -399,16 +424,20 @@ void CdmDocumentServiceImpl::OnCdmEvent(media::CdmEvent event,
     return;
   }
 
+  auto site = render_frame_host()
+                  .GetSiteInstance()
+                  ->GetSecurityPrincipal()
+                  .GetDeprecatedSiteURL();
   switch (event) {
     case media::CdmEvent::kSignificantPlayback:
-      monitor->OnSignificantPlayback();
+      monitor->OnSignificantPlayback(site);
       break;
     case media::CdmEvent::kPlaybackError:
     case media::CdmEvent::kCdmError:
-      monitor->OnPlaybackOrCdmError(static_cast<HRESULT>(hresult));
+      monitor->OnPlaybackOrCdmError(site, static_cast<HRESULT>(hresult));
       break;
     case media::CdmEvent::kHardwareContextReset:
-      monitor->OnUnexpectedHardwareContextReset();
+      monitor->OnUnexpectedHardwareContextReset(site);
       break;
   }
 }
@@ -445,9 +474,11 @@ void DeleteMediaFoundationCdmData(
       continue;
 
     DVLOG(2) << __func__ << ": Processing: " << file_path;
-    absl::optional<url::Origin> origin = absl::nullopt;
-    if (origin_id_mapping.count(origin_id_string) != 0)
-      origin = origin_id_mapping.at(origin_id_string);
+    std::optional<url::Origin> origin;
+    if (auto it = origin_id_mapping.find(origin_id_string);
+        it != origin_id_mapping.end()) {
+      origin = it->second;
+    }
 
     // If we couldn't find the origin, this mean the origin was not present in
     // the PrefService and we should also delete the folder.

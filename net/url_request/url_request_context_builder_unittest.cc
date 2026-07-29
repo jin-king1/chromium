@@ -36,15 +36,16 @@
 #include "url/gurl.h"
 #include "url/scheme_host_port.h"
 
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/android_info.h"
+#endif
+
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
 #include "net/proxy_resolution/proxy_config.h"
 #include "net/proxy_resolution/proxy_config_service_fixed.h"
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
         // BUILDFLAG(IS_ANDROID)
 
-#if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
-#endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(ENABLE_REPORTING)
 #include "base/files/scoped_temp_dir.h"
@@ -101,8 +102,12 @@ class URLRequestContextBuilderTest : public PlatformTest,
   URLRequestContextBuilderTest() {
     test_server_.AddDefaultHandlers(
         base::FilePath(FILE_PATH_LITERAL("net/data/url_request_unittest")));
+    SetUpURLRequestContextBuilder(builder_);
+  }
+
+  void SetUpURLRequestContextBuilder(URLRequestContextBuilder& builder) {
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
-    builder_.set_proxy_config_service(std::make_unique<ProxyConfigServiceFixed>(
+    builder.set_proxy_config_service(std::make_unique<ProxyConfigServiceFixed>(
         ProxyConfigWithAnnotation::CreateDirect()));
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) ||
         // BUILDFLAG(IS_ANDROID)
@@ -121,11 +126,11 @@ TEST_F(URLRequestContextBuilderTest, DefaultSettings) {
   TestDelegate delegate;
   std::unique_ptr<URLRequest> request(context->CreateRequest(
       test_server_.GetURL("/echoheader?Foo"), DEFAULT_PRIORITY, &delegate,
-      TRAFFIC_ANNOTATION_FOR_TESTS));
+      TRAFFIC_ANNOTATION_FOR_TESTS, net::handles::kInvalidNetworkHandle));
   request->set_method("GET");
   request->SetExtraRequestHeaderByName("Foo", "Bar", false);
   request->Start();
-  base::RunLoop().Run();
+  delegate.RunUntilComplete();
   EXPECT_EQ("Bar", delegate.data_received());
 }
 
@@ -137,10 +142,11 @@ TEST_F(URLRequestContextBuilderTest, UserAgent) {
   TestDelegate delegate;
   std::unique_ptr<URLRequest> request(context->CreateRequest(
       test_server_.GetURL("/echoheader?User-Agent"), DEFAULT_PRIORITY,
-      &delegate, TRAFFIC_ANNOTATION_FOR_TESTS));
+      &delegate, TRAFFIC_ANNOTATION_FOR_TESTS,
+      net::handles::kInvalidNetworkHandle));
   request->set_method("GET");
   request->Start();
-  base::RunLoop().Run();
+  delegate.RunUntilComplete();
   EXPECT_EQ("Bar", delegate.data_received());
 }
 
@@ -211,8 +217,8 @@ TEST_F(URLRequestContextBuilderTest, ShutDownNELAndReportingWithPendingUpload) {
   // Queue a pending upload.
   GURL url("https://www.foo.test");
   context->reporting_service()->GetContextForTesting()->uploader()->StartUpload(
-      url::Origin::Create(url), url, IsolationInfo::CreateTransient(),
-      "report body", 0,
+      url::Origin::Create(url), url,
+      IsolationInfo::CreateTransient(/*nonce=*/std::nullopt), "report body", 0,
       /*eligible_for_credentials=*/false, base::DoNothing());
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(1, context->reporting_service()
@@ -263,8 +269,8 @@ TEST_F(URLRequestContextBuilderTest,
   // Queue a pending upload.
   GURL url("https://www.foo.test");
   context->reporting_service()->GetContextForTesting()->uploader()->StartUpload(
-      url::Origin::Create(url), url, IsolationInfo::CreateTransient(),
-      "report body", 0,
+      url::Origin::Create(url), url,
+      IsolationInfo::CreateTransient(/*nonce=*/std::nullopt), "report body", 0,
       /*eligible_for_credentials=*/false, base::DoNothing());
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(1, context->reporting_service()
@@ -291,7 +297,7 @@ TEST_F(URLRequestContextBuilderTest, ShutdownHostResolverWithPendingRequest) {
   std::unique_ptr<HostResolver::ResolveHostRequest> request =
       context->host_resolver()->CreateRequest(
           HostPortPair("example.com", 1234), NetworkAnonymizationKey(),
-          NetLogWithSource(), absl::nullopt);
+          handles::kInvalidNetworkHandle, NetLogWithSource(), std::nullopt);
   TestCompletionCallback callback;
   int rv = request->Start(callback.callback());
   ASSERT_TRUE(state->has_pending_requests());
@@ -311,8 +317,12 @@ TEST_F(URLRequestContextBuilderTest, DefaultHostResolver) {
       HostResolver::ManagerOptions(), nullptr /* system_dns_config_notifier */,
       nullptr /* net_log */);
 
-  builder_.set_host_resolver_manager(manager.get());
-  std::unique_ptr<URLRequestContext> context = builder_.Build();
+  // Use a stack allocated builder instead of `builder_` to avoid dangling
+  // pointer of `manager`.
+  URLRequestContextBuilder builder;
+  SetUpURLRequestContextBuilder(builder);
+  builder.set_host_resolver_manager(manager.get());
+  std::unique_ptr<URLRequestContext> context = builder.Build();
 
   EXPECT_EQ(context.get(), context->host_resolver()->GetContextForTesting());
   EXPECT_EQ(manager.get(), context->host_resolver()->GetManagerForTesting());
@@ -331,8 +341,8 @@ TEST_F(URLRequestContextBuilderTest, CustomHostResolver) {
 
 TEST_F(URLRequestContextBuilderTest, BindToNetworkFinalConfiguration) {
 #if BUILDFLAG(IS_ANDROID)
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <
-      base::android::SDK_VERSION_MARSHMALLOW) {
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_MARSHMALLOW) {
     GTEST_SKIP()
         << "BindToNetwork is supported starting from Android Marshmallow";
   }
@@ -376,8 +386,8 @@ TEST_F(URLRequestContextBuilderTest, BindToNetworkFinalConfiguration) {
 
 TEST_F(URLRequestContextBuilderTest, BindToNetworkCustomManagerOptions) {
 #if BUILDFLAG(IS_ANDROID)
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <
-      base::android::SDK_VERSION_MARSHMALLOW) {
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_MARSHMALLOW) {
     GTEST_SKIP()
         << "BindToNetwork is supported starting from Android Marshmallow";
   }

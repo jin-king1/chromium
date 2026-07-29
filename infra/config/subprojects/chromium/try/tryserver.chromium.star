@@ -3,22 +3,28 @@
 # found in the LICENSE file.
 """Definitions of builders in the tryserver.chromium builder group."""
 
-load("//lib/branches.star", "branches")
-load("//lib/builders.star", "os", "reclient")
-load("//lib/try.star", "try_")
-load("//lib/consoles.star", "consoles")
+load("@chromium-luci//branches.star", "branches")
+load("@chromium-luci//builders.star", "cpu", "os")
+load("@chromium-luci//consoles.star", "consoles")
+load("@chromium-luci//gn_args.star", "gn_args")
+load("@chromium-luci//try.star", "try_")
+load("//lib/siso.star", "siso")
+load("//lib/try_constants.star", "try_constants")
 
 try_.defaults.set(
-    executable = try_.DEFAULT_EXECUTABLE,
+    executable = try_constants.DEFAULT_EXECUTABLE,
     builder_group = "tryserver.chromium",
-    pool = try_.DEFAULT_POOL,
+    pool = try_constants.DEFAULT_POOL,
     builderless = True,
     cores = 32,
     os = os.LINUX_DEFAULT,
-    execution_timeout = try_.DEFAULT_EXECUTION_TIMEOUT,
-    reclient_instance = reclient.instance.DEFAULT_UNTRUSTED,
-    reclient_jobs = reclient.jobs.HIGH_JOBS_FOR_CQ,
-    service_account = try_.DEFAULT_SERVICE_ACCOUNT,
+    execution_timeout = try_constants.DEFAULT_EXECUTION_TIMEOUT,
+    experiments = {
+        "chromium_tests.resultdb_module": 100,
+    },
+    service_account = try_constants.DEFAULT_SERVICE_ACCOUNT,
+    siso_project = siso.project.DEFAULT_UNTRUSTED,
+    siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CQ,
 )
 
 consoles.list_view(
@@ -36,14 +42,47 @@ try_.builder(
     mirrors = [
         "ci/android-official",
     ],
+    gn_args = gn_args.config(
+        configs = [
+            "ci/android-official",
+            # TODO(crbug.com/41490911): Restore DCHECKs when the build is fixed.
+            #"dcheck_always_on",
+        ],
+    ),
+    builderless = False,
+    contact_team_email = "clank-engprod@google.com",
 )
 
 try_.builder(
-    name = "fuchsia-official",
-    branch_selector = branches.selector.FUCHSIA_BRANCHES,
+    name = "android-desktop-arm64-official",
+    branch_selector = branches.selector.ANDROID_BRANCHES,
     mirrors = [
-        "ci/fuchsia-official",
+        "ci/android-desktop-arm64-official",
     ],
+    gn_args = gn_args.config(
+        configs = [
+            "ci/android-desktop-arm64-official",
+            "dcheck_always_on",
+        ],
+    ),
+    builderless = False,
+    contact_team_email = "clank-engprod@google.com",
+)
+
+try_.builder(
+    name = "android-desktop-x64-official",
+    branch_selector = branches.selector.ANDROID_BRANCHES,
+    mirrors = [
+        "ci/android-desktop-x64-official",
+    ],
+    gn_args = gn_args.config(
+        configs = [
+            "ci/android-desktop-x64-official",
+            "dcheck_always_on",
+        ],
+    ),
+    builderless = False,
+    contact_team_email = "clank-engprod@google.com",
 )
 
 try_.builder(
@@ -52,6 +91,18 @@ try_.builder(
     mirrors = [
         "ci/linux-official",
     ],
+    gn_args = gn_args.config(
+        configs = ["ci/linux-official", "try_builder"],
+    ),
+    ssd = True,
+    # crbug.com/427503493: It produces large amount of dwo files (>700GB).
+    # Enabling remote linking without bytes avoids downloading them to the bot.
+    # It also sets no-remote-timeout for long remote linking steps.
+    siso_configs = [
+        "builder",
+        "no-remote-timeout",
+    ],
+    siso_remote_linking = True,
 )
 
 try_.builder(
@@ -60,11 +111,24 @@ try_.builder(
     mirrors = [
         "ci/mac-official",
     ],
+    gn_args = gn_args.config(
+        configs = [
+            "ci/mac-official",
+            "minimal_symbols",
+            "dcheck_always_on",
+        ],
+    ),
     cores = None,
     os = os.MAC_ANY,
-    # TODO(crbug.com/1279290) builds with PGO change take long time.
+    cpu = cpu.ARM64,
+    cq_settings = try_.cq_settings(
+        location_filters = [
+            "chrome/build/mac-arm.pgo.txt",
+        ],
+    ),
+    # TODO(crbug.com/40208487) builds with PGO change take long time.
     # Keep in sync with mac-official in ci/chromium.star.
-    execution_timeout = 9 * time.hour,
+    execution_timeout = 15 * time.hour,
 )
 
 try_.builder(
@@ -73,7 +137,14 @@ try_.builder(
     mirrors = [
         "ci/win-official",
     ],
+    gn_args = gn_args.config(
+        configs = [
+            "ci/win-official",
+            "dcheck_always_on",
+        ],
+    ),
     os = os.WINDOWS_DEFAULT,
+    ssd = True,
     execution_timeout = 6 * time.hour,
 )
 
@@ -83,6 +154,14 @@ try_.builder(
     mirrors = [
         "ci/win32-official",
     ],
+    gn_args = gn_args.config(
+        configs = [
+            "ci/win32-official",
+            "minimal_symbols",
+            "dcheck_always_on",
+        ],
+    ),
     os = os.WINDOWS_DEFAULT,
+    ssd = True,
     execution_timeout = 6 * time.hour,
 )

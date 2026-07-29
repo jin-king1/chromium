@@ -6,8 +6,9 @@
 #define CHROME_BROWSER_SYNC_TEST_INTEGRATION_INVALIDATIONS_FAKE_SERVER_SYNC_INVALIDATION_SENDER_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "components/gcm_driver/gcm_connection_observer.h"
-#include "components/sync/base/model_type.h"
+#include "components/sync/base/data_type.h"
 #include "components/sync/protocol/sync_invalidations_payload.pb.h"
 #include "components/sync/test/fake_server.h"
 
@@ -46,8 +47,7 @@ class FakeServerSyncInvalidationSender : public FakeServer::Observer,
 
   // FakeServer::Observer implementation.
   void OnWillCommit() override;
-  void OnCommit(const std::string& committer_invalidator_client_id,
-                syncer::ModelTypeSet committed_model_types) override;
+  void OnCommit(syncer::DataTypeSet committed_data_types) override;
 
   // gcm::GCMConnectionObserver implementation.
   void OnConnected(const net::IPEndPoint& ip_endpoint) override;
@@ -64,7 +64,7 @@ class FakeServerSyncInvalidationSender : public FakeServer::Observer,
   // data type.
   void UpdateTokenToInterestedDataTypesMap();
 
-  raw_ptr<FakeServer> fake_server_;
+  const raw_ptr<FakeServer> fake_server_;
 
   // Cache of invalidations to be dispatched by
   // DeliverInvalidationsToHandlers(), keyed by FCM registration token. If no
@@ -75,9 +75,11 @@ class FakeServerSyncInvalidationSender : public FakeServer::Observer,
 
   // List of tokens with a list of interested data types. Used to send
   // invalidations to a corresponding client.
-  std::map<std::string, syncer::ModelTypeSet> token_to_interested_data_types_;
+  std::map<std::string, syncer::DataTypeSet> token_to_interested_data_types_;
 
-  std::vector<raw_ptr<instance_id::FakeGCMDriverForInstanceID>>
+  // TODO(crbug.com/539790080): Remove base::WeakPtr usage once it is figured
+  // out why the invalidation sender doesn't remove Fake GCM server in tests.
+  std::vector<base::WeakPtr<instance_id::FakeGCMDriverForInstanceID>>
       fake_gcm_drivers_;
 };
 

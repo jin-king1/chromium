@@ -4,20 +4,20 @@
 
 package org.chromium.android_webview;
 
-import android.content.Context;
+import org.jni_zero.CalledByNative;
+import org.jni_zero.JNINamespace;
+import org.jni_zero.NativeMethods;
 
-import org.chromium.base.annotations.CalledByNative;
-import org.chromium.base.annotations.JNINamespace;
-import org.chromium.base.annotations.NativeMethods;
+import org.chromium.android_webview.common.Lifetime;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.WebContents;
 
-/**
- * The class to handle dark mode.
- */
+/** The class to handle dark mode. */
+@Lifetime.WebView
 @JNINamespace("android_webview")
+@NullMarked
 public class AwDarkMode {
-    private static Boolean sAppTargetsTForTesting;
-    private Context mContext;
     private long mNativeAwDarkMode;
 
     private static boolean sEnableSimplifiedDarkMode;
@@ -27,13 +27,15 @@ public class AwDarkMode {
         AwDarkModeJni.get().enableSimplifiedDarkMode();
     }
 
-    public AwDarkMode(Context context) {
-        mContext = context;
+    private final AwContents mAwContents;
+
+    public AwDarkMode(AwContents awContents) {
+        mAwContents = awContents;
     }
 
-    public void setWebContents(WebContents webContents) {
+    public void setWebContents(@Nullable WebContents webContents) {
         if (mNativeAwDarkMode != 0) {
-            AwDarkModeJni.get().detachFromJavaObject(mNativeAwDarkMode, this);
+            AwDarkModeJni.get().detachFromJavaObject(mNativeAwDarkMode);
             mNativeAwDarkMode = 0;
         }
         if (webContents != null) {
@@ -51,8 +53,13 @@ public class AwDarkMode {
 
     @CalledByNative
     private boolean isAppUsingDarkTheme() {
-        return DarkModeHelper.LightTheme.LIGHT_THEME_FALSE
-                == DarkModeHelper.getLightTheme(mContext);
+        // TODO(b/529634931): We should switch to returning a cached value when we are confident we
+        // are not attached to an activity context.
+        if (mAwContents != null) {
+            return DarkModeHelper.LightTheme.LIGHT_THEME_FALSE
+                    == DarkModeHelper.getLightTheme(mAwContents.getProvidedContext());
+        }
+        return false;
     }
 
     @CalledByNative
@@ -63,7 +70,9 @@ public class AwDarkMode {
     @NativeMethods
     interface Natives {
         void enableSimplifiedDarkMode();
-        long init(AwDarkMode caller, WebContents webContents);
-        void detachFromJavaObject(long nativeAwDarkMode, AwDarkMode caller);
+
+        long init(AwDarkMode self, WebContents webContents);
+
+        void detachFromJavaObject(long nativeAwDarkMode);
     }
 }

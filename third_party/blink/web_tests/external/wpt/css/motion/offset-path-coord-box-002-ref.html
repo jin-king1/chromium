@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>CSS Motion Path test: &lt;coord-box&gt; &lt;padding-box&gt;</title>
+<title>CSS Motion Path test reference: &lt;coord-box&gt; &lt;padding-box&gt;</title>
 <link rel="author" title="Daniil Sakhapov" href="sakhapov@google.com">
 
 <style>
@@ -8,13 +8,16 @@
   top: 100px;
   left: 100px;
   position: relative;
-  border: 5px solid black;
+  border: 10px solid black;
   width: 600px;
   height: 400px;
 }
 #box {
   background-color: green;
-  transform: translate(250px, -50px);
+  position: relative;
+  top: 100px;
+  left: 100px;
+  transform: translate(150px, -150px);
   width: 100px;
   height: 100px;
 }

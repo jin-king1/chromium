@@ -11,19 +11,21 @@
 #include <algorithm>
 #include <memory>
 
-#include "base/atomicops.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/lazy_instance.h"
 #include "base/logging.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/memory/ptr_util.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/notimplemented.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_piece.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "net/base/address_list.h"
+#include "net/base/features.h"
 #include "net/base/io_buffer.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
@@ -31,7 +33,6 @@
 #include "net/base/network_change_notifier.h"
 #include "net/base/sockaddr_storage.h"
 #include "net/base/sys_addrinfo.h"
-#include "net/base/tracing.h"
 #include "net/http/http_util.h"
 #include "net/log/net_log.h"
 #include "net/log/net_log_event_type.h"
@@ -48,13 +49,17 @@
 #include "net/android/network_library.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(IS_MAC)
+#include "net/socket/ephemeral_port_randomizer_mac.h"
+#endif  // BUILDFLAG(IS_MAC)
+
 // If we don't have a definition for TCPI_OPT_SYN_DATA, create one.
 #if !defined(TCPI_OPT_SYN_DATA)
 #define TCPI_OPT_SYN_DATA 32
 #endif
 
 // Fuchsia defines TCP_INFO, but it's not implemented.
-// TODO(crbug.com/758294): Enable TCP_INFO on Fuchsia once it's implemented
+// TODO(crbug.com/42050612): Enable TCP_INFO on Fuchsia once it's implemented
 // there (see NET-160).
 #if defined(TCP_INFO) && !BUILDFLAG(IS_FUCHSIA)
 #define HAVE_TCP_INFO
@@ -139,21 +144,26 @@ base::TimeDelta GetTransportRtt(SocketDescriptor fd) {
 
 #endif  // defined(TCP_INFO)
 
-#if BUILDFLAG(IS_APPLE) && !BUILDFLAG(CRONET_BUILD)
-// Returns true if `socket` is connected to 0.0.0.0, false otherwise.
-// For detecting slow socket close due to a MacOS bug
-// (https://crbug.com/1194888).
-bool PeerIsZeroIPv4(const TCPSocketPosix& socket) {
-  IPEndPoint peer;
-  if (socket.GetPeerAddress(&peer) != OK)
-    return false;
-  return peer.address().IsIPv4() && peer.address().IsZero();
-}
-#endif  // BUILDFLAG(IS_APPLE) && !BUILDFLAG(CRONET_BUILD)
-
 }  // namespace
 
 //-----------------------------------------------------------------------------
+
+// static
+std::unique_ptr<TCPSocketPosix> TCPSocketPosix::Create(
+    std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+    NetLog* net_log,
+    const NetLogSource& source) {
+  return base::WrapUnique(new TCPSocketPosix(
+      std::move(socket_performance_watcher), net_log, source));
+}
+
+// static
+std::unique_ptr<TCPSocketPosix> TCPSocketPosix::Create(
+    std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
+    NetLogWithSource net_log_source) {
+  return base::WrapUnique(new TCPSocketPosix(
+      std::move(socket_performance_watcher), net_log_source));
+}
 
 TCPSocketPosix::TCPSocketPosix(
     std::unique_ptr<SocketPerformanceWatcher> socket_performance_watcher,
@@ -204,7 +214,7 @@ int TCPSocketPosix::AdoptConnectedSocket(SocketDescriptor socket,
   DCHECK(!socket_);
 
   SockaddrStorage storage;
-  if (!peer_address.ToSockAddr(storage.addr, &storage.addr_len) &&
+  if (!peer_address.ToSockAddr(storage.addr(), &storage.addr_len) &&
       // For backward compatibility, allows the empty address.
       !(peer_address == IPEndPoint())) {
     return ERR_ADDRESS_INVALID;
@@ -235,8 +245,9 @@ int TCPSocketPosix::Bind(const IPEndPoint& address) {
   DCHECK(socket_);
 
   SockaddrStorage storage;
-  if (!address.ToSockAddr(storage.addr, &storage.addr_len))
+  if (!address.ToSockAddr(storage.addr(), &storage.addr_len)) {
     return ERR_ADDRESS_INVALID;
+  }
 
   return socket_->Bind(storage);
 }
@@ -276,8 +287,53 @@ int TCPSocketPosix::Connect(const IPEndPoint& address,
                       [&] { return CreateNetLogIPEndPointParams(&address); });
 
   SockaddrStorage storage;
-  if (!address.ToSockAddr(storage.addr, &storage.addr_len))
+  if (!address.ToSockAddr(storage.addr(), &storage.addr_len)) {
     return ERR_ADDRESS_INVALID;
+  }
+
+#if BUILDFLAG(IS_MAC)
+  if (base::FeatureList::IsEnabled(features::kTcpPortRandomizationMac)) {
+    port_randomization_data_.reset();
+    EphemeralPortRandomizer& randomizer =
+        EphemeralPortRandomizer::GetInstance();
+    constexpr int kMaxBindAttempts = 5;
+    for (int attempt = 0; attempt < kMaxBindAttempts; ++attempt) {
+      std::optional<uint16_t> port = randomizer.PickPort(address);
+      if (!port) {
+        break;
+      }
+
+      IPAddress local_ip = address.address().IsIPv6()
+                               ? IPAddress::IPv6AllZeros()
+                               : IPAddress::IPv4AllZeros();
+      IPEndPoint local_endpoint(local_ip, *port);
+      SockaddrStorage local_storage;
+      if (!local_endpoint.ToSockAddr(local_storage.addr(),
+                                     &local_storage.addr_len)) {
+        break;
+      }
+
+      int bind_result = HANDLE_EINTR(bind(
+          socket_->socket_fd(), local_storage.addr(), local_storage.addr_len));
+      if (bind_result == 0) {
+        port_randomization_data_ = {address, *port};
+        break;
+      }
+
+      int bind_error = errno;
+      if (bind_error == EADDRINUSE || bind_error == EACCES) {
+        // Someone else is using this port. Record it as used so we won't
+        // try it again in the near future.
+        randomizer.RecordPortUse(address, *port);
+        continue;
+      }
+      if (bind_error != EINVAL) {
+        DPLOG(ERROR) << "bind() failed while randomizing source port";
+      }
+      break;
+    }
+  }
+#endif  // BUILDFLAG(IS_MAC)
 
   int rv = socket_->Connect(
       storage, base::BindOnce(&TCPSocketPosix::ConnectCompleted,
@@ -374,8 +430,9 @@ int TCPSocketPosix::GetLocalAddress(IPEndPoint* address) const {
   if (rv != OK)
     return rv;
 
-  if (!address->FromSockAddr(storage.addr, storage.addr_len))
+  if (!address->FromSockAddr(storage.addr(), storage.addr_len)) {
     return ERR_ADDRESS_INVALID;
+  }
 
   return OK;
 }
@@ -391,8 +448,9 @@ int TCPSocketPosix::GetPeerAddress(IPEndPoint* address) const {
   if (rv != OK)
     return rv;
 
-  if (!address->FromSockAddr(storage.addr, storage.addr_len))
+  if (!address->FromSockAddr(storage.addr(), storage.addr_len)) {
     return ERR_ADDRESS_INVALID;
+  }
 
   return OK;
 }
@@ -466,15 +524,15 @@ int TCPSocketPosix::SetIPv6Only(bool ipv6_only) {
 }
 
 void TCPSocketPosix::Close() {
-#if BUILDFLAG(IS_APPLE) && !BUILDFLAG(CRONET_BUILD)
-  // A MacOS bug can cause sockets to 0.0.0.0 to take 1 second to close. Log a
-  // trace event for this case so that it can be correlated with jank in traces.
-  // Use the "base" category since "net" isn't enabled by default. See
-  // https://crbug.com/1194888.
-  TRACE_EVENT("base", PeerIsZeroIPv4(*this)
-                          ? perfetto::StaticString{"CloseSocketTCP.PeerIsZero"}
-                          : perfetto::StaticString{"CloseSocketTCP"});
-#endif  // BUILDFLAG(IS_APPLE) && !BUILDFLAG(CRONET_BUILD)
+  TRACE_EVENT("base", perfetto::StaticString{"CloseSocketTCP"});
+#if BUILDFLAG(IS_MAC)
+  if (port_randomization_data_) {
+    EphemeralPortRandomizer::GetInstance().RecordPortUse(
+        port_randomization_data_->peer_address,
+        port_randomization_data_->local_port);
+    port_randomization_data_.reset();
+  }
+#endif  // BUILDFLAG(IS_MAC)
   socket_.reset();
   tag_ = SocketTag();
 }
@@ -556,13 +614,13 @@ int TCPSocketPosix::BuildTcpSocketPosix(
 
   SockaddrStorage storage;
   if (accept_socket_->GetPeerAddress(&storage) != OK ||
-      !address->FromSockAddr(storage.addr, storage.addr_len)) {
+      !address->FromSockAddr(storage.addr(), storage.addr_len)) {
     accept_socket_.reset();
     return ERR_ADDRESS_INVALID;
   }
 
-  *tcp_socket = std::make_unique<TCPSocketPosix>(nullptr, net_log_.net_log(),
-                                                 net_log_.source());
+  *tcp_socket =
+      TCPSocketPosix::Create(nullptr, net_log_.net_log(), net_log_.source());
   (*tcp_socket)->socket_ = std::move(accept_socket_);
   return OK;
 }
@@ -582,6 +640,12 @@ int TCPSocketPosix::HandleConnectCompleted(int rv) {
     net_log_.EndEvent(NetLogEventType::TCP_CONNECT_ATTEMPT);
     NotifySocketPerformanceWatcher();
   }
+
+#if BUILDFLAG(IS_MAC)
+  if (port_randomization_data_.has_value()) {
+    base::UmaHistogramSparse("Net.EphemeralPortRandomizer.ConnectResult", -rv);
+  }
+#endif  // BUILDFLAG(IS_MAC)
 
   // Give a more specific error when the user is offline.
   if (rv == ERR_ADDRESS_UNREACHABLE && NetworkChangeNotifier::IsOffline())

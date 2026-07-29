@@ -7,28 +7,45 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/web_applications/proto/web_app.equal.h"
 #include "chrome/browser/web_applications/web_app_origin_association_task.h"
 #include "components/webapps/services/web_app_origin_association/web_app_origin_association_fetcher.h"
-#include "components/webapps/services/web_app_origin_association/web_app_origin_association_parser_service.h"
+#include "content/public/browser/storage_partition.h"
 
 namespace web_app {
 
-WebAppOriginAssociationManager::WebAppOriginAssociationManager()
-    : fetcher_(std::make_unique<webapps::WebAppOriginAssociationFetcher>()) {}
+WebAppOriginAssociationManager::WebAppOriginAssociationManager(Profile& profile)
+    : profile_(profile) {}
 
 WebAppOriginAssociationManager::~WebAppOriginAssociationManager() = default;
 
+OriginAssociations::OriginAssociations() = default;
+OriginAssociations::OriginAssociations(const OriginAssociations&) = default;
+OriginAssociations::OriginAssociations(OriginAssociations&&) = default;
+OriginAssociations& OriginAssociations::operator=(const OriginAssociations&) =
+    default;
+OriginAssociations& OriginAssociations::operator=(OriginAssociations&&) =
+    default;
+OriginAssociations::~OriginAssociations() = default;
+
+bool OriginAssociations::operator==(const OriginAssociations& other) const {
+  return scope_extensions == other.scope_extensions &&
+         migration_sources == other.migration_sources;
+}
+
 void WebAppOriginAssociationManager::GetWebAppOriginAssociations(
     const GURL& web_app_identity,
-    ScopeExtensions scope_extensions,
+    OriginAssociations origin_associations,
     OnDidGetWebAppOriginAssociations callback) {
-  if (scope_extensions.empty()) {
-    std::move(callback).Run(ScopeExtensions());
+  if (origin_associations.scope_extensions.empty() &&
+      origin_associations.migration_sources.empty()) {
+    std::move(callback).Run(OriginAssociations());
     return;
   }
 
   auto task =
-      std::make_unique<Task>(web_app_identity, std::move(scope_extensions),
+      std::make_unique<Task>(web_app_identity, std::move(origin_associations),
                              *this, std::move(callback));
   pending_tasks_.push_back(std::move(task));
   MaybeStartNextTask();
@@ -60,18 +77,13 @@ WebAppOriginAssociationManager::GetFetcherForTest() {
   return *fetcher_;
 }
 
-const mojo::Remote<webapps::mojom::WebAppOriginAssociationParser>&
-WebAppOriginAssociationManager::GetParser() {
-  if (!parser_ || !parser_.is_bound()) {
-    parser_ = webapps::LaunchWebAppOriginAssociationParser();
-    parser_.reset_on_disconnect();
-  }
-
-  return parser_;
-}
-
 webapps::WebAppOriginAssociationFetcher&
 WebAppOriginAssociationManager::GetFetcher() {
+  if (!fetcher_) {
+    fetcher_ = std::make_unique<webapps::WebAppOriginAssociationFetcher>(
+        profile_->GetDefaultStoragePartition()
+            ->GetURLLoaderFactoryForBrowserProcess());
+  }
   return *fetcher_;
 }
 

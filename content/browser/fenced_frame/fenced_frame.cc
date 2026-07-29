@@ -5,14 +5,16 @@
 #include "content/browser/fenced_frame/fenced_frame.h"
 
 #include "base/notreached.h"
+#include "content/browser/back_forward_cache/back_forward_cache_impl.h"
 #include "content/browser/devtools/devtools_instrumentation.h"
+#include "content/browser/renderer_host/initiator_navigation_state_impl.h"
 #include "content/browser/renderer_host/render_frame_proxy_host.h"
 #include "content/browser/renderer_host/render_widget_host_view_child_frame.h"
 #include "content/browser/web_contents/web_contents_impl.h"
+#include "net/storage_access_api/status.h"
 #include "third_party/blink/public/common/fenced_frame/fenced_frame_utils.h"
 #include "third_party/blink/public/common/frame/fenced_frame_sandbox_flags.h"
 #include "third_party/blink/public/common/frame/frame_owner_element_type.h"
-#include "third_party/blink/public/mojom/navigation/navigation_initiator_activation_and_ad_status.mojom.h"
 #include "url/gurl.h"
 
 namespace content {
@@ -22,7 +24,8 @@ namespace {
 FrameTreeNode* CreateDelegateFrameTreeNode(
     RenderFrameHostImpl* owner_render_frame_host) {
   return owner_render_frame_host->frame_tree()->AddFrame(
-      &*owner_render_frame_host, owner_render_frame_host->GetProcess()->GetID(),
+      &*owner_render_frame_host,
+      owner_render_frame_host->GetProcess()->GetDeprecatedID(),
       owner_render_frame_host->GetProcess()->GetNextRoutingID(),
       // We're creating an dummy outer delegate node which will never have a
       // corresponding `RenderFrameImpl`, and therefore we pass null
@@ -61,8 +64,9 @@ FencedFrame::FencedFrame(
                                       /*manager_delegate=*/web_contents_,
                                       /*page_delegate=*/web_contents_,
                                       FrameTree::Type::kFencedFrame)) {
-  if (was_discarded)
+  if (was_discarded) {
     frame_tree_->root()->set_was_discarded();
+  }
 }
 
 FencedFrame::~FencedFrame() {
@@ -74,7 +78,7 @@ FencedFrame::~FencedFrame() {
 void FencedFrame::Navigate(
     const GURL& url,
     base::TimeTicks navigation_start_time,
-    const absl::optional<std::u16string>& embedder_shared_storage_context) {
+    const std::optional<std::u16string>& embedder_shared_storage_context) {
   // We don't need guard against a bad message in the case of prerendering since
   // we wouldn't even establish the mojo connection in that case.
   DCHECK_NE(RenderFrameHost::LifecycleState::kPrerendering,
@@ -103,6 +107,7 @@ void FencedFrame::Navigate(
       bad_message::ReceivedBadMessage(
           owner_render_frame_host_->GetProcess(),
           bad_message::FF_DIFFERENT_MODE_THAN_EMBEDDER);
+      return;
     }
   }
 
@@ -128,39 +133,43 @@ void FencedFrame::Navigate(
   // base url, so we pass nullopt for `initiator_base_url` to
   // NavigateFromFrameProxy.
 
-  // TODO(yaoxia): implement this. This information will be propagated to the
-  // `NavigationHandle`. Skip propagating here is fine for now, because we are
-  // currently only interested navigation that occurs in the outermost RFH.
-  blink::mojom::NavigationInitiatorActivationAndAdStatus
-      initiator_activation_and_ad_status =
-          blink::mojom::NavigationInitiatorActivationAndAdStatus::
-              kDidNotStartWithTransientActivation;
+  // TODO(crbug.com/470115250): Implement `started_by_ad` and
+  // `has_user_gesture`. This information will be propagated to the
+  // `NavigationHandle`. Skipping propagation here is fine for now, because we
+  // are currently only interested in navigation that occurs in the outermost
+  // RFH.
 
+  // Embedder initiated fenced frame navigation should force a new browsing
+  // instance.
+  // Note: `navigation_start_time` already comes from the renderer process in
+  // HTMLFencedFrameElement::FencedFrameDelegate::Navigate, so it is not
+  // necessary to record a different `actual_navigation_start_time`.
   inner_root->navigator().NavigateFromFrameProxy(
       inner_root->current_frame_host(), validated_url,
-      /*initiator_frame_token=*/nullptr,
-      content::ChildProcessHost::kInvalidUniqueID, initiator_origin,
-      /*initiator_base_url=*/absl::nullopt,
-      /*source_site_instance=*/nullptr, content::Referrer(),
+      /*initiator_frame_token=*/nullptr, content::ChildProcessId(),
+      initiator_origin,
+      /*initiator_base_url=*/std::nullopt,
+      /*initiator_navigation_state=*/nullptr, content::Referrer(),
       ui::PAGE_TRANSITION_AUTO_SUBFRAME,
       /*should_replace_current_entry=*/true, download_policy, "GET",
       /*post_body=*/nullptr, /*extra_headers=*/"",
       /*blob_url_loader_factory=*/nullptr,
       network::mojom::SourceLocation::New(), /*has_user_gesture=*/false,
       /*is_form_submission=*/false,
-      /*impression=*/absl::nullopt, initiator_activation_and_ad_status,
+      /*started_by_ad=*/false,
+      /*actual_navigation_start_time=*/navigation_start_time,
       navigation_start_time,
       /*is_embedder_initiated_fenced_frame_navigation=*/true,
       /*is_unfenced_top_navigation=*/false,
-      /*force_new_browsing_instance=*/false, /*is_container_initiated=*/false,
-      embedder_shared_storage_context);
+      /*force_new_browsing_instance=*/true, /*is_container_initiated=*/false,
+      /*has_rel_opener=*/false, embedder_shared_storage_context);
 }
 
 bool FencedFrame::IsHidden() {
   return web_contents_->IsHidden();
 }
 
-int FencedFrame::GetOuterDelegateFrameTreeNodeId() {
+FrameTreeNodeId FencedFrame::GetOuterDelegateFrameTreeNodeId() {
   DCHECK(outer_delegate_frame_tree_node_);
   return outer_delegate_frame_tree_node_->frame_tree_node_id();
 }
@@ -171,19 +180,33 @@ RenderFrameHostImpl* FencedFrame::GetProspectiveOuterDocument() {
   return nullptr;
 }
 
-bool FencedFrame::IsPortal() {
-  return false;
-}
-
 FrameTree* FencedFrame::LoadingTree() {
-  // TODO(crbug.com/1232528): Consider and fix the case when fenced frames are
-  // being prerendered.
+  CHECK_NE(RenderFrameHostImpl::LifecycleStateImpl::kPrerendering,
+           owner_render_frame_host_->lifecycle_state());
   return web_contents_->LoadingTree();
 }
 
 void FencedFrame::SetFocusedFrame(FrameTreeNode* node,
                                   SiteInstanceGroup* source) {
   web_contents_->SetFocusedFrame(node, source);
+}
+
+FrameTree* FencedFrame::GetOwnedDocumentPictureInPictureFrameTree() {
+  return nullptr;
+}
+
+bool FencedFrame::OnRenderFrameProxyVisibilityChanged(
+    RenderFrameProxyHost* render_frame_proxy_host,
+    blink::mojom::FrameVisibility visibility) {
+  return false;
+}
+
+PrerenderHostId FencedFrame::GetPrerenderHostId() {
+  return PrerenderHostId();
+}
+
+FrameTree* FencedFrame::GetDocumentPictureInPictureOpenerFrameTree() {
+  return nullptr;
 }
 
 RenderFrameProxyHost*
@@ -208,8 +231,8 @@ FencedFrame::InitInnerFrameTreeAndReturnProxyToOuterFrameTree(
   // already created the main frame for the window, but wants the browser to
   // refrain from showing the main frame until the renderer signals the browser
   // via the mojom.LocalMainFrameHost.ShowCreatedWindow(). This flow does not
-  // apply for fenced frames, portals, and prerendered nested FrameTrees, hence
-  // the decision to mark it as false.
+  // apply for fenced frames and prerendered nested FrameTrees, hence the
+  // decision to mark it as false.
   frame_tree_->Init(site_instance.get(),
                     /*renderer_initiated_creation=*/false,
                     /*main_frame_name=*/"",
@@ -220,7 +243,7 @@ FencedFrame::InitInnerFrameTreeAndReturnProxyToOuterFrameTree(
   // See `RenderFrameHostImpl::CreateRenderFrame`.
   frame_tree_->root()->SetPendingFramePolicy(frame_policy);
 
-  // TODO(crbug.com/1199679): This should be moved to FrameTree::Init.
+  // TODO(crbug.com/40177940): This should be moved to FrameTree::Init.
   web_contents_->NotifySwappedFromRenderManager(
       /*old_frame=*/nullptr,
       frame_tree_->root()->render_manager()->current_frame_host());
@@ -239,7 +262,7 @@ FencedFrame::InitInnerFrameTreeAndReturnProxyToOuterFrameTree(
       inner_root->current_frame_host()
           ->browsing_context_state()
           ->CreateOuterDelegateProxy(
-              owner_render_frame_host_->GetSiteInstance(), inner_root,
+              owner_render_frame_host_->GetSiteInstance()->group(), inner_root,
               frame_token);
 
   proxy_host->BindRemoteFrameInterfaces(
@@ -267,7 +290,8 @@ FencedFrame::InitInnerFrameTreeAndReturnProxyToOuterFrameTree(
           inner_render_manager->current_frame_host()
               ->GetSiteInstance()
               ->group(),
-          static_cast<RenderViewHostImpl*>(rvh), nullptr)) {
+          static_cast<RenderViewHostImpl*>(rvh), /*proxy=*/nullptr,
+          /*navigation_metrics_token=*/std::nullopt)) {
     return proxy_host;
   }
 
@@ -286,6 +310,10 @@ FencedFrame::InitInnerFrameTreeAndReturnProxyToOuterFrameTree(
 const base::UnguessableToken& FencedFrame::GetDevToolsFrameToken() const {
   DCHECK(frame_tree_);
   return frame_tree_->GetMainFrame()->GetDevToolsFrameToken();
+}
+
+BackForwardCacheImpl& FencedFrame::GetBackForwardCache() {
+  NOTREACHED();
 }
 
 void FencedFrame::NotifyBeforeFormRepostWarningShow() {}
@@ -310,11 +338,22 @@ bool FencedFrame::ShouldPreserveAbortedURLs() {
   return false;
 }
 
-WebContents* FencedFrame::DeprecatedGetWebContents() {
-  return web_contents_;
+void FencedFrame::UpdateOverridingUserAgent() {}
+
+#if BUILDFLAG(IS_ANDROID)
+
+scoped_refptr<viz::RasterContextProvider>
+FencedFrame::GetRasterContextProvider() {
+  NOTREACHED();
 }
 
-void FencedFrame::UpdateOverridingUserAgent() {}
+gfx::ColorSpace FencedFrame::GetOutputColorSpace(
+    gfx::ContentColorUsage color_usage,
+    bool needs_alpha) {
+  NOTREACHED();
+}
+
+#endif  // BUILDFLAG(IS_ANDROID)
 
 void FencedFrame::DidChangeFramePolicy(const blink::FramePolicy& frame_policy) {
   FrameTreeNode* inner_root = frame_tree_->root();
@@ -323,11 +362,12 @@ void FencedFrame::DidChangeFramePolicy(const blink::FramePolicy& frame_policy) {
   // Observe that the sandbox flags sent from the renderer are currently
   // ignored. The `sandbox` attribute on `HTMLFencedFrameElement` may only
   // cause embedder-initiated navigations to fail for now---in the renderer.
-  // TODO(crbug.com/1347953): Handle sandbox flags for fenced frames properly
+  // TODO(crbug.com/40233168): Handle sandbox flags for fenced frames properly
   // in the browser, allowing us to use non-fixed sets of sandbox flags.
   inner_root->SetPendingFramePolicy(blink::FramePolicy(
       current_frame_policy.sandbox_flags, frame_policy.container_policy,
-      current_frame_policy.required_document_policy));
+      current_frame_policy.required_document_policy,
+      frame_policy.deferred_fetch_policy));
 }
 
 }  // namespace content

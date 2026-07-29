@@ -17,19 +17,21 @@ NativeMessagingHostListPolicyHandler::NativeMessagingHostListPolicyHandler(
       pref_path_(pref_path),
       allow_wildcards_(allow_wildcards) {}
 
-NativeMessagingHostListPolicyHandler::~NativeMessagingHostListPolicyHandler() {}
+NativeMessagingHostListPolicyHandler::~NativeMessagingHostListPolicyHandler() =
+    default;
 
 bool NativeMessagingHostListPolicyHandler::CheckListEntry(
     const base::Value& value) {
   const std::string& str = value.GetString();
-  if (allow_wildcards_ && str == "*")
+  if (allow_wildcards_ && str == "*") {
     return true;
+  }
 
   return NativeMessagingHostManifest::IsValidName(str);
 }
 
 void NativeMessagingHostListPolicyHandler::ApplyList(
-    base::Value::List filtered_list,
+    base::ListValue filtered_list,
     PrefValueMap* prefs) {
   prefs->SetValue(pref_path_, base::Value(std::move(filtered_list)));
 }

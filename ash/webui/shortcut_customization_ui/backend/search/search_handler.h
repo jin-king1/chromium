@@ -7,7 +7,6 @@
 
 #include <vector>
 
-#include "ash/webui/shortcut_customization_ui/backend/search/search.mojom-forward.h"
 #include "ash/webui/shortcut_customization_ui/backend/search/search.mojom.h"
 #include "ash/webui/shortcut_customization_ui/backend/search/search_concept_registry.h"
 #include "base/gtest_prod_util.h"
@@ -62,7 +61,7 @@ class SearchHandler : public shortcut_customization::mojom::SearchHandler,
   void OnFindComplete(
       SearchCallback callback,
       local_search_service::ResponseStatus response_status,
-      const absl::optional<std::vector<local_search_service::Result>>&
+      const std::optional<std::vector<local_search_service::Result>>&
           local_search_service_results);
 
   std::vector<shortcut_customization::mojom::SearchResultPtr>

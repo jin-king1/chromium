@@ -5,9 +5,10 @@
 #include "chrome/browser/ui/views/sharing_hub/preview_view.h"
 
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/share/share_features.h"
 #include "chrome/browser/ui/sharing_hub/sharing_hub_bubble_controller.h"
 #include "components/url_formatter/elide_url.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/flex_layout.h"
@@ -19,14 +20,16 @@ namespace sharing_hub {
 namespace {
 
 class UrlLabel : public views::Label {
+  METADATA_HEADER(UrlLabel, views::Label)
+
  public:
   UrlLabel(GURL url, int context, int style)
       : views::Label(base::UTF8ToUTF16(url.spec()), context, style), url_(url) {
     // Never use the elided URL for the accessible name or tooltip - both of
     // these are allowed to be of arbitrary length (since they aren't
     // constrained by the visual layout) and should give the user the full URL.
-    SetAccessibleName(GetText());
-    SetTooltipText(GetText());
+    GetViewAccessibility().SetName(std::u16string(GetText()));
+    SetCustomTooltipText(GetText());
   }
   ~UrlLabel() override = default;
 
@@ -48,6 +51,9 @@ class UrlLabel : public views::Label {
   GURL url_;
 };
 
+BEGIN_METADATA(UrlLabel)
+END_METADATA
+
 }  // namespace
 
 // This view uses two nested FlexLayouts, a horizontal outer one and a vertical
@@ -60,7 +66,7 @@ class UrlLabel : public views::Label {
 //       Label (URL)
 PreviewView::PreviewView(share::ShareAttempt attempt) {
   // These values are all directly from the Figma redlines. See
-  // https://crbug.com/1314486 and https://crbug.com/1316473.
+  // https://crbug.com/40832894 and https://crbug.com/40834138.
   constexpr gfx::Insets kInteriorMargin = gfx::Insets::VH(8, 8);
   constexpr gfx::Insets kDefaultMargin = gfx::Insets::VH(0, 16);
   constexpr gfx::Size kImageSize{16, 16};
@@ -105,5 +111,8 @@ PreviewView::PreviewView(share::ShareAttempt attempt) {
 }
 
 PreviewView::~PreviewView() = default;
+
+BEGIN_METADATA(PreviewView)
+END_METADATA
 
 }  // namespace sharing_hub

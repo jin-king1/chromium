@@ -24,7 +24,7 @@ ui::Layer* DelegatedFrameHostClientAura::DelegatedFrameHostGetLayer() const {
 }
 
 bool DelegatedFrameHostClientAura::DelegatedFrameHostIsVisible() const {
-  return !render_widget_host_view_->host()->is_hidden();
+  return !render_widget_host_view_->host()->IsHidden();
 }
 
 SkColor DelegatedFrameHostClientAura::DelegatedFrameHostGetGutterColor() const {
@@ -55,13 +55,24 @@ void DelegatedFrameHostClientAura::InvalidateLocalSurfaceIdOnEviction() {
   render_widget_host_view_->InvalidateLocalSurfaceIdOnEviction();
 }
 
-std::vector<viz::SurfaceId>
+viz::FrameEvictorClient::EvictIds
 DelegatedFrameHostClientAura::CollectSurfaceIdsForEviction() {
-  return render_widget_host_view_->host()->CollectSurfaceIdsForEviction();
+  viz::FrameEvictorClient::EvictIds ids;
+  ids.embedded_ids =
+      render_widget_host_view_->host()->CollectSurfaceIdsForEviction();
+  return ids;
 }
 
 bool DelegatedFrameHostClientAura::ShouldShowStaleContentOnEviction() {
   return render_widget_host_view_->ShouldShowStaleContentOnEviction();
+}
+
+cc::DeadlinePolicy DelegatedFrameHostClientAura::GetResizeDeadlinePolicy()
+    const {
+  if (render_widget_host_view_->ShouldUseDefaultDeadlineOnResize()) {
+    return cc::DeadlinePolicy::UseDefaultDeadline();
+  }
+  return DelegatedFrameHostClient::GetResizeDeadlinePolicy();
 }
 
 }  // namespace content

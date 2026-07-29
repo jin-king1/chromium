@@ -5,18 +5,18 @@
 import './folder_node.js';
 import './item.js';
 
-import {assert} from 'chrome://resources/js/assert_ts.js';
+import {assert} from 'chrome://resources/js/assert.js';
 import {EventTracker} from 'chrome://resources/js/event_tracker.js';
 
 import {changeFolderOpen, deselectItems, selectItem} from './actions.js';
 import {highlightUpdatedItems, trackUpdatedItems} from './api_listener.js';
 import {BookmarkManagerApiProxyImpl} from './bookmark_manager_api_proxy.js';
-import {DropPosition, ROOT_NODE_ID} from './constants.js';
+import {DropPosition} from './constants.js';
 import {Debouncer} from './debouncer.js';
-import {BookmarksFolderNodeElement} from './folder_node.js';
+import type {BookmarksFolderNodeElement} from './folder_node.js';
 import {Store} from './store.js';
-import {BookmarkElement, BookmarkNode, DragData, DropDestination, NodeMap, ObjectMap, TimerProxy} from './types.js';
-import {canEditNode, canReorderChildren, getDisplayedList, hasChildFolders, isShowingSearch, normalizeNode} from './util.js';
+import type {BookmarkElement, BookmarkNode, DragData, DropDestination, NodeMap, ObjectMap, TimerProxy} from './types.js';
+import {canEditNode, canReorderChildren, getDisplayedList, hasChildFolders, isRootOrChildOfRoot, isShowingSearch, normalizeNode} from './util.js';
 
 interface NormalizedDragData {
   elements: BookmarkNode[];
@@ -45,11 +45,11 @@ function getBookmarkElement(path?: EventTarget[]): BookmarkElement|null {
     return null;
   }
 
-  for (let i = 0; i < path!.length; i++) {
-    const element = path![i] as Element;
+  for (let i = 0; i < path.length; i++) {
+    const element = path[i] as Element;
     if (isBookmarkItem(element) || isBookmarkFolderNode(element) ||
         isBookmarkList(element)) {
-      return path![i] as BookmarkElement;
+      return path[i] as BookmarkElement;
     }
   }
   return null;
@@ -58,7 +58,7 @@ function getBookmarkElement(path?: EventTarget[]): BookmarkElement|null {
 function getDragElement(path: EventTarget[]): BookmarkElement|null {
   const dragElement = getBookmarkElement(path);
   for (let i = 0; i < path.length; i++) {
-    if ((path![i] as Element).tagName === 'BUTTON') {
+    if ((path[i] as Element).tagName === 'BUTTON') {
       return null;
     }
   }
@@ -285,6 +285,7 @@ export class DndManager {
   private autoExpander_: AutoExpander|null;
   private timerProxy_: TimerProxy;
   private lastPointerWasTouch_: boolean;
+  private dragStarted_: boolean = false;
 
   constructor() {
     this.dragInfo_ = null;
@@ -327,6 +328,11 @@ export class DndManager {
   // DragEvent handlers:
 
   private onDragStart_(e: Event) {
+    if (this.dragStarted_) {
+      e.preventDefault();
+      return;
+    }
+
     const dragElement = getDragElement(e.composedPath());
     if (!dragElement) {
       return;
@@ -346,24 +352,26 @@ export class DndManager {
 
     if (isBookmarkItem(dragElement)) {
       const displayingItems = getDisplayedList(state);
-      // TODO(crbug.com/980427): Make this search more time efficient to avoid
+      // TODO(crbug.com/41468833): Make this search more time efficient to avoid
       // delay on large amount of bookmark dragging.
       for (const itemId of displayingItems) {
         for (const element of dragData.elements) {
-          if (element!.id === itemId) {
-            draggedNodes.push(element!.id);
+          if (element.id === itemId) {
+            draggedNodes.push(element.id);
             break;
           }
         }
       }
     } else {
-      draggedNodes = dragData.elements.map((item) => item!.id);
+      draggedNodes = dragData.elements.map((item) => item.id);
     }
 
     assert(draggedNodes.length === dragData.elements.length);
 
     const dragNodeIndex = draggedNodes.indexOf(dragElement.itemId);
     assert(dragNodeIndex !== -1);
+
+    this.dragStarted_ = true;
 
     BookmarkManagerApiProxyImpl.getInstance().startDrag(
         draggedNodes, dragNodeIndex, this.lastPointerWasTouch_,
@@ -441,10 +449,12 @@ export class DndManager {
 
   private onMouseDown_() {
     this.lastPointerWasTouch_ = false;
+    this.dragStarted_ = false;
   }
 
   private onTouchStart_() {
     this.lastPointerWasTouch_ = true;
+    this.dragStarted_ = false;
   }
 
   private handleChromeDragEnter_(dragData: DragData) {
@@ -455,6 +465,7 @@ export class DndManager {
   // Helper methods:
 
   private clearDragData_() {
+    this.dragStarted_ = false;
     this.autoExpander_!.reset();
 
     // Defer the clearing of the data so that the bookmark manager API's drop
@@ -537,7 +548,7 @@ export class DndManager {
     }
 
     return {
-      elements: draggedNodes.map((id) => state.nodes[id]),
+      elements: draggedNodes.map((id) => state.nodes[id]!),
       sameProfile: true,
     };
   }
@@ -620,7 +631,7 @@ export class DndManager {
     }
 
     // We cannot drop between Bookmarks bar and Other bookmarks.
-    if (getBookmarkNode(overElement).parentId === ROOT_NODE_ID) {
+    if (isRootOrChildOfRoot(state, getBookmarkNode(overElement).id)) {
       return DropPosition.NONE;
     }
 
@@ -664,7 +675,7 @@ export class DndManager {
     // Allow dragging onto empty bookmark lists.
     if (isBookmarkList(overElement)) {
       const state = Store.getInstance().data;
-      return !!state.selectedFolder &&
+      return !!state.selectedFolder && !!state.nodes[state.selectedFolder] &&
           state.nodes[state.selectedFolder]!.children!.length === 0;
     }
 

@@ -6,10 +6,11 @@
 #define COMPONENTS_BACKGROUND_TASK_SCHEDULER_TASK_INFO_H_
 
 #include <stdint.h>
+
+#include <optional>
 #include <string>
 
 #include "components/background_task_scheduler/task_ids.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace background_task {
 
@@ -37,8 +38,8 @@ struct OneOffInfo {
 // the required parameters, such as whether a special type of network is
 // available.
 struct TaskInfo {
-  TaskInfo(int task_id, const PeriodicInfo& timing_info);
-  TaskInfo(int task_id, const OneOffInfo& timing_info);
+  TaskInfo(TaskIds task_id, const PeriodicInfo& timing_info);
+  TaskInfo(TaskIds task_id, const OneOffInfo& timing_info);
 
   TaskInfo(const TaskInfo&) = delete;
   TaskInfo& operator=(const TaskInfo&) = delete;
@@ -57,15 +58,15 @@ struct TaskInfo {
     UNMETERED = 2,
   };
 
-  int task_id;
+  TaskIds task_id;
   NetworkType network_type = NetworkType::NONE;
   bool requires_charging = false;
   bool is_persisted = false;
   bool update_current = false;
   std::string extras;
 
-  absl::optional<PeriodicInfo> periodic_info;
-  absl::optional<OneOffInfo> one_off_info;
+  std::optional<PeriodicInfo> periodic_info;
+  std::optional<OneOffInfo> one_off_info;
 };
 
 }  // namespace background_task

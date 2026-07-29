@@ -33,7 +33,7 @@ class DeviceLocalAccountPolicyStatusProvider
   ~DeviceLocalAccountPolicyStatusProvider() override;
 
   // PolicyStatusProvider implementation.
-  base::Value::Dict GetStatus() override;
+  base::DictValue GetStatus() override;
 
   // policy::DeviceLocalAccountPolicyService::Observer implementation.
   void OnPolicyUpdated(const std::string& user_id) override;
@@ -41,7 +41,7 @@ class DeviceLocalAccountPolicyStatusProvider
 
  private:
   const std::string user_id_;
-  raw_ptr<policy::DeviceLocalAccountPolicyService, ExperimentalAsh> service_;
+  raw_ptr<policy::DeviceLocalAccountPolicyService> service_;
 };
 
 #endif  // CHROME_BROWSER_POLICY_STATUS_PROVIDER_DEVICE_LOCAL_ACCOUNT_POLICY_STATUS_PROVIDER_H_

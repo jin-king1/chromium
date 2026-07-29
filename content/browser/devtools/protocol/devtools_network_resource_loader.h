@@ -6,6 +6,7 @@
 #define CONTENT_BROWSER_DEVTOOLS_PROTOCOL_DEVTOOLS_NETWORK_RESOURCE_LOADER_H_
 
 #include <memory>
+#include <string_view>
 
 #include "content/common/content_export.h"
 #include "mojo/public/cpp/bindings/remote.h"
@@ -46,7 +47,8 @@ class CONTENT_EXPORT DevToolsNetworkResourceLoader
       net::SiteForCookies site_for_cookies,
       Caching caching,
       Credentials include_credentials,
-      CompletionCallback complete_callback);
+      CompletionCallback complete_callback,
+      bool is_outermost_main_frame = false);
 
   ~DevToolsNetworkResourceLoader() override;
 
@@ -63,7 +65,7 @@ class CONTENT_EXPORT DevToolsNetworkResourceLoader
       CompletionCallback complete_callback);
   void DownloadAsStream();
 
-  void OnDataReceived(base::StringPiece chunk,
+  void OnDataReceived(std::string_view chunk,
                       base::OnceClosure resume) override;
 
   void OnComplete(bool success) override;

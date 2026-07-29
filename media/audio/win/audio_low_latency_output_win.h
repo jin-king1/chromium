@@ -93,8 +93,9 @@
 #ifndef MEDIA_AUDIO_WIN_AUDIO_LOW_LATENCY_OUTPUT_WIN_H_
 #define MEDIA_AUDIO_WIN_AUDIO_LOW_LATENCY_OUTPUT_WIN_H_
 
-#include <Audioclient.h>
 #include <MMDeviceAPI.h>
+
+#include <Audioclient.h>
 #include <audiopolicy.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -109,6 +110,7 @@
 #include "base/threading/platform_thread.h"
 #include "base/threading/simple_thread.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
 #include "base/win/scoped_co_mem.h"
 #include "base/win/scoped_com_initializer.h"
 #include "base/win/scoped_handle.h"
@@ -160,7 +162,7 @@ class MEDIA_EXPORT WASAPIAudioOutputStream
   bool started() const { return render_thread_.get() != NULL; }
 
  private:
-  void SendLogMessage(const char* format, ...) PRINTF_FORMAT(2, 3);
+  void SendLogMessage(std::string message);
 
   // DelegateSimpleThread::Delegate implementation.
   void Run() override;
@@ -169,7 +171,7 @@ class MEDIA_EXPORT WASAPIAudioOutputStream
   // Checks available amount of space in the endpoint buffer and reads
   // data from the client to fill up the buffer without causing audio
   // glitches.
-  bool RenderAudioFromSource(UINT64 device_frequency);
+  HRESULT RenderAudioFromSource(UINT64 device_frequency);
 
   // Called when the device will be opened in exclusive mode and use the
   // application specified format.
@@ -196,6 +198,11 @@ class MEDIA_EXPORT WASAPIAudioOutputStream
 
   // Called by AudioSessionEventListener() when a device change occurs.
   void OnDeviceChanged();
+
+  // Set up the desired render format specified by the client.
+  void SetupWaveFormat();
+
+  const base::UnguessableToken id_;
 
   // Contains the thread ID of the creating thread.
   const base::PlatformThreadId creating_thread_id_;
@@ -256,10 +263,10 @@ class MEDIA_EXPORT WASAPIAudioOutputStream
   // Counts the number of audio frames written to the endpoint buffer.
   UINT64 num_written_frames_;
 
-  // The position read during the last call to RenderAudioFromSource
+  // The position read during the last call to RenderAudioFromSource.
   UINT64 last_position_ = 0;
 
-  // The performance counter read during the last call to RenderAudioFromSource
+  // The performance counter read during the last call to RenderAudioFromSource.
   UINT64 last_qpc_position_ = 0;
 
   // Pointer to the client that will deliver audio samples to be played out.
@@ -289,6 +296,8 @@ class MEDIA_EXPORT WASAPIAudioOutputStream
   Microsoft::WRL::ComPtr<IAudioClock> audio_clock_;
 
   bool device_changed_ = false;
+
+  bool enable_audio_offload_ = false;
 
   // Generates Windows audio session events for `session_listener_` to handle.
   Microsoft::WRL::ComPtr<IAudioSessionControl> audio_session_control_;

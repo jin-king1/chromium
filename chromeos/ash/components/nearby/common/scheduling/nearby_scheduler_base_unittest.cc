@@ -35,43 +35,44 @@ namespace ash::nearby {
 class NearbySchedulerBaseForTest : public NearbySchedulerBase {
  public:
   NearbySchedulerBaseForTest(
-      absl::optional<base::TimeDelta> time_until_recurring_request,
+      std::optional<base::TimeDelta> time_until_recurring_request,
       bool retry_failures,
       bool require_connectivity,
       const std::string& pref_name,
       PrefService* pref_service,
       OnRequestCallback callback,
+      Feature logging_feature,
       const base::Clock* clock)
       : NearbySchedulerBase(retry_failures,
                             require_connectivity,
                             pref_name,
                             pref_service,
                             std::move(callback),
+                            logging_feature,
                             clock),
         time_until_recurring_request_(time_until_recurring_request) {}
 
   ~NearbySchedulerBaseForTest() override = default;
 
  private:
-  absl::optional<base::TimeDelta> TimeUntilRecurringRequest(
+  std::optional<base::TimeDelta> TimeUntilRecurringRequest(
       base::Time now) const override {
     return time_until_recurring_request_;
   }
 
-  absl::optional<base::TimeDelta> time_until_recurring_request_;
+  std::optional<base::TimeDelta> time_until_recurring_request_;
 };
 
 class NearbySchedulerBaseTest : public ::testing::Test {
  protected:
-  NearbySchedulerBaseTest()
-      : network_connection_tracker_(
-            network::TestNetworkConnectionTracker::CreateInstance()) {}
+  NearbySchedulerBaseTest() = default;
 
   ~NearbySchedulerBaseTest() override = default;
 
   void SetUp() override {
+    CHECK(network::TestNetworkConnectionTracker::HasInstance());
     content::SetNetworkConnectionTrackerForTesting(
-        network_connection_tracker_.get());
+        network::TestNetworkConnectionTracker::GetInstance());
     pref_service_.registry()->RegisterDictionaryPref(kTestPrefName);
     SetNetworkConnection(/*online=*/true);
   }
@@ -81,14 +82,14 @@ class NearbySchedulerBaseTest : public ::testing::Test {
   void CreateScheduler(
       bool retry_failures,
       bool require_connectivity,
-      absl::optional<base::TimeDelta> time_until_recurring_request =
+      std::optional<base::TimeDelta> time_until_recurring_request =
           kTestTimeUntilRecurringRequest) {
     scheduler_ = std::make_unique<NearbySchedulerBaseForTest>(
         time_until_recurring_request, retry_failures, require_connectivity,
         kTestPrefName, &pref_service_,
         base::BindRepeating(&NearbySchedulerBaseTest::OnRequestCallback,
                             base::Unretained(this)),
-        task_environment_.GetMockClock());
+        Feature::NS, task_environment_.GetMockClock());
   }
 
   void DestroyScheduler() { scheduler_.reset(); }
@@ -112,7 +113,7 @@ class NearbySchedulerBaseTest : public ::testing::Test {
 
   void RunPendingRequest() {
     EXPECT_FALSE(scheduler_->IsWaitingForResult());
-    absl::optional<base::TimeDelta> time_until_next_request =
+    std::optional<base::TimeDelta> time_until_next_request =
         scheduler_->GetTimeUntilNextRequest();
     ASSERT_TRUE(time_until_next_request);
     FastForward(*time_until_next_request);
@@ -122,21 +123,21 @@ class NearbySchedulerBaseTest : public ::testing::Test {
     EXPECT_TRUE(scheduler_->IsWaitingForResult());
     EXPECT_FALSE(scheduler_->GetTimeUntilNextRequest());
     size_t num_failures = scheduler_->GetNumConsecutiveFailures();
-    absl::optional<base::Time> last_success_time =
+    std::optional<base::Time> last_success_time =
         scheduler_->GetLastSuccessTime();
     scheduler_->HandleResult(success);
     EXPECT_FALSE(scheduler_->IsWaitingForResult());
     EXPECT_EQ(success ? 0 : num_failures + 1,
               scheduler_->GetNumConsecutiveFailures());
     EXPECT_EQ(
-        success ? absl::make_optional<base::Time>(Now()) : last_success_time,
+        success ? std::make_optional<base::Time>(Now()) : last_success_time,
         scheduler_->GetLastSuccessTime());
   }
 
   void SetNetworkConnection(bool online) {
     network::TestNetworkConnectionTracker::GetInstance()->SetConnectionType(
-        online ? network::mojom::ConnectionType::CONNECTION_WIFI
-               : network::mojom::ConnectionType::CONNECTION_NONE);
+        online ? net::NetworkChangeNotifier::ConnectionType::CONNECTION_WIFI
+               : net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE);
   }
 
   size_t on_request_call_count() const { return on_request_call_count_; }
@@ -146,8 +147,6 @@ class NearbySchedulerBaseTest : public ::testing::Test {
   size_t on_request_call_count_ = 0;
   base::test::SingleThreadTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
-  std::unique_ptr<network::TestNetworkConnectionTracker>
-      network_connection_tracker_;
   TestingPrefServiceSimple pref_service_;
   std::unique_ptr<NearbyScheduler> scheduler_;
 };
@@ -177,7 +176,7 @@ TEST_F(NearbySchedulerBaseTest, RecurringRequest) {
 TEST_F(NearbySchedulerBaseTest, NoRecurringRequest) {
   // The flavor of the schedule does not schedule recurring requests.
   CreateScheduler(/*retry_failures=*/true, /*require_connectivity=*/true,
-                  /*time_until_recurring_request=*/absl::nullopt);
+                  /*time_until_recurring_request=*/std::nullopt);
   StartScheduling();
   EXPECT_FALSE(scheduler()->GetTimeUntilNextRequest());
 

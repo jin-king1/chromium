@@ -25,8 +25,12 @@
 #include "extensions/browser/event_router_factory.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/buildflags/buildflags.h"
+#include "extensions/common/extension_id.h"
 #include "extensions/common/manifest_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using media_router::MockDnsSdRegistry;
 using testing::_;
@@ -42,12 +46,11 @@ const char kService2[] = "service2";
 
 // Registers a new EventListener for |service_types| in |listener_list|.
 void AddEventListener(
-    const std::string& extension_id,
+    const ExtensionId& extension_id,
     const std::string& service_type,
     content::RenderProcessHost* process,
     extensions::EventListenerMap::ListenerList* listener_list) {
-  auto filter =
-      base::Value::Dict().Set(kEventFilterServiceTypeKey, service_type);
+  auto filter = base::DictValue().Set(kEventFilterServiceTypeKey, service_type);
   listener_list->push_back(EventListener::ForExtension(
       kEventFilterServiceTypeKey, extension_id, process, std::move(filter)));
 }
@@ -56,6 +59,7 @@ class NullDelegate : public EventListenerMap::Delegate {
  public:
   void OnListenerAdded(const EventListener* listener) override {}
   void OnListenerRemoved(const EventListener* listener) override {}
+  void OnListenerUpdated(const EventListener* listener) override {}
 };
 
 // Testing subclass of MDnsAPI which replaces calls to core browser components
@@ -65,7 +69,7 @@ class MockedMDnsAPI : public MDnsAPI {
   explicit MockedMDnsAPI(content::BrowserContext* context) : MDnsAPI(context) {}
 
  public:
-  MOCK_CONST_METHOD1(IsMDnsAllowed, bool(const std::string& extension_id));
+  MOCK_CONST_METHOD1(IsMDnsAllowed, bool(const ExtensionId& extension_id));
 
   MOCK_METHOD0(GetEventListeners,
                const extensions::EventListenerMap::ListenerList&());
@@ -125,9 +129,9 @@ class EventServiceListSizeMatcher
                 << e.event_args.size();
       return false;
     }
-    const base::Value::List* services = e.event_args[0].GetIfList();
+    const base::ListValue* services = e.event_args[0].GetIfList();
     if (!services) {
-      *listener << "event's service list argument is not a Value::List";
+      *listener << "event's service list argument is not a base::ListValue";
       return false;
     }
     *listener << "number of services is " << services->size();
@@ -206,8 +210,8 @@ class MDnsAPITest : public extensions::ExtensionServiceTestBase {
   const scoped_refptr<extensions::Extension> CreateExtension(
       std::string name,
       bool is_platform_app,
-      std::string extension_id) {
-    auto manifest = base::Value::Dict()
+      const extensions::ExtensionId& extension_id) {
+    auto manifest = base::DictValue()
                         .Set(extensions::manifest_keys::kVersion, "1.0.0.0")
                         .Set(extensions::manifest_keys::kName, name)
                         .Set(extensions::manifest_keys::kManifestVersion, 2);
@@ -219,7 +223,7 @@ class MDnsAPITest : public extensions::ExtensionServiceTestBase {
           "background.html");
     }
 
-    std::string error;
+    std::u16string error;
     return extensions::Extension::Create(
         bogus_file_pathname(name),
         extensions::mojom::ManifestLocation::kInvalidLocation, manifest,
@@ -255,6 +259,11 @@ class MDnsAPIDiscoveryTest : public MDnsAPITest {
     EXPECT_CALL(*mdns_api_, IsMDnsAllowed(_)).WillRepeatedly(Return(true));
   }
 
+  void TearDown() override {
+    mdns_api_ = nullptr;
+    MDnsAPITest::TearDown();
+  }
+
  protected:
   raw_ptr<MockedMDnsAPI> mdns_api_;
 };
@@ -265,7 +274,7 @@ TEST_F(MDnsAPIDiscoveryTest, ServiceListenersAddedAndRemoved) {
   extensions::EventListenerMap::ListenerList listeners;
 
   extensions::EventListenerInfo listener_info(
-      kEventFilterServiceTypeKey, kExtId, GURL(), browser_context());
+      kEventFilterServiceTypeKey, kExtId, GURL(), nullptr, browser_context());
 
   EXPECT_CALL(*mdns_api_, GetEventListeners())
       .WillRepeatedly(ReturnRef(listeners));

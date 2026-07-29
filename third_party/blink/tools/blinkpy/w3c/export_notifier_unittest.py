@@ -304,8 +304,10 @@ class ExportNotifierTest(LoggingTestCase):
             PullRequest(
                 title='title1',
                 number=1234,
-                body='description\nWPT-Export-Revision: hash\nChange-Id: decafbad',
+                body=
+                'description\nWPT-Export-Revision: hash\nChange-Id: decafbad',
                 state='open',
+                node_id='PR_1',
                 labels=[''])
         ]
         self.notifier.wpt_github.check_runs = [
@@ -354,9 +356,9 @@ class ExportNotifierTest(LoggingTestCase):
         expected = self.generate_notifier_comment(1234, checks_results, 'hash',
                                                   2)
 
-        exit_code = self.notifier.main()
-
-        self.assertFalse(exit_code)
+        pr_by_change_id = self.notifier.main()
+        self.assertEqual(set(pr_by_change_id), {'decafbad'})
+        self.assertEqual(pr_by_change_id['decafbad'].pr_number, 1234)
         self.assertEqual(self.notifier.wpt_github.calls, [
             'recent_failing_chromium_exports',
             'get_pr_branch',
@@ -368,6 +370,97 @@ class ExportNotifierTest(LoggingTestCase):
             {
                 'message': expected
             })])
+
+    def _create_test_notifier(self):
+        gerrit = MockGerritAPI()
+        github = MockWPTGitHub(pull_requests=[])
+        github.gh_org = 'web-platform-tests'
+        github.gh_repo_name = 'wpt'
+        notifier = ExportNotifier(self.host, github, gerrit, dry_run=False)
+        return notifier, gerrit, github
+
+    def test_notify_gerrit_of_blocked_pr_posts_comment(self):
+        notifier, gerrit, github = self._create_test_notifier()
+        pull_request = PullRequest(title='title',
+                                   number=123,
+                                   body='Change-Id: I123',
+                                   state='open',
+                                   node_id='PR_123_',
+                                   labels=[],
+                                   requested_teams=[{'slug': 'interop'}])
+        message = ('The exported PR for this CL requires approval from the '
+                   'interop team(s) on GitHub. Please see the PR for details: '
+                   'https://github.com/web-platform-tests/wpt/pull/123')
+        gerrit.cl = MockGerritCL(data={
+            'change_id': 'I123',
+            'messages': []
+        },
+                                 api=gerrit)
+        notifier.notify_gerrit_of_blocked_pr(pull_request)
+        self.assertEqual(len(gerrit.request_posted), 1)
+        self.assertIn(message, gerrit.request_posted[0][1]['message'])
+
+    def test_notify_gerrit_of_blocked_pr_no_approval_needed(self):
+        notifier, gerrit, github = self._create_test_notifier()
+        pull_request = PullRequest(title='title',
+                                   number=123,
+                                   body='Change-Id: I123',
+                                   state='open',
+                                   node_id='PR_123_',
+                                   labels=[])
+        github.pr_data = {
+            'head': {
+                'ref': 'branch-name'
+            },
+            'requested_teams': []
+        }
+        gerrit.cl = MockGerritCL(data={
+            'change_id': 'I123',
+            'messages': []
+        },
+                                 api=gerrit)
+        notifier.notify_gerrit_of_blocked_pr(pull_request)
+        print(pull_request)
+        self.assertEqual(len(gerrit.request_posted), 0)
+
+    def test_notify_gerrit_of_blocked_pr_notification_exists(self):
+        notifier, gerrit, github = self._create_test_notifier()
+        pull_request = PullRequest(
+            title='title',
+            number=123,
+            body='Change-Id: I123',
+            state='open',
+            node_id='PR_123_',
+            labels=[],
+            requested_teams=[{
+                'slug': 'interop'
+            }, {
+                'slug': 'wpt-core-team'
+            }])
+        message = ('The exported PR for this CL requires approval from the '
+                   'interop, wpt-core-team team(s) on GitHub. Please see the '
+                   'PR for details: '
+                   'https://github.com/web-platform-tests/wpt/pull/123')
+        gerrit.cl = MockGerritCL(data={
+            'change_id': 'I123',
+            'messages': [{
+                'message': message
+            }]
+        },
+                                 api=gerrit)
+        notifier.notify_gerrit_of_blocked_pr(pull_request)
+        self.assertEqual(len(gerrit.request_posted), 0)
+
+    def test_notify_gerrit_of_blocked_pr_no_change_id(self):
+        notifier, gerrit, github = self._create_test_notifier()
+        pull_request = PullRequest(title='title',
+                                   number=123,
+                                   body='No Change-Id here',
+                                   state='open',
+                                   node_id='PR_123_',
+                                   labels=[])
+        notifier.notify_gerrit_of_blocked_pr(pull_request)
+        self.assertEqual(len(gerrit.request_posted), 0)
 
     def generate_notifier_comment(self,
                                   pr_number,
@@ -387,7 +480,7 @@ class ExportNotifierTest(LoggingTestCase):
                 'a look at the output and see if it can be fixed. '
                 'Unresolved failures will be looked at by the Ecosystem-Infra '
                 'sheriff after this CL has been landed in Chromium; if you '
-                'need earlier help please contact ecosystem-infra@chromium.org.\n\n'
+                'need earlier help please contact blink-dev@chromium.org.\n\n'
                 'Any suggestions to improve this service are welcome; '
                 'crbug.com/1027618.\n\n'
                 'Gerrit CL SHA: {}\n'
@@ -403,7 +496,7 @@ class ExportNotifierTest(LoggingTestCase):
                 'a look at the output and see if it can be fixed. '
                 'Unresolved failures will be looked at by the Ecosystem-Infra '
                 'sheriff after this CL has been landed in Chromium; if you '
-                'need earlier help please contact ecosystem-infra@chromium.org.\n\n'
+                'need earlier help please contact blink-dev@chromium.org.\n\n'
                 'Any suggestions to improve this service are welcome; '
                 'crbug.com/1027618.\n\n'
                 'Gerrit CL SHA: {}').format(pr_number, checks_results_comment,

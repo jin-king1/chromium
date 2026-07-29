@@ -28,8 +28,6 @@ import struct
 import sys
 import time
 from datetime import datetime
-
-from six import raise_from
 from urllib.parse import urlparse
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -77,6 +75,15 @@ def HostnameFromArg(arg):
   return None
 
 
+def IsExtensionId(arg):
+  """Determines whether a string represents a valid Chromium extension origin.
+
+  Returns True if the argument is valid extension origin, or False otherwise.
+  """
+  extensionIdRegex = re.compile(r"[a-p]{32}")
+  return bool(extensionIdRegex.fullmatch(arg))
+
+
 def OriginFromArg(arg):
   """Constructs the origin for the token from a command line argument.
 
@@ -92,25 +99,43 @@ def OriginFromArg(arg):
   if not origin or not origin.scheme or not origin.netloc:
     raise argparse.ArgumentTypeError("%s is not a hostname or a URL" % arg)
   # HTTPS or HTTP only
-  if origin.scheme not in ('https','http'):
+  if origin.scheme not in ("https", "http", "chrome-extension"):
     raise argparse.ArgumentTypeError("%s does not use a recognized URL scheme" %
                                      arg)
+  # Is it a valid extension origin?
+  if origin.scheme == "chrome-extension":
+    if (IsExtensionId(origin.hostname) and not origin.port
+        and not origin.username and not origin.password):
+      return "chrome-extension://{0}".format(origin.hostname)
+    raise argparse.ArgumentTypeError("%s is not a valid extension origin" % arg)
   # Add default port if it is not specified
   try:
     port = origin.port
   except ValueError as e:
-    raise_from(
-        argparse.ArgumentTypeError("%s is not a hostname or a URL" % arg), e)
+    raise argparse.ArgumentTypeError("%s is not a hostname or a URL" %
+                                     arg) from e
   if not port:
     port = {"https": 443, "http": 80}[origin.scheme]
   # Strip any extra components and return the origin URL:
   return "{0}://{1}:{2}".format(origin.scheme, origin.hostname, port)
 
 def ExpiryFromArgs(args):
+  expiry: int
   if args.expire_timestamp:
-    return int(args.expire_timestamp)
-  return (int(time.time()) + (int(args.expire_days) * 86400))
+    expiry = int(args.expire_timestamp)
+  else:
+    expiry = (int(time.time()) + (int(args.expire_days) * 86400))
 
+  if expiry > 2**31 - 1:
+    # The maximum expiry timestamp is bound by the maximum value of a signed
+    # 32-bit integer (2^31-1).
+    # TODO(crbug.com/40872096): All expiries after 2038-01-19 03:14:07 UTC
+    # will raise this error, so add support for a larger range of values
+    # before then.
+    raise argparse.ArgumentTypeError(
+        "%d (%s UTC) is beyond the range of supported expiries" %
+        (expiry, datetime.utcfromtimestamp(expiry)))
+  return expiry
 
 def GenerateTokenData(version, origin, is_subdomain, is_third_party,
                       usage_restriction, feature_name, expiry):

@@ -2,12 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "chrome/browser/ui/side_panel/history_clusters/history_clusters_side_panel_controller_utils.h"
+#include "chrome/browser/ui/views/side_panel/history_clusters/history_clusters_side_panel_controller_utils.h"
 
 #include <memory>
 
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/views/side_panel/history_clusters/history_clusters_side_panel_controller.h"
 
 namespace side_panel::history_clusters {

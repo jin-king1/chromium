@@ -16,7 +16,7 @@ class InstallPromptPrefsTest : public ::testing::Test {
  public:
   void SetUp() override {
     // user_prefs::UserPrefs::Set(browser_context(), &prefs_);
-    InstallPromptPrefs::RegisterLocalPrefs(prefs_.registry());
+    InstallPromptPrefs::RegisterProfilePrefs(prefs_.registry());
   }
 
   TestingPrefServiceSimple* prefs() { return &prefs_; }
@@ -26,9 +26,6 @@ class InstallPromptPrefsTest : public ::testing::Test {
 };
 
 TEST_F(InstallPromptPrefsTest, PromptDismissedRecently) {
-  base::test::ScopedFeatureList scoped_list;
-  scoped_list.InitAndEnableFeature(features::kInstallPromptGlobalGuardrails);
-
   base::Time time = base::Time::Now();
   // Dismiss the prompt once.
   InstallPromptPrefs::RecordInstallPromptDismissed(prefs(), time);
@@ -47,9 +44,6 @@ TEST_F(InstallPromptPrefsTest, PromptDismissedRecently) {
 }
 
 TEST_F(InstallPromptPrefsTest, PromptIgnoredRecently) {
-  base::test::ScopedFeatureList scoped_list;
-  scoped_list.InitAndEnableFeature(features::kInstallPromptGlobalGuardrails);
-
   base::Time time = base::Time::Now();
   // Ignore the prompt once.
   InstallPromptPrefs::RecordInstallPromptIgnored(prefs(), time);
@@ -68,9 +62,6 @@ TEST_F(InstallPromptPrefsTest, PromptIgnoredRecently) {
 }
 
 TEST_F(InstallPromptPrefsTest, RecentCountResetByClicks) {
-  base::test::ScopedFeatureList scoped_list;
-  scoped_list.InitAndEnableFeature(features::kInstallPromptGlobalGuardrails);
-
   base::Time time = base::Time::Now();
   // Record 3 dismiss and 3 ignore.
   for (int i = 0; i < 3; i++) {

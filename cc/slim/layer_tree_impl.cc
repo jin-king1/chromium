@@ -10,13 +10,23 @@
 
 #include "base/auto_reset.h"
 #include "base/containers/adapters.h"
-#include "base/ranges/algorithm.h"
+#include "base/logging.h"
+#include "base/metrics/histogram.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/histogram_macros.h"
+#include "base/rand_util.h"
+#include "base/strings/stringprintf.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/timer/elapsed_timer.h"
 #include "base/trace_event/trace_event.h"
+#include "base/trace_event/typed_macros.h"
+#include "cc/base/histograms.h"
 #include "cc/base/region.h"
 #include "cc/slim/frame_data.h"
 #include "cc/slim/frame_sink_impl.h"
 #include "cc/slim/layer.h"
 #include "cc/slim/layer_tree_client.h"
+#include "cc/slim/surface_layer.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
 #include "components/viz/common/hit_test/hit_test_region_list.h"
 #include "components/viz/common/quads/compositor_frame.h"
@@ -25,7 +35,9 @@
 #include "components/viz/common/quads/compositor_render_pass_draw_quad.h"
 #include "components/viz/common/quads/draw_quad.h"
 #include "components/viz/common/quads/frame_deadline.h"
+#include "components/viz/common/quads/offset_tag.h"
 #include "components/viz/common/quads/solid_color_draw_quad.h"
+#include "components/viz/common/resources/resource_id.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -36,6 +48,40 @@
 #include "ui/gfx/geometry/vector2d_f.h"
 
 namespace cc::slim {
+
+namespace {
+
+class LayerTreeImplScopedKeepSurfaceAlive
+    : public LayerTree::ScopedKeepSurfaceAlive {
+ public:
+  LayerTreeImplScopedKeepSurfaceAlive(base::WeakPtr<LayerTreeImpl> layer_tree,
+                                      const viz::SurfaceId& surface_id)
+      : layer_tree_(std::move(layer_tree)), range_(surface_id, surface_id) {
+    layer_tree_->AddSurfaceRange(range_);
+  }
+
+  ~LayerTreeImplScopedKeepSurfaceAlive() override {
+    if (layer_tree_) {
+      layer_tree_->RemoveSurfaceRange(range_);
+    }
+  }
+
+ private:
+  const base::WeakPtr<LayerTreeImpl> layer_tree_;
+  const viz::SurfaceRange range_;
+};
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+// This enum is used for the "Compositing.Slim.BeginFrameResult" histogram.
+enum class SlimBeginFrameResult {
+  kEarlyOutNoDraw = 0,
+  kEarlyOutProcessed = 1,
+  kFrameProduced = 2,
+  kMaxValue = kFrameProduced,
+};
+
+}  // namespace
 
 LayerTreeImpl::PresentationCallbackInfo::PresentationCallbackInfo(
     uint32_t frame_token,
@@ -61,6 +107,7 @@ LayerTreeImpl::LayerTreeImpl(LayerTreeClient* client,
 
 LayerTreeImpl::~LayerTreeImpl() {
   SetRoot(nullptr);
+  FlushBeginFrameResults();
 }
 
 cc::UIResourceManager* LayerTreeImpl::GetUIResourceManager() {
@@ -71,16 +118,15 @@ void LayerTreeImpl::SetViewportRectAndScale(
     const gfx::Rect& device_viewport_rect,
     float device_scale_factor,
     const viz::LocalSurfaceId& local_surface_id) {
+  bool id_updated =
+      local_surface_id_allocator_.UpdateFromParent(local_surface_id);
   if (device_viewport_rect_ == device_viewport_rect &&
-      device_scale_factor_ == device_scale_factor &&
-      local_surface_id_ == local_surface_id) {
+      device_scale_factor_ == device_scale_factor && !id_updated) {
     return;
   }
-  if (local_surface_id_ != local_surface_id) {
-    local_surface_id_ = local_surface_id;
-    if (frame_sink_) {
-      frame_sink_->SetLocalSurfaceId(local_surface_id);
-    }
+  if (frame_sink_) {
+    frame_sink_->SetLocalSurfaceId(
+        local_surface_id_allocator_.GetCurrentLocalSurfaceId());
   }
 
   device_viewport_rect_ = device_viewport_rect;
@@ -131,7 +177,7 @@ void LayerTreeImpl::RequestCopyOfOutput(
     std::unique_ptr<viz::CopyOutputRequest> request) {
   if (request->has_source()) {
     const base::UnguessableToken& source = request->source();
-    auto it = base::ranges::find_if(
+    auto it = std::ranges::find_if(
         copy_requests_for_next_frame_,
         [&source](const std::unique_ptr<viz::CopyOutputRequest>& x) {
           return x->has_source() && x->source() == source;
@@ -157,20 +203,7 @@ void LayerTreeImpl::ReleaseDeferBeginFrame() {
   UpdateNeedsBeginFrame();
 }
 
-void LayerTreeImpl::UpdateTopControlsVisibleHeight(float height) {
-  if (top_controls_visible_height_ &&
-      top_controls_visible_height_.value() == height) {
-    return;
-  }
-  top_controls_visible_height_ = height;
-  SetNeedsDraw();
-}
-
 void LayerTreeImpl::SetNeedsAnimate() {
-  SetClientNeedsOneBeginFrame();
-}
-
-void LayerTreeImpl::SetNeedsRedraw() {
   SetClientNeedsOneBeginFrame();
 }
 
@@ -211,8 +244,10 @@ void LayerTreeImpl::SetFrameSink(std::unique_ptr<FrameSink> sink) {
     return;
   }
   frame_sink_request_pending_ = false;
-  if (local_surface_id_.is_valid()) {
-    frame_sink_->SetLocalSurfaceId(local_surface_id_);
+  if (local_surface_id_allocator_.GetCurrentLocalSurfaceId().is_valid()) {
+    local_surface_id_allocator_.GenerateId();
+    frame_sink_->SetLocalSurfaceId(
+        local_surface_id_allocator_.GetCurrentLocalSurfaceId());
   }
   client_->DidInitializeLayerTreeFrameSink();
   ui_resource_manager_.RecreateUIResources();
@@ -223,8 +258,27 @@ void LayerTreeImpl::SetFrameSink(std::unique_ptr<FrameSink> sink) {
 
 void LayerTreeImpl::ReleaseLayerTreeFrameSink() {
   DCHECK(!IsVisible());
+  MaybeReleaseResources();
   frame_sink_.reset();
   damage_from_previous_frame_.clear();
+}
+
+std::unique_ptr<LayerTree::ScopedKeepSurfaceAlive>
+LayerTreeImpl::CreateScopedKeepSurfaceAlive(const viz::SurfaceId& surface_id) {
+  return std::make_unique<LayerTreeImplScopedKeepSurfaceAlive>(
+      weak_factory_.GetWeakPtr(), surface_id);
+}
+
+const LayerTree::SurfaceRangesAndCounts&
+LayerTreeImpl::GetSurfaceRangesForTesting() const {
+  return referenced_surfaces_;
+}
+
+void LayerTreeImpl::SetNeedsRedrawForTesting() {
+  // Clearing the previous damages, so that when the next BeginFrame arrives,
+  // the root layer will be treated as a new layer.
+  damage_from_previous_frame_.clear();
+  SetNeedsDraw();
 }
 
 bool LayerTreeImpl::BeginFrame(
@@ -232,10 +286,18 @@ bool LayerTreeImpl::BeginFrame(
     viz::CompositorFrame& out_frame,
     base::flat_set<viz::ResourceId>& out_resource_ids,
     viz::HitTestRegionList& out_hit_test_region_list) {
+  base::ElapsedTimer timer;
+  if (begin_frame_not_needed_count_ + begin_frame_processed_count_ +
+          begin_frame_produced_count_ >=
+      100) {
+    FlushBeginFrameResults();
+  }
+
   // Skip any delayed BeginFrame messages that arrive even after we no longer
   // need it.
   if (!NeedsDraw()) {
-    TRACE_EVENT_INSTANT0("cc", "EarlyOut_NotNeeded", TRACE_EVENT_SCOPE_THREAD);
+    TRACE_EVENT_INSTANT("cc", "EarlyOut_NotNeeded");
+    ++begin_frame_not_needed_count_;
     num_begin_frames_with_no_draw_++;
     frame_sink_->SetNeedsBeginFrame(NeedsBeginFrames());
     return false;
@@ -256,6 +318,7 @@ bool LayerTreeImpl::BeginFrame(
   needs_draw_ = false;
 
   if (!root_ || device_viewport_rect_.IsEmpty()) {
+    ++begin_frame_processed_count_;
     UpdateNeedsBeginFrame();
     return false;
   }
@@ -263,6 +326,13 @@ bool LayerTreeImpl::BeginFrame(
   GenerateCompositorFrame(args, out_frame, out_resource_ids,
                           out_hit_test_region_list);
   UpdateNeedsBeginFrame();
+
+  ++begin_frame_produced_count_;
+  if (base::ShouldRecordSubsampledMetric(0.01)) {
+    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
+        "Compositing.Browser.BeginFrame.Produced.Duration.Subsampled",
+        timer.Elapsed(), base::Microseconds(1), base::Milliseconds(30), 50);
+  }
   return true;
 }
 
@@ -280,7 +350,7 @@ void LayerTreeImpl::DidPresentCompositorFrame(
   const bool success = !details.presentation_feedback.failed();
   for (auto itr = pending_presentation_callbacks_.begin();
        itr != pending_presentation_callbacks_.end();) {
-    if (viz::FrameTokenGT(itr->frame_token, frame_token)) {
+    if (itr->frame_token > frame_token) {
       break;
     }
     for (auto& callback : itr->presentation_callbacks) {
@@ -291,7 +361,7 @@ void LayerTreeImpl::DidPresentCompositorFrame(
     // Only run `success_callbacks` if successful.
     if (success) {
       for (auto& callback : itr->success_callbacks) {
-        std::move(callback).Run(details.presentation_feedback.timestamp);
+        std::move(callback).Run(details);
       }
       itr->success_callbacks.clear();
     }
@@ -307,7 +377,7 @@ void LayerTreeImpl::DidPresentCompositorFrame(
 
 void LayerTreeImpl::DidLoseLayerTreeFrameSink() {
   client_->DidLoseLayerTreeFrameSink();
-  frame_sink_.reset();
+  MaybeReleaseResources();
   MaybeRequestFrameSink();
 }
 
@@ -343,14 +413,34 @@ gfx::Size LayerTreeImpl::GetUIResourceSize(int resource_id) {
 
 void LayerTreeImpl::AddSurfaceRange(const viz::SurfaceRange& range) {
   DCHECK(range.IsValid());
-  DCHECK(!referenced_surfaces_.contains(range));
-  referenced_surfaces_.insert(range);
+  DCHECK(!referenced_surfaces_.contains(range) ||
+         referenced_surfaces_[range] >= 1);
+  if (++(referenced_surfaces_[range]) == 1) {
+    SetNeedsDraw();
+  }
 }
 
 void LayerTreeImpl::RemoveSurfaceRange(const viz::SurfaceRange& range) {
   DCHECK(range.IsValid());
-  DCHECK(referenced_surfaces_.contains(range));
-  referenced_surfaces_.erase(range);
+  DCHECK(referenced_surfaces_.contains(range) &&
+         referenced_surfaces_[range] >= 1);
+  if (--(referenced_surfaces_[range]) == 0) {
+    referenced_surfaces_.erase(range);
+    SetNeedsDraw();
+  }
+}
+
+void LayerTreeImpl::RegisterOffsetTag(const viz::OffsetTag& tag,
+                                      SurfaceLayer* owner) {
+  bool inserted = registered_offset_tags_.insert({tag, owner}).second;
+  // There should only be a single SurfaceLayer owner for each tag.
+  CHECK(inserted);
+}
+
+void LayerTreeImpl::UnregisterOffsetTag(const viz::OffsetTag& tag,
+                                        SurfaceLayer* owner) {
+  size_t erased = registered_offset_tags_.erase(tag);
+  CHECK_EQ(erased, 1u);
 }
 
 void LayerTreeImpl::MaybeRequestFrameSink() {
@@ -388,6 +478,45 @@ bool LayerTreeImpl::NeedsDraw() const {
   return client_needs_one_begin_frame_ || needs_draw_;
 }
 
+void LayerTreeImpl::FlushBeginFrameResults() {
+  if (begin_frame_not_needed_count_ == 0 && begin_frame_processed_count_ == 0 &&
+      begin_frame_produced_count_ == 0) {
+    return;
+  }
+
+  // The UMA_HISTOGRAM_ENUMERATION macro is not suitable for adding a count > 1.
+  // Instead, we get the histogram pointer and use AddCount(). For performance,
+  // the pointer is cached in a static variable.
+  static base::HistogramBase* histogram = nullptr;
+  if (!histogram) {
+    constexpr char kHistogramName[] = "Compositing.Slim.BeginFrameResult";
+    // For enums, the max value is one higher than the max enumerator value.
+    constexpr int kBoundary =
+        static_cast<int>(SlimBeginFrameResult::kMaxValue) + 1;
+    // The number of buckets is boundary + 1 to include the overflow bucket.
+    histogram = base::LinearHistogram::FactoryGet(
+        kHistogramName, 1, kBoundary, kBoundary + 1,
+        base::HistogramBase::kUmaTargetedHistogramFlag);
+  }
+
+  if (begin_frame_not_needed_count_ > 0) {
+    histogram->AddCount(static_cast<int>(SlimBeginFrameResult::kEarlyOutNoDraw),
+                        begin_frame_not_needed_count_);
+    begin_frame_not_needed_count_ = 0;
+  }
+  if (begin_frame_processed_count_ > 0) {
+    histogram->AddCount(
+        static_cast<int>(SlimBeginFrameResult::kEarlyOutProcessed),
+        begin_frame_processed_count_);
+    begin_frame_processed_count_ = 0;
+  }
+  if (begin_frame_produced_count_ > 0) {
+    histogram->AddCount(static_cast<int>(SlimBeginFrameResult::kFrameProduced),
+                        begin_frame_produced_count_);
+    begin_frame_produced_count_ = 0;
+  }
+}
+
 bool LayerTreeImpl::NeedsBeginFrames() const {
   return NeedsDraw() ||
          num_begin_frames_with_no_draw_ < num_unneeded_begin_frame_before_stop_;
@@ -398,19 +527,14 @@ void LayerTreeImpl::GenerateCompositorFrame(
     viz::CompositorFrame& out_frame,
     base::flat_set<viz::ResourceId>& out_resource_ids,
     viz::HitTestRegionList& out_hit_test_region_list) {
-  TRACE_EVENT_WITH_FLOW1("viz,benchmark", "Graphics.Pipeline",
-                         TRACE_ID_GLOBAL(args.trace_id),
-                         TRACE_EVENT_FLAG_FLOW_IN | TRACE_EVENT_FLAG_FLOW_OUT,
-                         "step", "GenerateCompositorFrame");
-
   for (auto& resource_request :
        ui_resource_manager_.TakeUIResourcesRequests()) {
     switch (resource_request.GetType()) {
-      case cc::UIResourceRequest::UI_RESOURCE_CREATE:
+      case cc::UIResourceRequest::Type::kCreate:
         frame_sink_->UploadUIResource(resource_request.GetId(),
                                       resource_request.GetBitmap());
         break;
-      case cc::UIResourceRequest::UI_RESOURCE_DELETE:
+      case cc::UIResourceRequest::Type::kDelete:
         frame_sink_->MarkUIResourceForDeletion(resource_request.GetId());
         break;
     }
@@ -432,10 +556,20 @@ void LayerTreeImpl::GenerateCompositorFrame(
       viz::BeginFrameAck(args, /*has_damage=*/true);
   out_frame.metadata.device_scale_factor = device_scale_factor_;
   out_frame.metadata.root_background_color = background_color_;
-  out_frame.metadata.referenced_surfaces = std::vector<viz::SurfaceRange>(
-      referenced_surfaces_.begin(), referenced_surfaces_.end());
-  out_frame.metadata.top_controls_visible_height = top_controls_visible_height_;
-  top_controls_visible_height_.reset();
+  out_frame.metadata.referenced_surfaces.reserve(referenced_surfaces_.size());
+  for (const auto& [range, range_counts] : referenced_surfaces_) {
+    out_frame.metadata.referenced_surfaces.emplace_back(range);
+  }
+  for (auto& [tag, layer] : registered_offset_tags_) {
+    // Only add OffsetTagDefinitions if the SurfaceLayer they are registered to
+    // embed something. There is no way to provide an offset value without an
+    // embedded viz::Surface to look the value up from.
+    // TODO(b/334144355): Don't tag quads if no definition is added.
+    if (layer->surface_range().IsValid()) {
+      out_frame.metadata.offset_tag_definitions.push_back(
+          layer->GetOffsetTagDefinition(tag));
+    }
+  }
   out_frame.metadata.display_transform_hint = display_transform_hint_;
 
   FrameData frame_data(out_frame, out_hit_test_region_list.regions);
@@ -466,8 +600,10 @@ void LayerTreeImpl::GenerateCompositorFrame(
           background_opaque && unoccluded_region.GetRegionComplexity() <= 1;
       quad_state->SetAll(gfx::Transform(), gutter_bounding_rect,
                          gutter_bounding_rect, gfx::MaskFilterInfo(),
-                         /*clip=*/absl::nullopt, contents_opaque,
-                         /*opacity_f=*/1.0f, SkBlendMode::kSrcOver, 0);
+                         /*clip=*/std::nullopt, contents_opaque,
+                         /*opacity_f=*/1.0f, SkBlendMode::kSrcOver,
+                         /*sorting_context=*/0, /*layer_id=*/0u,
+                         /*fast_rounded_corner=*/false);
       for (gfx::Rect unoccluded_rect : unoccluded_region) {
         viz::SolidColorDrawQuad* quad =
             render_pass->CreateAndAppendDrawQuad<viz::SolidColorDrawQuad>();
@@ -491,12 +627,20 @@ void LayerTreeImpl::GenerateCompositorFrame(
       args.frame_time, frame_data.deadline_in_frames.value_or(0u),
       args.interval, frame_data.use_default_lower_bound_deadline);
 
+  size_t total_quad_count = 0;
   for (const auto& pass : out_frame.render_pass_list) {
+    total_quad_count += pass->quad_list.size();
     for (const auto* quad : pass->quad_list) {
-      for (viz::ResourceId resource_id : quad->resources) {
-        out_resource_ids.insert(resource_id);
+      if (quad->resource_id != viz::kInvalidResourceId) {
+        out_resource_ids.insert(quad->resource_id);
       }
     }
+  }
+
+  if (const char* client_name = GetClientNameForMetrics()) {
+    UMA_HISTOGRAM_COUNTS_1000(
+        base::StringPrintf("Compositing.%s.CompositorFrame.Quads", client_name),
+        total_quad_count);
   }
 
   if (!presentation_callback_for_next_frame_.empty() ||
@@ -521,24 +665,12 @@ void LayerTreeImpl::Draw(Layer& layer,
     return;
   }
 
-  absl::optional<gfx::Transform> transform_from_parent =
+  std::optional<gfx::Transform> transform_from_parent =
       layer.ComputeTransformFromParent();
   // If a 2d transform isn't invertible, then it must map the whole 2d space to
   // a single line or pointer, neither is visible.
   if (!transform_from_parent) {
     DLOG(WARNING) << "Skipping layer subtree from non-invertible transform.";
-    return;
-  }
-
-  // Compute new clip in layer space.
-  const bool mask_to_bounds =
-      layer.masks_to_bounds() || layer.HasRoundedCorner();
-  gfx::RectF clip_in_layer = transform_from_parent->MapRect(clip_in_parent);
-  if (mask_to_bounds) {
-    clip_in_layer.Intersect(
-        gfx::RectF(layer.bounds().width(), layer.bounds().height()));
-  }
-  if (clip_in_layer.IsEmpty()) {
     return;
   }
 
@@ -551,6 +683,62 @@ void LayerTreeImpl::Draw(Layer& layer,
     transform_to_root.PreConcat(transform_to_parent);
   }
 
+  // Compute new clip in layer space.
+  gfx::RectF clip_in_layer;
+  std::optional<base::AutoReset<viz::OffsetTag>> offset_tag_reset;
+  if (layer.offset_tag() &&
+      registered_offset_tags_.contains(layer.offset_tag())) {
+    // A layer can't have a different offset tag than it's ancestor.
+    CHECK(!data.offset_tag);
+
+    // If a mask filter from a parent layer that applies to tagged `layer` then
+    // the mask filter bounds shouldn't move based on offset. Currently viz
+    // assumes that mask bounds should move so don't allow this case. Allowing
+    // this would require plumbing a bool to viz that indicates if
+    // `SharedQuadState::mask_filter_info` should be translated, see
+    // crbug.com/361804880 for details
+    CHECK(!data.mask_filter_info_in_target.HasRoundedCorners() &&
+          !data.mask_filter_info_in_target.HasGradientMask());
+
+    offset_tag_reset.emplace(&data.offset_tag, layer.offset_tag());
+
+    // If `layer` has an offset tag then the position `layer` will be drawn at
+    // isn't fixed and `transform_to_target` and `transform_to_parent` might be
+    // inaccurate. Any required clipping from ancestor layers is already part of
+    // `parent_clip_in_target` if the ancestor layer has an axis-aligned
+    // transform to target render pass. Otherwise the ancestor layer will have
+    // introduced a new render pass to perform clipping. In either case, the
+    // ancestor clipping is handled and we could discard parent clipping in
+    // layer space without issues.
+    //
+    // A valid `clip_in_layer` is still needed so take `parent_clip_in_target`,
+    // expand it by the maximum movement of current layer based on offset tag
+    // constraints and transform it back to current layers coordinate space.
+    // This represents the area of `layer` that can be visible for any possible
+    // `transform_to_target` at draw time aka it clips any part of the current
+    // layer that isn't possible to be visible.
+    gfx::RectF expanded_parent_clip_in_target =
+        parent_clip_in_target ? *parent_clip_in_target
+                              : gfx::RectF(parent_pass.output_rect);
+    auto tag_constraints = registered_offset_tags_[layer.offset_tag()]
+                               ->GetOffsetTagDefinition(layer.offset_tag())
+                               .constraints;
+    tag_constraints.ExpandVisibleRect(expanded_parent_clip_in_target);
+    clip_in_layer = transform_to_target.GetCheckedInverse().MapRect(
+        expanded_parent_clip_in_target);
+  } else {
+    clip_in_layer = transform_from_parent->MapRect(clip_in_parent);
+  }
+
+  const bool mask_to_bounds =
+      layer.masks_to_bounds() || layer.HasNonTrivialMaskFilterInfo();
+  if (mask_to_bounds) {
+    clip_in_layer.Intersect(gfx::RectF(layer.bounds()));
+  }
+  if (clip_in_layer.IsEmpty()) {
+    return;
+  }
+
   {
     const int num_drawing_layers_in_subtree =
         layer.GetNumDrawingLayersInSubtree();
@@ -559,21 +747,27 @@ void LayerTreeImpl::Draw(Layer& layer,
     // There is no way to merge 2 rounded corners, so create a render pass so
     // existing rounded corners can go into RenderPassDrawQuad, and the layer's
     // rounded corners can go into quad its own pass.
-    const bool rounded_corners_needs_pass =
-        layer.HasRoundedCorner() &&
-        data.mask_filter_info_in_target.HasRoundedCorners();
+    const bool mask_filter_needs_pass =
+        layer.HasNonTrivialMaskFilterInfo() &&
+        (data.mask_filter_info_in_target.HasRoundedCorners() ||
+         data.mask_filter_info_in_target.HasGradientMask());
     const bool clip_needs_pass =
         !is_root && mask_to_bounds &&
         !transform_to_target.Preserves2dAxisAlignment();
     const bool opacity_needs_pass =
         layer.opacity() != 1.0f && num_drawing_layers_in_subtree > 1;
-    if (!filters_needs_pass && !clip_needs_pass &&
-        !rounded_corners_needs_pass && !opacity_needs_pass) {
+    if (!filters_needs_pass && !clip_needs_pass && !mask_filter_needs_pass &&
+        !opacity_needs_pass) {
       // Does not need new render pass.
       // Compute new clip in target space.
       gfx::RectF new_clip_in_target(gfx::SizeF(layer.bounds()));
       const gfx::RectF* clip_in_target = parent_clip_in_target;
-      if (mask_to_bounds) {
+
+      // If `layer`, or an ancestor layer, has an OffsetTag then it's not known
+      // where it will be drawn in target render pass coordinate space. Don't
+      // add layer bounds to `clip_in_target` and rely on layer space clipping
+      // in `clip_in_layer`.
+      if (mask_to_bounds && !data.offset_tag) {
         new_clip_in_target = transform_to_target.MapRect(new_clip_in_target);
         if (parent_clip_in_target) {
           new_clip_in_target.Intersect(*parent_clip_in_target);
@@ -649,6 +843,12 @@ void LayerTreeImpl::Draw(Layer& layer,
   {
     SimpleEnclosedRegion parent_pass_occlusion = data.occlusion_in_target;
     data.occlusion_in_target.Clear();
+
+    // The OffsetTag will be applied to the RenderPassDrawQuad so reset it when
+    // drawing layers to the new render pass.
+    base::AutoReset<viz::OffsetTag> render_pass_offset_tag_reset(
+        &data.offset_tag, viz::OffsetTag());
+
     DrawChildrenAndAppendQuads(layer, *new_pass, data, transform_to_root,
                                transform_to_target, clip_in_target,
                                clip_in_layer,
@@ -694,28 +894,30 @@ void LayerTreeImpl::Draw(Layer& layer,
   // Any clip introduced by this layer is already applied by the bounds of the
   // new pass, so only need to apply any clips in parents target that came
   // from parent.
-  absl::optional<gfx::Rect> clip_opt;
+  std::optional<gfx::Rect> clip_opt;
   if (parent_clip_in_target) {
     clip_opt = gfx::ToEnclosingRect(*parent_clip_in_target);
   }
   const bool new_pass_contents_opaque =
       occlusion_in_new_pass.Contains(content_rect);
-  shared_quad_state->SetAll(
-      transform_new_pass_to_parent_target, content_rect, content_rect,
-      data.mask_filter_info_in_target, clip_opt, new_pass_contents_opaque,
-      parent_opacity * layer.opacity(), SkBlendMode::kSrcOver, 0);
-  shared_quad_state->is_fast_rounded_corner = true;
+  shared_quad_state->SetAll(transform_new_pass_to_parent_target, content_rect,
+                            content_rect, data.mask_filter_info_in_target,
+                            clip_opt, new_pass_contents_opaque,
+                            parent_opacity * layer.opacity(),
+                            SkBlendMode::kSrcOver, /*sorting_context=*/0,
+                            /*layer_id=*/0u, /*fast_rounded_corner=*/true);
+  shared_quad_state->offset_tag = data.offset_tag;
+
   auto* quad =
       parent_pass.CreateAndAppendDrawQuad<viz::CompositorRenderPassDrawQuad>();
 
-  gfx::RectF tex_coord_rect(gfx::Rect(content_rect.size()));
   quad->SetAll(shared_quad_state, content_rect, content_rect,
                /*needs_blending=*/true, new_pass->id,
                /*mask_resource_id=*/viz::kInvalidResourceId,
                /*mask_uv_rect=*/gfx::RectF(),
                /*mask_texture_size=*/gfx::Size(),
                /*filters_scale=*/scale_to_new_pass,
-               /*filters_origin=*/gfx::PointF(), tex_coord_rect,
+               /*filters_origin=*/gfx::PointF(),
                /*force_anti_aliasing_off=*/false,
                /*backdrop_filter_quality=*/1.f,
                /*intersects_damage_under=*/true);
@@ -745,11 +947,12 @@ void LayerTreeImpl::DrawChildrenAndAppendQuads(
   const bool subtree_property_changed =
       layer.GetAndResetSubtreePropertyChanged() ||
       data.subtree_property_changed_from_parent;
-  absl::optional<base::AutoReset<gfx::MaskFilterInfo>>
+  std::optional<base::AutoReset<gfx::MaskFilterInfo>>
       auto_reset_mask_filter_info;
-  if (layer.HasRoundedCorner()) {
+  if (layer.HasNonTrivialMaskFilterInfo()) {
     gfx::MaskFilterInfo info(gfx::RRectF(gfx::RectF(gfx::Rect(layer.bounds())),
-                                         layer.corner_radii()));
+                                         layer.corner_radii()),
+                             layer.gradient_mask());
     info.ApplyTransform(transform_to_target);
     auto_reset_mask_filter_info.emplace(&data.mask_filter_info_in_target, info);
   }
@@ -795,6 +998,16 @@ bool LayerTreeImpl::UpdateOcclusionRect(
     float opacity,
     const gfx::RectF& visible_rectf_in_target,
     gfx::RectF& visible_rect) {
+  if (data.offset_tag) {
+    // If layer has an offset tag then it's not known where it will be drawn.
+    // Don't consider anything above it as occluding or anything below it as
+    // occluded.
+    // TODO(kylechar): It's possible to start a new "occlusion context" at the
+    // parent layer and compute occlusion between layers that have the same
+    // OffsetTag, since they all move together.
+    return true;
+  }
+
   // Skip occlusion calculations on non-axis aligned layers.
   // Note this is to reduce complexity of occlusion tracking (eg can use
   // Transform::MapRect on RectF directly and only need to worry about
@@ -821,7 +1034,8 @@ bool LayerTreeImpl::UpdateOcclusionRect(
     }
   }
 
-  if (opacity < 1.0f || !layer.contents_opaque() || layer.HasRoundedCorner()) {
+  if (opacity < 1.0f || !layer.contents_opaque() ||
+      layer.HasNonTrivialMaskFilterInfo()) {
     return true;
   }
 
@@ -910,6 +1124,19 @@ void LayerTreeImpl::ProcessDamageForRenderPass(
   render_pass.damage_rect = damage;
   render_pass.has_damage_from_contributing_content =
       !render_pass.damage_rect.IsEmpty();
+}
+
+void LayerTreeImpl::MaybeReleaseResources() {
+  if (frame_sink_ && root_) {
+    ReleaseResourcesFromLayerAndChildren(root_.get());
+  }
+}
+
+void LayerTreeImpl::ReleaseResourcesFromLayerAndChildren(Layer* layer) {
+  layer->ReleaseResources();
+  for (auto& child : layer->children()) {
+    ReleaseResourcesFromLayerAndChildren(child.get());
+  }
 }
 
 }  // namespace cc::slim

@@ -5,23 +5,26 @@
 #include "chrome/browser/ash/arc/arc_migration_guide_notification.h"
 
 #include <memory>
+#include <optional>
 
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/notification_utils.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/functional/bind.h"
 #include "chrome/browser/ash/arc/arc_migration_constants.h"
 #include "chrome/browser/ash/arc/arc_util.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/notifications/notification_display_service.h"
+#include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "chromeos/dbus/power_manager/power_supply_properties.pb.h"
+#include "components/account_id/account_id.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/vector_icons/vector_icons.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/devicetype_utils.h"
 #include "ui/gfx/color_palette.h"
 #include "ui/message_center/public/cpp/notification.h"
@@ -44,7 +47,7 @@ void ShowArcMigrationGuideNotification(Profile* profile) {
   notifier_id.profile_id =
       multi_user_util::GetAccountIdFromProfile(profile).GetUserEmail();
 
-  absl::optional<power_manager::PowerSupplyProperties> power =
+  std::optional<power_manager::PowerSupplyProperties> power =
       chromeos::PowerManagerClient::Get()->GetLastStatus();
   const bool is_low_battery =
       power &&
@@ -59,18 +62,21 @@ void ShowArcMigrationGuideNotification(Profile* profile) {
 
   auto delegate =
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
-          base::BindRepeating(&chrome::AttemptUserExit));
+          base::BindRepeating([]() {
+            session_manager::SessionManager::Get()->RequestSignOut();
+          }));
 
   message_center::Notification notification = ash::CreateSystemNotification(
       message_center::NOTIFICATION_TYPE_SIMPLE, kSuggestNotificationId,
       l10n_util::GetStringUTF16(IDS_ARC_MIGRATE_ENCRYPTION_NOTIFICATION_TITLE),
       message, std::u16string(), GURL(), notifier_id,
       message_center::RichNotificationData(), std::move(delegate),
-      vector_icons::kSettingsIcon,
+      features::IsRoundedIconsEnabled() ? vector_icons::kSettingsFilledIcon
+                                        : vector_icons::kSettingsOldIcon,
       message_center::SystemNotificationWarningLevel::CRITICAL_WARNING);
   notification.set_renotify(true);
 
-  NotificationDisplayService::GetForProfile(profile)->Display(
+  NotificationDisplayServiceFactory::GetForProfile(profile)->Display(
       NotificationHandler::Type::TRANSIENT, notification,
       /*metadata=*/nullptr);
 }

@@ -3,9 +3,12 @@
 // found in the LICENSE file.
 
 // clang-format off
+import {COLORS_CSS_SELECTOR} from 'chrome://resources/cr_components/color_change_listener/colors_css_updater.js';
 import {flush} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {CrDrawerElement, CrSettingsPrefs, CrToolbarElement, CrToolbarSearchFieldElement, Router, routes, SettingsUiElement} from 'chrome://settings/settings.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {CrDrawerElement, CrToolbarElement, CrToolbarSearchFieldElement, SettingsUiElement} from 'chrome://settings/settings.js';
+import {CrSettingsPrefs, loadTimeData, MAX_QUERY_LENGTH, Router, routes} from 'chrome://settings/settings.js';
+import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {eventToPromise} from 'chrome://webui-test/test_util.js';
 // clang-format on
 
@@ -15,43 +18,43 @@ suite('SettingsUIToolbarAndDrawer', function() {
   let toolbar: CrToolbarElement;
   let drawer: CrDrawerElement;
 
-  setup(function() {
+  setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     ui = document.createElement('settings-ui');
     document.body.appendChild(ui);
-    return CrSettingsPrefs.initialized.then(() => {
-      flush();
-      toolbar = ui.$.toolbar;
-      drawer = ui.$.drawer;
-    });
+    await CrSettingsPrefs.initialized;
+    flush();
+    toolbar = ui.$.toolbar;
+    drawer = ui.$.drawer;
   });
 
-  test('showing menu in toolbar is dependent on narrow mode', function() {
+  test('showing menu in toolbar is dependent on narrow mode', async function() {
     assertTrue(!!toolbar);
     toolbar.narrow = true;
+    await toolbar.updateComplete;
     assertTrue(toolbar.showMenu);
 
     toolbar.narrow = false;
+    await toolbar.updateComplete;
     assertFalse(toolbar.showMenu);
   });
 
   test('app drawer', async () => {
     assertEquals(null, ui.shadowRoot!.querySelector('cr-drawer settings-menu'));
-    assertFalse(!!drawer.open);
+    assertFalse(drawer.open);
 
     const drawerOpened = eventToPromise('cr-drawer-opened', drawer);
     drawer.openDrawer();
-    flush();
+    await drawerOpened;
 
     // Validate that dialog is open and menu is shown so it will animate.
     assertTrue(drawer.open);
     assertTrue(!!ui.shadowRoot!.querySelector('cr-drawer settings-menu'));
 
-    await drawerOpened;
     const drawerClosed = eventToPromise('close', drawer);
     drawer.cancel();
-
     await drawerClosed;
+
     // Drawer is closed, but menu is still stamped so
     // its contents remain visible as the drawer slides
     // out.
@@ -77,15 +80,14 @@ suite('SettingsUISearch', function() {
   let toolbar: CrToolbarElement;
   let searchField: CrToolbarSearchFieldElement;
 
-  setup(function() {
+  setup(async function() {
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     ui = document.createElement('settings-ui');
     document.body.appendChild(ui);
-    return CrSettingsPrefs.initialized.then(() => {
-      flush();
-      toolbar = ui.$.toolbar;
-      searchField = toolbar.getSearchField();
-    });
+    await CrSettingsPrefs.initialized;
+    flush();
+    toolbar = ui.$.toolbar;
+    searchField = toolbar.getSearchField();
   });
 
   test('URL initiated search propagates to search box', function() {
@@ -108,6 +110,13 @@ suite('SettingsUISearch', function() {
     searchField.setValue(value);
     assertEquals(
         value, Router.getInstance().getQueryParameters().get('search'));
+
+    // Test that overly long queries are truncated.
+    value = value.repeat(300);
+    searchField.setValue(value);
+    assertEquals(
+        value.substring(0, MAX_QUERY_LENGTH),
+        Router.getInstance().getQueryParameters().get('search'));
 
     // Test that search queries are properly URL encoded.
     value = '+++';
@@ -137,18 +146,46 @@ suite('SettingsUISearch', function() {
   test('MaintainsFocusOnMenus', async () => {
     // Start in non-narrow mode with focus in the left menu.
     toolbar.narrow = false;
+    await toolbar.updateComplete;
     ui.$.leftMenu.focusFirstItem();
     assertEquals(ui.$.leftMenu, ui.shadowRoot!.activeElement);
 
     // Switch to narrow mode and test that focus moves to menu button.
     toolbar.narrow = true;
-    flush();
-    await new Promise(resolve => requestAnimationFrame(resolve));
-    assertTrue(ui.$.toolbar.isMenuFocused());
+    await eventToPromise('focusin', toolbar);
+    assertTrue(toolbar.isMenuFocused());
 
     // Switch back to non-narrow mode and test that focus moves to left menu.
     toolbar.narrow = false;
-    flush();
+    await toolbar.updateComplete;
     assertEquals(ui.$.leftMenu, ui.shadowRoot!.activeElement);
+  });
+});
+
+suite('WebuiRefresh2026', () => {
+  const WEBUI_REFRESH_ATTR = 'webui-refresh-2026';
+  let ui: SettingsUiElement;
+
+  function createSettingsUI() {
+    document.body.innerHTML = window.trustedTypes!.emptyHTML;
+    ui = document.createElement('settings-ui');
+    document.body.appendChild(ui);
+    flush();
+  }
+
+  test('Enabled', async () => {
+    loadTimeData.overrideValues({webuiRefresh2026: WEBUI_REFRESH_ATTR});
+    createSettingsUI();
+    await flushTasks();
+
+    assertNotEquals(null, document.body.querySelector(COLORS_CSS_SELECTOR));
+  });
+
+  test('Disabled', async () => {
+    loadTimeData.overrideValues({webuiRefresh2026: ''});
+    createSettingsUI();
+    await flushTasks();
+
+    assertEquals(null, document.body.querySelector(COLORS_CSS_SELECTOR));
   });
 });

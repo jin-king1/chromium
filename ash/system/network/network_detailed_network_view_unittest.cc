@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/system/network/network_detailed_network_view_impl.h"
+#include "ash/system/network/network_detailed_network_view.h"
 
 #include <memory>
 
-#include "ash/system/network/network_detailed_network_view.h"
+#include "ash/system/network/network_detailed_network_view_impl.h"
 #include "ash/system/network/network_detailed_view.h"
 #include "ash/system/network/network_list_mobile_header_view.h"
 #include "ash/system/network/network_list_network_item_view.h"
@@ -111,10 +111,6 @@ class NetworkDetailedNetworkViewTest : public AshTestBase {
     // Wait for network state and device change events to be handled.
     base::RunLoop().RunUntilIdle();
 
-    histogram_tester_.ExpectBucketCount(
-        "ChromeOS.SystemTray.Network.SectionShown",
-        DetailedViewSection::kDetailedSection, 0);
-
     detailed_view_delegate_ =
         std::make_unique<DetailedViewDelegate>(/*tray_controller=*/nullptr);
 
@@ -124,10 +120,6 @@ class NetworkDetailedNetworkViewTest : public AshTestBase {
                 detailed_view_delegate_.get(),
                 &fake_network_detailed_network_delagte_);
 
-    histogram_tester_.ExpectBucketCount(
-        "ChromeOS.SystemTray.Network.SectionShown",
-        DetailedViewSection::kDetailedSection, 1);
-
     widget_ = CreateFramelessTestWidget();
     widget_->SetFullscreen(true);
     network_detailed_network_view_ =
@@ -135,6 +127,7 @@ class NetworkDetailedNetworkViewTest : public AshTestBase {
   }
 
   void TearDown() override {
+    network_detailed_network_view_ = nullptr;
     widget_.reset();
 
     AshTestBase::TearDown();
@@ -208,8 +201,7 @@ class NetworkDetailedNetworkViewTest : public AshTestBase {
   CrosNetworkConfigTestHelper network_config_helper_;
   FakeNetworkDetailedNetworkViewDelegate fake_network_detailed_network_delagte_;
   std::unique_ptr<DetailedViewDelegate> detailed_view_delegate_;
-  raw_ptr<NetworkDetailedNetworkViewImpl, ExperimentalAsh>
-      network_detailed_network_view_;
+  raw_ptr<NetworkDetailedNetworkViewImpl> network_detailed_network_view_;
   base::HistogramTester histogram_tester_;
 };
 
@@ -217,15 +209,12 @@ TEST_F(NetworkDetailedNetworkViewTest, ViewsAreCreated) {
   NetworkListNetworkItemView* network_list_item =
       AddNetworkListItem(NetworkType::kWiFi);
   ASSERT_NE(nullptr, network_list_item);
-  EXPECT_STREQ("NetworkListNetworkItemView", network_list_item->GetClassName());
 
   NetworkListWifiHeaderView* wifi_section = AddWifiSectionHeader();
   ASSERT_NE(nullptr, wifi_section);
-  EXPECT_STREQ("NetworkListWifiHeaderView", wifi_section->GetClassName());
 
   NetworkListMobileHeaderView* mobile_section = AddMobileSectionHeader();
   ASSERT_NE(nullptr, mobile_section);
-  EXPECT_STREQ("NetworkListMobileHeaderView", mobile_section->GetClassName());
 }
 
 TEST_F(NetworkDetailedNetworkViewTest, ToggleInteractions) {

@@ -9,6 +9,7 @@ import android.view.ViewGroup;
 
 import androidx.recyclerview.widget.RecyclerView;
 
+import org.chromium.chrome.browser.autofill.helpers.FaviconHelper;
 import org.chromium.chrome.browser.keyboard_accessory.R;
 import org.chromium.chrome.browser.keyboard_accessory.data.KeyboardAccessoryData;
 import org.chromium.chrome.browser.keyboard_accessory.data.UserInfoField;
@@ -18,27 +19,28 @@ import org.chromium.components.browser_ui.widget.chips.ChipView;
 import org.chromium.ui.modelutil.ListModel;
 
 /**
- * This stateless class provides methods to bind a {@link ListModel<AccessorySheetDataPiece>}
- * to the {@link RecyclerView} used as view of a tab for the address accessory sheet component.
+ * This stateless class provides methods to bind a {@link ListModel<AccessorySheetDataPiece>} to the
+ * {@link RecyclerView} used as view of a tab for the address accessory sheet component.
  */
 class AddressAccessorySheetViewBinder {
-    static ElementViewHolder create(ViewGroup parent, @AccessorySheetDataPiece.Type int viewType) {
+    static ElementViewHolder create(
+            ViewGroup parent,
+            @AccessorySheetDataPiece.Type int viewType,
+            FaviconHelper faviconHelper) {
         switch (viewType) {
             case AccessorySheetDataPiece.Type.TITLE:
-                return new AccessorySheetTabViewBinder.TitleViewHolder(
-                        parent, R.layout.keyboard_accessory_sheet_tab_title);
+                return new AccessorySheetTabViewBinder.TitleViewHolder(parent);
             case AccessorySheetDataPiece.Type.ADDRESS_INFO:
                 return new AddressInfoViewHolder(parent);
             case AccessorySheetDataPiece.Type.FOOTER_COMMAND:
+            case AccessorySheetDataPiece.Type.DIVIDER:
                 return AccessorySheetTabViewBinder.create(parent, viewType);
         }
         assert false : "Unhandled type of data piece: " + viewType;
         return null;
     }
 
-    /**
-     * Holds a View representing a set of address data.
-     */
+    /** Holds a View representing a set of address data. */
     static class AddressInfoViewHolder
             extends ElementViewHolder<KeyboardAccessoryData.UserInfo, AddressAccessoryInfoView> {
         AddressInfoViewHolder(ViewGroup parent) {
@@ -73,8 +75,9 @@ class AddressAccessorySheetViewBinder {
         }
     }
 
-    static void initializeView(RecyclerView view, AccessorySheetTabItemsModel model) {
-        view.setAdapter(AddressAccessorySheetCoordinator.createAdapter(model));
+    static void initializeView(
+            RecyclerView view, AccessorySheetTabItemsModel model, FaviconHelper faviconHelper) {
+        view.setAdapter(AddressAccessorySheetCoordinator.createAdapter(model, faviconHelper));
         view.addItemDecoration(new DynamicInfoViewBottomSpacer(AddressAccessoryInfoView.class));
     }
 }

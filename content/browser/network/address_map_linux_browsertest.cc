@@ -19,8 +19,8 @@
 #include "base/task/thread_pool.h"
 #include "base/test/scoped_feature_list.h"
 #include "content/public/browser/network_service_instance.h"
+#include "content/public/browser/network_service_util.h"
 #include "content/public/common/content_features.h"
-#include "content/public/common/network_service_util.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/content_browser_test.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -64,7 +64,6 @@ class NCNLinuxMockedNetlinkTestUtil {
     auto ncn_linux =
         net::NetworkChangeNotifierLinux::CreateWithSocketForTesting(
             {}, std::move(netlink_fd_receiver));
-    ncn_linux_ = ncn_linux.get();
 
     base::ThreadPool::PostTaskAndReply(
         FROM_HERE, {base::MayBlock()},
@@ -88,8 +87,11 @@ class NCNLinuxMockedNetlinkTestUtil {
     // Receive the RTM_GETADDR request.
     std::vector<base::ScopedFD> fds;
     ssize_t expected_size = NLMSG_LENGTH(sizeof(request.msg));
-    EXPECT_EQ(base::UnixDomainSocket::RecvMsg(fake_netlink_fd_.get(), &request,
-                                              expected_size, &fds),
+    EXPECT_EQ(base::UnixDomainSocket::RecvMsg(
+                  fake_netlink_fd_.get(),
+                  base::byte_span_from_ref(base::allow_nonunique_obj, request)
+                      .first(static_cast<size_t>(expected_size)),
+                  &fds),
               expected_size);
     EXPECT_TRUE(fds.empty());
     EXPECT_EQ(request.header.nlmsg_type, RTM_GETADDR);
@@ -98,12 +100,15 @@ class NCNLinuxMockedNetlinkTestUtil {
     net::test::NetlinkBuffer buffer;
     net::test::MakeAddrMessage(RTM_NEWADDR, IFA_F_TEMPORARY, AF_INET,
                                kTestInterfaceEth, kAddr0, kEmpty, &buffer);
-    base::UnixDomainSocket::SendMsg(fake_netlink_fd_.get(), buffer.data(),
-                                    buffer.size(), {});
+    base::UnixDomainSocket::SendMsg(fake_netlink_fd_.get(),
+                                    base::as_byte_span(buffer), {});
 
     // Receive the RTM_GETLINK request.
-    EXPECT_EQ(base::UnixDomainSocket::RecvMsg(fake_netlink_fd_.get(), &request,
-                                              expected_size, &fds),
+    EXPECT_EQ(base::UnixDomainSocket::RecvMsg(
+                  fake_netlink_fd_.get(),
+                  base::byte_span_from_ref(base::allow_nonunique_obj, request)
+                      .first(static_cast<size_t>(expected_size)),
+                  &fds),
               expected_size);
     EXPECT_EQ(request.header.nlmsg_type, RTM_GETLINK);
 
@@ -111,8 +116,8 @@ class NCNLinuxMockedNetlinkTestUtil {
     buffer.clear();
     net::test::MakeLinkMessage(RTM_NEWLINK, IFF_UP | IFF_LOWER_UP | IFF_RUNNING,
                                kTestInterfaceEth, &buffer);
-    base::UnixDomainSocket::SendMsg(fake_netlink_fd_.get(), buffer.data(),
-                                    buffer.size(), {});
+    base::UnixDomainSocket::SendMsg(fake_netlink_fd_.get(),
+                                    base::as_byte_span(buffer), {});
   }
 
   void BufferAddAddrMsg(const net::IPAddress address,
@@ -141,8 +146,8 @@ class NCNLinuxMockedNetlinkTestUtil {
   }
 
   void SendBuffer() {
-    base::UnixDomainSocket::SendMsg(fake_netlink_fd_.get(), buffer_.data(),
-                                    buffer_.size(), {});
+    base::UnixDomainSocket::SendMsg(fake_netlink_fd_.get(),
+                                    base::as_byte_span(buffer_), {});
     buffer_.clear();
   }
 
@@ -159,7 +164,6 @@ class NCNLinuxMockedNetlinkTestUtil {
   }
 
  private:
-  raw_ptr<net::NetworkChangeNotifierLinux, DanglingUntriaged> ncn_linux_;
   base::ScopedFD fake_netlink_fd_;
 
   bool initialized_ = false;
@@ -202,11 +206,12 @@ class AddressMapLinuxBrowserTest : public ContentBrowserTest {
   };
 
   void SetUp() override {
-    scoped_feature_list_.InitWithFeatures(
-        {net::features::kAddressTrackerLinuxIsProxied},
-        {features::kNetworkServiceInProcess});
-    ncn_mocked_factory_ = new NetworkChangeNotifierLinuxMockedNetlinkFactory();
-    net::NetworkChangeNotifier::SetFactory(ncn_mocked_factory_);
+    scoped_feature_list_.InitAndEnableFeature(
+        net::features::kAddressTrackerLinuxIsProxied);
+    ForceOutOfProcessNetworkService();
+    ncn_mocked_factory_ =
+        std::make_unique<NetworkChangeNotifierLinuxMockedNetlinkFactory>();
+    net::NetworkChangeNotifier::SetFactory(ncn_mocked_factory_.get());
     ContentBrowserTest::SetUp();
   }
 
@@ -276,7 +281,8 @@ class AddressMapLinuxBrowserTest : public ContentBrowserTest {
   }
 
  protected:
-  raw_ptr<NetworkChangeNotifierLinuxMockedNetlinkFactory> ncn_mocked_factory_;
+  std::unique_ptr<NetworkChangeNotifierLinuxMockedNetlinkFactory>
+      ncn_mocked_factory_;
 
  private:
   class NetworkChangeNotificationListener
@@ -286,10 +292,11 @@ class AddressMapLinuxBrowserTest : public ContentBrowserTest {
         mojo::PendingReceiver<network::mojom::NetworkChangeManagerClient>
             receiver)
         : receiver_(this, std::move(receiver)) {}
-    void OnInitialConnectionType(network::mojom::ConnectionType type) override {
-    }
+    void OnInitialConnectionType(
+        net::NetworkChangeNotifier::ConnectionType type) override {}
 
-    void OnNetworkChanged(network::mojom::ConnectionType type) override {
+    void OnNetworkChanged(
+        net::NetworkChangeNotifier::ConnectionType type) override {
       // NetworkChangeNotifier::NetworkChangeObserver will fire a
       // CONNECTION_NONE change right before firing a non-CONNECTION_NONE
       // change. So if this is a CONNECTION_NONE event, only continue the test
@@ -297,7 +304,8 @@ class AddressMapLinuxBrowserTest : public ContentBrowserTest {
       // TODO(mpdenton): set timeouts to zero in the network process so tests
       // run faster.
       if ((expected_connection_type_ == ExpectedConnectionType::kNone ||
-           type != network::mojom::ConnectionType::CONNECTION_NONE) &&
+           type !=
+               net::NetworkChangeNotifier::ConnectionType::CONNECTION_NONE) &&
           run_loop_.has_value()) {
         run_loop_->Quit();
       }
@@ -312,7 +320,7 @@ class AddressMapLinuxBrowserTest : public ContentBrowserTest {
 
    private:
     mojo::Receiver<network::mojom::NetworkChangeManagerClient> receiver_;
-    absl::optional<base::RunLoop> run_loop_;
+    std::optional<base::RunLoop> run_loop_;
     ExpectedConnectionType expected_connection_type_;
   };
 

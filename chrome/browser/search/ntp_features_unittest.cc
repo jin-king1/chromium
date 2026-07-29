@@ -9,6 +9,7 @@
 #include "base/time/time.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/ui_base_features.h"
 
 namespace ntp_features {
 
@@ -49,6 +50,41 @@ TEST(NTPFeaturesTest, ModulesOrder) {
   scoped_feature_list_.InitWithFeaturesAndParameters(
       {{kNtpModulesOrder, {{kNtpModulesOrderParam, ""}}}}, {});
   EXPECT_TRUE(GetModulesOrder().empty());
+}
+
+TEST(NTPFeaturesTest, WallpaperSearchButtonAnimationShownThreshold) {
+  base::test::ScopedFeatureList scoped_feature_list_;
+
+  // If the param is unset, the default value is used.
+  int threshold = GetWallpaperSearchButtonAnimationShownThreshold();
+  EXPECT_EQ(15, threshold);
+
+  // Unsigned integers override the default value.
+  scoped_feature_list_.InitWithFeaturesAndParameters(
+      {{kNtpWallpaperSearchButtonAnimationShownThreshold,
+        {{kNtpWallpaperSearchButtonAnimationShownThresholdParam, "20"}}}},
+      {});
+  threshold = GetWallpaperSearchButtonAnimationShownThreshold();
+  EXPECT_EQ(20, threshold);
+
+  // Signed integers override the default value.
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitWithFeaturesAndParameters(
+      {{kNtpWallpaperSearchButtonAnimationShownThreshold,
+        {{kNtpWallpaperSearchButtonAnimationShownThresholdParam, "-20"}}}},
+      {});
+  threshold = GetWallpaperSearchButtonAnimationShownThreshold();
+  EXPECT_EQ(-20, threshold);
+
+  // If the param is not parsable to an integer, the default value is
+  // used.
+  scoped_feature_list_.Reset();
+  scoped_feature_list_.InitWithFeaturesAndParameters(
+      {{kNtpWallpaperSearchButtonAnimationShownThreshold,
+        {{kNtpWallpaperSearchButtonAnimationShownThresholdParam, "j"}}}},
+      {});
+  threshold = GetWallpaperSearchButtonAnimationShownThreshold();
+  EXPECT_EQ(15, threshold);
 }
 
 }  // namespace ntp_features

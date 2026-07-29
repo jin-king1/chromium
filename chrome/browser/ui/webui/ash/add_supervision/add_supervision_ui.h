@@ -7,15 +7,16 @@
 
 #include <memory>
 
+#include "ash/constants/webui_url_constants.h"
 #include "chrome/browser/ui/webui/ash/add_supervision/add_supervision.mojom-forward.h"
 #include "chrome/browser/ui/webui/ash/add_supervision/add_supervision_handler.h"
-#include "chrome/browser/ui/webui/ash/system_web_dialog_delegate.h"
-#include "chrome/common/webui_url_constants.h"
+#include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
+#include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/controls/label.h"
 #include "ui/webui/mojo_web_ui_controller.h"
 #include "url/gurl.h"
@@ -51,11 +52,12 @@ class AddSupervisionDialog : public SystemWebDialogDelegate {
   void CloseNowForTesting();
 
   // ui::WebDialogDelegate:
-  ui::ModalType GetDialogModalType() const override;
+  ui::mojom::ModalType GetDialogModalType() const override;
   void GetDialogSize(gfx::Size* size) const override;
   bool OnDialogCloseRequested() override;
   void OnDialogWillClose() override;
   bool ShouldCloseDialogOnEscape() const override;
+  bool ShouldShowDialogTitle() const override;
 
  protected:
   AddSupervisionDialog();
@@ -73,7 +75,7 @@ class AddSupervisionUIConfig
  public:
   AddSupervisionUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
-                           chrome::kChromeUIAddSupervisionHost) {}
+                           ash::kChromeUIAddSupervisionHost) {}
 };
 
 // Controller for chrome://add-supervision

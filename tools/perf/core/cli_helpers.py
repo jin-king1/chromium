@@ -4,10 +4,9 @@
 
 from __future__ import print_function
 
-import pipes
+import shlex
 import subprocess
 import sys
-from six.moves import input  # pylint: disable=redefined-builtin
 
 
 COLOR_ANSI_CODE_MAP = {
@@ -161,8 +160,9 @@ def CheckLog(command, log_path, env=None):
   """
   with open(log_path, 'w') as f:
     try:
-      cmd_str = (' '.join(pipes.quote(c) for c in command)
-                 if isinstance(command, list) else command)
+      cmd_str = (' '.join(
+          shlex.quote(c)
+          for c in command) if isinstance(command, list) else command)
       print(Colored(cmd_str, 'blue'))
       print(Colored('Logging stdout & stderr to %s' % log_path, 'blue'))
       subprocess.check_call(
@@ -180,7 +180,7 @@ def Run(command, ok_fail=False, **kwargs):
   """Prints and runs the command. Allows to ignore non-zero exit code."""
   if not isinstance(command, list):
     raise ValueError('command must be a list')
-  print(Colored(' '.join(pipes.quote(c) for c in command), 'blue'))
+  print(Colored(' '.join(shlex.quote(c) for c in command), 'blue'))
   try:
     return subprocess.check_call(command, **kwargs)
   except subprocess.CalledProcessError as cpe:

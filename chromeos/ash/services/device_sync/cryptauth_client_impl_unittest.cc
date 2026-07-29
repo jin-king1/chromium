@@ -29,6 +29,7 @@
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -147,7 +148,14 @@ void NotCalledConstRef(const T& type) {
 class DeviceSyncCryptAuthClientTest : public testing::Test {
  protected:
   DeviceSyncCryptAuthClientTest()
-      : api_call_flow_(new StrictMock<MockCryptAuthApiCallFlow>()),
+      // In threadsafe death tests, the child process bypasses `AshTestSuite`'s
+      // `OnTestStart()` listener, meaning `TestNetworkConnectionTracker` is not
+      // created automatically. Create a fallback instance here if none exists.
+      : network_connection_tracker_(
+            network::TestNetworkConnectionTracker::HasInstance()
+                ? nullptr
+                : network::TestNetworkConnectionTracker::CreateInstance()),
+        api_call_flow_(new StrictMock<MockCryptAuthApiCallFlow>()),
         serialized_request_(std::string()) {
     shared_factory_ =
         base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
@@ -219,9 +227,12 @@ class DeviceSyncCryptAuthClientTest : public testing::Test {
 
  protected:
   base::test::TaskEnvironment task_environment_;
+  std::unique_ptr<network::TestNetworkConnectionTracker>
+      network_connection_tracker_;
   signin::IdentityTestEnvironment identity_test_environment_;
   // Owned by |client_|.
-  raw_ptr<StrictMock<MockCryptAuthApiCallFlow>, ExperimentalAsh> api_call_flow_;
+  raw_ptr<StrictMock<MockCryptAuthApiCallFlow>, DanglingUntriaged>
+      api_call_flow_;
 
   scoped_refptr<network::SharedURLLoaderFactory> shared_factory_;
 
@@ -971,7 +982,7 @@ TEST_F(DeviceSyncCryptAuthClientTest, FetchAccessTokenFailure) {
       future.GetCallback(), PARTIAL_TRAFFIC_ANNOTATION_FOR_TESTS);
   identity_test_environment_
       .WaitForAccessTokenRequestIfNecessaryAndRespondWithError(
-          GoogleServiceAuthError(GoogleServiceAuthError::SERVICE_UNAVAILABLE));
+          GoogleServiceAuthError::FromServiceUnavailable(""));
 
   EXPECT_EQ(NetworkRequestError::kAuthenticationError, future.Get());
 }
@@ -1013,7 +1024,7 @@ TEST_F(DeviceSyncCryptAuthClientTest,
   // With request pending, make second request.
   {
     base::test::TestFuture<NetworkRequestError> future2;
-    EXPECT_DCHECK_DEATH(client_->FindEligibleUnlockDevices(
+    EXPECT_NOTREACHED_DEATH(client_->FindEligibleUnlockDevices(
         cryptauth::FindEligibleUnlockDevicesRequest(),
         base::BindOnce(
             &NotCalledConstRef<cryptauth::FindEligibleUnlockDevicesResponse>),
@@ -1061,7 +1072,7 @@ TEST_F(DeviceSyncCryptAuthClientTest,
   // Second request fails.
   {
     base::test::TestFuture<NetworkRequestError> future;
-    EXPECT_DCHECK_DEATH(client_->FindEligibleUnlockDevices(
+    EXPECT_NOTREACHED_DEATH(client_->FindEligibleUnlockDevices(
         cryptauth::FindEligibleUnlockDevicesRequest(),
         base::BindOnce(
             &NotCalledConstRef<cryptauth::FindEligibleUnlockDevicesResponse>),

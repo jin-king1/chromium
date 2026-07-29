@@ -6,13 +6,20 @@
 #define CONTENT_COMMON_WEBID_IDENTITY_URL_LOADER_THROTTLE_H_
 
 #include <memory>
+#include <string_view>
 
 #include "base/functional/callback.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "content/common/content_export.h"
 #include "content/public/common/web_identity.h"
 #include "third_party/blink/public/common/loader/url_loader_throttle.h"
 #include "url/gurl.h"
+#include "url/origin.h"
+
+namespace net {
+class HttpResponseHeaders;
+}  // namespace net
 
 namespace content {
 
@@ -37,18 +44,22 @@ class CONTENT_EXPORT IdentityUrlLoaderThrottle
       net::RedirectInfo* redirect_info,
       const network::mojom::URLResponseHead& response_head,
       bool* defer,
-      std::vector<std::string>* to_be_removed_request_headers,
-      net::HttpRequestHeaders* modified_request_headers,
-      net::HttpRequestHeaders* modified_cors_exempt_request_headers) override;
+      network::HttpRequestHeadersUpdateParams* headers_update_params) override;
 
  private:
+  FRIEND_TEST_ALL_PREFIXES(IdentityUrlLoaderThrottleTest, HeaderHasToken);
+
   void HandleResponseOrRedirect(
       const GURL& response_url,
       const network::mojom::URLResponseHead& response_head);
 
+  static bool HeaderHasToken(const net::HttpResponseHeaders& headers,
+                             std::string_view header_name,
+                             std::string_view token);
+
   GURL request_url_;
+  std::optional<url::Origin> request_initiator_;
   SetIdpStatusCallback set_idp_status_cb_;
-  bool has_user_gesture_ = false;
 
   base::WeakPtrFactory<IdentityUrlLoaderThrottle> weak_ptr_factory_{this};
 };

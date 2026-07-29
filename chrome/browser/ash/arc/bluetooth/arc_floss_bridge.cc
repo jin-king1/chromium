@@ -2,26 +2,23 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ash/arc/bluetooth/arc_floss_bridge.h"
+
 #include <bluetooth/bluetooth.h>
 #include <bluetooth/l2cap.h>
 #include <bluetooth/rfcomm.h>
 
-#include "ash/components/arc/bluetooth/bluetooth_type_converters.h"
 #include "base/functional/callback_helpers.h"
+#include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "chrome/browser/ash/arc/bluetooth/arc_floss_bridge.h"
+#include "chromeos/ash/experiences/arc/bluetooth/bluetooth_type_converters.h"
+#include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "device/bluetooth/bluetooth_socket.h"
-#include "device/bluetooth/floss/floss_dbus_manager.h"
-#include "device/bluetooth/floss/floss_socket_manager.h"
-
-#include "base/logging.h"
-
-#include "ash/components/arc/bluetooth/bluetooth_type_converters.h"
-#include "ash/components/arc/session/arc_bridge_service.h"
 #include "device/bluetooth/floss/bluetooth_device_floss.h"
 #include "device/bluetooth/floss/floss_dbus_manager.h"
 #include "device/bluetooth/floss/floss_sdp_types.h"
+#include "device/bluetooth/floss/floss_socket_manager.h"
 
 using device::BluetoothUUID;
 using floss::BluetoothDeviceFloss;
@@ -120,20 +117,19 @@ void ArcFlossBridge::CreateSdpRecord(mojom::BluetoothSdpRecordPtr record_mojo,
           Convert(mojo::TypeConverter<
                   bluez::BluetoothServiceRecordBlueZ,
                   mojom::BluetoothSdpRecordPtr>::Convert(record_mojo));
-  const absl::optional<device::BluetoothUUID> uuid =
-      floss::GetUUIDFromSdpRecord(sdp_record);
-  if (!uuid.has_value()) {
+  const device::BluetoothUUID uuid = floss::GetUUIDFromSdpRecord(sdp_record);
+  if (!uuid.IsValid()) {
     arc::mojom::BluetoothCreateSdpRecordResultPtr result =
         arc::mojom::BluetoothCreateSdpRecordResult::New();
     result->status = mojom::BluetoothStatus::PARM_INVALID;
     std::move(callback).Run(std::move(result));
     return;
   }
-  create_sdp_record_callbacks_.insert_or_assign(*uuid, std::move(callback));
+  create_sdp_record_callbacks_.insert_or_assign(uuid, std::move(callback));
 
   floss::ResponseCallback<bool> response_callback =
       base::BindOnce(&ArcFlossBridge::CreateSdpRecordComplete,
-                     weak_factory_.GetWeakPtr(), *uuid);
+                     weak_factory_.GetWeakPtr(), uuid);
   floss::FlossDBusManager::Get()->GetAdapterClient()->CreateSdpRecord(
       std::move(response_callback), sdp_record);
 }
@@ -213,40 +209,36 @@ void ArcFlossBridge::CloseBluetoothConnectingSocket(
 void ArcFlossBridge::SdpSearchComplete(
     const floss::FlossDeviceId device,
     const device::BluetoothUUID uuid,
-    const std::vector<floss::BtSdpRecord> records) {
+    const std::vector<floss::BtSdpRecord>& records) {
   mojom::BluetoothAddressPtr address =
       mojom::BluetoothAddress::From(device.address);
   std::vector<bluez::BluetoothServiceRecordBlueZ> records_bluez;
-  for (auto record : records) {
+  for (const auto& record : records) {
     records_bluez.push_back(
         mojo::TypeConverter<bluez::BluetoothServiceRecordBlueZ,
                             floss::BtSdpRecord>::Convert(record));
-    absl::optional<floss::BtSdpHeaderOverlay> header =
-        GetHeaderOverlayFromSdpRecord(record);
-    if (!header.has_value()) {
-      continue;
-    }
+    floss::BtSdpHeaderOverlay header =
+        floss::GetHeaderOverlayFromSdpRecord(record);
     // This record may be for an L2CAP service, but callers have to specify what
     // protocol they want to use anyway.
     uuid_lookups_.insert_or_assign(
-        std::make_pair(device.address, header->rfcomm_channel_number),
-        header->uuid);
+        std::make_pair(device.address, header.rfcomm_channel_number),
+        header.uuid);
   }
   OnGetServiceRecordsFinished(std::move(address), uuid, records_bluez);
 }
 
 void ArcFlossBridge::SdpRecordCreated(const floss::BtSdpRecord record,
                                       const int32_t handle) {
-  const absl::optional<device::BluetoothUUID> uuid =
-      floss::GetUUIDFromSdpRecord(record);
-  if (!uuid.has_value()) {
+  const device::BluetoothUUID uuid = floss::GetUUIDFromSdpRecord(record);
+  if (!uuid.IsValid()) {
     return;
   }
   arc::mojom::BluetoothCreateSdpRecordResultPtr callback_result =
       arc::mojom::BluetoothCreateSdpRecordResult::New();
   callback_result->status = mojom::BluetoothStatus::SUCCESS;
   callback_result->service_handle = handle;
-  CompleteCreateSdpRecord(*uuid, std::move(callback_result));
+  CompleteCreateSdpRecord(uuid, std::move(callback_result));
 }
 
 void ArcFlossBridge::SendCachedDevices() const {
@@ -284,6 +276,7 @@ void ArcFlossBridge::StartLEScanImpl() {
   if (ble_scan_session_) {
     LOG(ERROR) << "LE scan already running.";
     StartLEScanOffTimer();
+    scanned_devices_.clear();
     discovery_queue_.Pop();
     return;
   }
@@ -296,6 +289,10 @@ void ArcFlossBridge::ResetLEScanSession() {
   if (ble_scan_session_) {
     ble_scan_session_.reset();
   }
+}
+
+bool ArcFlossBridge::IsDiscoveringOrScanning() {
+  return discovery_session_ || ble_scan_session_;
 }
 
 void ArcFlossBridge::CreateBluetoothListenSocket(
@@ -323,7 +320,9 @@ void ArcFlossBridge::CreateBluetoothListenSocket(
                                            std::move(callback));
   auto connection_state_changed_callback = base::BindRepeating(
       &ArcFlossBridge::OnConnectionStateChanged, weak_factory_.GetWeakPtr(),
-      sock_wrapper.get(), socket_ready_callback_id);
+      // TODO(crbug.com/40061562): Remove `UnsafeDanglingUntriaged`
+      base::UnsafeDanglingUntriaged(sock_wrapper.get()),
+      socket_ready_callback_id);
   floss::ResponseCallback<floss::FlossDBusClient::BtifStatus>
       response_callback =
           base::BindOnce(&ArcFlossBridge::OnCreateListenSocketCallback,
@@ -332,7 +331,7 @@ void ArcFlossBridge::CreateBluetoothListenSocket(
   switch (type) {
     case mojom::BluetoothSocketType::TYPE_RFCOMM: {
       floss::FlossDBusManager::Get()->GetSocketManager()->ListenUsingRfcommAlt(
-          absl::nullopt, absl::nullopt, port,
+          std::nullopt, std::nullopt, port,
           floss::FlossSocketManager::GetRawFlossFlagsFromBluetoothFlags(
               flags->encrypt, flags->auth, flags->auth_mitm,
               flags->auth_16_digit, /*no_sdp=*/true),
@@ -430,7 +429,7 @@ void ArcFlossBridge::OnCreateConnectSocketCallback(
     std::unique_ptr<ArcBluetoothBridge::BluetoothConnectingSocket> sock_wrapper,
     ArcFlossBridge::BluetoothSocketConnectCallback callback,
     floss::FlossDBusClient::BtifStatus status,
-    absl::optional<floss::FlossSocketManager::FlossSocket>&& socket) {
+    std::optional<floss::FlossSocketManager::FlossSocket>&& socket) {
   if (status != floss::FlossDBusClient::BtifStatus::kSuccess) {
     std::move(callback).Run(
         mojom::BluetoothStatus::FAIL,
@@ -510,7 +509,7 @@ void ArcFlossBridge::OnConnectionStateChanged(
       response_callback = base::BindOnce(&OnNoOpBtifResult);
   // TODO: figure out the correct timeout here
   floss::FlossDBusManager::Get()->GetSocketManager()->Accept(
-      socket.id, /*timeout_ms=*/absl::nullopt, std::move(response_callback));
+      socket.id, /*timeout_ms=*/std::nullopt, std::move(response_callback));
 }
 
 void ArcFlossBridge::OnConnectionAccepted(
@@ -615,7 +614,7 @@ void ArcFlossBridge::CompleteListenSocketReady(
 void ArcFlossBridge::CompleteCreateSdpRecord(
     device::BluetoothUUID uuid,
     arc::mojom::BluetoothCreateSdpRecordResultPtr result) {
-  if (!base::Contains(create_sdp_record_callbacks_, uuid)) {
+  if (!create_sdp_record_callbacks_.contains(uuid)) {
     return;
   }
 

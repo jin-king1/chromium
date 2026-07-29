@@ -4,8 +4,9 @@
 
 #include "chromeos/ash/services/cellular_setup/esim_profile.h"
 
+#include <algorithm>
+
 #include "ash/constants/ash_features.h"
-#include "base/containers/contains.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
@@ -24,7 +25,6 @@
 #include "chromeos/ash/services/cellular_setup/esim_manager.h"
 #include "chromeos/ash/services/cellular_setup/esim_mojo_utils.h"
 #include "chromeos/ash/services/cellular_setup/euicc.h"
-#include "chromeos/ash/services/cellular_setup/public/mojom/esim_manager.mojom-shared.h"
 #include "chromeos/ash/services/cellular_setup/public/mojom/esim_manager.mojom.h"
 #include "components/device_event_log/device_event_log.h"
 #include "components/user_manager/user_manager.h"
@@ -36,7 +36,7 @@ namespace {
 
 bool IsGuestModeActive() {
   return user_manager::UserManager::Get()->IsLoggedInAsGuest() ||
-         user_manager::UserManager::Get()->IsLoggedInAsPublicAccount();
+         user_manager::UserManager::Get()->IsLoggedInAsManagedGuestSession();
 }
 
 bool IsESimProfilePropertiesEqualToState(
@@ -63,7 +63,7 @@ ESimProfile::InstallProfileCallback CreateTimedInstallProfileCallback(
         std::move(callback).Run(result);
         if (result != mojom::ProfileInstallResult::kSuccess)
           return;
-        UMA_HISTOGRAM_MEDIUM_TIMES(
+        DEPRECATED_UMA_HISTOGRAM_MEDIUM_TIMES(
             "Network.Cellular.ESim.ProfileDownload.PendingProfile.Latency",
             base::Time::Now() - installation_start_time);
       },
@@ -272,21 +272,13 @@ void ESimProfile::EnsureProfileExistsOnEuicc(
                          weak_ptr_factory_.GetWeakPtr(), std::move(callback)),
           std::move(inhibit_lock));
     } else {
-      if (ash::features::IsSmdsDbusMigrationEnabled()) {
-        HermesEuiccClient::Get()->RefreshSmdxProfiles(
-            euicc_->path(),
-            /*activation_code=*/ESimManager::GetRootSmdsAddress(),
-            /*restore_slot=*/true,
-            base::BindOnce(&ESimProfile::OnRefreshSmdxProfiles,
-                           weak_ptr_factory_.GetWeakPtr(), std::move(callback),
-                           std::move(inhibit_lock)));
-      } else {
-        HermesEuiccClient::Get()->RequestPendingProfiles(
-            euicc_->path(), /*root_smds=*/ESimManager::GetRootSmdsAddress(),
-            base::BindOnce(&ESimProfile::OnRequestPendingProfiles,
-                           weak_ptr_factory_.GetWeakPtr(), std::move(callback),
-                           std::move(inhibit_lock)));
-      }
+      HermesEuiccClient::Get()->RefreshSmdxProfiles(
+          euicc_->path(),
+          /*activation_code=*/ESimManager::GetRootSmdsAddress(),
+          /*restore_slot=*/true,
+          base::BindOnce(&ESimProfile::OnRefreshSmdxProfiles,
+                         weak_ptr_factory_.GetWeakPtr(), std::move(callback),
+                         std::move(inhibit_lock)));
     }
     return;
   }
@@ -471,16 +463,7 @@ bool ESimProfile::ProfileExistsOnEuicc() {
   HermesEuiccClient::Properties* euicc_properties =
       HermesEuiccClient::Get()->GetProperties(euicc_->path());
 
-  if (features::IsSmdsDbusMigrationEnabled()) {
-    return base::Contains(euicc_properties->profiles().value(), path_);
-  }
-
-  const std::vector<dbus::ObjectPath>& profile_paths =
-      IsProfileInstalled()
-          ? euicc_properties->installed_carrier_profiles().value()
-          : euicc_properties->pending_carrier_profiles().value();
-
-  return base::Contains(profile_paths, path_);
+  return std::ranges::contains(euicc_properties->profiles().value(), path_);
 }
 
 bool ESimProfile::IsProfileInstalled() {

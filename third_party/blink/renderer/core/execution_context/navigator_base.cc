@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
 #include "third_party/blink/renderer/core/probe/core_probes.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 #if !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_WIN)
@@ -47,50 +48,18 @@ NavigatorBase::NavigatorBase(ExecutionContext* context)
 
 String NavigatorBase::userAgent() const {
   ExecutionContext* execution_context = GetExecutionContext();
-  if (!execution_context)
-    return String();
-
-  execution_context->ReportNavigatorUserAgentAccess();
-  return execution_context->UserAgent();
+  return execution_context ? execution_context->UserAgent() : String();
 }
 
 String NavigatorBase::platform() const {
-  ExecutionContext* execution_context = GetExecutionContext();
-  // Report as user agent access
-  if (execution_context)
-    execution_context->ReportNavigatorUserAgentAccess();
-
-  // If the User-Agent string is opted into the SendFullUserAgentAfterReduction,
-  // platform should be a full value.
-  if (RuntimeEnabledFeatures::SendFullUserAgentAfterReductionEnabled(
-          execution_context)) {
+#if BUILDFLAG(IS_ANDROID)
+  // We need to check the ReduceUserAgentMinorVersion feature flag for
+  // Android WebView, which does not currently ship a reduced User-Agent.
+  if (!RuntimeEnabledFeatures::ReduceUserAgentMinorVersionEnabled()) {
     return NavigatorID::platform();
   }
-
-  // If the User-Agent string is frozen, platform should be a value
-  // matching the frozen string per https://github.com/WICG/ua-client-hints.
-  // See content::frozen_user_agent_strings.
-  if (RuntimeEnabledFeatures::UserAgentReductionEnabled(execution_context)) {
-    return GetReducedNavigatorPlatform();
-  }
-
-#if BUILDFLAG(IS_ANDROID)
-  // For user-agent reduction phase 6, Android platform should be frozen
-  // string, see https://www.chromium.org/updates/ua-reduction/.
-  if (RuntimeEnabledFeatures::ReduceUserAgentAndroidVersionDeviceModelEnabled(
-          execution_context)) {
-    return GetReducedNavigatorPlatform();
-  }
-#else
-  // For user-agent reduction phase 5, all desktop platform should be frozen
-  // string, see https://www.chromium.org/updates/ua-reduction/.
-  if (RuntimeEnabledFeatures::ReduceUserAgentPlatformOsCpuEnabled(
-          execution_context)) {
-    return GetReducedNavigatorPlatform();
-  }
 #endif
-
-  return NavigatorID::platform();
+  return GetReducedNavigatorPlatform();
 }
 
 void NavigatorBase::Trace(Visitor* visitor) const {

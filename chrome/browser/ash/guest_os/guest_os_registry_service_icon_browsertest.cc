@@ -47,7 +47,8 @@ class GuestOsRegistryServiceIconTest : public InProcessBrowserTest {
 
   guest_os::GuestOsRegistryService* service() {
     if (!service_) {
-      service_ = std::make_unique<GuestOsRegistryService>(browser()->profile());
+      service_ =
+          std::make_unique<GuestOsRegistryService>(browser()->GetProfile());
     }
     return service_.get();
   }
@@ -86,8 +87,11 @@ class GuestOsRegistryServiceIconTest : public InProcessBrowserTest {
 
   void ExpectIconFiles(const std::string& app_id) {
     base::ScopedAllowBlockingForTesting allow_blocking;
-    base::FilePath icon_dir =
-        browser()->profile()->GetPath().Append("crostini.icons").Append(app_id);
+    base::FilePath icon_dir = browser()
+                                  ->GetProfile()
+                                  ->GetPath()
+                                  .Append("crostini.icons")
+                                  .Append(app_id);
 
     EXPECT_TRUE(base::PathExists(icon_dir.Append("icon.svg")));
 
@@ -131,8 +135,7 @@ class GuestOsRegistryServiceIconTest : public InProcessBrowserTest {
   }
 
  protected:
-  raw_ptr<ash::FakeCiceroneClient, DanglingUntriaged | ExperimentalAsh>
-      fake_cicerone_client_;
+  raw_ptr<ash::FakeCiceroneClient, DanglingUntriaged> fake_cicerone_client_;
   static constexpr char kSvgData[] =
       "<svg width='20px' height='20px' viewBox='0 0 24 24' "
       "fill='rgb(95,99,104)' "
@@ -165,8 +168,11 @@ IN_PROC_BROWSER_TEST_F(GuestOsRegistryServiceIconTest, AddRemoveAddAppIcon) {
   base::ScopedAllowBlockingForTesting allow_blocking;
   std::string app_id = crostini::CrostiniTestHelper::GenerateAppId(
       kSvgAppName, "termina", "penguin");
-  base::FilePath icon_dir =
-      browser()->profile()->GetPath().Append("crostini.icons").Append(app_id);
+  base::FilePath icon_dir = browser()
+                                ->GetProfile()
+                                ->GetPath()
+                                .Append("crostini.icons")
+                                .Append(app_id);
 
   // Initially, there's no app icon.
   EXPECT_FALSE(base::PathExists(icon_dir));

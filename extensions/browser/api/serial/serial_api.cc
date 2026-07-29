@@ -6,7 +6,6 @@
 
 #include <algorithm>
 #include <map>
-#include <unordered_set>
 #include <utility>
 
 #include "base/functional/bind.h"
@@ -16,8 +15,10 @@
 #include "extensions/browser/api/serial/serial_connection.h"
 #include "extensions/browser/api/serial/serial_port_manager.h"
 #include "extensions/common/api/serial.h"
+#include "extensions/common/extension_id.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace extensions {
 
@@ -45,7 +46,7 @@ const char kErrorSerialConnectionNotFound[] = "Serial connection not found.";
 const char kErrorGetControlSignalsFailed[] = "Failed to get control signals.";
 
 template <typename T>
-void SetDefaultOptionalValue(absl::optional<T>& field, const T& value) {
+void SetDefaultOptionalValue(std::optional<T>& field, const T& value) {
   if (!field)
     field = value;
 }
@@ -88,18 +89,6 @@ void SerialGetDevicesFunction::OnGotDevices(
     info.product_id = device->product_id;
     info.display_name = device->display_name;
     results.push_back(std::move(info));
-
-#if BUILDFLAG(IS_MAC)
-    if (device->alternate_path) {
-      extensions::api::serial::DeviceInfo alternate_info;
-      alternate_info.path = device->alternate_path->AsUTF8Unsafe();
-      alternate_info.vendor_id = device->vendor_id;
-      alternate_info.product_id = device->product_id;
-      alternate_info.display_name = device->display_name;
-
-      results.push_back(std::move(alternate_info));
-    }
-#endif  // BUILDFLAG(IS_MAC)
   }
   Respond(ArgumentList(serial::GetDevices::Results::Create(results)));
 }
@@ -175,7 +164,7 @@ void SerialConnectFunction::FinishConnect(
     connection->SetConnectionErrorHandler(base::BindOnce(
         [](scoped_refptr<ApiResourceManager<SerialConnection>::ApiResourceData>
                connections,
-           std::string extension_id, int api_resource_id) {
+           const ExtensionId& extension_id, int api_resource_id) {
           connections->Remove(extension_id, api_resource_id);
         },
         manager->data_, extension_->id(), id));
@@ -319,7 +308,7 @@ SerialGetConnectionsFunction::~SerialGetConnectionsFunction() = default;
 
 ExtensionFunction::ResponseAction SerialGetConnectionsFunction::Run() {
   auto* manager = ApiResourceManager<SerialConnection>::Get(browser_context());
-  const std::unordered_set<int>* connection_ids =
+  const absl::flat_hash_set<int>* connection_ids =
       manager->GetResourceIds(extension_->id());
   if (connection_ids) {
     for (auto it = connection_ids->cbegin(); it != connection_ids->cend();

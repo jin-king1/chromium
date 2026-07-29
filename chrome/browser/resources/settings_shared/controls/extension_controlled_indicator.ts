@@ -3,12 +3,9 @@
 // found in the LICENSE file.
 
 import '//resources/cr_elements/cr_button/cr_button.js';
-// <if expr='chromeos_ash'>
-import '//resources/cr_elements/chromeos/cros_color_overrides.css.js';
+import '//resources/cr_elements/cr_icon/cr_icon.js';
 
-// </if>
-
-import {assert} from '//resources/js/assert_ts.js';
+import {assert} from '//resources/js/assert.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
 import {OpenWindowProxyImpl} from '//resources/js/open_window_proxy.js';
 import {PolymerElement} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
@@ -31,14 +28,19 @@ export class ExtensionControlledIndicatorElement extends PolymerElement {
       extensionCanBeDisabled: Boolean,
       extensionId: String,
       extensionName: String,
+      extensionNameOnlyInLabel: Boolean,
     };
   }
 
-  extensionCanBeDisabled: boolean;
-  extensionId: string;
-  extensionName: string;
+  declare extensionCanBeDisabled: boolean;
+  declare extensionId: string;
+  declare extensionName: string;
+  declare extensionNameOnlyInLabel?: boolean;
 
   private getLabel_(): string {
+    if (this.extensionNameOnlyInLabel === true) {
+      return this.extensionName;
+    }
     return loadTimeData.getStringF('controlledByExtension', this.extensionName);
   }
 
@@ -51,8 +53,8 @@ export class ExtensionControlledIndicatorElement extends PolymerElement {
     assert(this.extensionCanBeDisabled);
     ExtensionControlBrowserProxyImpl.getInstance().disableExtension(
         this.extensionId);
-    this.dispatchEvent(
-        new CustomEvent('extension-disable', {bubbles: true, composed: true}));
+    this.dispatchEvent(new CustomEvent(
+        'disable-extension-click', {bubbles: true, composed: true}));
   }
 }
 

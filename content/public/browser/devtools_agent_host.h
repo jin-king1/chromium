@@ -18,9 +18,6 @@
 #include "content/common/content_export.h"
 #include "content/public/browser/devtools_agent_host_client.h"
 #include "content/public/browser/devtools_agent_host_observer.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
-#include "services/network/public/mojom/network_context.mojom-forward.h"
-#include "services/network/public/mojom/url_loader_factory.mojom-forward.h"
 #include "url/gurl.h"
 
 namespace base {
@@ -36,6 +33,7 @@ namespace content {
 
 class BrowserContext;
 class DevToolsExternalAgentProxyDelegate;
+class MojomDevToolsAgentHostDelegate;
 class DevToolsSocketFactory;
 class RenderFrameHost;
 class WebContents;
@@ -46,19 +44,38 @@ class ServiceWorkerContext;
 class CONTENT_EXPORT DevToolsAgentHost
     : public base::RefCounted<DevToolsAgentHost> {
  public:
+  // Mode for the remote debugging server
+  // started by StartRemoteDebuggingServer.
+  enum RemoteDebuggingServerMode {
+    // The default mode started by command-line flags like
+    // --remote-debugging-port.
+    // The server does not require explicit user approval for debugging.
+    kDefault,
+    // Each debugging connection will be rejected until the user explicitly
+    // approves it.
+    kWithApprovalOnly,
+  };
+
   static const char kTypeTab[];
   static const char kTypePage[];
   static const char kTypeFrame[];
   static const char kTypeDedicatedWorker[];
   static const char kTypeSharedWorker[];
   static const char kTypeServiceWorker[];
+  static const char kTypeWorklet[];
   static const char kTypeBrowser[];
   static const char kTypeGuest[];
   static const char kTypeOther[];
   static const char kTypeAuctionWorklet[];
+  static const char kTypeAssistiveTechnology[];
+  static const char kTypeBrowserUI[];
+  // File descriptor used by DevTools remote debugging pipe handler
+  // to read and write protocol messages.
+  static constexpr int kReadFD = 3;
+  static constexpr int kWriteFD = 4;
 
   // Latest DevTools protocol version supported.
-  static std::string GetProtocolVersion();
+  static std::string_view GetProtocolVersion();
 
   // Returns whether particular version of DevTools protocol is supported.
   static bool IsSupportedProtocolVersion(const std::string& version);
@@ -96,6 +113,13 @@ class CONTENT_EXPORT DevToolsAgentHost
       const std::string& id,
       std::unique_ptr<DevToolsExternalAgentProxyDelegate> delegate);
 
+  // Creates DevToolsAgentHost that communicates to the target using mojom, and
+  // gets details from |delegate|. |delegate| ownership is passed to the created
+  // agent host.
+  static scoped_refptr<DevToolsAgentHost> CreateForMojomDelegate(
+      const std::string& id,
+      std::unique_ptr<MojomDevToolsAgentHostDelegate> delegate);
+
   using CreateServerSocketCallback =
       base::RepeatingCallback<std::unique_ptr<net::ServerSocket>(std::string*)>;
 
@@ -128,8 +152,12 @@ class CONTENT_EXPORT DevToolsAgentHost
   static void StartRemoteDebuggingServer(
       std::unique_ptr<DevToolsSocketFactory> server_socket_factory,
       const base::FilePath& active_port_output_directory,
-      const base::FilePath& debug_frontend_dir);
+      const base::FilePath& debug_frontend_dir,
+      RemoteDebuggingServerMode mode = RemoteDebuggingServerMode::kDefault);
   static void StopRemoteDebuggingServer();
+  // Returns the address of the remote debugging server, if started.
+  // Returns empty string if server is not started.
+  static std::string GetRemoteDebuggingServerAddress();
 
   // Starts remote debugging for browser target for the given fd=3
   // for reading and fd=4 for writing remote debugging messages.
@@ -151,9 +179,6 @@ class CONTENT_EXPORT DevToolsAgentHost
   // embedder or |client| itself may prevent attaching.
   virtual bool AttachClient(DevToolsAgentHostClient* client) = 0;
 
-  // Same as the above, but does not acquire the WakeLock.
-  virtual bool AttachClientWithoutWakeLock(DevToolsAgentHostClient* client) = 0;
-
   // Already attached client detaches from this agent host to stop debugging it.
   // Returns true iff detach succeeded.
   virtual bool DetachClient(DevToolsAgentHostClient* client) = 0;
@@ -168,12 +193,6 @@ class CONTENT_EXPORT DevToolsAgentHost
   // Starts inspecting element at position (|x|, |y|) in the frame
   // represented by |frame_host|.
   virtual void InspectElement(RenderFrameHost* frame_host, int x, int y) = 0;
-
-  using GetUniqueFormControlIdCallback = base::OnceCallback<void(uint64_t)>;
-  // Resolves a backendNodeId to a form control ID.
-  virtual void GetUniqueFormControlId(
-      int node_id,
-      GetUniqueFormControlIdCallback callback) = 0;
 
   // Returns the unique id of the agent.
   virtual std::string GetId() = 0;
@@ -191,6 +210,10 @@ class CONTENT_EXPORT DevToolsAgentHost
   // Returns the DevTools token of this window's opener, or empty string if no
   // opener.
   virtual std::string GetOpenerFrameId() = 0;
+
+  // Returns the DevTools token of this frame's parent, or empty string if
+  // this host is not a frame or is a main frame.
+  virtual std::string GetParentFrameId() = 0;
 
   // Returns web contents instance for this host if any.
   virtual WebContents* GetWebContents() = 0;

@@ -11,11 +11,42 @@
 #import <vector>
 
 #import "base/check.h"
+#import "base/containers/heap_array.h"
+#import "base/memory/free_deleter.h"
 #import "base/strings/sys_string_conversions.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+namespace {
+
+// Returns an base::HeapArray<...> of required methods defined in `protocol`.
+base::HeapArray<objc_method_description, base::FreeDeleter> GetRequiredMethods(
+    Protocol* protocol) {
+  unsigned int count = 0;
+  objc_method_description* methods =
+      protocol_copyMethodDescriptionList(protocol, /*isRequiredMethod=*/YES,
+                                         /*isInstanceMethod=*/YES, &count);
+
+  // SAFETY: protocol_copyMethodDescriptionList(...) sets `count` to the
+  // number of elements in the returned array.
+  return UNSAFE_BUFFERS(
+      base::HeapArray<objc_method_description,
+                      base::FreeDeleter>::FromOwningPointer(methods, count));
+}
+
+// Returns an base::HeapArray<...> of protocols that `protocol` conforms to.
+base::HeapArray<Protocol * __unsafe_unretained _Nonnull, base::FreeDeleter>
+GetConformingProtocols(Protocol* protocol) {
+  unsigned int count = 0;
+  Protocol* __unsafe_unretained _Nonnull* protocols =
+      protocol_copyProtocolList(protocol, &count);
+
+  // SAFETY: protocol_copyProtocolList(...) sets `count` to the number of
+  // elements in the returned array.
+  return UNSAFE_BUFFERS(
+      base::HeapArray<Protocol * __unsafe_unretained _Nonnull,
+                      base::FreeDeleter>::FromOwningPointer(protocols, count));
+}
+
+}  // namespace
 
 #pragma mark - SilentlyFailingObject
 
@@ -64,16 +95,13 @@
 }
 
 - (void)startDispatchingToTarget:(id)target forProtocol:(Protocol*)protocol {
-  unsigned int methodCount;
-  objc_method_description* requiredInstanceMethods =
-      protocol_copyMethodDescriptionList(protocol, YES /* isRequiredMethod */,
-                                         YES /* isInstanceMethod */,
-                                         &methodCount);
-  for (unsigned int i = 0; i < methodCount; i++) {
-    [self startDispatchingToTarget:target
-                       forSelector:requiredInstanceMethods[i].name];
+  DCHECK([target conformsToProtocol:protocol])
+      << base::SysNSStringToUTF8(NSStringFromClass([target class]))
+      << " should implement "
+      << base::SysNSStringToUTF8(NSStringFromProtocol(protocol)) << ".";
+  for (const objc_method_description& method : GetRequiredMethods(protocol)) {
+    [self startDispatchingToTarget:target forSelector:method.name];
   }
-  free(requiredInstanceMethods);
 }
 
 - (void)stopDispatchingForSelector:(SEL)selector {
@@ -85,15 +113,9 @@
 }
 
 - (void)stopDispatchingForProtocol:(Protocol*)protocol {
-  unsigned int methodCount;
-  objc_method_description* requiredInstanceMethods =
-      protocol_copyMethodDescriptionList(protocol, YES /* isRequiredMethod */,
-                                         YES /* isInstanceMethod */,
-                                         &methodCount);
-  for (unsigned int i = 0; i < methodCount; i++) {
-    [self stopDispatchingForSelector:requiredInstanceMethods[i].name];
+  for (const objc_method_description& method : GetRequiredMethods(protocol)) {
+    [self stopDispatchingForSelector:method.name];
   }
-  free(requiredInstanceMethods);
 }
 
 // `-stopDispatchingToTarget` should be called much less often than
@@ -118,37 +140,27 @@
     return YES;
   }
 
-  unsigned int methodCount;
-  objc_method_description* requiredInstanceMethods =
-      protocol_copyMethodDescriptionList(protocol, YES /* isRequiredMethod */,
-                                         YES /* isInstanceMethod */,
-                                         &methodCount);
   BOOL conforming = YES;
-  for (unsigned int i = 0; i < methodCount; i++) {
-    SEL selector = requiredInstanceMethods[i].name;
-    BOOL targetFound =
-        _forwardingTargets.find(selector) != _forwardingTargets.end();
+  for (const objc_method_description& method : GetRequiredMethods(protocol)) {
+    SEL selector = method.name;
+    BOOL targetFound = _forwardingTargets.contains(selector);
     if (!targetFound && ![self shouldFailSilentlyForSelector:selector]) {
       conforming = NO;
       break;
     }
   }
-  free(requiredInstanceMethods);
+
   if (!conforming) {
     return NO;
   }
 
-  unsigned int protocolCount;
-  Protocol* __unsafe_unretained _Nonnull* _Nullable conformedProtocols =
-      protocol_copyProtocolList(protocol, &protocolCount);
-  for (unsigned int i = 0; i < protocolCount; i++) {
-    if (![self dispatchingForProtocol:conformedProtocols[i]]) {
+  for (Protocol* conformingProtocol : GetConformingProtocols(protocol)) {
+    if (![self dispatchingForProtocol:conformingProtocol]) {
       conforming = NO;
       break;
     }
   }
 
-  free(conformedProtocols);
   return conforming;
 }
 
@@ -210,8 +222,7 @@
 }
 
 - (BOOL)shouldFailSilentlyForSelector:(SEL)selector {
-  return _preparingForShutdown && _silentlyFailingTargets.find(selector) !=
-                                      _silentlyFailingTargets.end();
+  return _preparingForShutdown && _silentlyFailingTargets.contains(selector);
 }
 
 @end

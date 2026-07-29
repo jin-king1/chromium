@@ -16,10 +16,14 @@
 #define ABSL_RANDOM_INTERNAL_IOSTREAM_STATE_SAVER_H_
 
 #include <cmath>
-#include <iostream>
+#include <cstdint>
+#include <ios>
+#include <istream>
 #include <limits>
+#include <ostream>
 #include <type_traits>
 
+#include "absl/base/config.h"
 #include "absl/meta/type_traits.h"
 #include "absl/numeric/int128.h"
 
@@ -91,11 +95,10 @@ ostream_state_saver<std::basic_ostream<CharT, Traits>> make_ostream_state_saver(
 }
 
 template <typename T>
-typename absl::enable_if_t<!std::is_base_of<std::ios_base, T>::value,
-                           null_state_saver<T>>
+typename std::enable_if_t<!std::is_base_of_v<std::ios_base, T>,
+                          null_state_saver<T>>
 make_ostream_state_saver(T& is,  // NOLINT(runtime/references)
                          std::ios_base::fmtflags flags = std::ios_base::dec) {
-  std::cerr << "null_state_saver";
   using result_type = null_state_saver<T>;
   return result_type(is, flags);
 }
@@ -156,8 +159,8 @@ istream_state_saver<std::basic_istream<CharT, Traits>> make_istream_state_saver(
 }
 
 template <typename T>
-typename absl::enable_if_t<!std::is_base_of<std::ios_base, T>::value,
-                           null_state_saver<T>>
+typename std::enable_if_t<!std::is_base_of_v<std::ios_base, T>,
+                          null_state_saver<T>>
 make_istream_state_saver(T& is,  // NOLINT(runtime/references)
                          std::ios_base::fmtflags flags = std::ios_base::dec) {
   using result_type = null_state_saver<T>;
@@ -220,7 +223,7 @@ struct stream_u128_helper<__uint128_t> {
 
 template <typename FloatType, typename IStream>
 inline FloatType read_floating_point(IStream& is) {
-  static_assert(std::is_floating_point<FloatType>::value, "");
+  static_assert(std::is_floating_point_v<FloatType>, "");
   FloatType dest;
   is >> dest;
   // Parsing a double value may report a subnormal value as an error

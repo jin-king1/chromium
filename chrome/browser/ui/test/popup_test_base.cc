@@ -16,7 +16,7 @@
 #include "ui/display/display.h"
 #include "ui/display/screen.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
 #include "url/gurl.h"
@@ -28,12 +28,10 @@ class BoundsChangeWaiter final : public views::WidgetObserver {
  public:
   BoundsChangeWaiter(Browser* browser, int move_by, int resize_by)
       : widget_(views::Widget::GetWidgetForNativeWindow(
-            browser->window()->GetNativeWindow())),
+            browser->GetWindow()->GetNativeWindow())),
         move_by_(move_by),
         resize_by_(resize_by),
-        initial_bounds_(widget_->GetWindowBoundsInScreen()) {
-    widget_->AddObserver(this);
-  }
+        initial_bounds_(widget_->GetWindowBoundsInScreen()) {}
 
   BoundsChangeWaiter(const BoundsChangeWaiter&) = delete;
   BoundsChangeWaiter& operator=(const BoundsChangeWaiter&) = delete;
@@ -42,7 +40,7 @@ class BoundsChangeWaiter final : public views::WidgetObserver {
   // views::WidgetObserver:
   void OnWidgetBoundsChanged(views::Widget* widget,
                              const gfx::Rect& rect) final {
-    if (BoundsChangeMeetsThreshold(rect)) {
+    if (BoundsChangeMeetsThreshold(widget_->GetWindowBoundsInScreen())) {
       widget_->RemoveObserver(this);
       run_loop_.Quit();
     }
@@ -51,6 +49,7 @@ class BoundsChangeWaiter final : public views::WidgetObserver {
   // Wait for changes to occur, or return immediately if they already have.
   void Wait() {
     if (!BoundsChangeMeetsThreshold(widget_->GetWindowBoundsInScreen())) {
+      widget_->AddObserver(this);
       run_loop_.Run();
     }
   }
@@ -76,14 +75,22 @@ void PopupTestBase::SetUpCommandLine(base::CommandLine* command_line) {
 }
 
 // static
-Browser* PopupTestBase::OpenPopup(Browser* browser, const std::string& script) {
-  return OpenPopup(browser->tab_strip_model()->GetActiveWebContents(), script);
+Browser* PopupTestBase::OpenPopup(Browser* browser,
+                                  const std::string& script,
+                                  bool user_gesture) {
+  return OpenPopup(browser->tab_strip_model()->GetActiveWebContents(), script,
+                   user_gesture);
 }
 
 // static
 Browser* PopupTestBase::OpenPopup(const content::ToRenderFrameHost& adapter,
-                                  const std::string& script) {
-  content::ExecuteScriptAsync(adapter, script);
+                                  const std::string& script,
+                                  bool user_gesture) {
+  if (user_gesture) {
+    content::ExecuteScriptAsync(adapter, script);
+  } else {
+    content::ExecuteScriptAsyncWithoutUserGesture(adapter, script);
+  }
   Browser* popup = ui_test_utils::WaitForBrowserToOpen();
   content::WebContents* popup_contents =
       popup->tab_strip_model()->GetActiveWebContents();
@@ -115,6 +122,11 @@ void PopupTestBase::SetUpWindowManagement(Browser* browser) {
       permissions::PermissionRequestManager::FromWebContents(web_contents);
   permission_request_manager->set_auto_response_for_test(
       permissions::PermissionRequestManager::ACCEPT_ALL);
+  content::RenderFrameHost* rfh = web_contents->GetPrimaryMainFrame();
+  ASSERT_TRUE(content::WaitForLoadStop(web_contents));
+  ASSERT_TRUE(content::WaitForRenderFrameReady(rfh));
+  ASSERT_EQ("complete", EvalJs(web_contents, "document.readyState"));
+  ASSERT_EQ("visible", EvalJs(web_contents, "document.visibilityState"));
   ASSERT_GT(EvalJs(web_contents,
                    R"JS(getScreenDetails().then(s => {
                           window.screenDetails = s;
@@ -128,23 +140,21 @@ void PopupTestBase::SetUpWindowManagement(Browser* browser) {
 // static
 display::Display PopupTestBase::GetDisplayNearestBrowser(
     const Browser* browser) {
-  return display::Screen::GetScreen()->GetDisplayNearestWindow(
-      browser->window()->GetNativeWindow());
+  return display::Screen::Get()->GetDisplayNearestWindow(
+      browser->GetWindow()->GetNativeWindow());
 }
 
 // static
-void PopupTestBase::WaitForHTMLFullscreen(content::WebContents* web_contents) {
-  content::WaitForLoadStop(web_contents);
-  ASSERT_TRUE(EvalJs(web_contents, R"JS(
-        (new Promise((resolve, reject) => {
-          if (!!document.fullscreenElement) {
-            resolve();
-          } else {
-            document.addEventListener(`fullscreenchange`,
-              () => { if (!!document.fullscreenElement) resolve(); }
-            );
-            document.addEventListener(`fullscreenerror`, e => { reject(e); });
-          }
-        })))JS")
-                  .error.empty());
+void PopupTestBase::WaitForUserActivationExpiry(Browser* browser) {
+  const std::string await_activation_expiry_script = R"(
+    (async () => {
+      while (navigator.userActivation.isActive)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      return navigator.userActivation.isActive;
+    })();
+  )";
+  auto* tab = browser->tab_strip_model()->GetActiveWebContents();
+  EXPECT_EQ(false, EvalJs(tab, await_activation_expiry_script,
+                          content::EXECUTE_SCRIPT_NO_USER_GESTURE));
+  EXPECT_FALSE(tab->HasRecentInteraction());
 }

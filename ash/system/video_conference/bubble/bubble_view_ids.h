@@ -41,7 +41,54 @@ enum BubbleViewID {
   // Label which is a child of an individual "toggle" VC effect.
   kToggleEffectLabel,
 
-  kNextAvailableId = kToggleEffectLabel + 1,
+  // The view with a warning icon and label, indicating that effects are not
+  // available
+  // for linux apps.
+  kLinuxAppWarningView,
+
+  // The view with a warning icon and a custom label for each DLC which had an
+  // error installing.
+  kDLCDownloadsInErrorView,
+
+  // The label in the generic warning view which is either
+  // `kLinuxAppWarningView` or `kDLCDownloadsInErrorView`.
+  kWarningViewLabel,
+
+  // The VC bubble that will be displayed when all the running media apps are
+  // Linux apps.
+  kLinuxAppBubbleView,
+
+  // The view that contains elements for setting camera background.
+  kSetCameraBackgroundView,
+
+  // Background blur off button.
+  kBackgroundBlurOffButton,
+
+  // Background blur light button.
+  kBackgroundBlurLightButton,
+
+  // Background blur full button.
+  kBackgroundBlurFullButton,
+
+  // Background blur image button.
+  kBackgroundBlurImageButton,
+
+  // The first recently used background image.
+  kBackgroundImage0,
+
+  // The second recently used background image.
+  kBackgroundImage1,
+
+  // The third recently used background image.
+  kBackgroundImage2,
+
+  // The fourth recently used background image.
+  kBackgroundImage3,
+
+  // The create with AI button.
+  kCreateWithAiButton,
+
+  kNextAvailableId = kCreateWithAiButton + 1,
 };
 
 }  // namespace ash::video_conference

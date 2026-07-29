@@ -72,9 +72,6 @@ class PowerButtonTestBase : public AshTestBase {
   // Simulates a mouse move event.
   void GenerateMouseMoveEvent();
 
-  // Initializes login status and sets power button type.
-  void Initialize(ButtonType button_type, LoginStatus status);
-
   // Triggers a lock screen operation.
   void LockScreen();
 
@@ -89,11 +86,10 @@ class PowerButtonTestBase : public AshTestBase {
   // they come too close.
   void AdvanceClockToAvoidIgnoring();
 
-  raw_ptr<PowerButtonController, DanglingUntriaged | ExperimentalAsh>
-      power_button_controller_ = nullptr;  // Not owned.
-  raw_ptr<LockStateController, DanglingUntriaged | ExperimentalAsh>
-      lock_state_controller_ = nullptr;  // Not owned.
-  raw_ptr<PowerButtonScreenshotController, DanglingUntriaged | ExperimentalAsh>
+  raw_ptr<PowerButtonController, DanglingUntriaged> power_button_controller_ =
+      nullptr;  // Not owned.
+  raw_ptr<LockStateController> lock_state_controller_ = nullptr;  // Not owned.
+  raw_ptr<PowerButtonScreenshotController, DanglingUntriaged>
       screenshot_controller_ = nullptr;  // Not owned.
   std::unique_ptr<LockStateControllerTestApi> lock_state_test_api_;
   std::unique_ptr<PowerButtonControllerTestApi> power_button_test_api_;

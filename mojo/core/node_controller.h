@@ -7,7 +7,9 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -29,7 +31,6 @@
 #include "mojo/core/ports/node_delegate.h"
 #include "mojo/core/system_impl_export.h"
 #include "mojo/public/cpp/platform/platform_handle.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace mojo {
 namespace core {
@@ -104,7 +105,7 @@ class MOJO_SYSTEM_IMPL_EXPORT NodeController : public ports::NodeDelegate,
   // the corresponding port in the peer node.
   void ConnectIsolated(ConnectionParams connection_params,
                        const ports::PortRef& port,
-                       base::StringPiece connection_name);
+                       std::string_view connection_name);
 
   // Sets a port's observer. If |observer| is null the port's current observer
   // is removed.
@@ -173,7 +174,7 @@ class MOJO_SYSTEM_IMPL_EXPORT NodeController : public ports::NodeDelegate,
     IsolatedConnection(IsolatedConnection&& other);
     IsolatedConnection(scoped_refptr<NodeChannel> channel,
                        const ports::PortRef& local_port,
-                       base::StringPiece name);
+                       std::string_view name);
     ~IsolatedConnection();
 
     IsolatedConnection& operator=(const IsolatedConnection& other);
@@ -199,7 +200,7 @@ class MOJO_SYSTEM_IMPL_EXPORT NodeController : public ports::NodeDelegate,
 
   void AcceptBrokerClientInvitationOnIOThread(
       ConnectionParams connection_params,
-      absl::optional<PlatformHandle> broker_host_handle);
+      std::optional<PlatformHandle> broker_host_handle);
 
   void ConnectIsolatedOnIOThread(ConnectionParams connection_params,
                                  ports::PortRef port,
@@ -288,7 +289,8 @@ class MOJO_SYSTEM_IMPL_EXPORT NodeController : public ports::NodeDelegate,
 
   // Mark a port that it is about to be merged. This allows us to do a security
   // check on the incoming port merge that this port was intended to be merged.
-  void RecordPendingPortMerge(const ports::PortRef& port);
+  void RecordPendingPortMerge(const ports::PortRef& port,
+                              const ports::NodeName& allowed_node);
 
   // These are safe to access from any thread as long as the Node is alive.
   const ports::NodeName name_;
@@ -368,7 +370,7 @@ class MOJO_SYSTEM_IMPL_EXPORT NodeController : public ports::NodeDelegate,
   // Must only be accessed from the IO thread.
   bool destroy_on_io_thread_shutdown_ = false;
 
-#if !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_NACL) && !BUILDFLAG(IS_FUCHSIA)
+#if !BUILDFLAG(IS_APPLE) && !BUILDFLAG(IS_FUCHSIA)
   // Broker for sync shared buffer creation on behalf of broker clients.
   std::unique_ptr<Broker> broker_;
 #endif

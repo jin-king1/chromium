@@ -12,6 +12,7 @@
 #include "ash/test/ash_test_base.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/scoped_refptr.h"
 #include "components/prefs/pref_notifier_impl.h"
 #include "components/prefs/testing_pref_store.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
@@ -28,35 +29,32 @@ class PolicyRecommendationRestorerTest : public NoSessionAshTestBase {
 
  protected:
   PolicyRecommendationRestorerTest()
-      : recommended_prefs_(new TestingPrefStore),
-        prefs_(new sync_preferences::TestingPrefServiceSyncable(
-            /*managed_prefs=*/new TestingPrefStore,
-            /*supervised_user_prefs=*/new TestingPrefStore,
-            /*extension_prefs=*/new TestingPrefStore,
-            /*standalone_browser_prefs=*/new TestingPrefStore,
-            /*user_prefs=*/new TestingPrefStore,
+      : recommended_prefs_(base::MakeRefCounted<TestingPrefStore>()),
+        prefs_(std::make_unique<sync_preferences::TestingPrefServiceSyncable>(
+            /*managed_prefs=*/base::MakeRefCounted<TestingPrefStore>(),
+            /*supervised_user_prefs=*/base::MakeRefCounted<TestingPrefStore>(),
+            /*extension_prefs=*/base::MakeRefCounted<TestingPrefStore>(),
+            /*user_prefs=*/base::MakeRefCounted<TestingPrefStore>(),
             recommended_prefs_,
-            new user_prefs::PrefRegistrySyncable,
-            new PrefNotifierImpl)) {}
+            base::MakeRefCounted<user_prefs::PrefRegistrySyncable>(),
+            std::make_unique<PrefNotifierImpl>())) {
+    // Register sigin prefs but not connected to pref service yet. This allows
+    // us set pref values before ash connects to pref service for testing.
+    RegisterSigninProfilePrefs(prefs_->registry(), /*country=*/"",
+                               /*for_test=*/true);
+  }
+
   ~PolicyRecommendationRestorerTest() override = default;
 
   // NoSessionAshTestBase override:
   void SetUp() override {
-    TestSessionControllerClient::DisableAutomaticallyProvideSigninPref();
+    set_create_signin_pref_service(false);
     NoSessionAshTestBase::SetUp();
-
-    // Register sigin prefs but not connected to pref service yet. This allows
-    // us set pref values before ash connects to pref service for testing.
-    RegisterSigninProfilePrefs(prefs_->registry(), true /* for_test */);
-
-    restorer_ = Shell::Get()->policy_recommendation_restorer();
   }
 
   void ConnectToSigninPrefService() {
-    GetSessionControllerClient()->SetSigninScreenPrefService(
-        base::WrapUnique(prefs_.get()));
-    ASSERT_EQ(Shell::Get()->session_controller()->GetSigninScreenPrefService(),
-              prefs_);
+    GetSessionControllerClient()->SetSigninScreenPrefService(std::move(prefs_));
+
     // Manually trigger a user activity, so that the delay is not skipped due to
     // no user input since a pref is started observing recommended value. See
     // PolicyRecommendationRestorer::Restore() for the information.
@@ -77,17 +75,17 @@ class PolicyRecommendationRestorerTest : public NoSessionAshTestBase {
   }
 
   void SetUserSettings() {
-    prefs_->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
-    prefs_->SetBoolean(prefs::kAccessibilitySpokenFeedbackEnabled, true);
-    prefs_->SetBoolean(prefs::kAccessibilityHighContrastEnabled, true);
-    prefs_->SetBoolean(prefs::kAccessibilityScreenMagnifierEnabled, true);
-    prefs_->SetBoolean(prefs::kAccessibilityVirtualKeyboardEnabled, true);
+    prefs()->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
+    prefs()->SetBoolean(prefs::kAccessibilitySpokenFeedbackEnabled, true);
+    prefs()->SetBoolean(prefs::kAccessibilityHighContrastEnabled, true);
+    prefs()->SetBoolean(prefs::kAccessibilityScreenMagnifierEnabled, true);
+    prefs()->SetBoolean(prefs::kAccessibilityVirtualKeyboardEnabled, true);
   }
 
   void VerifyPrefFollowsUser(const std::string& pref_name,
                              const base::Value& expected_value) const {
     const sync_preferences::PrefServiceSyncable::Preference* pref =
-        prefs_->FindPreference(pref_name);
+        prefs()->FindPreference(pref_name);
     ASSERT_TRUE(pref);
     EXPECT_TRUE(pref->HasUserSetting());
     const base::Value* value = pref->GetValue();
@@ -112,7 +110,7 @@ class PolicyRecommendationRestorerTest : public NoSessionAshTestBase {
       const std::string& pref_name,
       const base::Value& expected_value) const {
     const sync_preferences::PrefServiceSyncable::Preference* pref =
-        prefs_->FindPreference(pref_name);
+        prefs()->FindPreference(pref_name);
     ASSERT_TRUE(pref);
     EXPECT_TRUE(pref->IsRecommended());
     EXPECT_FALSE(pref->HasUserSetting());
@@ -135,27 +133,40 @@ class PolicyRecommendationRestorerTest : public NoSessionAshTestBase {
   }
 
   bool RestoreTimerIsRunning() {
-    return restorer_->restore_timer_for_test()->IsRunning();
+    return restorer()->restore_timer_for_test()->IsRunning();
   }
 
   // If restore timer is running, stops it, runs its task and returns true.
   // Otherwise, returns false.
   [[nodiscard]] bool TriggerRestoreTimer() {
-    if (!restorer_->restore_timer_for_test()->IsRunning())
+    if (!restorer()->restore_timer_for_test()->IsRunning()) {
       return false;
+    }
 
-    restorer_->restore_timer_for_test()->FireNow();
+    restorer()->restore_timer_for_test()->FireNow();
     return true;
   }
 
-  raw_ptr<PolicyRecommendationRestorer, ExperimentalAsh> restorer_ = nullptr;
+  PolicyRecommendationRestorer* restorer() const {
+    return Shell::Get()->policy_recommendation_restorer();
+  }
 
-  // Ownerships are passed to SessionController.
-  raw_ptr<TestingPrefStore, ExperimentalAsh> recommended_prefs_;
-  raw_ptr<sync_preferences::TestingPrefServiceSyncable, ExperimentalAsh> prefs_;
+  PrefService* prefs() const {
+    return prefs_ ? prefs_.get()
+                  : Shell::Get()
+                        ->session_controller()
+                        ->GetSigninScreenPrefService();
+  }
+
+  scoped_refptr<TestingPrefStore> recommended_prefs_;
+  // Ownership is eventually passed to the session controller in
+  // `ConnectToSigninPrefService()`. This allows tests to configure prefs
+  // either before or after initializing the signin pref service for the
+  // session controller.
+  std::unique_ptr<sync_preferences::TestingPrefServiceSyncable> prefs_;
 };
 
-// Verifies that when no recommended values have been set, |restorer_| does not
+// Verifies that when no recommended values have been set, |restorer()| does not
 // clear user settings on initialization and does not start a timer that will
 // clear user settings eventually.
 TEST_F(PolicyRecommendationRestorerTest, NoRecommendations) {
@@ -166,7 +177,7 @@ TEST_F(PolicyRecommendationRestorerTest, NoRecommendations) {
   EXPECT_FALSE(RestoreTimerIsRunning());
 }
 
-// Verifies that when recommended values have been set, |restorer_| clears user
+// Verifies that when recommended values have been set, |restorer()| clears user
 // settings on signing pref initialization.
 TEST_F(PolicyRecommendationRestorerTest, RestoreOnSigninPrefInitialized) {
   SetRecommendedValues();
@@ -185,7 +196,7 @@ TEST_F(PolicyRecommendationRestorerTest,
   ConnectToSigninPrefService();
   EXPECT_FALSE(RestoreTimerIsRunning());
 
-  prefs_->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilityLargeCursorEnabled,
                         base::Value(true));
   EXPECT_FALSE(RestoreTimerIsRunning());
@@ -195,7 +206,7 @@ TEST_F(PolicyRecommendationRestorerTest,
   VerifyPrefFollowsRecommendation(prefs::kAccessibilityLargeCursorEnabled,
                                   base::Value(false));
 
-  prefs_->SetBoolean(prefs::kAccessibilitySpokenFeedbackEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilitySpokenFeedbackEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilitySpokenFeedbackEnabled,
                         base::Value(true));
   recommended_prefs_->SetBoolean(prefs::kAccessibilitySpokenFeedbackEnabled,
@@ -204,7 +215,7 @@ TEST_F(PolicyRecommendationRestorerTest,
   VerifyPrefFollowsRecommendation(prefs::kAccessibilitySpokenFeedbackEnabled,
                                   base::Value(false));
 
-  prefs_->SetBoolean(prefs::kAccessibilityHighContrastEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityHighContrastEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilityHighContrastEnabled,
                         base::Value(true));
   recommended_prefs_->SetBoolean(prefs::kAccessibilityHighContrastEnabled,
@@ -213,7 +224,7 @@ TEST_F(PolicyRecommendationRestorerTest,
   VerifyPrefFollowsRecommendation(prefs::kAccessibilityHighContrastEnabled,
                                   base::Value(false));
 
-  prefs_->SetBoolean(prefs::kAccessibilityScreenMagnifierEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityScreenMagnifierEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilityScreenMagnifierEnabled,
                         base::Value(true));
   recommended_prefs_->SetBoolean(prefs::kAccessibilityScreenMagnifierEnabled,
@@ -222,7 +233,7 @@ TEST_F(PolicyRecommendationRestorerTest,
   VerifyPrefFollowsRecommendation(prefs::kAccessibilityScreenMagnifierEnabled,
                                   base::Value(false));
 
-  prefs_->SetBoolean(prefs::kAccessibilityVirtualKeyboardEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityVirtualKeyboardEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilityVirtualKeyboardEnabled,
                         base::Value(true));
   recommended_prefs_->SetBoolean(prefs::kAccessibilityVirtualKeyboardEnabled,
@@ -239,7 +250,7 @@ TEST_F(PolicyRecommendationRestorerTest,
   SetUserSettings();
 
   ConnectToSigninPrefService();
-  SimulateUserLogin("user@test.com");
+  SimulateUserLogin({"user@test.com"});
 
   VerifyPrefFollowsUser(prefs::kAccessibilityLargeCursorEnabled,
                         base::Value(true));
@@ -289,7 +300,7 @@ TEST_F(PolicyRecommendationRestorerTest, DoNothingOnUserChange) {
   ConnectToSigninPrefService();
 
   // a11y mono audio is not observing recommended values in production.
-  prefs_->SetBoolean(prefs::kAccessibilityMonoAudioEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityMonoAudioEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilityMonoAudioEnabled,
                         base::Value(true));
   EXPECT_FALSE(RestoreTimerIsRunning());
@@ -300,7 +311,7 @@ TEST_F(PolicyRecommendationRestorerTest, RestoreOnUserChange) {
   ConnectToSigninPrefService();
 
   EXPECT_FALSE(RestoreTimerIsRunning());
-  prefs_->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilityLargeCursorEnabled,
                         base::Value(true));
   EXPECT_TRUE(TriggerRestoreTimer());
@@ -308,7 +319,7 @@ TEST_F(PolicyRecommendationRestorerTest, RestoreOnUserChange) {
                                   base::Value(false));
 
   EXPECT_FALSE(RestoreTimerIsRunning());
-  prefs_->SetBoolean(prefs::kAccessibilitySpokenFeedbackEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilitySpokenFeedbackEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilitySpokenFeedbackEnabled,
                         base::Value(true));
   EXPECT_TRUE(TriggerRestoreTimer());
@@ -316,7 +327,7 @@ TEST_F(PolicyRecommendationRestorerTest, RestoreOnUserChange) {
                                   base::Value(false));
 
   EXPECT_FALSE(RestoreTimerIsRunning());
-  prefs_->SetBoolean(prefs::kAccessibilityHighContrastEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityHighContrastEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilityHighContrastEnabled,
                         base::Value(true));
   EXPECT_TRUE(TriggerRestoreTimer());
@@ -324,7 +335,7 @@ TEST_F(PolicyRecommendationRestorerTest, RestoreOnUserChange) {
                                   base::Value(false));
 
   EXPECT_FALSE(RestoreTimerIsRunning());
-  prefs_->SetBoolean(prefs::kAccessibilityScreenMagnifierEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityScreenMagnifierEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilityScreenMagnifierEnabled,
                         base::Value(true));
   EXPECT_TRUE(TriggerRestoreTimer());
@@ -332,7 +343,7 @@ TEST_F(PolicyRecommendationRestorerTest, RestoreOnUserChange) {
                                   base::Value(false));
 
   EXPECT_FALSE(RestoreTimerIsRunning());
-  prefs_->SetBoolean(prefs::kAccessibilityVirtualKeyboardEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityVirtualKeyboardEnabled, true);
   VerifyPrefFollowsUser(prefs::kAccessibilityVirtualKeyboardEnabled,
                         base::Value(true));
   EXPECT_TRUE(TriggerRestoreTimer());
@@ -349,7 +360,7 @@ TEST_F(PolicyRecommendationRestorerTest, DoNothingOnSessionStart) {
   ConnectToSigninPrefService();
   SetUserSettings();
 
-  SimulateUserLogin("user@test.com");
+  SimulateUserLogin({"user@test.com"});
   VerifyPrefsFollowUser();
   EXPECT_FALSE(RestoreTimerIsRunning());
 }
@@ -360,11 +371,11 @@ TEST_F(PolicyRecommendationRestorerTest, UserActivityResetsTimer) {
                                  false);
   ConnectToSigninPrefService();
 
-  prefs_->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
+  prefs()->SetBoolean(prefs::kAccessibilityLargeCursorEnabled, true);
   EXPECT_TRUE(RestoreTimerIsRunning());
 
   // Notify that there is user activity.
-  restorer_->OnUserActivity(nullptr);
+  restorer()->OnUserActivity(nullptr);
   VerifyPrefFollowsUser(prefs::kAccessibilityLargeCursorEnabled,
                         base::Value(true));
 

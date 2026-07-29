@@ -7,8 +7,8 @@
 
 #include <memory>
 
+#include "ash/constants/webui_url_constants.h"
 #include "chrome/browser/ui/webui/ash/parent_access/parent_access_ui.mojom-forward.h"
-#include "chrome/common/webui_url_constants.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
@@ -18,7 +18,7 @@
 namespace ash {
 
 class ParentAccessUI;
-class ParentAccessUIHandler;
+class ParentAccessUiHandler;
 
 // WebUIConfig for chrome://parent-access
 class ParentAccessUIConfig
@@ -26,7 +26,7 @@ class ParentAccessUIConfig
  public:
   ParentAccessUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
-                           chrome::kChromeUIParentAccessHost) {}
+                           ash::kChromeUIParentAccessHost) {}
 };
 
 // Controller for the ParentAccessUI, a WebUI which enables parent verification.
@@ -41,18 +41,18 @@ class ParentAccessUI : public ui::MojoWebDialogUI {
 
   static void SetUpForTest(signin::IdentityManager* identity_manager);
 
-  // Instantiates the implementor of the mojom::ParentAccessUIHandler mojo
+  // Instantiates the implementor of the mojom::ParentAccessUiHandler mojo
   // interface passing the pending receiver that will be internally bound.
   void BindInterface(
-      mojo::PendingReceiver<parent_access_ui::mojom::ParentAccessUIHandler>
+      mojo::PendingReceiver<parent_access_ui::mojom::ParentAccessUiHandler>
           receiver);
 
-  parent_access_ui::mojom::ParentAccessUIHandler* GetHandlerForTest();
+  parent_access_ui::mojom::ParentAccessUiHandler* GetHandlerForTest();
 
  private:
   void SetUpResources();
 
-  std::unique_ptr<parent_access_ui::mojom::ParentAccessUIHandler>
+  std::unique_ptr<parent_access_ui::mojom::ParentAccessUiHandler>
       mojo_api_handler_;
 
   static signin::IdentityManager* test_identity_manager_;

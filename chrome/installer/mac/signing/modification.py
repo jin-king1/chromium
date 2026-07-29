@@ -10,7 +10,7 @@ be modified or renamed to support side-by-side channel installs.
 
 import os.path
 
-from . import commands, parts
+from signing import commands, parts
 
 _CF_BUNDLE_DISPLAY_NAME = 'CFBundleDisplayName'
 _CF_BUNDLE_EXE = 'CFBundleExecutable'
@@ -21,6 +21,17 @@ _ENT_GET_TASK_ALLOW = 'com.apple.security.get-task-allow'
 _KS_BRAND_ID = 'KSBrandID'
 _KS_CHANNEL_ID = 'KSChannelID'
 _KS_PRODUCT_ID = 'KSProductID'
+
+
+def _should_keep_scheme(scheme, dist):
+    """Returns True if the URL scheme should be kept in the Info.plist."""
+    if scheme not in ('google-chrome', 'chromium'):
+        return True
+
+    if dist.direct_launch_scheme is not None:
+        return scheme == dist.direct_launch_scheme
+
+    return True
 
 
 def _modify_plists(paths, dist, config):
@@ -102,6 +113,25 @@ def _modify_plists(paths, dist, config):
             ignore, extra = key.split('-')
             app_plist[key] = '{}-{}'.format(base_channel_tag, extra)
 
+        # The 'google-chrome' and 'chromium' URI schemes are registered by
+        # build/apple/tweak_info_plist.py.
+        # We need to filter them based on the distribution configuration (e.g.
+        # removing them for side-by-side channels).
+        url_types = app_plist.get('CFBundleURLTypes')
+        if url_types:
+            new_url_types = []
+            for url_type in url_types:
+                schemes = url_type.get('CFBundleURLSchemes', [])
+                new_schemes = []
+                for scheme in schemes:
+                    if _should_keep_scheme(scheme, dist):
+                        new_schemes.append(scheme)
+
+                if new_schemes:
+                    url_type['CFBundleURLSchemes'] = new_schemes
+                    new_url_types.append(url_type)
+            app_plist['CFBundleURLTypes'] = new_url_types
+
 
 def _replace_icons(paths, dist, config):
     """Replaces icon assets in the bundle with the channel-customized versions.
@@ -116,20 +146,22 @@ def _replace_icons(paths, dist, config):
     packaging_dir = paths.packaging_dir(config)
     resources_dir = os.path.join(paths.work, config.resources_dir)
 
+    new_asset_catalog = os.path.join(packaging_dir,
+                                     'Assets_{}.car'.format(dist.channel))
     new_app_icon = os.path.join(packaging_dir,
                                 'app_{}.icns'.format(dist.channel))
-    new_document_icon = os.path.join(packaging_dir,
-                                     'document_{}.icns'.format(dist.channel))
 
+    commands.copy_files(new_asset_catalog,
+                        os.path.join(resources_dir, 'Assets.car'))
     commands.copy_files(new_app_icon, os.path.join(resources_dir, 'app.icns'))
-    commands.copy_files(new_document_icon,
-                        os.path.join(resources_dir, 'document.icns'))
 
     # Also update the icon in the Alert Helper app.
     alert_helper_resources_dir = os.path.join(
         paths.work, config.framework_dir, 'Helpers',
         '{} Helper (Alerts).app'.format(config.product), 'Contents',
         'Resources')
+    commands.copy_files(new_asset_catalog,
+                        os.path.join(alert_helper_resources_dir, 'Assets.car'))
     commands.copy_files(new_app_icon,
                         os.path.join(alert_helper_resources_dir, 'app.icns'))
 

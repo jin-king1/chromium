@@ -11,8 +11,12 @@ namespace em = enterprise_management;
 
 namespace policy {
 
-RemoteCommandBuilder& RemoteCommandBuilder::SetCommandId(int id) {
-  result_.set_command_id(id);
+enterprise_management::RemoteCommand RemoteCommandBuilder::Build() {
+  return std::move(result_);
+}
+
+RemoteCommandBuilder& RemoteCommandBuilder::SetCommandId(int64_t value) {
+  result_.set_command_id(value);
   return *this;
 }
 

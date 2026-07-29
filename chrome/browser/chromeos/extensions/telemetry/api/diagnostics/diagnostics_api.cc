@@ -9,18 +9,22 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/notreached.h"
+#include "base/time/time.h"
+#include "base/types/expected.h"
+#include "base/uuid.h"
 #include "base/values.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/chromeos/extensions/telemetry/api/diagnostics/diagnostics_api_converters.h"
-#include "chrome/browser/chromeos/extensions/telemetry/api/diagnostics/remote_diagnostics_service_strategy.h"
+#include "chrome/browser/chromeos/extensions/telemetry/api/diagnostics/diagnostics_api_metrics.h"
+#include "chrome/browser/chromeos/extensions/telemetry/api/routines/diagnostic_routine_manager.h"
 #include "chrome/common/chromeos/extensions/api/diagnostics.h"
-#include "chromeos/crosapi/mojom/diagnostics_service.mojom.h"
-#include "chromeos/crosapi/mojom/nullable_primitives.mojom.h"
-
-#if BUILDFLAG(IS_CHROMEOS_LACROS)
-#include "base/strings/stringprintf.h"
-#include "chromeos/lacros/lacros_service.h"
-#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
+#include "chromeos/ash/components/telemetry_extension/diagnostics/mojo_utils.h"
+#include "chromeos/ash/services/cros_healthd/public/cpp/service_connection.h"
+#include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd.mojom.h"
+#include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_diagnostics.mojom.h"
+#include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_exception.mojom.h"
+#include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_routines.mojom.h"
+#include "extensions/common/permissions/permissions_data.h"
 
 namespace chromeos {
 
@@ -28,24 +32,34 @@ namespace {
 
 namespace cx_diag = api::os_diagnostics;
 
-}  // namespace
-
-// DiagnosticsApiFunctionBase --------------------------------------------------
-
-DiagnosticsApiFunctionBase::DiagnosticsApiFunctionBase()
-    : remote_diagnostics_service_strategy_(
-          RemoteDiagnosticsServiceStrategy::Create()) {}
-
-DiagnosticsApiFunctionBase::~DiagnosticsApiFunctionBase() = default;
-
-mojo::Remote<crosapi::mojom::DiagnosticsService>&
-DiagnosticsApiFunctionBase::GetRemoteService() {
-  DCHECK(remote_diagnostics_service_strategy_);
-  return remote_diagnostics_service_strategy_->GetRemoteService();
+base::expected<cx_diag::RoutineSupportStatusInfo, std::string>
+ParseRoutineArgumentSupportResult(
+    const ash::cros_healthd::mojom::SupportStatus& result) {
+  switch (result.which()) {
+    case ash::cros_healthd::mojom::SupportStatus::Tag::kUnmappedUnionField:
+      return base::unexpected("API internal error.");
+    case ash::cros_healthd::mojom::SupportStatus::Tag::kException:
+      return base::unexpected(result.get_exception()->debug_message);
+    case ash::cros_healthd::mojom::SupportStatus::Tag::kSupported: {
+      cx_diag::RoutineSupportStatusInfo info;
+      info.status = cx_diag::RoutineSupportStatus::kSupported;
+      return base::ok(std::move(info));
+    }
+    case ash::cros_healthd::mojom::SupportStatus::Tag::kUnsupported: {
+      cx_diag::RoutineSupportStatusInfo info;
+      info.status = cx_diag::RoutineSupportStatus::kUnsupported;
+      return base::ok(std::move(info));
+    }
+  }
+  NOTREACHED();
 }
 
+}  // namespace
+
+// DiagnosticsApiFunctionV1AndV2Base -------------------------------------------
+
 template <class Params>
-absl::optional<Params> DiagnosticsApiFunctionBase::GetParams() {
+std::optional<Params> DiagnosticsApiFunctionV1AndV2Base::GetParams() {
   auto params = Params::Create(args());
   if (!params) {
     SetBadMessage();
@@ -55,27 +69,41 @@ absl::optional<Params> DiagnosticsApiFunctionBase::GetParams() {
   return params;
 }
 
-#if BUILDFLAG(IS_CHROMEOS_LACROS)
-bool DiagnosticsApiFunctionBase::IsCrosApiAvailable() {
-  return remote_diagnostics_service_strategy_ != nullptr;
+// DiagnosticsApiFunctionBase --------------------------------------------------
+
+DiagnosticsApiFunctionBase::DiagnosticsApiFunctionBase() = default;
+
+DiagnosticsApiFunctionBase::~DiagnosticsApiFunctionBase() = default;
+
+const mojo::Remote<ash::cros_healthd::mojom::CrosHealthdDiagnosticsService>&
+DiagnosticsApiFunctionBase::GetService() {
+  if (!service_ || !service_.is_connected()) {
+    ash::cros_healthd::ServiceConnection::GetInstance()->BindDiagnosticsService(
+        service_.BindNewPipeAndPassReceiver());
+    service_.set_disconnect_handler(base::BindOnce(
+        &DiagnosticsApiFunctionBase::OnMojoDisconnect, base::Unretained(this)));
+  }
+  return service_;
 }
-#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
+
+void DiagnosticsApiFunctionBase::OnMojoDisconnect() {
+  service_.reset();
+}
 
 // OsDiagnosticsGetAvailableRoutinesFunction -----------------------------------
 
 void OsDiagnosticsGetAvailableRoutinesFunction::RunIfAllowed() {
-  auto cb = base::BindOnce(&OsDiagnosticsGetAvailableRoutinesFunction::OnResult,
-                           this);
-
-  GetRemoteService()->GetAvailableRoutines(std::move(cb));
+  GetService()->GetAvailableRoutines(base::BindOnce(
+      &OsDiagnosticsGetAvailableRoutinesFunction::OnResponse, this));
 }
 
-void OsDiagnosticsGetAvailableRoutinesFunction::OnResult(
-    const std::vector<crosapi::mojom::DiagnosticsRoutineEnum>& routines) {
+void OsDiagnosticsGetAvailableRoutinesFunction::OnResponse(
+    const std::vector<ash::cros_healthd::mojom::DiagnosticRoutineEnum>&
+        routines) {
   cx_diag::GetAvailableRoutinesResponse result;
   for (const auto in : routines) {
     cx_diag::RoutineType out;
-    if (converters::ConvertMojoRoutine(in, &out)) {
+    if (converters::diagnostics::ConvertMojoRoutine(in, &out)) {
       result.routines.push_back(out);
     }
   }
@@ -91,17 +119,15 @@ void OsDiagnosticsGetRoutineUpdateFunction::RunIfAllowed() {
     return;
   }
 
-  auto cb =
-      base::BindOnce(&OsDiagnosticsGetRoutineUpdateFunction::OnResult, this);
-
-  GetRemoteService()->GetRoutineUpdate(
+  GetService()->GetRoutineUpdate(
       params->request.id,
-      converters::ConvertRoutineCommand(params->request.command),
-      /* include_output= */ true, std::move(cb));
+      converters::diagnostics::ConvertRoutineCommand(params->request.command),
+      /*include_output=*/true,
+      base::BindOnce(&OsDiagnosticsGetRoutineUpdateFunction::OnResponse, this));
 }
 
-void OsDiagnosticsGetRoutineUpdateFunction::OnResult(
-    crosapi::mojom::DiagnosticsRoutineUpdatePtr ptr) {
+void OsDiagnosticsGetRoutineUpdateFunction::OnResponse(
+    ash::cros_healthd::mojom::RoutineUpdatePtr ptr) {
   if (!ptr) {
     // |ptr| should never be null, otherwise Mojo validation will fail.
     // However it's safer to handle it in case of API changes.
@@ -112,24 +138,31 @@ void OsDiagnosticsGetRoutineUpdateFunction::OnResult(
   cx_diag::GetRoutineUpdateResponse result;
   result.progress_percent = ptr->progress_percent;
 
-  if (ptr->output.has_value() && !ptr->output.value().empty()) {
-    result.output = std::move(ptr->output);
+  std::string output_str;
+  if (ptr->output.is_valid()) {
+    output_str =
+        ash::converters::diagnostics::MojoUtils::GetStringFromMojoHandle(
+            std::move(ptr->output));
+  }
+  if (!output_str.empty()) {
+    result.output = std::move(output_str);
   }
 
   switch (ptr->routine_update_union->which()) {
-    case crosapi::mojom::DiagnosticsRoutineUpdateUnion::Tag::
+    case ash::cros_healthd::mojom::RoutineUpdateUnion::Tag::
         kNoninteractiveUpdate: {
       auto& routine_update =
           ptr->routine_update_union->get_noninteractive_update();
-      result.status = converters::ConvertRoutineStatus(routine_update->status);
+      result.status =
+          converters::diagnostics::ConvertRoutineStatus(routine_update->status);
       result.status_message = std::move(routine_update->status_message);
       break;
     }
-    case crosapi::mojom::DiagnosticsRoutineUpdateUnion::Tag::kInteractiveUpdate:
+    case ash::cros_healthd::mojom::RoutineUpdateUnion::Tag::kInteractiveUpdate:
       // Routine is waiting for user action. Set the status to waiting.
       result.status = cx_diag::RoutineStatus::kWaitingUserAction;
       result.status_message = "Waiting for user action. See user_message";
-      result.user_message = converters::ConvertRoutineUserMessage(
+      result.user_message = converters::diagnostics::ConvertRoutineUserMessage(
           ptr->routine_update_union->get_interactive_update()->user_message);
       break;
   }
@@ -139,8 +172,8 @@ void OsDiagnosticsGetRoutineUpdateFunction::OnResult(
 
 // DiagnosticsApiRunRoutineFunctionBase ----------------------------------------
 
-void DiagnosticsApiRunRoutineFunctionBase::OnResult(
-    crosapi::mojom::DiagnosticsRunRoutineResponsePtr ptr) {
+void DiagnosticsApiRunRoutineFunctionBase::OnResponse(
+    ash::cros_healthd::mojom::RunRoutineResponsePtr ptr) {
   if (!ptr) {
     // |ptr| should never be null, otherwise Mojo validation will fail.
     // However it's safer to handle it in case of API changes.
@@ -150,13 +183,14 @@ void DiagnosticsApiRunRoutineFunctionBase::OnResult(
 
   cx_diag::RunRoutineResponse result;
   result.id = ptr->id;
-  result.status = converters::ConvertRoutineStatus(ptr->status);
+  result.status = converters::diagnostics::ConvertRoutineStatus(ptr->status);
   Respond(WithArguments(result.ToValue()));
 }
 
-base::OnceCallback<void(crosapi::mojom::DiagnosticsRunRoutineResponsePtr)>
-DiagnosticsApiRunRoutineFunctionBase::GetOnResult() {
-  return base::BindOnce(&DiagnosticsApiRunRoutineFunctionBase::OnResult, this);
+base::OnceCallback<void(ash::cros_healthd::mojom::RunRoutineResponsePtr)>
+DiagnosticsApiRunRoutineFunctionBase::GetOnResponse() {
+  return base::BindOnce(&DiagnosticsApiRunRoutineFunctionBase::OnResponse,
+                        this);
 }
 
 // OsDiagnosticsRunAcPowerRoutineFunction ------------------------------
@@ -167,15 +201,15 @@ void OsDiagnosticsRunAcPowerRoutineFunction::RunIfAllowed() {
     return;
   }
 
-  GetRemoteService()->RunAcPowerRoutine(
-      converters::ConvertAcPowerStatusRoutineType(
+  GetService()->RunAcPowerRoutine(
+      converters::diagnostics::ConvertAcPowerStatusRoutineType(
           params->request.expected_status),
-      params->request.expected_power_type, GetOnResult());
+      params->request.expected_power_type, GetOnResponse());
 }
 
 // OsDiagnosticsRunBatteryCapacityRoutineFunction ------------------------------
 void OsDiagnosticsRunBatteryCapacityRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunBatteryCapacityRoutine(GetOnResult());
+  GetService()->RunBatteryCapacityRoutine(GetOnResponse());
 }
 
 // OsDiagnosticsRunBatteryChargeRoutineFunction --------------------------------
@@ -186,9 +220,9 @@ void OsDiagnosticsRunBatteryChargeRoutineFunction::RunIfAllowed() {
     return;
   }
 
-  GetRemoteService()->RunBatteryChargeRoutine(
+  GetService()->RunBatteryChargeRoutine(
       params->request.length_seconds,
-      params->request.minimum_charge_percent_required, GetOnResult());
+      params->request.minimum_charge_percent_required, GetOnResponse());
 }
 
 // OsDiagnosticsRunBatteryDischargeRoutineFunction -----------------------------
@@ -199,15 +233,75 @@ void OsDiagnosticsRunBatteryDischargeRoutineFunction::RunIfAllowed() {
     return;
   }
 
-  GetRemoteService()->RunBatteryDischargeRoutine(
+  GetService()->RunBatteryDischargeRoutine(
       params->request.length_seconds,
-      params->request.maximum_discharge_percent_allowed, GetOnResult());
+      params->request.maximum_discharge_percent_allowed, GetOnResponse());
 }
 
 // OsDiagnosticsRunBatteryHealthRoutineFunction --------------------------------
 
 void OsDiagnosticsRunBatteryHealthRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunBatteryHealthRoutine(GetOnResult());
+  GetService()->RunBatteryHealthRoutine(GetOnResponse());
+}
+
+// OsDiagnosticsRunBluetoothDiscoveryRoutineFunction ---------------------------
+
+void OsDiagnosticsRunBluetoothDiscoveryRoutineFunction::RunIfAllowed() {
+  GetService()->RunBluetoothDiscoveryRoutine(GetOnResponse());
+}
+
+// OsDiagnosticsRunBluetoothPairingRoutineFunction -----------------------------
+
+void OsDiagnosticsRunBluetoothPairingRoutineFunction::RunIfAllowed() {
+  // Pairing Routine is guarded by `os.bluetooth_peripherals_info` permission.
+  if (!extension()->permissions_data()->HasAPIPermission(
+          extensions::mojom::APIPermissionID::
+              kChromeOSBluetoothPeripheralsInfo)) {
+    Respond(
+        Error("Unauthorized access to "
+              "chrome.os.diagnostics.runBluetoothPairingRoutine. Extension "
+              "doesn't have the permission."));
+    return;
+  }
+
+  const auto params = GetParams<cx_diag::RunBluetoothPairingRoutine::Params>();
+  if (!params) {
+    return;
+  }
+
+  GetService()->RunBluetoothPairingRoutine(params->request.peripheral_id,
+                                           GetOnResponse());
+}
+
+// OsDiagnosticsRunBluetoothPowerRoutineFunction -------------------------------
+
+void OsDiagnosticsRunBluetoothPowerRoutineFunction::RunIfAllowed() {
+  GetService()->RunBluetoothPowerRoutine(GetOnResponse());
+}
+
+// OsDiagnosticsRunBluetoothScanningRoutineFunction ----------------------------
+
+void OsDiagnosticsRunBluetoothScanningRoutineFunction::RunIfAllowed() {
+  // Scanning Routine is guarded by `os.bluetooth_peripherals_info` permission.
+  if (!extension()->permissions_data()->HasAPIPermission(
+          extensions::mojom::APIPermissionID::
+              kChromeOSBluetoothPeripheralsInfo)) {
+    Respond(
+        Error("Unauthorized access to "
+              "chrome.os.diagnostics.runBluetoothScanningRoutine. Extension"
+              " doesn't have the permission."));
+    return;
+  }
+
+  const auto params = GetParams<cx_diag::RunBluetoothScanningRoutine::Params>();
+  if (!params) {
+    return;
+  }
+
+  GetService()->RunBluetoothScanningRoutine(
+      ash::cros_healthd::mojom::NullableUint32::New(
+          params->request.length_seconds),
+      GetOnResponse());
 }
 
 // OsDiagnosticsRunCpuCacheRoutineFunction -------------------------------------
@@ -218,8 +312,10 @@ void OsDiagnosticsRunCpuCacheRoutineFunction::RunIfAllowed() {
     return;
   }
 
-  GetRemoteService()->RunCpuCacheRoutine(params->request.length_seconds,
-                                         GetOnResult());
+  GetService()->RunCpuCacheRoutine(
+      ash::cros_healthd::mojom::NullableUint32::New(
+          params->request.length_seconds),
+      GetOnResponse());
 }
 
 // OsDiagnosticsRunCpuFloatingPointAccuracyRoutineFunction ---------------------
@@ -231,8 +327,10 @@ void OsDiagnosticsRunCpuFloatingPointAccuracyRoutineFunction::RunIfAllowed() {
     return;
   }
 
-  GetRemoteService()->RunFloatingPointAccuracyRoutine(
-      params->request.length_seconds, GetOnResult());
+  GetService()->RunFloatingPointAccuracyRoutine(
+      ash::cros_healthd::mojom::NullableUint32::New(
+          params->request.length_seconds),
+      GetOnResponse());
 }
 
 // OsDiagnosticsRunCpuPrimeSearchRoutineFunction -------------------------------
@@ -243,8 +341,10 @@ void OsDiagnosticsRunCpuPrimeSearchRoutineFunction::RunIfAllowed() {
     return;
   }
 
-  GetRemoteService()->RunPrimeSearchRoutine(params->request.length_seconds,
-                                            GetOnResult());
+  GetService()->RunPrimeSearchRoutine(
+      ash::cros_healthd::mojom::NullableUint32::New(
+          params->request.length_seconds),
+      GetOnResponse());
 }
 
 // OsDiagnosticsRunCpuStressRoutineFunction ------------------------------------
@@ -255,8 +355,10 @@ void OsDiagnosticsRunCpuStressRoutineFunction::RunIfAllowed() {
     return;
   }
 
-  GetRemoteService()->RunCpuStressRoutine(params->request.length_seconds,
-                                          GetOnResult());
+  GetService()->RunCpuStressRoutine(
+      ash::cros_healthd::mojom::NullableUint32::New(
+          params->request.length_seconds),
+      GetOnResponse());
 }
 
 // OsDiagnosticsRunDiskReadRoutineFunction -------------------------------------
@@ -267,51 +369,52 @@ void OsDiagnosticsRunDiskReadRoutineFunction::RunIfAllowed() {
     return;
   }
 
-  GetRemoteService()->RunDiskReadRoutine(
-      converters::ConvertDiskReadRoutineType(params->request.type),
+  GetService()->RunDiskReadRoutine(
+      converters::diagnostics::ConvertDiskReadRoutineType(params->request.type),
       params->request.length_seconds, params->request.file_size_mb,
-      GetOnResult());
+      GetOnResponse());
 }
 
 // OsDiagnosticsRunDnsResolutionRoutineFunction --------------------------------
 
 void OsDiagnosticsRunDnsResolutionRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunDnsResolutionRoutine(GetOnResult());
+  GetService()->RunDnsResolutionRoutine(GetOnResponse());
 }
 
 // OsDiagnosticsRunDnsResolverPresentRoutineFunction ---------------------------
 void OsDiagnosticsRunDnsResolverPresentRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunDnsResolverPresentRoutine(GetOnResult());
+  GetService()->RunDnsResolverPresentRoutine(GetOnResponse());
 }
 
 // OsDiagnosticsRunEmmcLifetimeRoutineFunction ---------------------------
 
 void OsDiagnosticsRunEmmcLifetimeRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunEmmcLifetimeRoutine(GetOnResult());
+  GetService()->RunEmmcLifetimeRoutine(GetOnResponse());
 }
 
 // OsDiagnosticsRunGatewayCanBePingedRoutineFunction ---------------------------
 
 void OsDiagnosticsRunGatewayCanBePingedRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunGatewayCanBePingedRoutine(GetOnResult());
+  GetService()->RunGatewayCanBePingedRoutine(GetOnResponse());
 }
 
 // OsDiagnosticsRunFingerprintAliveRoutineFunction -----------------------------
 
 void OsDiagnosticsRunFingerprintAliveRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunFingerprintAliveRoutine(GetOnResult());
+  GetService()->RunFingerprintAliveRoutine(GetOnResponse());
 }
 
 // OsDiagnosticsRunLanConnectivityRoutineFunction ------------------------------
 
 void OsDiagnosticsRunLanConnectivityRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunLanConnectivityRoutine(GetOnResult());
+  GetService()->RunLanConnectivityRoutine(GetOnResponse());
 }
 
 // OsDiagnosticsRunMemoryRoutineFunction ---------------------------------------
 
 void OsDiagnosticsRunMemoryRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunMemoryRoutine(GetOnResult());
+  GetService()->RunMemoryRoutine(/*max_testing_mem_kib=*/std::nullopt,
+                                 GetOnResponse());
 }
 
 // OsDiagnosticsRunNvmeSelfTestRoutineFunction ---------------------------------
@@ -322,52 +425,491 @@ void OsDiagnosticsRunNvmeSelfTestRoutineFunction::RunIfAllowed() {
     return;
   }
 
-  GetRemoteService()->RunNvmeSelfTestRoutine(
-      converters::ConvertNvmeSelfTestRoutineType(std::move(params->request)),
-      GetOnResult());
-}
-
-// OsDiagnosticsRunNvmeWearLevelRoutineFunction --------------------------------
-
-void OsDiagnosticsRunNvmeWearLevelRoutineFunction::RunIfAllowed() {
-  const auto params = GetParams<cx_diag::RunNvmeWearLevelRoutine::Params>();
-  if (!params) {
-    return;
-  }
-
-  GetRemoteService()->RunNvmeWearLevelRoutine(
-      params->request.wear_level_threshold, GetOnResult());
+  GetService()->RunNvmeSelfTestRoutine(
+      converters::diagnostics::ConvertNvmeSelfTestRoutineType(
+          std::move(params->request)),
+      GetOnResponse());
 }
 
 // OsDiagnosticsRunSensitiveSensorRoutineFunction -----------------------------
 
 void OsDiagnosticsRunSensitiveSensorRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunSensitiveSensorRoutine(GetOnResult());
+  GetService()->RunSensitiveSensorRoutine(GetOnResponse());
 }
 
 // OsDiagnosticsRunSignalStrengthRoutineFunction -------------------------------
 
 void OsDiagnosticsRunSignalStrengthRoutineFunction::RunIfAllowed() {
-  GetRemoteService()->RunSignalStrengthRoutine(GetOnResult());
+  GetService()->RunSignalStrengthRoutine(GetOnResponse());
 }
 
 // OsDiagnosticsRunSmartctlCheckRoutineFunction --------------------------------
 
 void OsDiagnosticsRunSmartctlCheckRoutineFunction::RunIfAllowed() {
-  absl::optional<api::os_diagnostics::RunSmartctlCheckRoutine::Params> params(
-      api::os_diagnostics::RunSmartctlCheckRoutine::Params::Create(args()));
+  std::optional<cx_diag::RunSmartctlCheckRoutine::Params> params(
+      cx_diag::RunSmartctlCheckRoutine::Params::Create(args()));
 
-  crosapi::mojom::UInt32ValuePtr percentage_used;
-  if (params && params->request && params->request->percentage_used_threshold) {
-    percentage_used = crosapi::mojom::UInt32Value::New(
-        params->request->percentage_used_threshold.value());
+  ash::cros_healthd::mojom::NullableUint32Ptr percentage_used;
+  if (params && params->request &&
+      params->request->percentage_used_threshold.has_value()) {
+    percentage_used = ash::cros_healthd::mojom::NullableUint32::New(
+        *params->request->percentage_used_threshold);
   }
 
   // Backwards compatibility: Calling the routine with an null parameter
   // results in the same behaviour as the former `RunSmartctlCheckRoutine`
   // without any parameters.
-  GetRemoteService()->RunSmartctlCheckRoutine(std::move(percentage_used),
-                                              GetOnResult());
+  GetService()->RunSmartctlCheckRoutine(std::move(percentage_used),
+                                        GetOnResponse());
+}
+
+// OsDiagnosticsRunUfsLifetimeRoutineFunction -------------------------------
+
+void OsDiagnosticsRunUfsLifetimeRoutineFunction::RunIfAllowed() {
+  GetService()->RunUfsLifetimeRoutine(GetOnResponse());
+}
+
+// OsDiagnosticsRunPowerButtonRoutineFunction -----------------------------
+
+void OsDiagnosticsRunPowerButtonRoutineFunction::RunIfAllowed() {
+  const auto params = GetParams<cx_diag::RunPowerButtonRoutine::Params>();
+  if (!params) {
+    return;
+  }
+
+  GetService()->RunPowerButtonRoutine(params->request.timeout_seconds,
+                                      GetOnResponse());
+}
+
+// OsDiagnosticsRunAudioDriverRoutineFunction -------------------------------
+
+void OsDiagnosticsRunAudioDriverRoutineFunction::RunIfAllowed() {
+  GetService()->RunAudioDriverRoutine(GetOnResponse());
+}
+
+// OsDiagnosticsRunFanRoutineFunction -------------------------------
+
+void OsDiagnosticsRunFanRoutineFunction::RunIfAllowed() {
+  GetService()->RunFanRoutine(GetOnResponse());
+}
+
+// OsDiagnosticsCreateRoutineFunction ------------------------------------
+
+void OsDiagnosticsCreateRoutineFunction::RunIfAllowed() {
+  std::optional<cx_diag::CreateRoutine::Params> params(
+      cx_diag::CreateRoutine::Params::Create(args()));
+  if (!params.has_value()) {
+    Respond(BadMessage());
+    return;
+  }
+
+  auto mojo_arg = converters::diagnostics::ConvertRoutineArgumentsUnion(
+      std::move(params->args));
+  if (!mojo_arg.has_value()) {
+    RespondWithError("Routine arguments are invalid.");
+    return;
+  }
+
+  RecordRoutineCreation(mojo_arg.value()->which());
+
+  // Network bandwidth routine is guarded by `os.diagnostics.network_info_mlab`
+  // permission.
+  if (mojo_arg.value()->is_network_bandwidth() &&
+      !extension()->permissions_data()->HasAPIPermission(
+          extensions::mojom::APIPermissionID::
+              kChromeOSDiagnosticsNetworkInfoForMlab)) {
+    RespondWithError(
+        "Unauthorized access to chrome.os.diagnostics.CreateRoutine with "
+        "networkBandwidth argument. Extension doesn't have the permission.");
+    return;
+  }
+
+  auto* routines_manager = DiagnosticRoutineManager::Get(browser_context());
+  auto result = routines_manager->CreateRoutine(extension_id(),
+                                                std::move(mojo_arg.value()));
+
+  if (!result.has_value()) {
+    switch (result.error()) {
+      case DiagnosticRoutineManager::kAppUiClosed:
+        Respond(Error("Companion app UI is not open."));
+        break;
+      case DiagnosticRoutineManager::kExtensionUnloaded:
+        Respond(Error("Extension has been unloaded."));
+        break;
+    }
+    return;
+  }
+
+  cx_diag::CreateRoutineResponse response;
+  response.uuid = result->AsLowercaseString();
+  Respond(ArgumentList(cx_diag::CreateRoutine::Results::Create(response)));
+}
+
+// OsDiagnosticsCreateMemoryRoutineFunction ------------------------------------
+
+void OsDiagnosticsCreateMemoryRoutineFunction::RunIfAllowed() {
+  std::optional<cx_diag::CreateMemoryRoutine::Params> params(
+      cx_diag::CreateMemoryRoutine::Params::Create(args()));
+
+  if (!params.has_value() ||
+      (params.value().args.max_testing_mem_kib.has_value() &&
+       params.value().args.max_testing_mem_kib < 0)) {
+    SetBadMessage();
+    Respond(BadMessage());
+    return;
+  }
+
+  auto memory_arg = ash::cros_healthd::mojom::MemoryRoutineArgument::New();
+  if (params.value().args.max_testing_mem_kib.has_value()) {
+    memory_arg->max_testing_mem_kib = params.value().args.max_testing_mem_kib;
+  }
+
+  auto* routines_manager = DiagnosticRoutineManager::Get(browser_context());
+  auto result = routines_manager->CreateRoutine(
+      extension_id(), ash::cros_healthd::mojom::RoutineArgument::NewMemory(
+                          std::move(memory_arg)));
+
+  if (!result.has_value()) {
+    switch (result.error()) {
+      case DiagnosticRoutineManager::kAppUiClosed:
+        Respond(Error("Companion app UI is not open."));
+        break;
+      case DiagnosticRoutineManager::kExtensionUnloaded:
+        Respond(Error("Extension has been unloaded."));
+        break;
+    }
+    return;
+  }
+
+  cx_diag::CreateRoutineResponse response;
+  response.uuid = result->AsLowercaseString();
+  Respond(
+      ArgumentList(cx_diag::CreateMemoryRoutine::Results::Create(response)));
+}
+
+// OsDiagnosticsCreateVolumeButtonRoutineFunction
+// ------------------------------------
+
+void OsDiagnosticsCreateVolumeButtonRoutineFunction::RunIfAllowed() {
+  std::optional<cx_diag::CreateVolumeButtonRoutine::Params> params(
+      cx_diag::CreateVolumeButtonRoutine::Params::Create(args()));
+
+  if (!params.has_value() || params.value().args.timeout_seconds <= 0 ||
+      params.value().args.button_type == cx_diag::VolumeButtonType::kNone) {
+    SetBadMessage();
+    Respond(BadMessage());
+    return;
+  }
+
+  auto volume_button_arg =
+      ash::cros_healthd::mojom::VolumeButtonRoutineArgument::New();
+  volume_button_arg->type =
+      converters::diagnostics::ConvertVolumeButtonRoutineButtonType(
+          params.value().args.button_type);
+  volume_button_arg->timeout =
+      base::Seconds(params.value().args.timeout_seconds);
+
+  auto* routines_manager = DiagnosticRoutineManager::Get(browser_context());
+  auto result = routines_manager->CreateRoutine(
+      extension_id(),
+      ash::cros_healthd::mojom::RoutineArgument::NewVolumeButton(
+          std::move(volume_button_arg)));
+
+  if (!result.has_value()) {
+    switch (result.error()) {
+      case DiagnosticRoutineManager::kAppUiClosed:
+        Respond(Error("Companion app UI is not open."));
+        break;
+      case DiagnosticRoutineManager::kExtensionUnloaded:
+        Respond(Error("Extension has been unloaded."));
+        break;
+    }
+    return;
+  }
+
+  cx_diag::CreateRoutineResponse response;
+  response.uuid = result->AsLowercaseString();
+  Respond(ArgumentList(
+      cx_diag::CreateVolumeButtonRoutine::Results::Create(response)));
+}
+
+// OsDiagnosticsCreateFanRoutineFunction ------------------------------------
+
+void OsDiagnosticsCreateFanRoutineFunction::RunIfAllowed() {
+  std::optional<cx_diag::CreateFanRoutine::Params> params(
+      cx_diag::CreateFanRoutine::Params::Create(args()));
+
+  if (!params.has_value()) {
+    SetBadMessage();
+    Respond(BadMessage());
+    return;
+  }
+
+  auto fan_arg = ash::cros_healthd::mojom::FanRoutineArgument::New();
+
+  auto* routines_manager = DiagnosticRoutineManager::Get(browser_context());
+  auto result = routines_manager->CreateRoutine(
+      extension_id(),
+      ash::cros_healthd::mojom::RoutineArgument::NewFan(std::move(fan_arg)));
+
+  if (!result.has_value()) {
+    switch (result.error()) {
+      case DiagnosticRoutineManager::kAppUiClosed:
+        Respond(Error("Companion app UI is not open."));
+        break;
+      case DiagnosticRoutineManager::kExtensionUnloaded:
+        Respond(Error("Extension has been unloaded."));
+        break;
+    }
+    return;
+  }
+
+  cx_diag::CreateRoutineResponse response;
+  response.uuid = result->AsLowercaseString();
+  Respond(ArgumentList(cx_diag::CreateFanRoutine::Results::Create(response)));
+}
+
+// OsDiagnosticsStartRoutineFunction -------------------------------------------
+
+void OsDiagnosticsStartRoutineFunction::RunIfAllowed() {
+  auto params = GetParams<cx_diag::StartRoutine::Params>();
+  if (!params.has_value()) {
+    return;
+  }
+
+  auto* routines_manager = DiagnosticRoutineManager::Get(browser_context());
+  bool result = routines_manager->StartRoutineForExtension(
+      extension_id(), base::Uuid::ParseLowercase(params.value().request.uuid));
+
+  if (!result) {
+    RespondWithError("Unknown routine id.");
+    return;
+  }
+
+  Respond(NoArguments());
+}
+
+// OsDiagnosticsCancelRoutineFunction ------------------------------------------
+
+void OsDiagnosticsCancelRoutineFunction::RunIfAllowed() {
+  auto params = GetParams<cx_diag::CancelRoutine::Params>();
+  if (!params.has_value()) {
+    return;
+  }
+
+  auto* routines_manager = DiagnosticRoutineManager::Get(browser_context());
+  routines_manager->CancelRoutineForExtension(
+      extension_id(), base::Uuid::ParseLowercase(params.value().request.uuid));
+
+  Respond(NoArguments());
+}
+
+// OsDiagnosticsReplyToRoutineInquiryFunction ----------------------------------
+
+void OsDiagnosticsReplyToRoutineInquiryFunction::RunIfAllowed() {
+  auto params = cx_diag::ReplyToRoutineInquiry::Params::Create(args());
+  if (!params.has_value()) {
+    Respond(BadMessage());
+    return;
+  }
+
+  auto mojo_reply = converters::diagnostics::ConvertRoutineInquiryReplyUnion(
+      std::move(params->request.reply));
+  if (!mojo_reply.has_value()) {
+    RespondWithError("Inquiry reply is invalid.");
+    return;
+  }
+
+  auto* routines_manager = DiagnosticRoutineManager::Get(browser_context());
+  bool result = routines_manager->ReplyToRoutineInquiryForExtension(
+      extension_id(), base::Uuid::ParseLowercase(params.value().request.uuid),
+      std::move(mojo_reply.value()));
+
+  if (!result) {
+    RespondWithError("Unknown routine id.");
+    return;
+  }
+
+  Respond(NoArguments());
+}
+
+// OsDiagnosticsIsRoutineArgumentSupportedFunction -----------------------
+
+void OsDiagnosticsIsRoutineArgumentSupportedFunction::RunIfAllowed() {
+  auto params = GetParams<cx_diag::IsRoutineArgumentSupported::Params>();
+  if (!params.has_value()) {
+    return;
+  }
+
+  auto mojo_arg = converters::diagnostics::ConvertRoutineArgumentsUnion(
+      std::move(params->args));
+  if (!mojo_arg.has_value()) {
+    RespondWithError("Routine arguments are invalid.");
+    return;
+  }
+
+  RecordRoutineSupportedStatusQuery(mojo_arg.value()->which());
+
+  // Network bandwidth routine is guarded by `os.diagnostics.network_info_mlab`
+  // permission.
+  if (mojo_arg.value()->is_network_bandwidth() &&
+      !extension()->permissions_data()->HasAPIPermission(
+          extensions::mojom::APIPermissionID::
+              kChromeOSDiagnosticsNetworkInfoForMlab)) {
+    RespondWithError(
+        "Unauthorized access to "
+        "chrome.os.diagnostics.isRoutineArgumentSupported with "
+        "networkBandwidth argument. Extension doesn't have the permission.");
+    return;
+  }
+
+  ash::cros_healthd::ServiceConnection::GetInstance()
+      ->GetRoutinesService()
+      ->IsRoutineArgumentSupported(
+          std::move(mojo_arg.value()),
+          base::BindOnce(
+              &OsDiagnosticsIsRoutineArgumentSupportedFunction::OnResult,
+              this));
+}
+
+void OsDiagnosticsIsRoutineArgumentSupportedFunction::OnResult(
+    ash::cros_healthd::mojom::SupportStatusPtr result) {
+  if (result.is_null()) {
+    RespondWithError("API internal error.");
+    return;
+  }
+
+  auto response = ParseRoutineArgumentSupportResult(*result);
+  if (!response.has_value()) {
+    RespondWithError(response.error());
+    return;
+  }
+
+  Respond(ArgumentList(
+      cx_diag::IsRoutineArgumentSupported::Results::Create(response.value())));
+}
+
+// OsDiagnosticsIsMemoryRoutineArgumentSupportedFunction -----------------------
+
+void OsDiagnosticsIsMemoryRoutineArgumentSupportedFunction::RunIfAllowed() {
+  auto params = GetParams<cx_diag::IsMemoryRoutineArgumentSupported::Params>();
+  if (!params.has_value()) {
+    return;
+  }
+
+  auto mem_args = ash::cros_healthd::mojom::MemoryRoutineArgument::New();
+  mem_args->max_testing_mem_kib = params.value().args.max_testing_mem_kib;
+
+  ash::cros_healthd::ServiceConnection::GetInstance()
+      ->GetRoutinesService()
+      ->IsRoutineArgumentSupported(
+          ash::cros_healthd::mojom::RoutineArgument::NewMemory(
+              std::move(mem_args)),
+          base::BindOnce(
+              &OsDiagnosticsIsMemoryRoutineArgumentSupportedFunction::OnResult,
+              this));
+}
+
+void OsDiagnosticsIsMemoryRoutineArgumentSupportedFunction::OnResult(
+    ash::cros_healthd::mojom::SupportStatusPtr result) {
+  if (result.is_null()) {
+    RespondWithError("API internal error.");
+    return;
+  }
+
+  auto response = ParseRoutineArgumentSupportResult(*result);
+  if (!response.has_value()) {
+    RespondWithError(response.error());
+    return;
+  }
+
+  Respond(
+      ArgumentList(cx_diag::IsMemoryRoutineArgumentSupported::Results::Create(
+          response.value())));
+}
+
+// OsDiagnosticsIsVolumeButtonRoutineArgumentSupportedFunction
+// -----------------------
+
+void OsDiagnosticsIsVolumeButtonRoutineArgumentSupportedFunction::
+    RunIfAllowed() {
+  auto params =
+      GetParams<cx_diag::IsVolumeButtonRoutineArgumentSupported::Params>();
+  if (!params.has_value() || params.value().args.timeout_seconds <= 0 ||
+      params.value().args.button_type == cx_diag::VolumeButtonType::kNone) {
+    return;
+  }
+
+  auto volume_button_args =
+      ash::cros_healthd::mojom::VolumeButtonRoutineArgument::New();
+  volume_button_args->type =
+      converters::diagnostics::ConvertVolumeButtonRoutineButtonType(
+          params.value().args.button_type);
+  volume_button_args->timeout =
+      base::Seconds(params.value().args.timeout_seconds);
+
+  ash::cros_healthd::ServiceConnection::GetInstance()
+      ->GetRoutinesService()
+      ->IsRoutineArgumentSupported(
+          ash::cros_healthd::mojom::RoutineArgument::NewVolumeButton(
+              std::move(volume_button_args)),
+          base::BindOnce(
+              &OsDiagnosticsIsVolumeButtonRoutineArgumentSupportedFunction::
+                  OnResult,
+              this));
+}
+
+void OsDiagnosticsIsVolumeButtonRoutineArgumentSupportedFunction::OnResult(
+    ash::cros_healthd::mojom::SupportStatusPtr result) {
+  if (result.is_null()) {
+    RespondWithError("API internal error.");
+    return;
+  }
+
+  auto response = ParseRoutineArgumentSupportResult(*result);
+  if (!response.has_value()) {
+    RespondWithError(response.error());
+    return;
+  }
+
+  Respond(ArgumentList(
+      cx_diag::IsVolumeButtonRoutineArgumentSupported::Results::Create(
+          response.value())));
+}
+
+// OsDiagnosticsIsFanRoutineArgumentSupportedFunction -----------------------
+
+void OsDiagnosticsIsFanRoutineArgumentSupportedFunction::RunIfAllowed() {
+  auto params = GetParams<cx_diag::IsFanRoutineArgumentSupported::Params>();
+  if (!params.has_value()) {
+    return;
+  }
+
+  ash::cros_healthd::ServiceConnection::GetInstance()
+      ->GetRoutinesService()
+      ->IsRoutineArgumentSupported(
+          ash::cros_healthd::mojom::RoutineArgument::NewFan(
+              ash::cros_healthd::mojom::FanRoutineArgument::New()),
+          base::BindOnce(
+              &OsDiagnosticsIsFanRoutineArgumentSupportedFunction::OnResult,
+              this));
+}
+
+void OsDiagnosticsIsFanRoutineArgumentSupportedFunction::OnResult(
+    ash::cros_healthd::mojom::SupportStatusPtr result) {
+  if (result.is_null()) {
+    RespondWithError("API internal error.");
+    return;
+  }
+
+  auto response = ParseRoutineArgumentSupportResult(*result);
+  if (!response.has_value()) {
+    RespondWithError(response.error());
+    return;
+  }
+
+  Respond(ArgumentList(cx_diag::IsFanRoutineArgumentSupported::Results::Create(
+      response.value())));
 }
 
 }  // namespace chromeos

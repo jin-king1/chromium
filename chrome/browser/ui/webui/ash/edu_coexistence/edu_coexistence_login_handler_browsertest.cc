@@ -28,6 +28,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_web_ui.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 
 namespace ash {
@@ -76,12 +77,11 @@ class EduCoexistenceLoginHandlerBrowserTest
 
   void SimulateAccessTokenFetched(EduCoexistenceLoginHandler* handler,
                                   bool success = true) {
-    GoogleServiceAuthError::State state =
-        success ? GoogleServiceAuthError::NONE
-                : GoogleServiceAuthError::INVALID_GAIA_CREDENTIALS;
-
     handler->OnOAuthAccessTokensFetched(
-        GoogleServiceAuthError(state),
+        success ? GoogleServiceAuthError::AuthErrorNone()
+                : GoogleServiceAuthError::FromInvalidGaiaCredentialsReason(
+                      GoogleServiceAuthError::InvalidGaiaCredentialsReason::
+                          UNKNOWN),
         signin::AccessTokenInfo("access_token",
                                 base::Time::Now() + base::Minutes(1), ""));
   }
@@ -105,9 +105,9 @@ class EduCoexistenceLoginHandlerBrowserTest
   content::TestWebUI* web_ui() { return &web_ui_; }
 
  private:
-  LoggedInUserMixin logged_in_user_mixin_{&mixin_host_,
-                                          LoggedInUserMixin::LogInType::kChild,
-                                          embedded_test_server(), this};
+  LoggedInUserMixin logged_in_user_mixin_{&mixin_host_, /*test_base=*/this,
+                                          embedded_test_server(),
+                                          LoggedInUserMixin::LogInType::kChild};
 
   base::HistogramTester histograms_;
 
@@ -121,7 +121,7 @@ IN_PROC_BROWSER_TEST_F(EduCoexistenceLoginHandlerBrowserTest,
 
   ExpectEduCoexistenceState(EduCoexistenceStateTracker::FlowResult::kLaunched);
 
-  base::Value::List list_args;
+  base::ListValue list_args;
   list_args.Append(kCallbackId);
   web_ui()->HandleReceivedMessage("initializeEduArgs", list_args);
   SimulateAccessTokenFetched(handler.get());
@@ -144,7 +144,7 @@ IN_PROC_BROWSER_TEST_F(EduCoexistenceLoginHandlerBrowserTest,
                        ErrorCallsFromWebUI) {
   std::unique_ptr<EduCoexistenceLoginHandler> handler = SetUpHandler();
 
-  base::Value::List call_args;
+  base::ListValue call_args;
   call_args.Append("error message 1");
   call_args.Append("error message 2");
   web_ui()->HandleReceivedMessage("error", call_args);
@@ -166,7 +166,7 @@ IN_PROC_BROWSER_TEST_F(EduCoexistenceLoginHandlerBrowserTest,
   // C++ handler.
   EXPECT_EQ(web_ui()->call_data().size(), 0u);
 
-  base::Value::List call_args;
+  base::ListValue call_args;
   call_args.Append("coexistence-data-init");
   web_ui()->HandleReceivedMessage("initializeEduArgs", call_args);
 
@@ -193,11 +193,11 @@ IN_PROC_BROWSER_TEST_F(EduCoexistenceLoginHandlerBrowserTest,
 
   SimulateAccessTokenFetched(handler.get());
 
-  base::Value::List call_args;
+  base::ListValue call_args;
   call_args.Append(FakeGaiaMixin::kFakeUserEmail);
   call_args.Append(kToSVersion);
 
-  base::Value::List list_args;
+  base::ListValue list_args;
   list_args.Append(kConsentLoggedCallback);
   list_args.Append(std::move(call_args));
 
@@ -240,9 +240,9 @@ IN_PROC_BROWSER_TEST_F(EduCoexistenceLoginHandlerBrowserTest,
                        TestUpdateAcceptedToSVersionPrefAccount) {
   constexpr char kVersion1[] = "123";
   constexpr char kVersion2[] = "234";
-  constexpr char kUser1GaiaId[] = "user1-gaia-id";
-  constexpr char kUser2GaiaId[] = "user2-gaia-id";
-  constexpr char kUser3GaiaId[] = "user3-gaia-id";
+  const GaiaId kUser1GaiaId("user1-gaia-id");
+  const GaiaId kUser2GaiaId("user2-gaia-id");
+  const GaiaId kUser3GaiaId("user3-gaia-id");
 
   Profile* profile = ProfileManager::GetActiveUserProfile();
 

@@ -9,11 +9,19 @@
 #include "ash/user_education/user_education_delegate.h"
 #include "ash/user_education/user_education_types.h"
 #include "ash/user_education/user_education_util.h"
+#include "ash/user_education/views/help_bubble_factory_views_ash.h"
+#include "ash/user_education/views/help_bubble_view_ash.h"
+#include "base/cancelable_callback.h"
+#include "base/check_is_test.h"
 #include "base/check_op.h"
 #include "components/account_id/account_id.h"
-#include "components/user_education/common/help_bubble.h"
-#include "components/user_education/common/help_bubble_params.h"
+#include "components/user_education/common/help_bubble/help_bubble.h"
+#include "components/user_education/common/help_bubble/help_bubble_params.h"
+#include "ui/aura/window.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/view.h"
+#include "ui/views/widget/widget.h"
 
 namespace ash {
 namespace {
@@ -21,7 +29,22 @@ namespace {
 // The singleton instance owned by the `UserEducationController`.
 UserEducationHelpBubbleController* g_instance = nullptr;
 
+// Helpers ---------------------------------------------------------------------
+
+gfx::Rect GetAnchorBoundsInScreen(const HelpBubbleViewAsh* help_bubble_view) {
+  return help_bubble_view->GetAnchorView()->GetAnchorBoundsInScreen();
+}
+
+aura::Window* GetAnchorRootWindow(const HelpBubbleViewAsh* help_bubble_view) {
+  return help_bubble_view->GetAnchorView()
+      ->GetWidget()
+      ->GetNativeWindow()
+      ->GetRootWindow();
+}
+
 }  // namespace
+
+// UserEducationHelpBubbleController -------------------------------------------
 
 UserEducationHelpBubbleController::UserEducationHelpBubbleController(
     UserEducationDelegate* delegate)
@@ -37,50 +60,67 @@ UserEducationHelpBubbleController::~UserEducationHelpBubbleController() {
 
 // static
 UserEducationHelpBubbleController* UserEducationHelpBubbleController::Get() {
+  // Should only be `nullptr` in testing.
+  if (!g_instance) {
+    CHECK_IS_TEST();
+  }
   return g_instance;
 }
 
-bool UserEducationHelpBubbleController::CreateHelpBubble(
-    HelpBubbleId help_bubble_id,
-    user_education::HelpBubbleParams help_bubble_params,
-    ui::ElementIdentifier element_id,
-    ui::ElementContext element_context) {
-  // Prohibit showing multiple help bubbles concurrently.
-  if (help_bubble_) {
-    return false;
+base::CallbackListSubscription
+UserEducationHelpBubbleController::AddHelpBubbleAnchorBoundsChangedCallback(
+    base::RepeatingClosure callback) {
+  return help_bubble_anchor_bounds_changed_subscribers_.Add(
+      std::move(callback));
+}
+
+base::CallbackListSubscription
+UserEducationHelpBubbleController::AddHelpBubbleClosedCallback(
+    base::RepeatingClosure callback) {
+  return help_bubble_closed_subscribers_.Add(std::move(callback));
+}
+
+base::CallbackListSubscription
+UserEducationHelpBubbleController::AddHelpBubbleShownCallback(
+    base::RepeatingClosure callback) {
+  return help_bubble_shown_subscribers_.Add(std::move(callback));
+}
+
+void UserEducationHelpBubbleController::NotifyHelpBubbleAnchorBoundsChanged(
+    base::PassKey<HelpBubbleViewAsh>,
+    const HelpBubbleViewAsh* help_bubble_view) {
+  // Ignore event if the associated help bubble has not yet been shown.
+  if (auto it = help_bubble_metadata_by_key_.find(help_bubble_view);
+      it != help_bubble_metadata_by_key_.end()) {
+    it->second.anchor_bounds_in_screen =
+        GetAnchorBoundsInScreen(help_bubble_view);
+    help_bubble_anchor_bounds_changed_subscribers_.Notify();
   }
+}
 
-  // NOTE: User education in Ash is currently only supported for the primary
-  // user profile. This is a self-imposed restriction.
-  auto account_id = Shell::Get()->session_controller()->GetActiveAccountId();
-  CHECK(user_education_util::IsPrimaryAccountId(account_id));
-
-  // Attempt to create a `help_bubble_`.
-  help_bubble_ = delegate_->CreateHelpBubble(account_id, help_bubble_id,
-                                             std::move(help_bubble_params),
-                                             element_id, element_context);
-
-  // The `delegate_` may opt *not* to create a `help_bubble_` in certain
-  // circumstances, e.g. when there is an ongoing tutorial.
-  if (!help_bubble_) {
-    return false;
+void UserEducationHelpBubbleController::NotifyHelpBubbleClosed(
+    base::PassKey<HelpBubbleViewAsh>,
+    const HelpBubbleViewAsh* help_bubble_view) {
+  // Ignore event if the associated help bubble has not yet been shown.
+  if (auto it = help_bubble_metadata_by_key_.find(help_bubble_view);
+      it != help_bubble_metadata_by_key_.end()) {
+    help_bubble_metadata_by_key_.erase(it);
+    help_bubble_closed_subscribers_.Notify();
   }
+}
 
-  // Subscribe to be notified when the `help_bubble_` closes. Once closed, free
-  // `help_bubble_` related memory.
-  help_bubble_close_subscription_ =
-      help_bubble_->AddOnCloseCallback(base::BindOnce(
-          [](UserEducationHelpBubbleController* self,
-             user_education::HelpBubble* help_bubble) {
-            CHECK_EQ(self->help_bubble_.get(), help_bubble);
-            self->help_bubble_.reset();
-            self->help_bubble_close_subscription_ =
-                base::CallbackListSubscription();
-          },
-          base::Unretained(this)));
-
-  // Indicate success.
-  return true;
+void UserEducationHelpBubbleController::NotifyHelpBubbleShown(
+    base::PassKey<HelpBubbleViewAsh>,
+    const HelpBubbleViewAsh* help_bubble_view) {
+  // Ignore event if the associated help bubble has already been shown.
+  if (!help_bubble_metadata_by_key_.contains(help_bubble_view)) {
+    help_bubble_metadata_by_key_.emplace(
+        std::piecewise_construct, std::forward_as_tuple(help_bubble_view),
+        std::forward_as_tuple(help_bubble_view,
+                              GetAnchorRootWindow(help_bubble_view),
+                              GetAnchorBoundsInScreen(help_bubble_view)));
+    help_bubble_shown_subscribers_.Notify();
+  }
 }
 
 }  // namespace ash

@@ -6,6 +6,8 @@
 #define ASH_ACCELEROMETER_ACCEL_GYRO_SAMPLES_OBSERVER_H_
 
 #include <stdint.h>
+
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,25 +22,26 @@
 
 namespace ash {
 
-// A AccelGryoSamplesObserver for an accelerometer/gyroscope device.
-// AccelGryoSamplesObserver should only be used on the UI thread.
-class ASH_EXPORT AccelGryoSamplesObserver
+// A AccelGyroSamplesObserver for an accelerometer/gyroscope device.
+// AccelGyroSamplesObserver should only be used on the UI thread.
+class ASH_EXPORT AccelGyroSamplesObserver
     : public chromeos::sensors::mojom::SensorDeviceSamplesObserver {
  public:
   using OnSampleUpdatedCallback =
       base::RepeatingCallback<void(int iio_device_id,
                                    std::vector<float> sample)>;
 
-  AccelGryoSamplesObserver(
+  AccelGyroSamplesObserver(
       int iio_device_id,
       mojo::Remote<chromeos::sensors::mojom::SensorDevice> sensor_device_remote,
       float scale,
       OnSampleUpdatedCallback on_sample_updated_callback,
       chromeos::sensors::mojom::DeviceType device_type =
-          chromeos::sensors::mojom::DeviceType::ACCEL);
-  AccelGryoSamplesObserver(const AccelGryoSamplesObserver&) = delete;
-  AccelGryoSamplesObserver& operator=(const AccelGryoSamplesObserver&) = delete;
-  ~AccelGryoSamplesObserver() override;
+          chromeos::sensors::mojom::DeviceType::ACCEL,
+      float frequency = kReadFrequencyInHz);
+  AccelGyroSamplesObserver(const AccelGyroSamplesObserver&) = delete;
+  AccelGyroSamplesObserver& operator=(const AccelGyroSamplesObserver&) = delete;
+  ~AccelGyroSamplesObserver() override;
 
   // Sets the observer |enabled| by setting the frequency to iioservice.
   // Should be called on |task_runner_|.
@@ -56,8 +59,10 @@ class ASH_EXPORT AccelGryoSamplesObserver
       const std::vector<std::string>& iio_channel_ids);
   void StartReading();
 
-  // Update this sensor device's frequency to kReadFrequencyInHz if |enabled_|
-  // is true, and to 0 if |enabled_| is false.
+  // If |frequency_| is 0, updates this sensor device's frequency to
+  // kReadFrequencyInHz if |enabled_| is true, and to 0 if |enabled_| is false.
+  // If |frequency_| is not 0, updates this sensor device's frequency to
+  // frequency_ if |enabled_| is true, and to 0 if |enabled_| is false.
   void UpdateSensorDeviceFrequency();
 
   mojo::PendingRemote<chromeos::sensors::mojom::SensorDeviceSamplesObserver>
@@ -67,10 +72,14 @@ class ASH_EXPORT AccelGryoSamplesObserver
   void SetFrequencyCallback(bool enabled, double result_frequency);
   void SetChannelsEnabledCallback(const std::vector<int32_t>& failed_indices);
 
+  static constexpr double kReadFrequencyInHz = 10.0;
+
   int iio_device_id_;
   mojo::Remote<chromeos::sensors::mojom::SensorDevice> sensor_device_remote_;
 
   double scale_;
+
+  float frequency_;
 
   const chromeos::sensors::mojom::DeviceType device_type_;
 
@@ -86,14 +95,14 @@ class ASH_EXPORT AccelGryoSamplesObserver
   std::vector<std::string> iio_channel_ids_;
   // Channel indices (of accel_x, accel_y, and accel_z respectively) to
   // enable.
-  int32_t channel_indices_[kNumberOfAxes];
+  std::array<int32_t, kNumberOfAxes> channel_indices_;
 
   mojo::Receiver<chromeos::sensors::mojom::SensorDeviceSamplesObserver>
       receiver_{this};
 
   SEQUENCE_CHECKER(sequence_checker_);
 
-  base::WeakPtrFactory<AccelGryoSamplesObserver> weak_factory_{this};
+  base::WeakPtrFactory<AccelGyroSamplesObserver> weak_factory_{this};
 };
 
 }  // namespace ash

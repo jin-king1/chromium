@@ -2,18 +2,17 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <memory>
 #include <string>
 
 #include "ash/constants/ash_switches.h"
-#include "base/containers/contains.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
+#include "chrome/browser/ash/login/test/scoped_policy_update.h"
 #include "chrome/browser/ash/login/test/session_manager_state_waiter.h"
 #include "chrome/browser/ash/login/test/user_policy_mixin.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
-#include "chrome/browser/ash/settings/scoped_testing_cros_settings.h"
-#include "chrome/browser/ash/settings/stub_cros_settings_provider.h"
 #include "chrome/browser/chromeos/reporting/metric_default_utils.h"
 #include "chrome/browser/policy/dm_token_utils.h"
 #include "chrome/test/base/fake_gaia_mixin.h"
@@ -26,22 +25,17 @@
 #include "components/reporting/proto/synced/metric_data.pb.h"
 #include "components/reporting/proto/synced/record.pb.h"
 #include "components/reporting/proto/synced/record_constants.pb.h"
+#include "components/reporting/util/mock_clock.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace reporting {
+using testing::Eq;
+using testing::StrEq;
 
-class UsbBrowserTestHelper {
- public:
-  UsbBrowserTestHelper() {
-    // Set collection delay to zero seconds. We don't use
-    // |ScopedMockTimeMessageLoopTaskRunner| here because we are not able to
-    // make it work with mojom.
-    metrics::PeripheralCollectionDelayParam::SetForTesting(base::Seconds(0));
-  }
-};
+namespace reporting {
 namespace {
 
 namespace cros_healthd = ::ash::cros_healthd;
@@ -57,6 +51,7 @@ constexpr char kDMToken[] = "token";
 class UsbEventsBrowserTest : public ::policy::DevicePolicyCrosBrowserTest {
  protected:
   UsbEventsBrowserTest() {
+    test::MockClock::Get();
     // Add unaffiliated user for testing purposes.
     login_manager_mixin_.AppendRegularUsers(1);
     ::policy::SetDMTokenForTesting(
@@ -80,19 +75,16 @@ class UsbEventsBrowserTest : public ::policy::DevicePolicyCrosBrowserTest {
         kTestAffiliationId);
   }
 
-  void EnableUsbPolicy() {
-    scoped_testing_cros_settings_.device_settings()->SetBoolean(
-        ash::kReportDevicePeripherals, true);
-  }
-
-  void DisableUsbPolicy() {
-    scoped_testing_cros_settings_.device_settings()->SetBoolean(
-        ash::kReportDevicePeripherals, false);
+  void SetUsbPolicy(bool value) {
+    auto device_policy_update = device_state_.RequestDevicePolicyUpdate();
+    device_policy_update->policy_payload()
+        ->mutable_device_reporting()
+        ->set_report_peripherals(value);
   }
 
   bool NoUsbEventsEnqueued(const std::vector<Record>& records) {
-    return !base::Contains(records, Destination::PERIPHERAL_EVENTS,
-                           &Record::destination);
+    return !std::ranges::contains(records, Destination::PERIPHERAL_EVENTS,
+                                  &Record::destination);
   }
 
   void LoginAffiliatedUser() {
@@ -154,87 +146,104 @@ class UsbEventsBrowserTest : public ::policy::DevicePolicyCrosBrowserTest {
   FakeGaiaMixin fake_gaia_mixin_{&mixin_host_};
   ash::LoginManagerMixin login_manager_mixin_{
       &mixin_host_, ash::LoginManagerMixin::UserList(), &fake_gaia_mixin_};
-  ash::ScopedTestingCrosSettings scoped_testing_cros_settings_;
-  UsbBrowserTestHelper usb_browser_test_helper_;
 };
 
 IN_PROC_BROWSER_TEST_F(UsbEventsBrowserTest,
                        UsbEventDrivenTelemetryCollectedOnUsbEvent) {
-  EnableUsbPolicy();
-  LoginAffiliatedUser();
-
-  chromeos::MissiveClientTestObserver missive_observer_(
+  chromeos::MissiveClientTestObserver missive_observer(
       Destination::PERIPHERAL_EVENTS);
 
-  auto usb_telemetry = CreateUsbTelemetry();
+  SetUsbPolicy(true);
+
+  LoginAffiliatedUser();
+
+  // Setup fake telemetry to be collected
   cros_healthd::FakeCrosHealthd::Get()->SetProbeTelemetryInfoResponseForTesting(
-      usb_telemetry);
+      CreateUsbTelemetry());
 
   // Any USB event should trigger event driven telemetry collection
   EmitUsbAddEventForTesting();
 
-  Record record = std::get<1>(missive_observer_.GetNextEnqueuedRecord());
+  ::content::RunAllTasksUntilIdle();
+
+  Record record = std::get<1>(missive_observer.GetNextEnqueuedRecord());
+  ASSERT_TRUE(record.has_source_info());
+  EXPECT_THAT(record.source_info().source(), Eq(SourceInfo::ASH));
   MetricData record_data;
 
   // First record should be the USB added event
   ASSERT_TRUE(record_data.ParseFromString(record.data()));
-  EXPECT_THAT(record_data.event_data().type(),
-              ::testing::Eq(MetricEventType::USB_ADDED));
+  EXPECT_THAT(record_data.event_data().type(), Eq(MetricEventType::USB_ADDED));
+
+  // Telemetry should collected be collected with a delay after a USB event
+  // occurs.
+  test::MockClock::Get().Advance(metrics::kPeripheralCollectionDelay);
 
   // Second record should be the USB telemetry
-  record = std::get<1>(missive_observer_.GetNextEnqueuedRecord());
+  record = std::get<1>(missive_observer.GetNextEnqueuedRecord());
   ASSERT_TRUE(record_data.ParseFromString(record.data()));
   EXPECT_TRUE(record_data.has_telemetry_data());
   EXPECT_TRUE(record_data.telemetry_data().has_peripherals_telemetry());
   // Since telemetry is not an event, it shouldn't have event data or event type
   EXPECT_FALSE(record_data.has_event_data());
+
+  EXPECT_FALSE(missive_observer.HasNewEnqueuedRecord());
 }
 
 IN_PROC_BROWSER_TEST_F(
     UsbEventsBrowserTest,
     UsbAddedEventCollectedWhenPolicyEnabledWithAffiliatedUser) {
-  EnableUsbPolicy();
+  chromeos::MissiveClientTestObserver missive_observer(
+      Destination::PERIPHERAL_EVENTS);
+
+  SetUsbPolicy(true);
 
   LoginAffiliatedUser();
 
-  chromeos::MissiveClientTestObserver missive_observer_(
-      Destination::PERIPHERAL_EVENTS);
-
   EmitUsbAddEventForTesting();
-  std::tuple<Priority, Record> entry =
-      missive_observer_.GetNextEnqueuedRecord();
+
+  ::content::RunAllTasksUntilIdle();
+
+  std::tuple<Priority, Record> entry = missive_observer.GetNextEnqueuedRecord();
   Record record = std::get<1>(entry);
+  ASSERT_TRUE(record.has_source_info());
+  EXPECT_THAT(record.source_info().source(), Eq(SourceInfo::ASH));
+
   MetricData record_data;
   ASSERT_TRUE(record_data.ParseFromString(record.data()));
 
   EXPECT_TRUE(record_data.has_telemetry_data());
   EXPECT_TRUE(record_data.telemetry_data().has_peripherals_telemetry());
-  EXPECT_THAT(record_data.event_data().type(),
-              ::testing::Eq(MetricEventType::USB_ADDED));
-  EXPECT_THAT(record.destination(),
-              ::testing::Eq(Destination::PERIPHERAL_EVENTS));
+  EXPECT_THAT(record_data.event_data().type(), Eq(MetricEventType::USB_ADDED));
+  EXPECT_THAT(record.destination(), Eq(Destination::PERIPHERAL_EVENTS));
   ASSERT_TRUE(record.has_dm_token());
-  EXPECT_THAT(record.dm_token(), ::testing::StrEq(kDMToken));
+  EXPECT_THAT(record.dm_token(), StrEq(kDMToken));
+
+  EXPECT_FALSE(missive_observer.HasNewEnqueuedRecord());
 }
 
 IN_PROC_BROWSER_TEST_F(
     UsbEventsBrowserTest,
     UsbTelemetryCollectedWhenPolicyEnabledWithAffiliatedUser) {
-  EnableUsbPolicy();
-
-  chromeos::MissiveClientTestObserver missive_observer_(
+  chromeos::MissiveClientTestObserver missive_observer(
       Destination::PERIPHERAL_EVENTS);
 
-  auto usb_telemetry = CreateUsbTelemetry();
+  SetUsbPolicy(true);
+
+  // Setup fake telemetry.
   cros_healthd::FakeCrosHealthd::Get()->SetProbeTelemetryInfoResponseForTesting(
-      usb_telemetry);
+      CreateUsbTelemetry());
 
   // This triggers USB telemetry collection, a.k.a USB status updates
   LoginAffiliatedUser();
 
-  std::tuple<Priority, Record> entry =
-      missive_observer_.GetNextEnqueuedRecord();
+  ::content::RunAllTasksUntilIdle();
+
+  std::tuple<Priority, Record> entry = missive_observer.GetNextEnqueuedRecord();
   Record record = std::get<1>(entry);
+  ASSERT_TRUE(record.has_source_info());
+  EXPECT_THAT(record.source_info().source(), Eq(SourceInfo::ASH));
+
   MetricData record_data;
   ASSERT_TRUE(record_data.ParseFromString(record.data()));
 
@@ -244,57 +253,71 @@ IN_PROC_BROWSER_TEST_F(
   // technically telemetry, not events, so their event type is
   // EVENT_TYPE_UNSPECIFIED
   EXPECT_THAT(record_data.event_data().type(),
-              ::testing::Eq(MetricEventType::EVENT_TYPE_UNSPECIFIED));
-  EXPECT_THAT(record.destination(),
-              ::testing::Eq(Destination::PERIPHERAL_EVENTS));
+              Eq(MetricEventType::EVENT_TYPE_UNSPECIFIED));
+  EXPECT_THAT(record.destination(), Eq(Destination::PERIPHERAL_EVENTS));
   ASSERT_TRUE(record.has_dm_token());
-  EXPECT_THAT(record.dm_token(), ::testing::StrEq(kDMToken));
+  EXPECT_THAT(record.dm_token(), StrEq(kDMToken));
+
+  EXPECT_FALSE(missive_observer.HasNewEnqueuedRecord());
 }
 
 IN_PROC_BROWSER_TEST_F(
     UsbEventsBrowserTest,
     NoUsbEventsOrTelemetryWhenPolicyEnabledWithUnaffiliatedUser) {
-  EnableUsbPolicy();
-
-  chromeos::MissiveClientTestObserver missive_observer_(
+  chromeos::MissiveClientTestObserver missive_observer(
       Destination::PERIPHERAL_EVENTS);
+
+  SetUsbPolicy(true);
 
   LoginUnaffiliatedUser();
 
   EmitUsbAddEventForTesting();
-  EXPECT_TRUE(NoUsbEventsEnqueued(
-      chromeos::MissiveClient::Get()->GetTestInterface()->GetEnqueuedRecords(
-          Priority::SECURITY)));
+
+  ::content::RunAllTasksUntilIdle();
+
+  EXPECT_FALSE(missive_observer.HasNewEnqueuedRecord());
 }
 
 IN_PROC_BROWSER_TEST_F(
     UsbEventsBrowserTest,
     NoUsbEventsOrTelemetryWhenPolicyDisabledWithAffiliatedUser) {
-  DisableUsbPolicy();
+  chromeos::MissiveClientTestObserver missive_observer(
+      Destination::PERIPHERAL_EVENTS);
+
+  // Setup fake telemetry.
+  cros_healthd::FakeCrosHealthd::Get()->SetProbeTelemetryInfoResponseForTesting(
+      CreateUsbTelemetry());
+
+  SetUsbPolicy(false);
 
   LoginAffiliatedUser();
 
   EmitUsbAddEventForTesting();
 
-  // Shouldn't be any USB event related records in the MissiveClient queue
-  EXPECT_TRUE(NoUsbEventsEnqueued(
-      chromeos::MissiveClient::Get()->GetTestInterface()->GetEnqueuedRecords(
-          Priority::SECURITY)));
+  ::content::RunAllTasksUntilIdle();
+
+  EXPECT_FALSE(missive_observer.HasNewEnqueuedRecord());
 }
 
 IN_PROC_BROWSER_TEST_F(
     UsbEventsBrowserTest,
     NoUsbEventsOrTelemetryWhenPolicyDisabledWithUnaffiliatedUser) {
-  DisableUsbPolicy();
+  chromeos::MissiveClientTestObserver missive_observer(
+      Destination::PERIPHERAL_EVENTS);
+
+  // Setup fake telemetry.
+  cros_healthd::FakeCrosHealthd::Get()->SetProbeTelemetryInfoResponseForTesting(
+      CreateUsbTelemetry());
+
+  SetUsbPolicy(false);
 
   LoginUnaffiliatedUser();
 
   EmitUsbAddEventForTesting();
 
-  // Shouldn't be any USB event related records in the MissiveClient queue
-  EXPECT_TRUE(NoUsbEventsEnqueued(
-      chromeos::MissiveClient::Get()->GetTestInterface()->GetEnqueuedRecords(
-          Priority::SECURITY)));
+  ::content::RunAllTasksUntilIdle();
+
+  EXPECT_FALSE(missive_observer.HasNewEnqueuedRecord());
 }
 
 }  // namespace

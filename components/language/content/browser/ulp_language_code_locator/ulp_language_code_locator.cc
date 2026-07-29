@@ -19,19 +19,19 @@ namespace {
 constexpr char kCellTokenKey[] = "celltoken";
 constexpr char kLanguageKey[] = "language";
 
-absl::optional<std::string> GetLangFromCache(const base::Value::Dict& cache,
-                                             const S2CellId& cell) {
+std::optional<std::string> GetLangFromCache(const base::DictValue& cache,
+                                            const S2CellId& cell) {
   const std::string* lang_cached = cache.FindString(kLanguageKey);
   if (!lang_cached) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   const std::string* token_cached = cache.FindString(kCellTokenKey);
   if (!token_cached) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   const S2CellId cell_cached = S2CellId::FromToken(*token_cached);
   if (!cell_cached.is_valid() || !cell_cached.contains(cell)) {
-    return absl::nullopt;
+    return std::nullopt;
   }
   return *lang_cached;
 }
@@ -73,11 +73,11 @@ std::vector<std::string> UlpLanguageCodeLocator::GetLanguageCodes(
   std::vector<std::string> languages;
 
   ScopedListPrefUpdate update(prefs_, kCachedGeoLanguagesPref);
-  base::Value::List& celllangs_cached = update.Get();
+  base::ListValue& celllangs_cached = update.Get();
   for (size_t index = 0; index < serialized_langtrees_.size(); index++) {
     if (index < celllangs_cached.size()) {
       CHECK(celllangs_cached[index].is_dict());
-      if (absl::optional<std::string> cache_language =
+      if (std::optional<std::string> cache_language =
               GetLangFromCache(celllangs_cached[index].GetDict(), cell)) {
         if (!cache_language->empty()) {
           languages.emplace_back(std::move(*cache_language));
@@ -89,7 +89,7 @@ std::vector<std::string> UlpLanguageCodeLocator::GetLanguageCodes(
     auto [level, language] =
         GetLevelAndLangFromTree(serialized_langtrees_[index].get(), cell);
     if (level != -1) {
-      auto cache_update = base::Value::Dict()
+      auto cache_update = base::DictValue()
                               .Set(kCellTokenKey, cell.parent(level).ToToken())
                               .Set(kLanguageKey, language);
       if (index < celllangs_cached.size()) {

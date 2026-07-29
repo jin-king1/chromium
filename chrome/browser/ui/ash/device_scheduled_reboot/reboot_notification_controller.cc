@@ -14,12 +14,14 @@
 #include "base/memory/ptr_util.h"
 #include "base/strings/strcat.h"
 #include "chrome/browser/notifications/notification_display_service.h"
+#include "chrome/browser/notifications/notification_display_service_factory.h"
 #include "chrome/browser/notifications/notification_handler.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_manager/user_manager.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/message_center/public/cpp/notification.h"
 
 namespace ash {
@@ -40,8 +42,9 @@ RebootNotificationController::~RebootNotificationController() = default;
 void RebootNotificationController::MaybeShowPendingRebootNotification(
     const base::Time& reboot_time,
     base::RepeatingClosure reboot_callback) {
-  if (!ShouldNotifyUser())
+  if (!ShouldNotifyUser()) {
     return;
+  }
   notification_callback_ = std::move(reboot_callback);
   std::u16string reboot_title =
       l10n_util::GetStringUTF16(IDS_POLICY_DEVICE_SCHEDULED_REBOOT_TITLE);
@@ -67,8 +70,9 @@ void RebootNotificationController::MaybeShowPendingRebootNotification(
 void RebootNotificationController::MaybeShowPendingRebootDialog(
     const base::Time& reboot_time,
     base::OnceClosure reboot_callback) {
-  if (!ShouldNotifyUser())
+  if (!ShouldNotifyUser()) {
     return;
+  }
 
   gfx::NativeView parent =
       ash::Shell::GetContainer(ash::Shell::GetRootWindowForNewWindows(),
@@ -80,8 +84,9 @@ void RebootNotificationController::MaybeShowPendingRebootDialog(
 }
 
 void RebootNotificationController::MaybeShowPostRebootNotification() const {
-  if (!ShouldNotifyUser())
+  if (!ShouldNotifyUser()) {
     return;
+  }
   std::u16string title =
       l10n_util::GetStringUTF16(IDS_POLICY_DEVICE_POST_REBOOT_TITLE);
   scoped_refptr<message_center::NotificationDelegate> delegate =
@@ -94,10 +99,11 @@ void RebootNotificationController::MaybeShowPostRebootNotification() const {
 }
 
 void RebootNotificationController::CloseRebootNotification() const {
-  if (!ShouldNotifyUser())
+  if (!ShouldNotifyUser()) {
     return;
+  }
   NotificationDisplayService* notification_display_service =
-      NotificationDisplayService::GetForProfile(
+      NotificationDisplayServiceFactory::GetForProfile(
           ProfileManager::GetActiveUserProfile());
   notification_display_service->Close(NotificationHandler::Type::TRANSIENT,
                                       ash::kPendingRebootNotificationId);
@@ -119,11 +125,12 @@ void RebootNotificationController::ShowNotification(
   message_center::Notification notification = ash::CreateSystemNotification(
       message_center::NOTIFICATION_TYPE_SIMPLE, id, title, message,
       std::u16string(), GURL(), message_center::NotifierId(), data, delegate,
-      vector_icons::kBusinessIcon,
+      ::features::IsRoundedIconsEnabled() ? vector_icons::kDomainIcon
+                                          : vector_icons::kBusinessOldIcon,
       message_center::SystemNotificationWarningLevel::NORMAL);
 
   NotificationDisplayService* notification_display_service =
-      NotificationDisplayService::GetForProfile(
+      NotificationDisplayServiceFactory::GetForProfile(
           ProfileManager::GetActiveUserProfile());
   // Close old notification.
   notification_display_service->Close(NotificationHandler::Type::TRANSIENT, id);
@@ -140,10 +147,11 @@ bool RebootNotificationController::ShouldNotifyUser() const {
 }
 
 void RebootNotificationController::HandleNotificationClick(
-    absl::optional<int> button_index) const {
+    std::optional<int> button_index) const {
   // Only request restart when the button is clicked, i.e. ignore the clicks
   // on the body of the notification.
-  if (!button_index)
+  if (!button_index) {
     return;
+  }
   notification_callback_.Run();
 }

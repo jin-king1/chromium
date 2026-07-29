@@ -4,33 +4,43 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions.basic;
 
-import android.content.Context;
 import android.text.TextUtils;
 import android.view.View;
 import android.widget.TextView;
 
-import androidx.annotation.ColorInt;
-
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
-import org.chromium.chrome.browser.omnibox.suggestions.SuggestionCommonProperties;
-import org.chromium.chrome.browser.omnibox.suggestions.base.SuggestionSpannable;
-import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
+import org.chromium.chrome.browser.omnibox.styles.SuggestionSpannable;
+import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewBinder;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** Properties associated with the basic suggestion view. */
-public class SuggestionViewViewBinder {
-    /** @see PropertyModelChangeProcessor.ViewBinder#bind(Object, Object, Object) */
-    public static void bind(PropertyModel model, View view, PropertyKey propertyKey) {
-        if (propertyKey == SuggestionViewProperties.TEXT_LINE_1_TEXT) {
+@NullMarked
+public class SuggestionViewViewBinder extends BaseSuggestionViewBinder<View> {
+    private final OmniboxResourceProvider mResourceProvider;
+
+    public SuggestionViewViewBinder(OmniboxResourceProvider resourceProvider) {
+        super(resourceProvider);
+        mResourceProvider = resourceProvider;
+    }
+
+    /**
+     * @see PropertyModelChangeProcessor.ViewBinder#bind(Object, Object, Object)
+     */
+    @Override
+    protected void bindContent(PropertyModel model, View view, PropertyKey propertyKey) {
+        if (propertyKey == SuggestionViewProperties.TEXT_LINE_1_TEXT_APPEARANCE) {
+            TextView tv = view.findViewById(R.id.line_1);
+            tv.setTextAppearance(model.get(SuggestionViewProperties.TEXT_LINE_1_TEXT_APPEARANCE));
+        } else if (propertyKey == SuggestionViewProperties.TEXT_LINE_1_TEXT) {
             TextView tv = view.findViewById(R.id.line_1);
             tv.setText(model.get(SuggestionViewProperties.TEXT_LINE_1_TEXT));
-        } else if (propertyKey == SuggestionCommonProperties.COLOR_SCHEME) {
-            updateSuggestionTextColor(view, model);
+            int minHeight = mResourceProvider.getSuggestionMinHeight(tv.getLineCount());
+            view.setMinimumHeight(minHeight);
         } else if (propertyKey == SuggestionViewProperties.IS_SEARCH_SUGGESTION) {
-            updateSuggestionTextColor(view, model);
-            // https://crbug.com/609680: ensure URLs are always composed LTR and that their
+            // https://crbug.com/40084252: ensure URLs are always composed LTR and that their
             // components are not re-ordered.
             final boolean isSearch = model.get(SuggestionViewProperties.IS_SEARCH_SUGGESTION);
             final TextView tv = view.findViewById(R.id.line_2);
@@ -52,25 +62,8 @@ public class SuggestionViewViewBinder {
             if (tv.getMaxLines() != maxLines) {
                 tv.setMaxLines(maxLines);
             }
+        } else if (propertyKey == SuggestionViewProperties.CONTENT_DESCRIPTION) {
+            view.setContentDescription(model.get(SuggestionViewProperties.CONTENT_DESCRIPTION));
         }
-    }
-
-    private static void updateSuggestionTextColor(View view, PropertyModel model) {
-        final boolean isSearch = model.get(SuggestionViewProperties.IS_SEARCH_SUGGESTION);
-        final @BrandedColorScheme int brandedColorScheme =
-                model.get(SuggestionCommonProperties.COLOR_SCHEME);
-        final TextView line1 = view.findViewById(R.id.line_1);
-        final TextView line2 = view.findViewById(R.id.line_2);
-
-        final Context context = view.getContext();
-        final @ColorInt int color1 =
-                OmniboxResourceProvider.getSuggestionPrimaryTextColor(context, brandedColorScheme);
-        line1.setTextColor(color1);
-
-        final @ColorInt int color2 = isSearch
-                ? OmniboxResourceProvider.getSuggestionSecondaryTextColor(
-                        context, brandedColorScheme)
-                : OmniboxResourceProvider.getSuggestionUrlTextColor(context, brandedColorScheme);
-        line2.setTextColor(color2);
     }
 }

@@ -6,14 +6,9 @@
 
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_multi_line_text_edit_item_delegate.h"
-#import "ios/chrome/browser/shared/ui/table_view/chrome_table_view_styler.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace {
 
@@ -34,22 +29,21 @@ const CGFloat kSymbolSize = 15;
   if (self) {
     self.cellClass = [TableViewMultiLineTextEditCell class];
     _validText = YES;
+    _textFieldInteractionEnabled = YES;
   }
   return self;
 }
 
 #pragma mark - TableViewItem
 
-- (void)configureCell:(TableViewMultiLineTextEditCell*)cell
-           withStyler:(ChromeTableViewStyler*)styler {
-  [super configureCell:cell withStyler:styler];
+- (void)configureCell:(TableViewMultiLineTextEditCell*)cell {
+  [super configureCell:cell];
   cell.textLabel.text = self.label;
   cell.textView.text = self.text;
   cell.textView.editable = self.editingEnabled;
   cell.textView.delegate = self;
-  cell.textView.backgroundColor = styler.cellBackgroundColor
-                                      ? styler.cellBackgroundColor
-                                      : styler.tableViewBackgroundColor;
+  cell.textView.backgroundColor =
+      [UIColor colorNamed:kGroupedSecondaryBackgroundColor];
 
   if (self.label.length) {
     cell.textView.accessibilityIdentifier =
@@ -66,6 +60,10 @@ const CGFloat kSymbolSize = 15;
     [cell.iconView setImage:[self errorImage]];
     cell.iconView.tintColor = [UIColor colorNamed:kRedColor];
   }
+
+  if (!self.textFieldInteractionEnabled) {
+    cell.textView.userInteractionEnabled = NO;
+  }
 }
 
 #pragma mark - UITextViewDelegate
@@ -79,7 +77,7 @@ const CGFloat kSymbolSize = 15;
 
 // Returns the error icon image.
 - (UIImage*)errorImage {
-  return DefaultSymbolWithPointSize(kErrorCircleFillSymbol, kSymbolSize);
+  return SymbolWithPointSize(SymbolErrorCircleFill, kSymbolSize);
 }
 
 @end
@@ -167,7 +165,7 @@ const CGFloat kSymbolSize = 15;
   self.textView.text = nil;
 }
 
-#pragma mark - NSObject(Accessibility)
+#pragma mark - UIAccessibility
 
 - (NSString*)accessibilityLabel {
   return [NSString

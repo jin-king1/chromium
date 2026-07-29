@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_share_dialog.h"
 
+#include "ash/constants/webui_url_constants.h"
+#include "ash/webui/common/trusted_types_util.h"
 #include "base/functional/callback_helpers.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/smb_client/smb_service.h"
@@ -11,22 +13,21 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_handler.h"
 #include "chrome/browser/ui/webui/ash/smb_shares/smb_shares_localized_strings_provider.h"
-#include "chrome/browser/ui/webui/webui_util.h"
-#include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/browser_resources.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "chrome/grit/generated_resources.h"
+#include "chrome/grit/smb_shares_resources.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/user_manager/user_manager.h"
+#include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
+#include "ui/webui/webui_util.h"
 
 namespace ash::smb_dialog {
 namespace {
 
-constexpr int kSmbShareDialogHeight = 515;
-constexpr int kSmbShareDialogHeightWithJellyOn = 570;
+constexpr int kSmbShareDialogHeight = 570;
 
 void AddSmbSharesStrings(content::WebUIDataSource* html_source) {
   // Add strings specific to smb_dialog.
@@ -55,32 +56,23 @@ void SmbShareDialog::Show() {
 }
 
 SmbShareDialog::SmbShareDialog()
-    : SystemWebDialogDelegate(GURL(chrome::kChromeUISmbShareURL),
+    : SystemWebDialogDelegate(GURL(ash::kChromeUISmbShareURL),
                               std::u16string() /* title */) {}
 
 SmbShareDialog::~SmbShareDialog() = default;
 
 void SmbShareDialog::GetDialogSize(gfx::Size* size) const {
-  size->SetSize(SystemWebDialogDelegate::kDialogWidth,
-                chromeos::features::IsJellyEnabled()
-                    ? kSmbShareDialogHeightWithJellyOn
-                    : kSmbShareDialogHeight);
+  size->SetSize(SystemWebDialogDelegate::kDialogWidth, kSmbShareDialogHeight);
 }
 
 SmbShareDialogUI::SmbShareDialogUI(content::WebUI* web_ui)
     : ui::WebDialogUI(web_ui) {
+  Profile* const profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
-      Profile::FromWebUI(web_ui), chrome::kChromeUISmbShareHost);
-  webui::EnableTrustedTypesCSP(source);
+      profile, ash::kChromeUISmbShareHost);
+  ash::EnableTrustedTypesCSP(source);
 
   AddSmbSharesStrings(source);
-
-  Profile* const profile = Profile::FromWebUI(web_ui);
-  const user_manager::User* user =
-      ProfileHelper::Get()->GetUserByProfile(profile);
-
-  source->AddBoolean("isActiveDirectoryUser",
-                     user && user->IsActiveDirectoryUser());
 
   const smb_client::SmbService* const smb_service =
       smb_client::SmbServiceFactory::Get(profile);
@@ -88,28 +80,28 @@ SmbShareDialogUI::SmbShareDialogUI(content::WebUI* web_ui)
       smb_service && smb_service->IsKerberosEnabledViaPolicy();
   source->AddBoolean("isKerberosEnabled", is_kerberos_enabled);
 
-  bool is_guest = user_manager::UserManager::Get()->IsLoggedInAsGuest() ||
-                  user_manager::UserManager::Get()->IsLoggedInAsPublicAccount();
+  bool is_guest =
+      user_manager::UserManager::Get()->IsLoggedInAsGuest() ||
+      user_manager::UserManager::Get()->IsLoggedInAsManagedGuestSession();
   source->AddBoolean("isGuest", is_guest);
 
-  bool is_jelly_enabled = chromeos::features::IsJellyEnabled();
-  source->AddBoolean("isJellyEnabled", is_jelly_enabled);
+  source->AddBoolean("isCrosComponentsEnabled",
+                     chromeos::features::IsCrosComponentsEnabled());
 
   source->UseStringsJs();
-  source->SetDefaultResource(IDR_SMB_SHARES_DIALOG_CONTAINER_HTML);
-  source->AddResourcePath("smb_share_dialog.js", IDR_SMB_SHARES_DIALOG_JS);
+  source->SetDefaultResource(IDR_SMB_SHARES_SMB_SHARE_DIALOG_CONTAINER_HTML);
+  source->AddResourcePath("smb_share_dialog.js",
+                          IDR_SMB_SHARES_SMB_SHARE_DIALOG_JS);
+  source->AddResourcePath("smb_share_dialog.html.js",
+                          IDR_SMB_SHARES_SMB_SHARE_DIALOG_HTML_JS);
 
-  web_ui->AddMessageHandler(std::make_unique<SmbHandler>(
-      Profile::FromWebUI(web_ui), base::DoNothing()));
+  web_ui->AddMessageHandler(
+      std::make_unique<SmbHandler>(profile, base::DoNothing()));
+
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
 }
 
 SmbShareDialogUI::~SmbShareDialogUI() = default;
-
-void SmbShareDialogUI::BindInterface(
-    mojo::PendingReceiver<color_change_listener::mojom::PageHandler> receiver) {
-  color_provider_handler_ = std::make_unique<ui::ColorChangeHandler>(
-      web_ui()->GetWebContents(), std::move(receiver));
-}
 
 bool SmbShareDialog::ShouldShowCloseButton() const {
   return false;

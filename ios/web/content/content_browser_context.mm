@@ -10,10 +10,6 @@
 #import "ios/web/public/thread/web_task_traits.h"
 #import "ios/web/public/thread/web_thread.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace web {
 
 const char kBrowserContextDataKey[] = "browser_context";
@@ -50,33 +46,12 @@ content::BrowserContext* ContentBrowserContext::FromBrowserState(
 }
 
 ContentBrowserContext::ContentBrowserContext(web::BrowserState* browser_state)
-    : resource_context_(std::make_unique<ResourceContext>()),
-      browser_state_(browser_state) {
+    : browser_state_(browser_state) {
   InitWhileIOAllowed();
-
-  // This should depend on browser_state_->GetStatePath(), but it is probably
-  // unsafe to do this right now. Instead, use a temp directory until this is
-  // refactored.
-  browser_path_ =
-      base::FilePath(base::SysNSStringToUTF8(NSTemporaryDirectory()))
-          .Append("Chromium");
 }
-
-ContentBrowserContext::ResourceContext::ResourceContext() {}
-
-ContentBrowserContext::ResourceContext::~ResourceContext() {}
 
 ContentBrowserContext::~ContentBrowserContext() {
   NotifyWillBeDestroyed();
-
-  // Need to destruct the ResourceContext before posting tasks which may delete
-  // the URLRequestContext because ResourceContext's destructor will remove any
-  // outstanding request while URLRequestContext's destructor ensures that there
-  // are no more outstanding requests.
-  if (resource_context_) {
-    GetIOThreadTaskRunner({})->DeleteSoon(FROM_HERE,
-                                          resource_context_.release());
-  }
   ShutdownStoragePartitions();
 }
 
@@ -91,8 +66,8 @@ ContentBrowserContext::CreateZoomLevelDelegate(const base::FilePath&) {
   return nullptr;
 }
 
-base::FilePath ContentBrowserContext::GetPath() {
-  return browser_path_;
+base::FilePath ContentBrowserContext::GetPath() const {
+  return browser_state_->GetStatePath().Append("Content");
 }
 
 bool ContentBrowserContext::IsOffTheRecord() {
@@ -102,10 +77,6 @@ bool ContentBrowserContext::IsOffTheRecord() {
 content::DownloadManagerDelegate*
 ContentBrowserContext::GetDownloadManagerDelegate() {
   return nullptr;
-}
-
-content::ResourceContext* ContentBrowserContext::GetResourceContext() {
-  return resource_context_.get();
 }
 
 content::BrowserPluginGuestManager* ContentBrowserContext::GetGuestManager() {
@@ -164,16 +135,6 @@ ContentBrowserContext::GetBrowsingDataRemoverDelegate() {
 
 content::ContentIndexProvider*
 ContentBrowserContext::GetContentIndexProvider() {
-  return nullptr;
-}
-
-content::FederatedIdentityApiPermissionContextDelegate*
-ContentBrowserContext::GetFederatedIdentityApiPermissionContext() {
-  return nullptr;
-}
-
-content::FederatedIdentityPermissionContextDelegate*
-ContentBrowserContext::GetFederatedIdentityPermissionContext() {
   return nullptr;
 }
 

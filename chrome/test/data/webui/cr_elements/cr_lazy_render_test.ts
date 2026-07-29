@@ -7,7 +7,7 @@ import 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
 import 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
 
 import {getTrustedHTML} from 'chrome://resources/js/static_types.js';
-import {CrLazyRenderElement} from 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
+import type {CrLazyRenderElement} from 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render.js';
 import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 // clang-format on
@@ -53,18 +53,19 @@ suite('cr-lazy-render', function() {
     bind.name = 'Wings';
 
     const inner = lazy.get();
-    assertNotEquals(-1, inner.textContent!.indexOf('Wings'));
+    assertNotEquals(-1, inner.textContent.indexOf('Wings'));
     bind.name = 'DC';
-    assertNotEquals(-1, inner.textContent!.indexOf('DC'));
+    assertNotEquals(-1, inner.textContent.indexOf('DC'));
   });
 
-  test('two-way binding works', function() {
+  test('two-way binding works', async function() {
     bind.checked = true;
 
     lazy.get();
     const checkbox = document.querySelector('cr-checkbox')!;
     assertTrue(checkbox.checked);
     checkbox.click();
+    await checkbox.updateComplete;
     assertFalse(checkbox.checked);
     assertFalse(bind.checked);
   });

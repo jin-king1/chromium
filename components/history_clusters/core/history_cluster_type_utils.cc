@@ -4,16 +4,17 @@
 
 #include "components/history_clusters/core/history_cluster_type_utils.h"
 
+#include <optional>
+
+#include "base/i18n/time_formatting.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
-#include "base/time/time_to_iso8601.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/history_clusters/core/config.h"
 #include "components/history_clusters/public/mojom/history_cluster_types.mojom.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "ui/base/l10n/time_format.h"
 
 namespace history_clusters {
@@ -76,8 +77,10 @@ mojom::URLVisitPtr VisitToMojom(const TemplateURLService* template_url_service,
     visit_mojom->debug_info["visit_id"] =
         base::NumberToString(annotated_visit.visit_row.visit_id);
     visit_mojom->debug_info["score"] = base::NumberToString(visit.score);
+    visit_mojom->debug_info["interaction_state"] = base::NumberToString(
+        history::ClusterVisit::InteractionStateToInt(visit.interaction_state));
     visit_mojom->debug_info["visit_time"] =
-        base::TimeToISO8601(visit.annotated_visit.visit_row.visit_time);
+        base::TimeFormatAsIso8601(visit.annotated_visit.visit_row.visit_time);
     visit_mojom->debug_info["foreground_duration"] =
         base::NumberToString(annotated_visit.context_annotations
                                  .total_foreground_duration.InSecondsF());
@@ -89,21 +92,21 @@ mojom::URLVisitPtr VisitToMojom(const TemplateURLService* template_url_service,
 }
 
 // Creates a `mojom::SearchQueryPtr` from the given search query, if possible.
-absl::optional<mojom::SearchQueryPtr> SearchQueryToMojom(
+std::optional<mojom::SearchQueryPtr> SearchQueryToMojom(
     const TemplateURLService* template_url_service,
     const std::string& search_query) {
   const TemplateURL* default_search_provider =
       template_url_service ? template_url_service->GetDefaultSearchProvider()
                            : nullptr;
   if (!default_search_provider) {
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   const std::string url = default_search_provider->url_ref().ReplaceSearchTerms(
       TemplateURLRef::SearchTermsArgs(base::UTF8ToUTF16(search_query)),
       template_url_service->search_terms_data());
   if (url.empty()) {
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   auto search_query_mojom = mojom::SearchQuery::New();
@@ -115,7 +118,7 @@ absl::optional<mojom::SearchQueryPtr> SearchQueryToMojom(
 mojom::ClusterPtr ClusterToMojom(const TemplateURLService* template_url_service,
                                  const history::Cluster cluster) {
   auto cluster_mojom = mojom::Cluster::New();
-  cluster_mojom->id = cluster.cluster_id;
+  cluster_mojom->id = cluster.cluster_id.value();
   if (cluster.label) {
     cluster_mojom->label = base::UTF16ToUTF8(*cluster.label);
     for (const auto& match : cluster.label_match_positions) {
@@ -125,7 +128,7 @@ mojom::ClusterPtr ClusterToMojom(const TemplateURLService* template_url_service,
       cluster_mojom->label_match_positions.push_back(std::move(match_mojom));
     }
 
-    if (GetConfig().named_new_tab_groups && cluster.raw_label &&
+    if (cluster.raw_label &&
         (cluster.label_source == history::Cluster::LabelSource::kSearch ||
          cluster.label_source ==
              history::Cluster::LabelSource::kContentDerivedEntity)) {
@@ -137,7 +140,7 @@ mojom::ClusterPtr ClusterToMojom(const TemplateURLService* template_url_service,
 
   if (GetConfig().user_visible_debug && cluster.from_persistence) {
     cluster_mojom->debug_info =
-        "persisted, id = " + base::NumberToString(cluster.cluster_id);
+        "persisted, id = " + base::NumberToString(cluster.cluster_id.value());
   }
 
   for (const auto& visit : cluster.visits) {

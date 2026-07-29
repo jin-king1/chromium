@@ -5,7 +5,6 @@
 #include "components/omnibox/browser/on_device_model_update_listener.h"
 
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
 #include "base/strings/string_util.h"
@@ -19,7 +18,7 @@ static const char kHeadModelFilename[] = "on_device_head_test_model_index.bin";
 
 const base::FilePath GetTestDataDir() {
   base::FilePath file_path;
-  base::PathService::Get(base::DIR_SOURCE_ROOT, &file_path);
+  base::PathService::Get(base::DIR_SRC_TEST_DATA_ROOT, &file_path);
   file_path = file_path.AppendASCII("components/test/data/omnibox");
   return file_path;
 }

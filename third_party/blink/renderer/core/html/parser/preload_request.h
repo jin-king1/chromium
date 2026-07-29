@@ -8,7 +8,7 @@
 #include <memory>
 
 #include "base/memory/ptr_util.h"
-#include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink.h"
+#include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/script/script_type.mojom-blink-forward.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/script/script.h"
@@ -63,18 +63,21 @@ class CORE_EXPORT PreloadRequest {
 
   static std::unique_ptr<PreloadRequest> CreateIfNeeded(
       const String& initiator_name,
-      const TextPosition& initiator_position,
       const String& resource_url,
       const KURL& base_url,
       ResourceType resource_type,
       const network::mojom::ReferrerPolicy referrer_policy,
       ResourceFetcher::IsImageSet is_image_set,
       const ExclusionInfo* exclusion_info,
-      const absl::optional<float> resource_width = absl::nullopt,
-      const absl::optional<float> resource_height = absl::nullopt,
+      const std::optional<float> resource_width = std::nullopt,
+      const std::optional<float> resource_height = std::nullopt,
       RequestType request_type = kRequestTypePreload);
 
   Resource* Start(Document*);
+
+  void SetInitiatorPosition(const TextPosition& position) {
+    initiator_position_ = position;
+  }
 
   void SetDefer(FetchParameters::DeferOption defer) { defer_ = defer; }
   FetchParameters::DeferOption DeferOption() const { return defer_; }
@@ -132,30 +135,47 @@ class CORE_EXPORT PreloadRequest {
     render_blocking_behavior_ = render_blocking_behavior;
   }
 
-  bool IsAttributionReportingEligibleImgOrScript() const {
-    return is_attribution_reporting_eligible_img_or_script_;
+  RenderBlockingBehavior GetRenderBlockingBehavior() {
+    return render_blocking_behavior_;
   }
 
-  void SetAttributionReportingEligibleImgOrScript(bool eligible) {
-    is_attribution_reporting_eligible_img_or_script_ = eligible;
+  void SetIsPotentiallyLCPElement(bool flag) {
+    is_potentially_lcp_element_ = flag;
   }
 
-  absl::optional<float> GetResourceWidth() const { return resource_width_; }
-  absl::optional<float> GetResourceHeight() const { return resource_height_; }
+  void SetIsPotentiallyLCPInfluencer(bool flag) {
+    is_potentially_lcp_influencer_ = flag;
+  }
+
+
+  // Set whether the preload request is eligible for the Browsing Topics API.
+  //
+  // See https://github.com/patcg-individual-drafts/topics/blob/main/README.md
+  // for the latest version of the Topics API explainer.
+  void SetBrowsingTopicsEligible(bool flag) {
+    browsing_topics_eligible_ = flag;
+  }
+
+  bool IsPotentiallyLCPElement() const { return is_potentially_lcp_element_; }
+
+  bool IsPotentiallyLCPInfluencer() const {
+    return is_potentially_lcp_influencer_;
+  }
+
+  std::optional<float> GetResourceWidth() const { return resource_width_; }
+  std::optional<float> GetResourceHeight() const { return resource_height_; }
 
  private:
   PreloadRequest(const String& initiator_name,
-                 const TextPosition& initiator_position,
                  const String& resource_url,
                  const KURL& base_url,
                  ResourceType resource_type,
-                 const absl::optional<float> resource_width,
-                 const absl::optional<float> resource_height,
+                 const std::optional<float> resource_width,
+                 const std::optional<float> resource_height,
                  RequestType request_type,
                  const network::mojom::ReferrerPolicy referrer_policy,
                  ResourceFetcher::IsImageSet is_image_set)
       : initiator_name_(initiator_name),
-        initiator_position_(initiator_position),
         resource_url_(resource_url),
         base_url_(base_url),
         resource_type_(resource_type),
@@ -168,7 +188,7 @@ class CORE_EXPORT PreloadRequest {
   KURL CompleteURL(Document*);
 
   const String initiator_name_;
-  const TextPosition initiator_position_;
+  TextPosition initiator_position_{TextPosition::MinimumPosition()};
   const String resource_url_;
   const KURL base_url_;
   String charset_;
@@ -179,8 +199,8 @@ class CORE_EXPORT PreloadRequest {
       mojom::blink::FetchPriorityHint::kAuto;
   String nonce_;
   FetchParameters::DeferOption defer_ = FetchParameters::kNoDefer;
-  const absl::optional<float> resource_width_;
-  const absl::optional<float> resource_height_;
+  const std::optional<float> resource_width_;
+  const std::optional<float> resource_height_;
   const RequestType request_type_;
   const network::mojom::ReferrerPolicy referrer_policy_;
   IntegrityMetadataSet integrity_metadata_;
@@ -190,7 +210,9 @@ class CORE_EXPORT PreloadRequest {
   const ResourceFetcher::IsImageSet is_image_set_;
   bool is_lazy_load_image_enabled_ = false;
   base::TimeTicks creation_time_ = base::TimeTicks::Now();
-  bool is_attribution_reporting_eligible_img_or_script_ = false;
+  bool is_potentially_lcp_element_ = false;
+  bool is_potentially_lcp_influencer_ = false;
+  bool browsing_topics_eligible_ = false;
 };
 
 typedef Vector<std::unique_ptr<PreloadRequest>> PreloadRequestStream;

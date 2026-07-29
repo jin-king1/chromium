@@ -5,12 +5,16 @@
 #ifndef CHROME_BROWSER_ASH_ARC_VMM_ARC_VMM_SWAP_SCHEDULER_H_
 #define CHROME_BROWSER_ASH_ARC_VMM_ARC_VMM_SWAP_SCHEDULER_H_
 
+#include <optional>
+
 #include "base/functional/callback.h"
+#include "base/memory/raw_ref.h"
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ash/arc/vmm/arc_system_state_observation.h"
 #include "chromeos/ash/components/dbus/concierge/concierge_client.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+
+class PrefService;
 
 namespace arc {
 
@@ -23,13 +27,15 @@ class ArcVmmSwapScheduler : public ash::ConciergeClient::VmObserver {
  public:
   // ArcVmmSwapScheduler is allowed receive calls to set swap state and
   // control the swap state by itself.
+  // `local_state` must be non-null and must outlive `this`.
   // If the `minimum_swapout_interval` is nullopt, the scheduler will not check
   // the time interval when "enable vmm swap".
   // If the `checking_period` is nullopt, the scheduler will not use the
   // `observation` and timer to check and control the swappable state.
-  ArcVmmSwapScheduler(base::RepeatingCallback<void(bool)> swap_callback,
-                      absl::optional<base::TimeDelta> minimum_swapout_interval,
-                      absl::optional<base::TimeDelta> checking_period,
+  ArcVmmSwapScheduler(PrefService* local_state,
+                      base::RepeatingCallback<void(bool)> swap_callback,
+                      std::optional<base::TimeDelta> minimum_swapout_interval,
+                      std::optional<base::TimeDelta> checking_period,
                       std::unique_ptr<PeaceDurationProvider> observation);
 
   ArcVmmSwapScheduler(const ArcVmmSwapScheduler&) = delete;
@@ -38,19 +44,20 @@ class ArcVmmSwapScheduler : public ash::ConciergeClient::VmObserver {
 
   void SetSwappable(bool swappable);
 
-  bool swappable() const { return swappable_; }
-
   // ash::ConciergeClient::VmObserver override:
   void OnVmSwapping(
       const vm_tools::concierge::VmSwappingSignal& signal) override;
 
  private:
+  friend class ArcVmmManagerBrowserTest;
   void SetSwapoutThrottleInterval(base::TimeDelta interval);
   void SetActiveSwappableChecking(
       base::TimeDelta period,
       std::unique_ptr<PeaceDurationProvider> observation);
 
   void UpdateSwappableStateByObservation();
+
+  const raw_ref<PrefService> local_state_;
 
   // Swappable state throttle args.
   bool throttle_swapout_ = false;
@@ -60,8 +67,6 @@ class ArcVmmSwapScheduler : public ash::ConciergeClient::VmObserver {
   base::TimeDelta swappable_checking_period_;
   base::RepeatingTimer swappable_checking_timer_;
   std::unique_ptr<PeaceDurationProvider> peace_duration_provider_;
-
-  bool swappable_ = false;
 
   // Callback sends swap status to vmm manager.
   base::RepeatingCallback<void(bool)> swap_callback_;

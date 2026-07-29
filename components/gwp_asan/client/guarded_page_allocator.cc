@@ -5,15 +5,14 @@
 #include "components/gwp_asan/client/guarded_page_allocator.h"
 
 #include <algorithm>
+#include <bit>
 #include <memory>
 #include <random>
 #include <utility>
 
 #include "base/allocator/buildflags.h"
-#include "base/allocator/partition_allocator/gwp_asan_support.h"
-#include "base/allocator/partition_allocator/partition_alloc_buildflags.h"
 #include "base/bits.h"
-#include "base/debug/stack_trace.h"
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/memory/page_size.h"
 #include "base/rand_util.h"
@@ -21,18 +20,18 @@
 #include "base/synchronization/lock.h"
 #include "build/build_config.h"
 #include "components/crash/core/common/crash_key.h"
+#include "components/gwp_asan/client/gwp_asan.h"
+#include "components/gwp_asan/client/thread_local_random_bit_generator.h"
+#include "components/gwp_asan/common/allocation_info.h"
 #include "components/gwp_asan/common/allocator_state.h"
 #include "components/gwp_asan/common/crash_key_name.h"
-#include "components/gwp_asan/common/lightweight_detector.h"
 #include "components/gwp_asan/common/pack_stack_trace.h"
+#include "partition_alloc/buildflags.h"
+#include "partition_alloc/gwp_asan_support.h"
 #include "third_party/boringssl/src/include/openssl/rand.h"
 
-#if BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
 #include "components/crash/core/app/crashpad.h"  // nogncheck
-#endif
-
-#if BUILDFLAG(IS_APPLE)
-#include <pthread.h>
 #endif
 
 namespace gwp_asan {
@@ -40,39 +39,11 @@ namespace internal {
 
 namespace {
 
-size_t GetStackTrace(void** trace, size_t count) {
-  // TODO(vtsyrklevich): Investigate using trace_event::CFIBacktraceAndroid
-  // on 32-bit Android for canary/dev (where we can dynamically load unwind
-  // data.)
-#if BUILDFLAG(IS_ANDROID) && BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
-  // Android release builds ship without unwind tables so the normal method of
-  // stack trace collection for base::debug::StackTrace doesn't work; however,
-  // AArch64 builds ship with frame pointers so we can still collect stack
-  // traces in that case.
-  return base::debug::TraceStackFramePointers(const_cast<const void**>(trace),
-                                              count, 0);
-#else
-  return base::debug::CollectStackTrace(trace, count);
-#endif
-}
-
-// Report a tid that matches what crashpad collects which may differ from what
-// base::PlatformThread::CurrentId() returns.
-uint64_t ReportTid() {
-#if !BUILDFLAG(IS_APPLE)
-  return base::PlatformThread::CurrentId();
-#else
-  uint64_t tid = base::kInvalidThreadId;
-  pthread_threadid_np(nullptr, &tid);
-  return tid;
-#endif
-}
-
 template <typename T>
 T RandomEviction(std::vector<T>* list) {
   DCHECK(!list->empty());
   std::uniform_int_distribution<uint64_t> distribution(0, list->size() - 1);
-  base::NonAllocatingRandomBitGenerator generator;
+  ThreadLocalRandomBitGenerator generator;
   size_t rand = distribution(generator);
   T out = (*list)[rand];
   (*list)[rand] = list->back();
@@ -81,10 +52,6 @@ T RandomEviction(std::vector<T>* list) {
 }
 
 }  // namespace
-
-// TODO: Delete out-of-line constexpr defininitons once C++17 is in use.
-constexpr size_t GuardedPageAllocator::kOutOfMemoryCount;
-constexpr size_t GuardedPageAllocator::kGpaAllocAlignment;
 
 template <typename T>
 void GuardedPageAllocator::SimpleFreeList<T>::Initialize(T max_entries) {
@@ -156,11 +123,13 @@ bool GuardedPageAllocator::PartitionAllocSlotFreeList::Allocate(
     return true;
   }
 
-  if (!free_list_.count(type) || free_list_[type].empty())
+  auto it = free_list_.find(type);
+  if (it == free_list_.end() || it->second.empty()) {
     return false;
+  }
 
-  DCHECK_LE(free_list_[type].size(), max_entries_);
-  *out = RandomEviction(&free_list_[type]);
+  DCHECK_LE(it->second.size(), max_entries_);
+  *out = RandomEviction(&it->second);
   return true;
 }
 
@@ -170,26 +139,22 @@ void GuardedPageAllocator::PartitionAllocSlotFreeList::Free(
   free_list_[type_mapping_[entry]].push_back(entry);
 }
 
-GuardedPageAllocator::GuardedPageAllocator() {}
+GuardedPageAllocator::GuardedPageAllocator() = default;
 
-void GuardedPageAllocator::Init(
-    size_t max_alloced_pages,
-    size_t num_metadata,
-    size_t total_pages,
-    OutOfMemoryCallback oom_callback,
-    bool is_partition_alloc,
-    LightweightDetector::State lightweight_detector_state,
-    size_t num_lightweight_detector_metadata) {
-  CHECK_GT(max_alloced_pages, 0U);
-  CHECK_LE(max_alloced_pages, num_metadata);
-  CHECK_LE(num_metadata, AllocatorState::kMaxMetadata);
-  CHECK_LE(num_metadata, total_pages);
-  CHECK_LE(total_pages, AllocatorState::kMaxRequestedSlots);
-  CHECK_LE(num_lightweight_detector_metadata,
-           AllocatorState::kMaxLightweightMetadata);
-  max_alloced_pages_ = max_alloced_pages;
-  state_.num_metadata = num_metadata;
-  state_.total_requested_pages = total_pages;
+bool GuardedPageAllocator::Init(const AllocatorSettings& settings,
+                                OutOfMemoryCallback oom_callback,
+                                bool is_partition_alloc) {
+  CHECK_GT(settings.max_allocated_pages, 0U);
+  CHECK_LE(settings.max_allocated_pages, settings.num_metadata);
+  CHECK_LE(settings.num_metadata, AllocatorState::kMaxMetadata);
+  CHECK_LE(settings.num_metadata, settings.total_pages);
+  CHECK_LE(settings.total_pages, AllocatorState::kMaxRequestedSlots);
+
+  ThreadLocalRandomBitGenerator::InitIfNeeded();
+
+  max_alloced_pages_ = settings.max_allocated_pages;
+  state_.num_metadata = settings.num_metadata;
+  state_.total_requested_pages = settings.total_pages;
   oom_callback_ = std::move(oom_callback);
   is_partition_alloc_ = is_partition_alloc;
 
@@ -197,8 +162,8 @@ void GuardedPageAllocator::Init(
 
 #if BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
   std::vector<AllocatorState::SlotIdx> free_list_indices;
-  void* region = partition_alloc::GwpAsanSupport::MapRegion(total_pages,
-                                                            free_list_indices);
+  void* region = partition_alloc::GwpAsanSupport::MapRegion(
+      settings.total_pages, free_list_indices);
   CHECK(!free_list_indices.empty());
   AllocatorState::SlotIdx highest_idx = free_list_indices.back();
   DCHECK_EQ(highest_idx, *std::max_element(free_list_indices.begin(),
@@ -206,12 +171,12 @@ void GuardedPageAllocator::Init(
   state_.total_reserved_pages = highest_idx + 1;
   CHECK_LE(state_.total_reserved_pages, AllocatorState::kMaxReservedSlots);
 #else   // BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
-  state_.total_reserved_pages = total_pages;
+  state_.total_reserved_pages = settings.total_pages;
   void* region = MapRegion();
 #endif  // BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
 
   if (!region)
-    PLOG(FATAL) << "Failed to reserve allocator region";
+    return false;
 
   state_.pages_base_addr = reinterpret_cast<uintptr_t>(region);
   state_.first_page_addr = state_.pages_base_addr + state_.page_size;
@@ -226,12 +191,12 @@ void GuardedPageAllocator::Init(
       free_slots_ = std::make_unique<PartitionAllocSlotFreeList>();
     else
       free_slots_ = std::make_unique<SimpleFreeList<AllocatorState::SlotIdx>>();
-#if BUILDFLAG(USE_PARTITION_ALLOC) && BUILDFLAG(ENABLE_BACKUP_REF_PTR_SUPPORT)
+#if BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
     free_slots_->Initialize(state_.total_reserved_pages,
                             std::move(free_list_indices));
 #else
     free_slots_->Initialize(state_.total_reserved_pages);
-#endif
+#endif  // BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
   }
 
   slot_to_metadata_idx_.resize(state_.total_reserved_pages);
@@ -244,23 +209,36 @@ void GuardedPageAllocator::Init(
       std::make_unique<AllocatorState::SlotMetadata[]>(state_.num_metadata);
   state_.metadata_addr = reinterpret_cast<uintptr_t>(metadata_.get());
 
-  if (lightweight_detector_state == LightweightDetector::State::kEnabled) {
-    state_.num_lightweight_detector_metadata =
-        num_lightweight_detector_metadata;
-    lightweight_detector_metadata_ =
-        std::make_unique<AllocatorState::SlotMetadata[]>(
-            state_.num_lightweight_detector_metadata);
-    state_.lightweight_detector_metadata_addr =
-        reinterpret_cast<uintptr_t>(lightweight_detector_metadata_.get());
-  }
-
 #if BUILDFLAG(IS_ANDROID)
   // Explicitly allow memory ranges the crash_handler needs to read. This is
   // required for WebView because it has a stricter set of privacy constraints
   // on what it reads from the crashing process.
   for (auto& memory_region : GetInternalMemoryRegions())
     crash_reporter::AllowMemoryRange(memory_region.first, memory_region.second);
+#elif BUILDFLAG(IS_IOS)
+  // Explicitly add internal memory regions to Crashpad's iOS intermediate dump
+  // handler.
+  crashpad::SimpleAddressRangeBag* ios_extra_ranges =
+      crash_reporter::IntermediateDumpExtraMemoryRanges();
+  if (ios_extra_ranges) {
+    for (auto& memory_region : GetInternalMemoryRegions()) {
+      if (!ios_extra_ranges->Insert(memory_region.first,
+                                    memory_region.second)) {
+        PLOG(INFO) << "Failed to add InternalMemoryRegions to Crashpad.";
+      }
+    }
+  }
 #endif
+
+  return true;
+}
+
+void GuardedPageAllocator::DestructForTesting() {
+#if BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
+  partition_alloc::GwpAsanSupport::DestructForTesting();
+#else   // BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
+  // No need to call UnmapRegion() as ~GuardedPageAllocator does this.
+#endif  // BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
 }
 
 std::vector<std::pair<void*, size_t>>
@@ -272,11 +250,6 @@ GuardedPageAllocator::GetInternalMemoryRegions() {
   regions.emplace_back(
       slot_to_metadata_idx_.data(),
       sizeof(AllocatorState::MetadataIdx) * state_.total_reserved_pages);
-  if (lightweight_detector_metadata_) {
-    regions.emplace_back(lightweight_detector_metadata_.get(),
-                         sizeof(AllocatorState::SlotMetadata) *
-                             state_.num_lightweight_detector_metadata);
-  }
   return regions;
 }
 
@@ -320,10 +293,9 @@ void* GuardedPageAllocator::Allocate(size_t size,
   // Default alignment is size's next smallest power-of-two, up to
   // kGpaAllocAlignment.
   if (!align) {
-    align =
-        std::min(size_t{1} << base::bits::Log2Floor(size), kGpaAllocAlignment);
+    align = std::min(std::bit_floor(size), kGpaAllocAlignment);
   }
-  CHECK(base::bits::IsPowerOfTwo(align));
+  CHECK(std::has_single_bit(align));
 
   AllocatorState::SlotIdx free_slot;
   AllocatorState::MetadataIdx free_metadata;
@@ -367,15 +339,16 @@ void GuardedPageAllocator::Deallocate(void* ptr) {
   // not match the allocated pointer. This may occur with a bad free pointer or
   // an outdated double free when the metadata has expired.
   if (metadata_idx == AllocatorState::kInvalidMetadataIdx ||
-      addr != metadata_[metadata_idx].alloc_ptr) {
+      addr != UNSAFE_TODO(metadata_[metadata_idx]).alloc_ptr) {
     state_.free_invalid_address = addr;
     __builtin_trap();
   }
 
   // Check for double free.
-  if (metadata_[metadata_idx].deallocation_occurred.exchange(true)) {
+  if (UNSAFE_TODO(metadata_[metadata_idx])
+          .deallocation_occurred.exchange(true)) {
     state_.double_free_address = addr;
-    // TODO(https://crbug.com/925447): The other thread may not be done writing
+    // TODO(crbug.com/40611148): The other thread may not be done writing
     // a stack trace so we could spin here until it's read; however, it's also
     // possible we are racing an allocation in the middle of
     // RecordAllocationMetadata. For now it's possible a racy double free could
@@ -398,16 +371,17 @@ size_t GuardedPageAllocator::GetRequestedSize(const void* ptr) const {
   AllocatorState::MetadataIdx metadata_idx = slot_to_metadata_idx_[slot];
 #if !BUILDFLAG(IS_APPLE)
   CHECK_LT(metadata_idx, state_.num_metadata);
-  CHECK_EQ(addr, metadata_[metadata_idx].alloc_ptr);
+  CHECK_EQ(addr, UNSAFE_TODO(metadata_[metadata_idx]).alloc_ptr);
 #else
   // macOS core libraries call malloc_size() inside an allocation. The macOS
   // malloc_size() returns 0 when the pointer is not recognized.
   // https://crbug.com/946736
   if (metadata_idx == AllocatorState::kInvalidMetadataIdx ||
-      addr != metadata_[metadata_idx].alloc_ptr)
+      addr != UNSAFE_TODO(metadata_[metadata_idx]).alloc_ptr) {
     return 0;
+  }
 #endif
-  return metadata_[metadata_idx].alloc_size;
+  return UNSAFE_TODO(metadata_[metadata_idx]).alloc_size;
 }
 
 size_t GuardedPageAllocator::RegionSize() const {
@@ -422,15 +396,15 @@ bool GuardedPageAllocator::ReserveSlotAndMetadata(
   if (num_alloced_pages_ == max_alloced_pages_ ||
       !free_slots_->Allocate(slot, type)) {
     if (!oom_hit_) {
-      if (++consecutive_failed_allocations_ == kOutOfMemoryCount) {
+      if (++consecutive_oom_hits_ == kOutOfMemoryCount) {
         oom_hit_ = true;
-        size_t allocations = total_allocations_ - kOutOfMemoryCount;
         base::AutoUnlock unlock(lock_);
-        std::move(oom_callback_).Run(allocations);
+        std::move(oom_callback_).Run(total_allocations_);
       }
     }
     return false;
   }
+  consecutive_oom_hits_ = 0;
 
 #if BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
   if (!partition_alloc::GwpAsanSupport::CanReuse(state_.SlotToAddr(*slot))) {
@@ -445,18 +419,19 @@ bool GuardedPageAllocator::ReserveSlotAndMetadata(
 #endif  // BUILDFLAG(USE_PARTITION_ALLOC_AS_GWP_ASAN_STORE)
 
   CHECK(free_metadata_.Allocate(metadata_idx, nullptr));
-  if (metadata_[*metadata_idx].alloc_ptr) {
+  if (UNSAFE_TODO(metadata_[*metadata_idx]).alloc_ptr) {
     // Overwrite the outdated slot_to_metadata_idx mapping from the previous use
     // of this metadata if it's still valid.
-    DCHECK(state_.PointerIsMine(metadata_[*metadata_idx].alloc_ptr));
-    size_t old_slot = state_.GetNearestSlot(metadata_[*metadata_idx].alloc_ptr);
+    DCHECK(
+        state_.PointerIsMine(UNSAFE_TODO(metadata_[*metadata_idx]).alloc_ptr));
+    size_t old_slot =
+        state_.GetNearestSlot(UNSAFE_TODO(metadata_[*metadata_idx]).alloc_ptr);
     if (slot_to_metadata_idx_[old_slot] == *metadata_idx)
       slot_to_metadata_idx_[old_slot] = AllocatorState::kInvalidMetadataIdx;
   }
 
   num_alloced_pages_++;
   total_allocations_++;
-  consecutive_failed_allocations_ = 0;
   return true;
 }
 
@@ -478,89 +453,40 @@ void GuardedPageAllocator::RecordAllocationMetadata(
     AllocatorState::MetadataIdx metadata_idx,
     size_t size,
     void* ptr) {
-  metadata_[metadata_idx].alloc_size = size;
-  metadata_[metadata_idx].alloc_ptr = reinterpret_cast<uintptr_t>(ptr);
+  UNSAFE_TODO({
+    metadata_[metadata_idx].alloc_size = size;
+    metadata_[metadata_idx].alloc_ptr = reinterpret_cast<uintptr_t>(ptr);
 
-  void* trace[AllocatorState::kMaxStackFrames];
-  size_t len = GetStackTrace(trace, AllocatorState::kMaxStackFrames);
-  metadata_[metadata_idx].alloc.trace_len =
-      Pack(reinterpret_cast<uintptr_t*>(trace), len,
-           metadata_[metadata_idx].stack_trace_pool,
-           sizeof(metadata_[metadata_idx].stack_trace_pool) / 2);
-  metadata_[metadata_idx].alloc.tid = ReportTid();
-  metadata_[metadata_idx].alloc.trace_collected = true;
+    const void* trace[AllocatorState::kMaxStackFrames];
+    size_t len = AllocationInfo::GetStackTrace(trace);
+    metadata_[metadata_idx].alloc.trace_len =
+        Pack(reinterpret_cast<uintptr_t*>(trace), len,
+             metadata_[metadata_idx].stack_trace_pool,
+             sizeof(metadata_[metadata_idx].stack_trace_pool) / 2);
+    metadata_[metadata_idx].alloc.tid = base::PlatformThread::CurrentId();
+    metadata_[metadata_idx].alloc.trace_collected = true;
 
-  metadata_[metadata_idx].dealloc.tid = base::kInvalidThreadId;
-  metadata_[metadata_idx].dealloc.trace_len = 0;
-  metadata_[metadata_idx].dealloc.trace_collected = false;
-  metadata_[metadata_idx].deallocation_occurred = false;
+    metadata_[metadata_idx].dealloc.tid = base::kInvalidThreadId;
+    metadata_[metadata_idx].dealloc.trace_len = 0;
+    metadata_[metadata_idx].dealloc.trace_collected = false;
+    metadata_[metadata_idx].deallocation_occurred = false;
+  });
 }
 
 void GuardedPageAllocator::RecordDeallocationMetadata(
     AllocatorState::MetadataIdx metadata_idx) {
-  void* trace[AllocatorState::kMaxStackFrames];
-  size_t len = GetStackTrace(trace, AllocatorState::kMaxStackFrames);
-  metadata_[metadata_idx].dealloc.trace_len =
-      Pack(reinterpret_cast<uintptr_t*>(trace), len,
-           metadata_[metadata_idx].stack_trace_pool +
-               metadata_[metadata_idx].alloc.trace_len,
-           sizeof(metadata_[metadata_idx].stack_trace_pool) -
-               metadata_[metadata_idx].alloc.trace_len);
-  metadata_[metadata_idx].dealloc.tid = ReportTid();
-  metadata_[metadata_idx].dealloc.trace_collected = true;
-}
-
-void GuardedPageAllocator::RecordLightweightDeallocation(void* ptr,
-                                                         size_t size) {
-  DCHECK(lightweight_detector_metadata_);
-  DCHECK_GT(state_.num_lightweight_detector_metadata, 0u);
-
-  LightweightDetector::MetadataId metadata_offset;
-  if (next_lightweight_metadata_id_.load(std::memory_order_relaxed) <
-      state_.num_lightweight_detector_metadata) {
-    // First, fill up the metadata store. There might be a harmless race between
-    // the `load` above and `fetch_add` below.
-    metadata_offset = 1;
-  } else {
-    // Perform random eviction while ensuring `metadata_id` keeps increasing.
-    std::uniform_int_distribution<LightweightDetector::MetadataId> distribution(
-        1, state_.num_lightweight_detector_metadata);
-    base::NonAllocatingRandomBitGenerator generator;
-    metadata_offset = distribution(generator);
-  }
-
-  auto metadata_id = next_lightweight_metadata_id_.fetch_add(
-      metadata_offset, std::memory_order_relaxed);
-  auto& slot_metadata = state_.GetLightweightSlotMetadataById(
-      metadata_id, lightweight_detector_metadata_.get());
-
-  slot_metadata.lightweight_id = metadata_id;
-  slot_metadata.alloc_size = size;
-  slot_metadata.alloc_ptr = reinterpret_cast<uintptr_t>(ptr);
-
-  // The lightweight detector doesn't collect allocation stack traces.
-  slot_metadata.alloc.tid = base::kInvalidThreadId;
-  slot_metadata.alloc.trace_len = 0;
-  slot_metadata.alloc.trace_collected = false;
-
-  void* trace[AllocatorState::kMaxStackFrames];
-  size_t len = GetStackTrace(trace, AllocatorState::kMaxStackFrames);
-  slot_metadata.dealloc.trace_len = Pack(
-      reinterpret_cast<uintptr_t*>(trace), len, slot_metadata.stack_trace_pool,
-      sizeof(slot_metadata.stack_trace_pool));
-  slot_metadata.dealloc.tid = ReportTid();
-  slot_metadata.dealloc.trace_collected = true;
-
-  LightweightDetector::PseudoAddresss encoded_metadata_id =
-      LightweightDetector::EncodeMetadataId(metadata_id);
-  size_t count = size / sizeof(encoded_metadata_id);
-  std::fill_n(static_cast<LightweightDetector::PseudoAddresss*>(ptr), count,
-              encoded_metadata_id);
-
-  size_t remainder_offset = count * sizeof(encoded_metadata_id);
-  size_t remainder_size = size - remainder_offset;
-  std::fill_n(static_cast<uint8_t*>(ptr) + remainder_offset, remainder_size,
-              LightweightDetector::kMetadataRemainder);
+  UNSAFE_TODO({
+    const void* trace[AllocatorState::kMaxStackFrames];
+    size_t len = AllocationInfo::GetStackTrace(trace);
+    metadata_[metadata_idx].dealloc.trace_len =
+        Pack(reinterpret_cast<uintptr_t*>(trace), len,
+             metadata_[metadata_idx].stack_trace_pool +
+                 metadata_[metadata_idx].alloc.trace_len,
+             sizeof(metadata_[metadata_idx].stack_trace_pool) -
+                 metadata_[metadata_idx].alloc.trace_len);
+    metadata_[metadata_idx].dealloc.tid = base::PlatformThread::CurrentId();
+    metadata_[metadata_idx].dealloc.trace_collected = true;
+  });
 }
 
 std::string GuardedPageAllocator::GetCrashKey() const {

@@ -4,27 +4,26 @@
 
 #include "services/network/public/cpp/network_param_mojom_traits.h"
 
+#include <string_view>
+
+#include "base/compiler_specific.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/notreached.h"
+#include "base/strings/string_view_util.h"
+#include "mojo/public/cpp/base/time_mojom_traits.h"
 #include "mojo/public/cpp/bindings/struct_traits.h"
+#include "net/cert/cert_verify_result.h"
+#include "net/cert/signed_certificate_timestamp.h"
+#include "net/log/net_log_source_type.h"
 #include "net/ssl/ssl_cert_request_info.h"
-#include "net/ssl/ssl_client_cert_type.h"
+#include "services/network/public/cpp/ct_policy_status_mojom_traits.h"
+#include "services/network/public/cpp/http_response_headers_mojom_traits.h"
+#include "services/network/public/cpp/ocsp_verify_result_mojom_traits.h"
+#include "services/network/public/cpp/signed_certificate_timestamp_and_status_mojom_traits.h"
+#include "services/network/public/cpp/x509_certificate_mojom_traits.h"
+#include "third_party/boringssl/src/include/openssl/pool.h"
 
 namespace mojo {
-
-// static
-bool StructTraits<network::mojom::AuthChallengeInfoDataView,
-                  net::AuthChallengeInfo>::
-    Read(network::mojom::AuthChallengeInfoDataView data,
-         net::AuthChallengeInfo* out) {
-  out->is_proxy = data.is_proxy();
-  if (!data.ReadChallenger(&out->challenger) ||
-      !data.ReadScheme(&out->scheme) || !data.ReadRealm(&out->realm) ||
-      !data.ReadChallenge(&out->challenge) || !data.ReadPath(&out->path)) {
-    return false;
-  }
-  return true;
-}
 
 // static
 bool StructTraits<network::mojom::HttpVersionDataView, net::HttpVersion>::Read(
@@ -41,8 +40,9 @@ bool StructTraits<
                                  net::ResolveErrorInfo* out) {
   // There should not be a secure network error if the error code indicates no
   // error.
-  if (data.error() == net::OK && data.is_secure_network_error())
+  if (data.error() == net::OK && data.is_secure_network_error()) {
     return false;
+  }
   *out = net::ResolveErrorInfo(data.error(), data.is_secure_network_error());
   return true;
 }
@@ -65,8 +65,6 @@ EnumTraits<network::mojom::ProxyScheme, net::ProxyServer::Scheme>::ToMojom(
   switch (scheme) {
     case ProxyServer::SCHEME_INVALID:
       return network::mojom::ProxyScheme::kInvalid;
-    case ProxyServer::SCHEME_DIRECT:
-      return network::mojom::ProxyScheme::kDirect;
     case ProxyServer::SCHEME_HTTP:
       return network::mojom::ProxyScheme::kHttp;
     case ProxyServer::SCHEME_SOCKS4:
@@ -78,45 +76,35 @@ EnumTraits<network::mojom::ProxyScheme, net::ProxyServer::Scheme>::ToMojom(
     case ProxyServer::SCHEME_QUIC:
       return network::mojom::ProxyScheme::kQuic;
   }
-  NOTREACHED_NORETURN();
+  NOTREACHED();
 }
 
-bool EnumTraits<network::mojom::ProxyScheme, net::ProxyServer::Scheme>::
-    FromMojom(network::mojom::ProxyScheme scheme,
-              net::ProxyServer::Scheme* out) {
+net::ProxyServer::Scheme
+EnumTraits<network::mojom::ProxyScheme, net::ProxyServer::Scheme>::FromMojom(
+    network::mojom::ProxyScheme scheme) {
   using net::ProxyServer;
   switch (scheme) {
     case network::mojom::ProxyScheme::kInvalid:
-      *out = ProxyServer::SCHEME_INVALID;
-      return true;
-    case network::mojom::ProxyScheme::kDirect:
-      *out = ProxyServer::SCHEME_DIRECT;
-      return true;
+      return ProxyServer::SCHEME_INVALID;
     case network::mojom::ProxyScheme::kHttp:
-      *out = ProxyServer::SCHEME_HTTP;
-      return true;
+      return ProxyServer::SCHEME_HTTP;
     case network::mojom::ProxyScheme::kSocks4:
-      *out = ProxyServer::SCHEME_SOCKS4;
-      return true;
+      return ProxyServer::SCHEME_SOCKS4;
     case network::mojom::ProxyScheme::kSocks5:
-      *out = ProxyServer::SCHEME_SOCKS5;
-      return true;
+      return ProxyServer::SCHEME_SOCKS5;
     case network::mojom::ProxyScheme::kHttps:
-      *out = ProxyServer::SCHEME_HTTPS;
-      return true;
+      return ProxyServer::SCHEME_HTTPS;
     case network::mojom::ProxyScheme::kQuic:
-      *out = ProxyServer::SCHEME_QUIC;
-      return true;
+      return ProxyServer::SCHEME_QUIC;
   }
-  return false;
+  NOTREACHED();
 }
 
-absl::optional<net::HostPortPair>
+std::optional<net::HostPortPair>
 StructTraits<network::mojom::ProxyServerDataView,
              net::ProxyServer>::host_and_port(const net::ProxyServer& s) {
-  if (s.scheme() == net::ProxyServer::SCHEME_DIRECT ||
-      s.scheme() == net::ProxyServer::SCHEME_INVALID) {
-    return absl::nullopt;
+  if (s.scheme() == net::ProxyServer::SCHEME_INVALID) {
+    return std::nullopt;
   }
   return s.host_port_pair();
 }
@@ -129,13 +117,12 @@ bool StructTraits<network::mojom::ProxyServerDataView, net::ProxyServer>::Read(
     return false;
   }
 
-  absl::optional<net::HostPortPair> host_and_port;
+  std::optional<net::HostPortPair> host_and_port;
   if (!data.ReadHostAndPort(&host_and_port)) {
     return false;
   }
 
-  if (scheme == net::ProxyServer::SCHEME_INVALID ||
-      scheme == net::ProxyServer::SCHEME_DIRECT) {
+  if (scheme == net::ProxyServer::SCHEME_INVALID) {
     if (host_and_port) {
       return false;
     }
@@ -150,32 +137,30 @@ bool StructTraits<network::mojom::ProxyServerDataView, net::ProxyServer>::Read(
   }
 }
 
-// static
-network::mojom::SSLClientCertType
-EnumTraits<network::mojom::SSLClientCertType, net::SSLClientCertType>::ToMojom(
-    net::SSLClientCertType scheme) {
-  switch (scheme) {
-    case net::SSLClientCertType::kRsaSign:
-      return network::mojom::SSLClientCertType::kRsaSign;
-    case net::SSLClientCertType::kEcdsaSign:
-      return network::mojom::SSLClientCertType::kEcdsaSign;
+bool StructTraits<network::mojom::ProxyChainDataView, net::ProxyChain>::Read(
+    network::mojom::ProxyChainDataView data,
+    net::ProxyChain* out) {
+  std::optional<std::vector<net::ProxyServer>> proxy_servers;
+  if (!data.ReadProxyServers(&proxy_servers)) {
+    return false;
   }
-  NOTREACHED_NORETURN();
-}
 
-// static
-bool EnumTraits<network::mojom::SSLClientCertType, net::SSLClientCertType>::
-    FromMojom(network::mojom::SSLClientCertType scheme,
-              net::SSLClientCertType* out) {
-  switch (scheme) {
-    case network::mojom::SSLClientCertType::kRsaSign:
-      *out = net::SSLClientCertType::kRsaSign;
-      return true;
-    case network::mojom::SSLClientCertType::kEcdsaSign:
-      *out = net::SSLClientCertType::kEcdsaSign;
-      return true;
+  if (proxy_servers.has_value()) {
+    int chain_id = data.ip_protection_chain_id();
+    if (chain_id != net::ProxyChain::kNotIpProtectionChainId) {
+      *out =
+          net::ProxyChain::ForIpProtection(std::move(*proxy_servers), chain_id);
+    } else {
+      *out = net::ProxyChain(std::move(*proxy_servers));
+    }
+    if (!out->IsValid()) {
+      return false;
+    }
+  } else {
+    *out = net::ProxyChain();
   }
-  return false;
+
+  return true;
 }
 
 // static
@@ -191,8 +176,8 @@ bool StructTraits<network::mojom::SSLCertRequestInfoDataView,
   if (!data.ReadCertAuthorities(&cert_authorities)) {
     return false;
   }
-  std::vector<net::SSLClientCertType> cert_key_types;
-  if (!data.ReadCertKeyTypes(&cert_key_types)) {
+  std::vector<uint16_t> signature_algorithms;
+  if (!data.ReadSignatureAlgorithms(&signature_algorithms)) {
     return false;
   }
 
@@ -200,10 +185,27 @@ bool StructTraits<network::mojom::SSLCertRequestInfoDataView,
   ssl_cert_request_info->host_and_port = std::move(host_and_port);
   ssl_cert_request_info->is_proxy = data.is_proxy();
   ssl_cert_request_info->cert_authorities = std::move(cert_authorities);
-  ssl_cert_request_info->cert_key_types = std::move(cert_key_types);
+  ssl_cert_request_info->signature_algorithms = std::move(signature_algorithms);
 
   *out = ssl_cert_request_info;
 
+  return true;
+}
+
+// static
+bool StructTraits<network::mojom::NetLogSourceDataView, net::NetLogSource>::
+    Read(network::mojom::NetLogSourceDataView data, net::NetLogSource* out) {
+  if (data.source_type() >=
+      static_cast<uint32_t>(net::NetLogSourceType::COUNT)) {
+    return false;
+  }
+  base::TimeTicks start_time;
+  if (!data.ReadStartTime(&start_time)) {
+    return false;
+  }
+  *out =
+      net::NetLogSource(static_cast<net::NetLogSourceType>(data.source_type()),
+                        data.source_id(), start_time);
   return true;
 }
 

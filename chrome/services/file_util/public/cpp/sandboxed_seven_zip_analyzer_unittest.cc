@@ -9,6 +9,7 @@
 
 #include "base/base_paths.h"
 #include "base/files/file_util.h"
+#include "base/functional/callback_helpers.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/common/safe_browsing/archive_analyzer_results.h"
@@ -22,10 +23,6 @@ namespace safe_browsing {
 namespace {
 
 using ::testing::_;
-
-std::string ToHex(const std::string& s) {
-  return base::HexEncode(s.data(), s.size());
-}
 
 }  // namespace
 
@@ -117,7 +114,7 @@ TEST_F(SandboxedSevenZipAnalyzerTest, OneBinary) {
   EXPECT_EQ(ClientDownloadRequest::WIN_EXECUTABLE,
             results.archived_binary[0].download_type());
   EXPECT_EQ("B32E028F9B83C5FFB806CA7DFE7A3ECE5F1AED5A0368B0A140B35A67F5B000B3",
-            ToHex(results.archived_binary[0].digests().sha256()));
+            base::HexEncode(results.archived_binary[0].digests().sha256()));
   EXPECT_EQ(19, results.archived_binary[0].length());
   EXPECT_FALSE(results.archived_binary[0].is_encrypted());
   EXPECT_TRUE(results.archived_binary[0].is_executable());
@@ -139,7 +136,7 @@ TEST_F(SandboxedSevenZipAnalyzerTest, TwoBinariesAndFolder) {
   EXPECT_EQ(ClientDownloadRequest::WIN_EXECUTABLE,
             results.archived_binary[0].download_type());
   EXPECT_EQ("E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
-            ToHex(results.archived_binary[0].digests().sha256()));
+            base::HexEncode(results.archived_binary[0].digests().sha256()));
   EXPECT_EQ(0, results.archived_binary[0].length());
   EXPECT_FALSE(results.archived_binary[0].is_encrypted());
   EXPECT_FALSE(results.archived_binary[0].is_executable());
@@ -149,7 +146,7 @@ TEST_F(SandboxedSevenZipAnalyzerTest, TwoBinariesAndFolder) {
   EXPECT_EQ(ClientDownloadRequest::WIN_EXECUTABLE,
             results.archived_binary[1].download_type());
   EXPECT_EQ("B32E028F9B83C5FFB806CA7DFE7A3ECE5F1AED5A0368B0A140B35A67F5B000B3",
-            ToHex(results.archived_binary[1].digests().sha256()));
+            base::HexEncode(results.archived_binary[1].digests().sha256()));
   EXPECT_EQ(19, results.archived_binary[1].length());
   EXPECT_FALSE(results.archived_binary[1].is_encrypted());
   EXPECT_TRUE(results.archived_binary[1].is_executable());
@@ -159,18 +156,47 @@ TEST_F(SandboxedSevenZipAnalyzerTest, TwoBinariesAndFolder) {
   EXPECT_EQ(ClientDownloadRequest::WIN_EXECUTABLE,
             results.archived_binary[2].download_type());
   EXPECT_EQ("B32E028F9B83C5FFB806CA7DFE7A3ECE5F1AED5A0368B0A140B35A67F5B000B3",
-            ToHex(results.archived_binary[2].digests().sha256()));
+            base::HexEncode(results.archived_binary[2].digests().sha256()));
   EXPECT_EQ(19, results.archived_binary[2].length());
   EXPECT_FALSE(results.archived_binary[2].is_encrypted());
   EXPECT_TRUE(results.archived_binary[2].is_executable());
   EXPECT_FALSE(results.archived_binary[2].is_archive());
 }
 
+TEST_F(SandboxedSevenZipAnalyzerTest, BinaryAfterArchiveNamedFolder) {
+  safe_browsing::ArchiveAnalyzerResults results;
+  RunAnalyzer(
+      dir_test_data_.Append(FILE_PATH_LITERAL("archive_named_folder.7z")),
+      &results);
+  ASSERT_TRUE(results.success);
+  EXPECT_TRUE(results.has_executable);
+  EXPECT_TRUE(results.has_archive);
+  EXPECT_EQ(1, results.file_count);
+  EXPECT_EQ(1, results.directory_count);
+  ASSERT_EQ(2, results.archived_binary.size());
+
+  EXPECT_EQ("folder.zip", results.archived_binary[0].file_path());
+  EXPECT_EQ(ClientDownloadRequest::ARCHIVE,
+            results.archived_binary[0].download_type());
+  EXPECT_FALSE(results.archived_binary[0].is_executable());
+  EXPECT_TRUE(results.archived_binary[0].is_archive());
+
+  EXPECT_EQ("file.exe", results.archived_binary[1].file_path());
+  EXPECT_EQ(ClientDownloadRequest::WIN_EXECUTABLE,
+            results.archived_binary[1].download_type());
+  EXPECT_EQ("B32E028F9B83C5FFB806CA7DFE7A3ECE5F1AED5A0368B0A140B35A67F5B000B3",
+            base::HexEncode(results.archived_binary[1].digests().sha256()));
+  EXPECT_EQ(19, results.archived_binary[1].length());
+  EXPECT_FALSE(results.archived_binary[1].is_encrypted());
+  EXPECT_TRUE(results.archived_binary[1].is_executable());
+  EXPECT_FALSE(results.archived_binary[1].is_archive());
+}
+
 TEST_F(SandboxedSevenZipAnalyzerTest, NestedArchive) {
   safe_browsing::ArchiveAnalyzerResults results;
   RunAnalyzer(dir_test_data_.Append(FILE_PATH_LITERAL("inner_archive.7z")),
               &results);
-  ASSERT_TRUE(results.success);
+  EXPECT_FALSE(results.success);
   EXPECT_FALSE(results.has_executable);
   EXPECT_TRUE(results.has_archive);
   EXPECT_EQ(1, results.file_count);
@@ -181,7 +207,7 @@ TEST_F(SandboxedSevenZipAnalyzerTest, NestedArchive) {
   EXPECT_EQ(ClientDownloadRequest::ARCHIVE,
             results.archived_binary[0].download_type());
   EXPECT_EQ("DFD138681A2BE04D4E97A4CF839C08042A1A9F7541B4DE0EDEC4422A4D881045",
-            ToHex(results.archived_binary[0].digests().sha256()));
+            base::HexEncode(results.archived_binary[0].digests().sha256()));
   EXPECT_EQ(10, results.archived_binary[0].length());
   EXPECT_FALSE(results.archived_binary[0].is_encrypted());
   EXPECT_FALSE(results.archived_binary[0].is_executable());

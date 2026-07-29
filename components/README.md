@@ -1,7 +1,16 @@
 # About //components
 
 This directory is meant to house features or subsystems that are used in more
-than one part of the Chromium codebase.
+than one part of the Chromium codebase (as described below). It is acceptable
+to bring up a feature in //components that has a single initial use case but
+for which a second use case is targeted (e.g., a feature that is initially
+used on Chrome Desktop but for which integration on Chrome for iOS is
+planned in the future). In that case, if the planned second use case ends up not
+occurring when the dust settles, the feature team and/or eng from the relevant
+platform team should loop back to do the relevant architectural
+simplifications (e.g., eliminating the component being layered, moving the
+code to //chrome if it becomes clear that it's actually a desktop Chrome-only
+feature).
 
 ## Use cases:
 
@@ -24,7 +33,10 @@ than one part of the Chromium codebase.
 
 Note that the above list is meant to be exhaustive. A component should not be
 added just to separate it from other code in the same layer that is the only
-consumer; that can be done with strict `DEPS` or GN `visibility` rules.
+consumer; that can be done with strict `DEPS` and GN `visibility` rules. In
+particular, features that are added to //chrome can (and should) have
+proper modularity both between each other and between //chrome glue code such
+as Profile.
 
 ## Before adding a new component
 
@@ -84,7 +96,13 @@ Components **can** depend on `//content/public`, `//ipc`, and
 `//third_party/blink/public`. This must be made explicit in the `DEPS` file of
 the component. If such a component is used by Chrome for iOS (which does not
 use content or IPC), the component will have to be in the form of a [layered
-component](http://www.chromium.org/developers/design-documents/layered-components-design).
+component](https://www.chromium.org/developers/design-documents/layered-components-design).
+In particular, code that is shared with iOS *cannot* depend on any of the
+above modules; those dependencies must be injected into the shared code (either via
+a layered component structure or directly from the embedder for simple dependencies
+such as booleans that can be passed as constructor parameters). It is not
+an acceptable solution to conditionally depend on the above modules in code shared
+with iOS.
 
 `//chrome`, `//ios/chrome`, `//content` and `//ios/web` **can** depend on
 individual components. The dependency might have to be made explicit in the

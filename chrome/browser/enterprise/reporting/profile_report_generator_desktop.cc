@@ -8,17 +8,17 @@
 
 #include "base/json/values_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "build/chromeos_buildflags.h"
+#include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/enterprise/reporting/extension_info.h"
 #include "chrome/browser/enterprise/reporting/extension_request/extension_request_report_generator.h"
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/policy/chrome_browser_policy_connector.h"
-#include "chrome/common/extensions/extension_constants.h"
-#include "chrome/common/pref_names.h"
+#include "components/enterprise/browser/reporting/common_pref_names.h"
 #include "components/enterprise/browser/reporting/policy_info.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "components/prefs/pref_service.h"
+#include "extensions/common/constants.h"
 #include "extensions/common/extension_urls.h"
 
 namespace em = enterprise_management;
@@ -41,10 +41,13 @@ void ProfileReportGeneratorDesktop::GetExtensionInfo(
 
 void ProfileReportGeneratorDesktop::GetExtensionRequest(
     enterprise_management::ChromeUserProfileInfo* report) {
-  if (!profile_->GetPrefs()->GetBoolean(prefs::kCloudExtensionRequestEnabled))
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+  if (!profile_->GetPrefs()->GetBoolean(
+          enterprise_reporting::kCloudExtensionRequestEnabled)) {
     return;
-  const base::Value::Dict& pending_requests =
-      profile_->GetPrefs()->GetDict(prefs::kCloudExtensionRequestIds);
+  }
+  const base::DictValue& pending_requests = profile_->GetPrefs()->GetDict(
+      enterprise_reporting::kCloudExtensionRequestIds);
 
   // In case a corrupted profile prefs causing |pending_requests| to be null.
 
@@ -70,10 +73,10 @@ void ProfileReportGeneratorDesktop::GetExtensionRequest(
     request->set_id(extension_id);
 
     const auto& request_data_dict = request_data.GetDict();
-    absl::optional<base::Time> timestamp = ::base::ValueToTime(
+    std::optional<base::Time> timestamp = ::base::ValueToTime(
         request_data_dict.Find(extension_misc::kExtensionRequestTimestamp));
     if (timestamp)
-      request->set_request_timestamp(timestamp->ToJavaTime());
+      request->set_request_timestamp(timestamp->InMillisecondsSinceUnixEpoch());
 
     const std::string* justification = request_data_dict.FindString(
         extension_misc::kExtensionWorkflowJustification);
@@ -81,6 +84,7 @@ void ProfileReportGeneratorDesktop::GetExtensionRequest(
       request->set_justification(*justification);
     }
   }
+#endif
 }
 
 }  // namespace enterprise_reporting

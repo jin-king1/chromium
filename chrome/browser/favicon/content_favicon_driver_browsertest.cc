@@ -4,6 +4,7 @@
 
 #include "components/favicon/content/content_favicon_driver.h"
 
+#include <optional>
 #include <set>
 #include <string>
 
@@ -19,7 +20,6 @@
 #include "base/test/test_future.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
@@ -30,7 +30,6 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/favicon/core/favicon_handler.h"
 #include "components/favicon/core/favicon_service.h"
-#include "components/network_session_configurator/common/network_switches.h"
 #include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
@@ -48,7 +47,6 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "net/url_request/url_request.h"
 #include "testing/gmock/include/gmock/gmock.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/mojom/favicon/favicon_url.mojom.h"
 #include "ui/gfx/image/image_unittest_util.h"
@@ -128,7 +126,7 @@ class PendingTaskWaiter : public content::WebContentsObserver {
   PendingTaskWaiter(const PendingTaskWaiter&) = delete;
   PendingTaskWaiter& operator=(const PendingTaskWaiter&) = delete;
 
-  ~PendingTaskWaiter() override {}
+  ~PendingTaskWaiter() override = default;
 
   void AlsoRequireUrl(const GURL& url) { required_url_ = url; }
 
@@ -146,7 +144,8 @@ class PendingTaskWaiter : public content::WebContentsObserver {
   // content::WebContentsObserver:
   void DidUpdateFaviconURL(
       content::RenderFrameHost* rfh,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override {
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override {
     TestUrlAndTitle();
   }
 
@@ -192,7 +191,7 @@ class PendingTaskWaiter : public content::WebContentsObserver {
 
   base::RepeatingClosure quit_closure_;
   GURL required_url_;
-  absl::optional<std::u16string> required_title_;
+  std::optional<std::u16string> required_title_;
   base::WeakPtrFactory<PendingTaskWaiter> weak_factory_{this};
 };
 
@@ -204,7 +203,7 @@ class PageLoadStopper : public content::WebContentsObserver {
   PageLoadStopper(const PageLoadStopper&) = delete;
   PageLoadStopper& operator=(const PageLoadStopper&) = delete;
 
-  ~PageLoadStopper() override {}
+  ~PageLoadStopper() override = default;
 
   void StopOnDidFinishNavigation() { stop_on_finish_ = true; }
 
@@ -224,7 +223,8 @@ class PageLoadStopper : public content::WebContentsObserver {
 
   void DidUpdateFaviconURL(
       content::RenderFrameHost* rfh,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override {
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override {
     last_favicon_candidates_.clear();
     for (const auto& candidate : candidates)
       last_favicon_candidates_.push_back(candidate->icon_url);
@@ -249,16 +249,12 @@ class ContentFaviconDriverTest : public InProcessBrowserTest {
   ~ContentFaviconDriverTest() override = default;
 
   void SetUp() override {
-    prerender_helper_.SetUp(embedded_test_server());
+    prerender_helper_.RegisterServerRequestMonitor(embedded_test_server());
     InProcessBrowserTest::SetUp();
   }
 
   void SetUpOnMainThread() override {
     host_resolver()->AddRule("*", "127.0.0.1");
-  }
-
-  void SetUpCommandLine(base::CommandLine* command_line) override {
-    command_line->AppendSwitch(switches::kIgnoreCertificateErrors);
   }
 
   content::WebContents* web_contents() {
@@ -267,7 +263,7 @@ class ContentFaviconDriverTest : public InProcessBrowserTest {
 
   favicon::FaviconService* favicon_service() {
     return FaviconServiceFactory::GetForProfile(
-        browser()->profile(), ServiceAccessType::EXPLICIT_ACCESS);
+        browser()->GetProfile(), ServiceAccessType::EXPLICIT_ACCESS);
   }
 
   favicon_base::FaviconRawBitmapResult GetFaviconForPageURL(
@@ -311,7 +307,8 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
       embedded_test_server()->GetURL("/favicon/page_with_favicon.html");
   GURL icon_url = embedded_test_server()->GetURL("/favicon/icon.png");
   GURL initial_url = embedded_test_server()->GetURL("/empty.html");
-  EXPECT_CALL(observer, DidUpdateFaviconURL(testing::_, testing::_));
+  EXPECT_CALL(observer,
+              DidUpdateFaviconURL(testing::_, testing::_, testing::_));
   prerender_helper().NavigatePrimaryPage(initial_url);
 
   {
@@ -324,9 +321,11 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
   prerender_helper().WaitForRequest(prerender_url, 1);
   EXPECT_EQ(prerender_helper().GetRequestCount(icon_url), 0);
 
-  int host_id = prerender_helper().GetHostForUrl(prerender_url);
+  content::PrerenderHostId host_id =
+      prerender_helper().GetHostForUrl(prerender_url);
   auto* prerendered = prerender_helper().GetPrerenderedMainFrameHost(host_id);
-  EXPECT_CALL(observer, DidUpdateFaviconURL(prerendered, testing::_));
+  EXPECT_CALL(observer,
+              DidUpdateFaviconURL(prerendered, testing::_, testing::_));
   prerender_helper().NavigatePrimaryPage(prerender_url);
 
   // Check that we've fetched the URL upon activation. Should not hang.
@@ -352,7 +351,8 @@ class NoCommittedNavigationWebContentsObserver
   // WebContentsObserver:
   void DidUpdateFaviconURL(
       content::RenderFrameHost* rfh,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override {
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override {
     auto* web_contents = content::WebContents::FromRenderFrameHost(rfh);
     content::NavigationEntry* current_entry =
         web_contents->GetController().GetLastCommittedEntry();
@@ -418,7 +418,7 @@ class FaviconUpdateOnlyInitialEntryTabStripObserver
 // Tests that ContentFaviconDriver can handle being sent updated favicon URLs
 // if there is no committed navigation, so it will use the initial
 // NavigationEntry. This occurs when script is injected in the initial empty
-// document of a newly created window. See crbug.com/520759 for more details.
+// document of a newly created window. See crbug.com/40431380 for more details.
 IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
                        FaviconUpdateOnlyInitialEntry) {
   const char kNoContentPath[] = "/nocontent";
@@ -469,7 +469,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, ReloadBypassingCache) {
     PendingTaskWaiter waiter(web_contents());
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), url, WindowOpenDisposition::CURRENT_TAB,
-        ui_test_utils::BROWSER_TEST_NONE);
+        ui_test_utils::BROWSER_TEST_NO_WAIT);
     waiter.Wait();
   }
   ASSERT_TRUE(url_loader_interceptor.was_loaded(icon_url));
@@ -487,7 +487,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, ReloadBypassingCache) {
     PendingTaskWaiter waiter(web_contents());
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), url, WindowOpenDisposition::CURRENT_TAB,
-        ui_test_utils::BROWSER_TEST_NONE);
+        ui_test_utils::BROWSER_TEST_NO_WAIT);
     waiter.Wait();
   }
   EXPECT_FALSE(url_loader_interceptor.did_bypass_cache(icon_url));
@@ -530,7 +530,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
   waiter.AlsoRequireTitle(u"OK");
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_EQ(
@@ -549,7 +549,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, ChangeTouchIconViaJavascript) {
   waiter.AlsoRequireTitle(u"OK");
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(
@@ -569,7 +569,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, RemoveTouchIconViaJavascript) {
   waiter.AlsoRequireTitle(u"OK");
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_EQ(nullptr,
@@ -584,7 +584,9 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, RemoveTouchIconViaJavascript) {
 // have been processed in the HTML, because this is an example where Content
 // reports an incomplete favicon list (or, like in this test, falls back to the
 // default favicon.ico).
-IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, DoNotRemoveMappingIfStopped) {
+// TODO: https://crbug.com/434752631 - Re-enable this test.
+IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
+                       DISABLED_DoNotRemoveMappingIfStopped) {
   ASSERT_TRUE(embedded_test_server()->Start());
   GURL url =
       embedded_test_server()->GetURL("/favicon/slow_page_with_favicon.html");
@@ -608,7 +610,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, DoNotRemoveMappingIfStopped) {
   PendingTaskWaiter waiter(web_contents());
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   // The whole purpose of this test is due to the fact that Content returns a
@@ -634,7 +636,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, LoadIconFromWebManifest) {
   PendingTaskWaiter waiter(web_contents());
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
 #if BUILDFLAG(IS_ANDROID)
@@ -663,7 +665,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
   waiter.AlsoRequireUrl(landing_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(
@@ -692,7 +694,7 @@ IN_PROC_BROWSER_TEST_F(
     PendingTaskWaiter waiter(web_contents());
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), landing_url, WindowOpenDisposition::CURRENT_TAB,
-        ui_test_utils::BROWSER_TEST_NONE);
+        ui_test_utils::BROWSER_TEST_NO_WAIT);
     waiter.Wait();
   }
   ASSERT_NE(nullptr,
@@ -703,7 +705,7 @@ IN_PROC_BROWSER_TEST_F(
   waiter.AlsoRequireUrl(landing_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url_with_meta_refresh_tag, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(nullptr, GetFaviconForPageURL(url_with_meta_refresh_tag,
@@ -731,7 +733,7 @@ IN_PROC_BROWSER_TEST_F(
   waiter.AlsoRequireUrl(landing_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(
@@ -760,7 +762,7 @@ IN_PROC_BROWSER_TEST_F(
   waiter.AlsoRequireUrl(landing_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(
@@ -786,7 +788,7 @@ IN_PROC_BROWSER_TEST_F(
   waiter.AlsoRequireUrl(landing_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(
@@ -813,7 +815,7 @@ IN_PROC_BROWSER_TEST_F(
   waiter.AlsoRequireUrl(landing_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(
@@ -838,7 +840,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
   waiter.AlsoRequireUrl(replacestate_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(
@@ -863,7 +865,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
   waiter.AlsoRequireUrl(pushstate_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(
@@ -889,7 +891,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
   waiter.AlsoRequireUrl(landing_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   ASSERT_NE(nullptr,
@@ -913,7 +915,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
   waiter.AlsoRequireUrl(pushstate_url);
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), url, WindowOpenDisposition::CURRENT_TAB,
-      ui_test_utils::BROWSER_TEST_NONE);
+      ui_test_utils::BROWSER_TEST_NO_WAIT);
   waiter.Wait();
 
   EXPECT_NE(nullptr,
@@ -941,6 +943,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTestWithAutoupgradesDisabled,
                        MixedContentInsecureFaviconBlocked) {
   net::EmbeddedTestServer ssl_server(net::EmbeddedTestServer::TYPE_HTTPS);
   ssl_server.AddDefaultHandlers(GetChromeTestDataDir());
+  ssl_server.SetCertHostnames({"example.test"});
   ASSERT_TRUE(ssl_server.Start());
   ASSERT_TRUE(embedded_test_server()->Start());
 
@@ -974,6 +977,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTestWithAutoupgradesDisabled,
                        MixedContentSecureFaviconAllowed) {
   net::EmbeddedTestServer ssl_server(net::EmbeddedTestServer::TYPE_HTTPS);
   ssl_server.AddDefaultHandlers(GetChromeTestDataDir());
+  ssl_server.SetCertHostnames({"example.test"});
   ASSERT_TRUE(ssl_server.Start());
 
   const GURL favicon_url =
@@ -1038,7 +1042,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
     PendingTaskWaiter waiter(web_contents());
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), url, WindowOpenDisposition::CURRENT_TAB,
-        ui_test_utils::BROWSER_TEST_NONE);
+        ui_test_utils::BROWSER_TEST_NO_WAIT);
     waiter.Wait();
   }
   ASSERT_TRUE(url_loader_interceptor.was_loaded(icon_url));
@@ -1051,7 +1055,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
     PendingTaskWaiter waiter(web_contents());
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), url, WindowOpenDisposition::CURRENT_TAB,
-        ui_test_utils::BROWSER_TEST_NONE);
+        ui_test_utils::BROWSER_TEST_NO_WAIT);
     waiter.Wait();
   }
   ASSERT_FALSE(url_loader_interceptor.was_loaded(icon_url));
@@ -1062,7 +1066,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
   // Clear cache.
   {
     content::BrowsingDataRemover* remover =
-        browser()->profile()->GetBrowsingDataRemover();
+        browser()->GetProfile()->GetBrowsingDataRemover();
     content::BrowsingDataRemoverCompletionObserver observer(remover);
     remover->RemoveAndReply(
         base::Time(), base::Time::Max(),
@@ -1076,7 +1080,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
     PendingTaskWaiter waiter(web_contents());
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), url, WindowOpenDisposition::CURRENT_TAB,
-        ui_test_utils::BROWSER_TEST_NONE);
+        ui_test_utils::BROWSER_TEST_NO_WAIT);
     waiter.Wait();
   }
   ASSERT_TRUE(url_loader_interceptor.was_loaded(icon_url));
@@ -1097,7 +1101,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
     PendingTaskWaiter waiter(web_contents());
     ui_test_utils::NavigateToURLWithDisposition(
         browser(), url, WindowOpenDisposition::CURRENT_TAB,
-        ui_test_utils::BROWSER_TEST_NONE);
+        ui_test_utils::BROWSER_TEST_NO_WAIT);
     waiter.Wait();
   }
   ASSERT_TRUE(url_loader_interceptor.was_loaded(icon_url));
@@ -1107,7 +1111,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
 
   // Visiting the site in incognito mode should always load the favicon.
   Browser* incognito = Browser::Create(Browser::CreateParams(
-      browser()->profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
+      browser()->GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
       true));
   AddBlankTabAndShow(incognito);
   {
@@ -1115,7 +1119,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest,
         incognito->tab_strip_model()->GetActiveWebContents());
     ui_test_utils::NavigateToURLWithDisposition(
         incognito, url, WindowOpenDisposition::CURRENT_TAB,
-        ui_test_utils::BROWSER_TEST_NONE);
+        ui_test_utils::BROWSER_TEST_NO_WAIT);
     waiter.Wait();
   }
   ASSERT_TRUE(url_loader_interceptor.was_loaded(icon_url));
@@ -1162,6 +1166,7 @@ IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, CrossOriginCacheHTTP) {
 IN_PROC_BROWSER_TEST_F(ContentFaviconDriverTest, CrossOriginCacheHTTPS) {
   net::EmbeddedTestServer ssl_server(net::EmbeddedTestServer::TYPE_HTTPS);
   ssl_server.AddDefaultHandlers(GetChromeTestDataDir());
+  ssl_server.SetCertHostnames({"a.com", "b.com"});
   ASSERT_TRUE(ssl_server.Start());
   TestURLLoaderInterceptor url_loader_interceptor;
   GURL icon_url = ssl_server.GetURL("a.com", "/favicon/icon.png");

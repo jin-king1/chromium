@@ -6,7 +6,7 @@
 #define CHROMEOS_ASH_COMPONENTS_TETHER_ACTIVE_HOST_NETWORK_STATE_UPDATER_H_
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "chromeos/ash/components/tether/active_host.h"
 
 namespace ash {
@@ -26,15 +26,18 @@ class ActiveHostNetworkStateUpdater final : public ActiveHost::Observer {
   ActiveHostNetworkStateUpdater& operator=(
       const ActiveHostNetworkStateUpdater&) = delete;
 
-  ~ActiveHostNetworkStateUpdater();
+  ~ActiveHostNetworkStateUpdater() override;
 
   // ActiveHost::Observer:
   void OnActiveHostChanged(
       const ActiveHost::ActiveHostChangeInfo& change_info) override;
 
  private:
-  raw_ptr<ActiveHost, ExperimentalAsh> active_host_;
-  raw_ptr<NetworkStateHandler, ExperimentalAsh> network_state_handler_;
+  raw_ptr<ActiveHost> active_host_;
+  raw_ptr<NetworkStateHandler> network_state_handler_;
+
+  base::ScopedObservation<ActiveHost, ActiveHost::Observer>
+      active_host_observation_{this};
 };
 
 }  // namespace tether

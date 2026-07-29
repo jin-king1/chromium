@@ -2,7 +2,7 @@
 // META: script=/resources/WebIDLParser.js
 // META: script=/resources/idlharness.js
 
-// https://svgwg.org/svg2-draft/
+// https://w3c.github.io/svgwg/svg2-draft/
 
 'use strict';
 
@@ -32,7 +32,6 @@ const elements = [
   'marker',
   'linearGradient',
   'radialGradient',
-  'meshGradient',
   'stop',
   'pattern',
   'clipPath',
@@ -44,7 +43,6 @@ const elements = [
   'set',
   'animateMotion',
   'mpath',
-  'animateColor',
   'animateTransform',
   'metadata',
   'foreignObject',
@@ -158,7 +156,6 @@ idl_test(
       SVGMarkerElement: ['objects.marker'],
       SVGLinearGradientElement: ['objects.linearGradient'],
       SVGRadialGradientElement: ['objects.radialGradient'],
-      SVGMeshGradientElement: ['objects.meshGradient'],
       SVGStopElement: ['objects.stop'],
       SVGPatternElement: ['objects.pattern'],
       SVGClipPathElement: ['objects.clipPath'],
@@ -170,7 +167,6 @@ idl_test(
       SVGSetElement: ['objects.set'],
       SVGAnimateMotionElement: ['objects.animateMotion'],
       SVGMPathElement: ['objects.mpath'],
-      SVGAnimateColorElement: ['objects.animateColor'],
       SVGAnimateTransformElement: ['objects.animateTransform'],
       SVGMetadataElement: ['objects.metadata'],
       SVGForeignObjectElement: ['objects.foreignObject'],

@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_ASH_INPUT_METHOD_ASSISTIVE_SUGGESTER_H_
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,7 +14,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ash/input_method/assistive_suggester_switch.h"
-#include "chrome/browser/ash/input_method/emoji_suggester.h"
 #include "chrome/browser/ash/input_method/longpress_control_v_suggester.h"
 #include "chrome/browser/ash/input_method/longpress_diacritics_suggester.h"
 #include "chrome/browser/ash/input_method/multi_word_suggester.h"
@@ -22,7 +22,6 @@
 #include "chrome/browser/ash/input_method/suggestion_handler_interface.h"
 #include "chrome/browser/ash/input_method/suggestions_source.h"
 #include "chromeos/ash/services/ime/public/cpp/assistive_suggestions.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace ash::input_method {
 
@@ -44,13 +43,6 @@ enum class AssistiveSuggesterKeyResult {
 // dismiss the suggestion according to the user action.
 class AssistiveSuggester : public SuggestionsSource {
  public:
-  // Features handled by assistive suggester.
-  enum class AssistiveFeature {
-    kUnknown,  // Includes features not handled by assistive suggester.
-    kEmojiSuggestion,
-    kMultiWordSuggestion,
-  };
-
   AssistiveSuggester(
       SuggestionHandlerInterface* suggestion_handler,
       Profile* profile,
@@ -88,7 +80,8 @@ class AssistiveSuggester : public SuggestionsSource {
 
   // Called when suggestions are generated outside of the assistive framework.
   void OnExternalSuggestionsUpdated(
-      const std::vector<ime::AssistiveSuggestion>& suggestions);
+      const std::vector<ime::AssistiveSuggestion>& suggestions,
+      const std::optional<ime::SuggestionsTextContext>& context);
 
   // Accepts the suggestion at a given index if a suggester is currently
   // active.
@@ -97,11 +90,7 @@ class AssistiveSuggester : public SuggestionsSource {
   // Check if suggestion is being shown.
   bool IsSuggestionShown();
 
-  EmojiSuggester* get_emoji_suggester_for_testing() {
-    return &emoji_suggester_;
-  }
-
-  absl::optional<AssistiveSuggesterSwitch::EnabledSuggestions>
+  std::optional<AssistiveSuggesterSwitch::EnabledSuggestions>
   get_enabled_suggestion_from_last_onfocus_for_testing() {
     return enabled_suggestions_from_last_onfocus_;
   }
@@ -122,26 +111,9 @@ class AssistiveSuggester : public SuggestionsSource {
 
   void DismissSuggestion();
 
-  bool IsEmojiSuggestAdditionEnabled();
-
-  bool IsEnhancedEmojiSuggestEnabled();
-
   bool IsMultiWordSuggestEnabled();
 
-  bool IsExpandedMultiWordSuggestEnabled();
-
   bool IsDiacriticsOnPhysicalKeyboardLongpressEnabled();
-
-  // Checks the text before cursor, emits metric if any assistive prefix is
-  // matched.
-  void RecordAssistiveMatchMetrics(
-      const std::u16string& text,
-      gfx::Range selection_range,
-      const AssistiveSuggesterSwitch::EnabledSuggestions& enabled_suggestions);
-
-  void RecordAssistiveMatchMetricsForAssistiveType(
-      AssistiveType type,
-      const AssistiveSuggesterSwitch::EnabledSuggestions& enabled_suggestions);
 
   // Only the first applicable reason in DisabledReason enum is returned.
   DisabledReason GetDisabledReasonForEmoji(
@@ -151,18 +123,11 @@ class AssistiveSuggester : public SuggestionsSource {
   DisabledReason GetDisabledReasonForMultiWord(
       const AssistiveSuggesterSwitch::EnabledSuggestions& enabled_suggestions);
 
-  AssistiveFeature GetAssistiveFeatureForType(AssistiveType type);
-
-  bool IsAssistiveTypeEnabled(AssistiveType type);
-
-  bool IsAssistiveTypeAllowedInBrowserContext(
-      AssistiveType type,
-      const AssistiveSuggesterSwitch::EnabledSuggestions& enabled_suggestions);
-
   bool WithinGrammarFragment();
 
   void ProcessExternalSuggestions(
       const std::vector<ime::AssistiveSuggestion>& suggestions,
+      const std::optional<ime::SuggestionsTextContext>& context,
       const AssistiveSuggesterSwitch::EnabledSuggestions& enabled_suggestions);
 
   // This records any text input state metrics for each relevant assistive
@@ -186,8 +151,7 @@ class AssistiveSuggester : public SuggestionsSource {
   // status of the clipboard history menu, as indicated by `will_paste_item`.
   void OnClipboardHistoryMenuClosing(bool will_paste_item);
 
-  raw_ptr<Profile, ExperimentalAsh> profile_;
-  EmojiSuggester emoji_suggester_;
+  raw_ptr<Profile> profile_;
   MultiWordSuggester multi_word_suggester_;
   LongpressDiacriticsSuggester longpress_diacritics_suggester_;
   LongpressControlVSuggester longpress_control_v_suggester_;
@@ -197,20 +161,20 @@ class AssistiveSuggester : public SuggestionsSource {
   std::string active_engine_id_;
 
   // ID of the focused text field, nullopt if none focused.
-  absl::optional<int> focused_context_id_;
+  std::optional<int> focused_context_id_;
 
   // KeyEvent of the held down key at key down. nullopt if no longpress in
   // progress.
-  absl::optional<ui::KeyEvent> current_longpress_keydown_;
+  std::optional<ui::KeyEvent> current_longpress_keydown_;
 
   // Timer for longpress. Starts when key is held down. Fires when successfully
   // held down for a specified longpress duration.
   base::OneShotTimer longpress_timer_;
 
   // The current suggester in use, nullptr means no suggestion is shown.
-  raw_ptr<Suggester, ExperimentalAsh> current_suggester_ = nullptr;
+  raw_ptr<Suggester> current_suggester_ = nullptr;
 
-  absl::optional<AssistiveSuggesterSwitch::EnabledSuggestions>
+  std::optional<AssistiveSuggesterSwitch::EnabledSuggestions>
       enabled_suggestions_from_last_onfocus_;
 
   std::u16string last_surrounding_text_ = u"";

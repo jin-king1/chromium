@@ -4,21 +4,17 @@
 
 #include "components/omnibox/browser/actions/tab_switch_action.h"
 
-#include <cctype>
-#include <numeric>
+#include <utility>
 
-#include "build/build_config.h"
-#include "components/omnibox/browser/buildflags.h"
+#include "components/omnibox/browser/actions/omnibox_action.h"
+#include "components/omnibox/browser/actions/omnibox_action_concepts.h"
 #include "components/strings/grit/components_strings.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/base/window_open_disposition.h"
+#include "url/gurl.h"
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
 #include "components/omnibox/browser/vector_icons.h"  // nogncheck
-#endif
-
-#if BUILDFLAG(IS_ANDROID)
-#include "base/android/jni_android.h"
-#include "components/omnibox/browser/actions/omnibox_pedal_jni_wrapper.h"
 #endif
 
 TabSwitchAction::TabSwitchAction(GURL url)
@@ -37,7 +33,8 @@ void TabSwitchAction::Execute(ExecutionContext& context) const {
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
 const gfx::VectorIcon& TabSwitchAction::GetVectorIcon() const {
-  return omnibox::kSwitchIcon;
+  return features::IsRoundedIconsEnabled() ? omnibox::kTabIcon
+                                           : omnibox::kSwitchCr2023OldIcon;
 }
 #endif
 

@@ -71,18 +71,17 @@ class ASH_EXPORT LayerCopyAnimator : public aura::WindowObserver,
   void EnsureFakeSequence();
   void NotifyWithFakeSequence(bool abort);
 
-  raw_ptr<aura::Window, ExperimentalAsh> window_;
-  raw_ptr<ui::LayerAnimationObserver, DanglingUntriaged | ExperimentalAsh>
-      observer_ = nullptr;
+  raw_ptr<aura::Window> window_;
+  raw_ptr<ui::LayerAnimationObserver, DanglingUntriaged> observer_ = nullptr;
   AnimationCallback animation_callback_;
 
   std::unique_ptr<ui::Layer> copied_layer_;
   // A dummy sequence to keep AnimationSequence alive during copy.
   std::unique_ptr<ui::LayerAnimationSequence> fake_sequence_;
-  ui::Layer full_layer_{ui::LAYER_SOLID_COLOR};
+  ui::LayerSolidColor full_layer_;
   bool fail_ = false;
   bool animation_requested_ = false;
-  raw_ptr<ui::LayerAnimationSequence, ExperimentalAsh> last_sequence_ = nullptr;
+  raw_ptr<ui::LayerAnimationSequence> last_sequence_ = nullptr;
 
   base::ScopedObservation<aura::Window, aura::WindowObserver> observation_{
       this};

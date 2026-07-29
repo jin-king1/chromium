@@ -2,30 +2,28 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import("//mojo/public/tools/bindings/mojom.gni")
+assert(is_win || is_mac || is_linux || is_chromeos || is_android)
 
-static_library("text_finder") {
+source_set("text_finder") {
   sources = [
     "text_finder.cc",
     "text_finder.h",
+    "text_finder_manager.cc",
+    "text_finder_manager.h",
     "text_highlighter.cc",
     "text_highlighter.h",
+    "text_highlighter_manager.cc",
+    "text_highlighter_manager.h",
   ]
 
-  deps = [
+  public_deps = [
     "//base",
-    "//ui/gfx/geometry:geometry",
+    "//content/public/browser",
+    "//content/public/common",
+    "//ui/gfx/geometry",
   ]
 
-  if (!is_ios) {
-    sources += [
-      "text_finder_manager.cc",
-      "text_finder_manager.h",
-      "text_highlighter_manager.cc",
-      "text_highlighter_manager.h",
-    ]
-    deps += [ "//content/public/browser" ]
-  }
+  deps = [ "//services/service_manager/public/cpp" ]
 }
 
 source_set("unit_tests") {

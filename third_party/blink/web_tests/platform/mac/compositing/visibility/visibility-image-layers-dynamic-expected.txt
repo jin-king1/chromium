@@ -2,19 +2,19 @@ Initial
 {
   "layers": [
     {
-      "name": "Scrolling background of LayoutNGView #document",
+      "name": "Scrolling background of LayoutView #document",
       "bounds": [785, 626],
       "contentsOpaque": true,
       "backgroundColor": "#FFFFFF"
     },
     {
-      "name": "LayoutNGBlockFlow DIV class='composited container'",
+      "name": "LayoutBlockFlow (children-inline) DIV class='composited container'",
       "bounds": [749, 144],
       "drawsContent": false,
       "transform": 1
     },
     {
-      "name": "LayoutImage IMG class='visible composited box'",
+      "name": "LayoutImage (relayout-boundary) IMG class='visible composited box'",
       "bounds": [100, 100],
       "transform": 3
     },
@@ -61,24 +61,24 @@ After step 1
 {
   "layers": [
     {
-      "name": "Scrolling background of LayoutNGView #document",
+      "name": "Scrolling background of LayoutView #document",
       "bounds": [785, 1501],
       "contentsOpaque": true,
       "backgroundColor": "#FFFFFF"
     },
     {
-      "name": "LayoutNGBlockFlow DIV class='composited container'",
+      "name": "LayoutBlockFlow (children-inline) DIV class='composited container'",
       "bounds": [749, 144],
       "drawsContent": false,
       "transform": 1
     },
     {
-      "name": "LayoutImage IMG class='hidden composited box'",
+      "name": "LayoutImage (relayout-boundary) IMG class='hidden composited box'",
       "bounds": [100, 100],
       "transform": 2
     },
     {
-      "name": "LayoutImage IMG class='visible composited box'",
+      "name": "LayoutImage (relayout-boundary) IMG class='visible composited box'",
       "bounds": [100, 100],
       "transform": 4
     },
@@ -135,35 +135,35 @@ After step 2
 {
   "layers": [
     {
-      "name": "Scrolling background of LayoutNGView #document",
+      "name": "Scrolling background of LayoutView #document",
       "bounds": [785, 2600],
       "contentsOpaque": true,
       "backgroundColor": "#FFFFFF"
     },
     {
-      "name": "LayoutNGBlockFlow DIV class='composited container'",
+      "name": "LayoutBlockFlow (children-inline) DIV class='composited container'",
       "bounds": [749, 144],
       "drawsContent": false,
       "transform": 1
     },
     {
-      "name": "LayoutImage IMG class='hidden composited box'",
+      "name": "LayoutImage (relayout-boundary) IMG class='hidden composited box'",
       "bounds": [100, 100],
       "transform": 2
     },
     {
-      "name": "LayoutNGBlockFlow DIV class='composited hidden container'",
+      "name": "LayoutBlockFlow (children-inline) DIV class='composited hidden container'",
       "position": [-4, -4],
       "bounds": [757, 152],
       "transform": 3
     },
     {
-      "name": "LayoutImage IMG class='composited box'",
+      "name": "LayoutImage (relayout-boundary) IMG class='composited box'",
       "bounds": [100, 100],
       "transform": 4
     },
     {
-      "name": "LayoutImage IMG class='visible composited box'",
+      "name": "LayoutImage (relayout-boundary) IMG class='visible composited box'",
       "bounds": [100, 100],
       "transform": 6
     },

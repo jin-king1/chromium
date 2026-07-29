@@ -4,9 +4,9 @@
 
 #include "chrome/browser/ash/arc/privacy_items/arc_privacy_items_bridge.h"
 
-#include "ash/components/arc/arc_browser_context_keyed_service_factory_base.h"
-#include "ash/components/arc/session/arc_bridge_service.h"
-#include "base/memory/singleton.h"
+#include "base/no_destructor.h"
+#include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
+#include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 
 namespace arc {
 
@@ -22,11 +22,18 @@ class ArcPrivacyItemsBridgeFactory
   static constexpr const char* kName = "ArcPrivacyItemsBridgeFactory";
 
   static ArcPrivacyItemsBridgeFactory* GetInstance() {
-    return base::Singleton<ArcPrivacyItemsBridgeFactory>::get();
+    static base::NoDestructor<ArcPrivacyItemsBridgeFactory> instance;
+    return instance.get();
+  }
+
+  static void ShutdownForTesting(content::BrowserContext* context) {
+    auto* self = GetInstance();
+    self->BrowserContextShutdown(context);
+    self->BrowserContextDestroyed(context);
   }
 
  private:
-  friend base::DefaultSingletonTraits<ArcPrivacyItemsBridgeFactory>;
+  friend base::NoDestructor<ArcPrivacyItemsBridgeFactory>;
 
   ArcPrivacyItemsBridgeFactory() = default;
   ~ArcPrivacyItemsBridgeFactory() override = default;
@@ -38,6 +45,18 @@ class ArcPrivacyItemsBridgeFactory
 ArcPrivacyItemsBridge* ArcPrivacyItemsBridge::GetForBrowserContext(
     content::BrowserContext* context) {
   return ArcPrivacyItemsBridgeFactory::GetForBrowserContext(context);
+}
+
+// static
+ArcPrivacyItemsBridge* ArcPrivacyItemsBridge::GetForBrowserContextForTesting(
+    content::BrowserContext* context) {
+  return ArcPrivacyItemsBridgeFactory::GetForBrowserContextForTesting(context);
+}
+
+// static
+void ArcPrivacyItemsBridge::ShutdownForTesting(
+    content::BrowserContext* context) {
+  return ArcPrivacyItemsBridgeFactory::ShutdownForTesting(context);
 }
 
 ArcPrivacyItemsBridge::ArcPrivacyItemsBridge(content::BrowserContext* context,

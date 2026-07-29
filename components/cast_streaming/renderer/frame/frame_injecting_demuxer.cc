@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
@@ -58,7 +59,7 @@ class StreamTimestampOffsetTracker
 
   base::TimeDelta audio_position_ = {};
   base::TimeDelta offset_ = {};
-  media::DemuxerHost* demuxer_host_ = nullptr;
+  raw_ptr<media::DemuxerHost> demuxer_host_ = nullptr;
 };
 
 namespace {
@@ -197,14 +198,13 @@ class FrameInjectingDemuxerStream
     }
   }
 
-  // DemuxerStream partial implementation.
-  void Read(uint32_t count, ReadCB read_cb) final {
+  // DemuxerStream partial implementation. Method returns only a single buffer
+  // at a time, hence |count| is not taken into account.
+  void Read(uint32_t /*count*/, ReadCB read_cb) final {
     DVLOG(3) << __func__;
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
     DCHECK(!pending_read_cb_);
     DCHECK(!buffer_requester_ || current_buffer_provider_);
-    DCHECK_EQ(count, 1u)
-        << "FrameInjectingDemuxerStream only reads a single buffer.";
 
     pending_read_cb_ = std::move(read_cb);
 
@@ -292,10 +292,7 @@ class FrameInjectingAudioDemuxerStream final
  private:
   // DemuxerStream remainder of implementation.
   media::AudioDecoderConfig audio_decoder_config() final { return config(); }
-  media::VideoDecoderConfig video_decoder_config() final {
-    NOTREACHED();
-    return media::VideoDecoderConfig();
-  }
+  media::VideoDecoderConfig video_decoder_config() final { NOTREACHED(); }
   Type type() const final { return Type::AUDIO; }
 };
 
@@ -309,46 +306,22 @@ class FrameInjectingVideoDemuxerStream final
 
  private:
   // DemuxerStream remainder of implementation.
-  media::AudioDecoderConfig audio_decoder_config() final {
-    NOTREACHED();
-    return media::AudioDecoderConfig();
-  }
+  media::AudioDecoderConfig audio_decoder_config() final { NOTREACHED(); }
   media::VideoDecoderConfig video_decoder_config() final { return config(); }
   Type type() const final { return Type::VIDEO; }
 };
 
 FrameInjectingDemuxer::FrameInjectingDemuxer(
-    DemuxerConnector* demuxer_connector,
+    scoped_refptr<DemuxerStreamConfigBuffer> config_buffer,
     scoped_refptr<base::SequencedTaskRunner> media_task_runner)
     : media_task_runner_(std::move(media_task_runner)),
-      original_task_runner_(base::SequencedTaskRunner::GetCurrentDefault()),
-      demuxer_connector_(demuxer_connector),
-      weak_factory_(this) {
+      config_buffer_(std::move(config_buffer)) {
   DVLOG(1) << __func__;
-  DCHECK(demuxer_connector_);
+  DCHECK(config_buffer_);
 }
 
 FrameInjectingDemuxer::~FrameInjectingDemuxer() {
   DVLOG(1) << __func__;
-
-  if (was_initialization_successful_) {
-    original_task_runner_->PostTask(
-        FROM_HERE, base::BindOnce(&DemuxerConnector::OnDemuxerDestroyed,
-                                  base::Unretained(demuxer_connector_)));
-  }
-}
-
-void FrameInjectingDemuxer::OnStreamsInitialized(
-    mojom::AudioStreamInitializationInfoPtr audio_stream_info,
-    mojom::VideoStreamInitializationInfoPtr video_stream_info) {
-  DVLOG(1) << __func__;
-  DCHECK(!media_task_runner_->RunsTasksInCurrentSequence());
-
-  media_task_runner_->PostTask(
-      FROM_HERE,
-      base::BindOnce(&FrameInjectingDemuxer::OnStreamsInitializedOnMediaThread,
-                     weak_factory_.GetWeakPtr(), std::move(audio_stream_info),
-                     std::move(video_stream_info)));
 }
 
 void FrameInjectingDemuxer::OnStreamsInitializedOnMediaThread(
@@ -399,11 +372,12 @@ void FrameInjectingDemuxer::OnStreamInitializationComplete() {
   std::move(initialized_cb_).Run(media::PIPELINE_OK);
 }
 
-std::vector<media::DemuxerStream*> FrameInjectingDemuxer::GetAllStreams() {
+std::vector<raw_ptr<media::DemuxerStream>>
+FrameInjectingDemuxer::GetAllStreams() {
   DVLOG(1) << __func__;
   DCHECK(media_task_runner_->RunsTasksInCurrentSequence());
 
-  std::vector<media::DemuxerStream*> streams;
+  std::vector<raw_ptr<media::DemuxerStream>> streams;
   if (video_stream_) {
     streams.push_back(video_stream_.get());
   }
@@ -432,17 +406,19 @@ void FrameInjectingDemuxer::Initialize(
   host_->SetDuration(media::kInfiniteDuration);
   initialized_cb_ = std::move(status_cb);
 
-  original_task_runner_->PostTask(
-      FROM_HERE, base::BindOnce(&DemuxerConnector::SetDemuxer,
-                                base::Unretained(demuxer_connector_),
-                                base::Unretained(this)));
+  config_buffer_->ReadConfigs(
+      media_task_runner_,
+      base::BindOnce(&FrameInjectingDemuxer::OnStreamsInitializedOnMediaThread,
+                     weak_factory_.GetWeakPtr()));
 }
 
 void FrameInjectingDemuxer::AbortPendingReads() {
   DVLOG(2) << __func__;
   DCHECK(media_task_runner_->RunsTasksInCurrentSequence());
 
-  timestamp_tracker_->ResetPosition();
+  if (timestamp_tracker_) {
+    timestamp_tracker_->ResetPosition();
+  }
 
   if (audio_stream_) {
     audio_stream_->AbortPendingRead();
@@ -461,7 +437,9 @@ void FrameInjectingDemuxer::CancelPendingSeek(base::TimeDelta seek_time) {}
 // Not supported.
 void FrameInjectingDemuxer::Seek(base::TimeDelta time,
                                  media::PipelineStatusCallback status_cb) {
-  timestamp_tracker_->ResetPosition();
+  if (timestamp_tracker_) {
+    timestamp_tracker_->ResetPosition();
+  }
   std::move(status_cb).Run(media::PIPELINE_OK);
 }
 
@@ -479,6 +457,7 @@ void FrameInjectingDemuxer::Stop() {
   if (video_stream_) {
     video_stream_.reset();
   }
+  weak_factory_.InvalidateWeakPtrs();
 }
 
 base::TimeDelta FrameInjectingDemuxer::GetStartTime() const {
@@ -495,30 +474,21 @@ int64_t FrameInjectingDemuxer::GetMemoryUsage() const {
   return 0;
 }
 
-absl::optional<media::container_names::MediaContainerName>
+std::optional<media::container_names::MediaContainerName>
 FrameInjectingDemuxer::GetContainerForMetrics() const {
   // Cast Streaming frames have no container.
-  return absl::nullopt;
+  return std::nullopt;
 }
 
 // Not supported.
-void FrameInjectingDemuxer::OnEnabledAudioTracksChanged(
-    const std::vector<media::MediaTrack::Id>& track_ids,
+void FrameInjectingDemuxer::OnTracksChanged(
+    media::DemuxerStream::Type track_type,
+    std::optional<media::MediaTrack::Id> track_id,
     base::TimeDelta curr_time,
     TrackChangeCB change_completed_cb) {
-  DLOG(WARNING) << "Track changes are not supported.";
-  std::vector<media::DemuxerStream*> streams;
-  std::move(change_completed_cb).Run(media::DemuxerStream::AUDIO, streams);
-}
-
-// Not supported.
-void FrameInjectingDemuxer::OnSelectedVideoTrackChanged(
-    const std::vector<media::MediaTrack::Id>& track_ids,
-    base::TimeDelta curr_time,
-    TrackChangeCB change_completed_cb) {
-  DLOG(WARNING) << "Track changes are not supported.";
-  std::vector<media::DemuxerStream*> streams;
-  std::move(change_completed_cb).Run(media::DemuxerStream::VIDEO, streams);
+  // TODO(crbug.com/416543891): Demuxers should have a way to report that they
+  // do not support exposing track switching to JS.
+  NOTREACHED();
 }
 
 }  // namespace cast_streaming

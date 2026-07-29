@@ -15,12 +15,18 @@
 #include "third_party/blink/renderer/core/dom/node.h"
 #include "third_party/blink/renderer/core/dom/text.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/html/canvas/html_canvas_element.h"
 #include "third_party/blink/renderer/core/html/html_embed_element.h"
+#include "third_party/blink/renderer/core/html/html_image_element.h"
+#include "third_party/blink/renderer/core/html/html_object_element.h"
+#include "third_party/blink/renderer/core/html/html_picture_element.h"
+#include "third_party/blink/renderer/core/html/media/html_video_element.h"
 #include "third_party/blink/renderer/core/inspector/inspector_dom_agent.h"
 #include "third_party/blink/renderer/core/inspector/inspector_dom_snapshot_agent.h"
 #include "third_party/blink/renderer/core/layout/geometry/physical_rect.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
 #include "third_party/blink/renderer/core/style/style_generated_image.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 #include "ui/gfx/color_utils.h"
 
 namespace blink {
@@ -46,7 +52,7 @@ void BlendWithColorsFromGradient(cssvalue::CSSGradientValue* gradient,
 
   Vector<Color> stop_colors = gradient->GetStopColors(document, style);
   if (colors.empty()) {
-    colors.AppendRange(stop_colors.begin(), stop_colors.end());
+    colors.append_range(stop_colors);
   } else {
     if (colors.size() > 1) {
       // Gradient on gradient is too complicated, bail out.
@@ -58,7 +64,7 @@ void BlendWithColorsFromGradient(cssvalue::CSSGradientValue* gradient,
     colors.clear();
     for (auto stop_color : stop_colors) {
       found_non_transparent_color =
-          found_non_transparent_color || (stop_color.AlphaAsInteger() != 0);
+          found_non_transparent_color || !stop_color.IsFullyTransparent();
       colors.push_back(existing_color.Blend(stop_color));
     }
   }
@@ -140,23 +146,23 @@ void InspectorContrast::CollectNodesAndBuildRTreeIfNeeded() {
   if (!layout_view)
     return;
 
-  if (!layout_view->GetFrameView()->UpdateLifecycleToPrePaintClean(
+  if (!layout_view->GetFrameView()->UpdateAllLifecyclePhasesExceptPaint(
           DocumentUpdateReason::kInspector)) {
     return;
   }
 
   InspectorDOMAgent::CollectNodes(
       document_, INT_MAX, true, InspectorDOMAgent::IncludeWhitespaceEnum::NONE,
-      WTF::BindRepeating(&NodeIsElementWithLayoutObject), &elements_);
+      BindRepeating(&NodeIsElementWithLayoutObject), &elements_);
   SortElementsByPaintOrder(elements_, document_);
   rtree_.Build(
-      elements_,
-      [](const HeapVector<Member<Node>>& items, size_t index) {
+      elements_.size(),
+      [this](size_t index) {
         return ToPixelSnappedRect(
-            GetNodeRect(items[static_cast<wtf_size_t>(index)]));
+            GetNodeRect(elements_[static_cast<wtf_size_t>(index)]));
       },
-      [](const HeapVector<Member<Node>>& items, size_t index) {
-        return items[static_cast<wtf_size_t>(index)];
+      [this](size_t index) {
+        return elements_[static_cast<wtf_size_t>(index)];
       });
 
   rtree_built_ = true;
@@ -186,8 +192,9 @@ static bool IsLargeFont(const TextInfo& text_info) {
   String font_size_css = text_info.font_size;
   String font_weight = text_info.font_weight;
   // font_size_css always has 'px' appended at the end;
-  String font_size_str = font_size_css.Substring(0, font_size_css.length() - 2);
-  double font_size_px = font_size_str.ToDouble();
+  StringView font_size_str =
+      StringView(font_size_css, 0, font_size_css.length() - 2);
+  double font_size_px = StringToDouble(font_size_str).value_or(0);
   double font_size_pt = font_size_px * 72 / 96;
   bool is_bold = font_weight == "bold" || font_weight == "bolder" ||
                  font_weight == "600" || font_weight == "700" ||
@@ -288,11 +295,16 @@ Vector<Color> InspectorContrast::GetBackgroundColors(Element* element,
 }
 
 // Get the elements which overlap the given rectangle.
-std::vector<Node*> InspectorContrast::ElementsFromRect(const PhysicalRect& rect,
-                                                       Document& document) {
+HeapVector<Member<Node>> InspectorContrast::ElementsFromRect(
+    const PhysicalRect& rect,
+    Document& document) {
   CollectNodesAndBuildRTreeIfNeeded();
-  std::vector<Node*> overlapping_elements;
-  rtree_.Search(ToPixelSnappedRect(rect), &overlapping_elements);
+  HeapVector<Member<Node>> overlapping_elements;
+  rtree_.Search(ToPixelSnappedRect(rect),
+                [&overlapping_elements](const Member<Node>& payload,
+                                        const gfx::Rect& rect) {
+                  overlapping_elements.push_back(payload);
+                });
   return overlapping_elements;
 }
 
@@ -301,16 +313,19 @@ bool InspectorContrast::GetColorsFromRect(PhysicalRect rect,
                                           Element* top_element,
                                           Vector<Color>& colors,
                                           float* text_opacity) {
-  std::vector<Node*> elements_under_rect = ElementsFromRect(rect, document);
+  HeapVector<Member<Node>> elements_under_rect =
+      ElementsFromRect(rect, document);
 
   bool found_opaque_color = false;
   bool found_top_element = false;
 
   *text_opacity = 1.0f;
 
-  for (auto e = elements_under_rect.begin();
-       !found_top_element && e != elements_under_rect.end(); ++e) {
-    const Element* element = To<Element>(*e);
+  for (const Member<Node>& node : elements_under_rect) {
+    if (found_top_element) {
+      break;
+    }
+    const Element* element = To<Element>(node.Get());
     if (element == top_element)
       found_top_element = true;
 
@@ -330,8 +345,9 @@ bool InspectorContrast::GetColorsFromRect(PhysicalRect rect,
       continue;
 
     // If background elements are hidden, ignore their background colors.
-    if (element != top_element && style->Visibility() == EVisibility::kHidden)
+    if (element != top_element && style->Visibility() == EVisibility::kHidden) {
       continue;
+    }
 
     Color background_color =
         style->VisitedDependentColor(GetCSSPropertyBackgroundColor());
@@ -348,7 +364,7 @@ bool InspectorContrast::GetColorsFromRect(PhysicalRect rect,
     }
 
     bool found_non_transparent_color = false;
-    if (background_color.AlphaAsInteger() != 0) {
+    if (!background_color.IsFullyTransparent()) {
       found_non_transparent_color = true;
       if (!background_color.IsOpaque()) {
         if (colors.empty()) {
@@ -367,7 +383,7 @@ bool InspectorContrast::GetColorsFromRect(PhysicalRect rect,
     AddColorsFromImageStyle(*style, *layout_object, colors, found_opaque_color,
                             found_non_transparent_color);
 
-    bool contains = found_top_element || GetNodeRect(*e).Contains(rect);
+    bool contains = found_top_element || GetNodeRect(node).Contains(rect);
     if (!contains && found_non_transparent_color) {
       // Only return colors if some opaque element covers up this one.
       colors.clear();

@@ -4,12 +4,14 @@
 
 #include "content/test/test_render_frame.h"
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "base/functional/callback_helpers.h"
 #include "base/unguessable_token.h"
+#include "base/uuid.h"
 #include "build/build_config.h"
 #include "content/common/frame.mojom.h"
 #include "content/common/frame_messages.mojom.h"
@@ -17,17 +19,18 @@
 #include "content/public/test/mock_policy_container_host.h"
 #include "content/public/test/mock_render_thread.h"
 #include "content/public/test/policy_container_utils.h"
+#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_associated_remote.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/base/data_url.h"
 #include "services/network/public/cpp/not_implemented_url_loader_factory.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy_declaration.h"
+#include "services/network/public/cpp/web_sandbox_flags.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/features.h"
-#include "third_party/blink/public/common/permissions_policy/permissions_policy.h"
 #include "third_party/blink/public/mojom/frame/frame.mojom.h"
 #include "third_party/blink/public/mojom/frame/frame_replication_state.mojom.h"
 #include "third_party/blink/public/mojom/navigation/navigation_params.mojom.h"
@@ -138,7 +141,7 @@ class MockFrameHost : public mojom::FrameHost {
   }
 
   void CreateChildFrame(
-      int new_routing_id,
+      const blink::LocalFrameToken& frame_token,
       mojo::PendingAssociatedRemote<mojom::Frame> frame_remote,
       mojo::PendingReceiver<blink::mojom::BrowserInterfaceBroker>
           browser_interface_broker_receiver,
@@ -165,7 +168,7 @@ class MockFrameHost : public mojom::FrameHost {
     MockRenderThread* mock_render_thread =
         static_cast<MockRenderThread*>(RenderThread::Get());
     mock_render_thread->OnCreateChildFrame(
-        new_routing_id, std::move(frame_remote),
+        frame_token, std::move(frame_remote),
         std::move(browser_interface_broker_receiver));
   }
 
@@ -183,9 +186,12 @@ class MockFrameHost : public mojom::FrameHost {
       blink::mojom::BeginNavigationParamsPtr begin_params,
       mojo::PendingRemote<blink::mojom::BlobURLToken> blob_url_token,
       mojo::PendingAssociatedRemote<mojom::NavigationClient>,
-      mojo::PendingRemote<blink::mojom::PolicyContainerHostKeepAliveHandle>,
-      mojo::PendingReceiver<mojom::NavigationRendererCancellationListener>)
-      override {}
+      mojo::PendingRemote<blink::mojom::NavigationStateKeepAliveHandle>,
+      mojo::PendingReceiver<mojom::NavigationRendererCancellationListener>,
+      mojo::PendingReceiver<
+          mojom::NavigationRendererIgnoreDuplicateNavigationListener>,
+      mojo::PendingReceiver<
+          blink::mojom::NavigationResumeDeferredCommitListener>) override {}
 
   void SubresourceResponseStarted(const url::SchemeHostPort& final_response_url,
                                   net::CertStatus cert_status) override {}
@@ -220,7 +226,7 @@ class MockFrameHost : public mojom::FrameHost {
       last_browser_interface_broker_receiver_;
 
   size_t request_overlay_routing_token_called_ = 0;
-  absl::optional<base::UnguessableToken> overlay_routing_token_;
+  std::optional<base::UnguessableToken> overlay_routing_token_;
 
   bool is_page_state_updated_ = false;
 
@@ -236,11 +242,6 @@ RenderFrameImpl* TestRenderFrame::CreateTestRenderFrame(
 TestRenderFrame::TestRenderFrame(RenderFrameImpl::CreateParams params)
     : RenderFrameImpl(std::move(params)),
       mock_frame_host_(std::make_unique<MockFrameHost>()) {
-  MockRenderThread* mock_render_thread =
-      static_cast<MockRenderThread*>(RenderThread::Get());
-  mock_frame_host_->SetInitialBrowserInterfaceBrokerReceiver(
-      mock_render_thread->TakeInitialBrowserInterfaceBrokerReceiverForFrame(
-          GetRoutingID()));
 }
 
 TestRenderFrame::~TestRenderFrame() {}
@@ -267,18 +268,21 @@ void TestRenderFrame::Navigate(
       mojo::ScopedDataPipeConsumerHandle(),
       network::mojom::URLLoaderClientEndpointsPtr(),
       std::move(pending_factory_bundle),
-      /*subresource_overrides=*/absl::nullopt,
+      /*subresource_overrides=*/std::nullopt,
       blink::mojom::ControllerServiceWorkerInfoPtr(),
       blink::mojom::ServiceWorkerContainerInfoForClientPtr(),
-      /*prefetch_loader_factory=*/mojo::NullRemote(),
-      /*topics_loader_factory=*/mojo::NullRemote(),
-      /*keep_alive_loader_factory=*/mojo::NullRemote(), blink::DocumentToken(),
-      base::UnguessableToken::Create(), blink::ParsedPermissionsPolicy(),
+      /*subresource_proxying_loader_factory=*/mojo::NullRemote(),
+      /*keep_alive_loader_factory=*/mojo::NullRemote(),
+      /*fetch_later_loader_factory=*/mojo::NullAssociatedRemote(),
+      /*document_token=*/blink::DocumentToken(),
+      /*devtools_navigation_token=*/base::UnguessableToken::Create(),
+      /*base_auction_nonce=*/base::Uuid::GenerateRandomV4(),
       blink::mojom::PolicyContainer::New(
           blink::mojom::PolicyContainerPolicies::New(),
           mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote()),
       /*code_cache_host=*/mojo::NullRemote(),
-      /*resource_cache=*/mojo::NullRemote(), /*cookie_manager_info=*/nullptr,
+      /*code_cache_host_for_background=*/mojo::NullRemote(),
+      /*cookie_manager_info=*/nullptr,
       /*storage_info=*/nullptr,
       base::BindOnce(&MockFrameHost::DidCommitProvisionalLoad,
                      base::Unretained(mock_frame_host_.get())));
@@ -296,7 +300,7 @@ void TestRenderFrame::NavigateWithError(
     blink::mojom::CommitNavigationParamsPtr commit_params,
     int error_code,
     const net::ResolveErrorInfo& resolve_error_info,
-    const absl::optional<std::string>& error_page_content) {
+    const std::optional<std::string>& error_page_content) {
   mock_navigation_client_.reset();
   BindNavigationClient(
       mock_navigation_client_.BindNewEndpointAndPassDedicatedReceiver());
@@ -308,7 +312,7 @@ void TestRenderFrame::NavigateWithError(
       /*has_stale_copy_in_cache=*/false, error_code,
       /*extended_error_code=*/0, resolve_error_info, error_page_content,
       std::move(pending_factory_bundle), blink::DocumentToken(),
-      CreateStubPolicyContainer(),
+      base::UnguessableToken::Create(), CreateStubPolicyContainer(),
       /*alternative_error_page_info=*/nullptr,
       base::BindOnce(&MockFrameHost::DidCommitProvisionalLoad,
                      base::Unretained(mock_frame_host_.get())));
@@ -328,7 +332,7 @@ void TestRenderFrame::BeginNavigation(
         std::make_unique<blink::WebPolicyContainer>(
             blink::WebPolicyContainerPolicies(),
             mock_policy_container_host.BindNewEndpointAndPassDedicatedRemote());
-    next_navigation_html_override_ = absl::nullopt;
+    next_navigation_html_override_ = std::nullopt;
     DCHECK(!static_cast<GURL>(info->url_request.Url()).IsAboutSrcdoc());
     frame_->CommitNavigation(std::move(navigation_params),
                              nullptr /* extra_data */);
@@ -359,8 +363,8 @@ void TestRenderFrame::BeginNavigation(
         charset = "UTF-8";
       }
       blink::WebNavigationParams::FillStaticResponse(
-          navigation_params.get(), blink::WebString::FromUTF8(mime_type),
-          blink::WebString::FromUTF8(charset), data);
+          navigation_params.get(), blink::WebString::FromUtf8(mime_type),
+          blink::WebString::FromUtf8(charset), data);
     }
     if (url.IsAboutSrcdoc()) {
       navigation_params->fallback_base_url = info->requestor_base_url;
@@ -368,6 +372,14 @@ void TestRenderFrame::BeginNavigation(
 
     navigation_params->policy_container->policies.sandbox_flags =
         navigation_params->frame_policy->sandbox_flags;
+
+    if ((navigation_params->policy_container->policies.sandbox_flags &
+         network::mojom::WebSandboxFlags::kOrigin) !=
+        network::mojom::WebSandboxFlags::kNone) {
+      url::Origin requestor_origin = info->url_request.RequestorOrigin();
+      navigation_params->origin_to_commit =
+          blink::WebSecurityOrigin(requestor_origin.DeriveNewOpaqueOrigin());
+    }
 
     if (url.IsAboutSrcdoc()) {
       blink::TestWebFrameHelper::FillStaticResponseForSrcdocNavigation(
@@ -396,7 +408,10 @@ void TestRenderFrame::SimulateBeforeUnload(bool is_reload) {
   // local descendant frames, including children of remote frames. The browser
   // process will send separate IPCs to dispatch beforeunload in any
   // out-of-process child frames.
-  frame_->DispatchBeforeUnloadEvent(is_reload);
+  base::TimeTicks before_unload_dialog_opened_time;
+  base::TimeTicks before_unload_dialog_closed_time;
+  frame_->DispatchBeforeUnloadEvent(is_reload, before_unload_dialog_opened_time,
+                                    before_unload_dialog_closed_time);
 }
 
 bool TestRenderFrame::IsPageStateUpdated() const {
@@ -405,6 +420,15 @@ bool TestRenderFrame::IsPageStateUpdated() const {
 
 bool TestRenderFrame::IsURLOpened() const {
   return mock_frame_host_->is_url_opened();
+}
+
+void TestRenderFrame::BindToFrame(blink::WebNavigationControl* frame) {
+  RenderFrameImpl::BindToFrame(frame);
+  MockRenderThread* mock_render_thread =
+      static_cast<MockRenderThread*>(RenderThread::Get());
+  mock_frame_host_->SetInitialBrowserInterfaceBrokerReceiver(
+      mock_render_thread->TakeInitialBrowserInterfaceBrokerReceiverForFrame(
+          frame->GetLocalFrameToken()));
 }
 
 mojom::FrameHost* TestRenderFrame::GetFrameHost() {

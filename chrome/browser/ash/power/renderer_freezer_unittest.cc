@@ -13,7 +13,6 @@
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/values.h"
-#include "chrome/browser/ash/login/users/scoped_test_user_manager.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/extensions/extension_service.h"
 #include "chrome/browser/extensions/test_extension_system.h"
@@ -22,13 +21,11 @@
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power_manager/suspend.pb.h"
-#include "content/public/browser/notification_service.h"
-#include "content/public/browser/notification_source.h"
-#include "content/public/browser/notification_types.h"
 #include "content/public/browser/site_instance.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_render_process_host.h"
-#include "extensions/browser/notification_types.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/process_map.h"
 #include "extensions/common/extension_builder.h"
@@ -43,12 +40,12 @@ namespace {
 // are made by the code being tested.
 class ActionRecorder {
  public:
-  ActionRecorder() {}
+  ActionRecorder() = default;
 
   ActionRecorder(const ActionRecorder&) = delete;
   ActionRecorder& operator=(const ActionRecorder&) = delete;
 
-  virtual ~ActionRecorder() {}
+  virtual ~ActionRecorder() = default;
 
   // Returns a comma-separated string describing the actions that were
   // requested since the previous call to GetActions() (i.e. results are
@@ -91,7 +88,7 @@ class TestDelegate : public RendererFreezer::Delegate, public ActionRecorder {
   TestDelegate(const TestDelegate&) = delete;
   TestDelegate& operator=(const TestDelegate&) = delete;
 
-  ~TestDelegate() override {}
+  ~TestDelegate() override = default;
 
   // RendererFreezer::Delegate overrides.
   void SetShouldFreezeRenderer(base::ProcessHandle handle,
@@ -150,6 +147,7 @@ class RendererFreezerTest : public testing::Test {
 
   void SimulateRenderProcessHostCreated(content::RenderProcessHost* rph) {
     renderer_freezer_->OnRenderProcessHostCreated(rph);
+    renderer_freezer_->OnRenderProcessLaunched(rph);
   }
 
  protected:
@@ -159,7 +157,7 @@ class RendererFreezerTest : public testing::Test {
   }
 
   // Owned by |renderer_freezer_|.
-  raw_ptr<TestDelegate, ExperimentalAsh> test_delegate_;
+  raw_ptr<TestDelegate, DanglingUntriaged> test_delegate_;
   std::unique_ptr<RendererFreezer> renderer_freezer_;
 
  private:
@@ -203,7 +201,7 @@ TEST_F(RendererFreezerTest, ErrorThawingRenderers) {
   // The "threadsafe" style of death test re-executes the unit test binary,
   // which in turn re-initializes some global state leading to failed CHECKs.
   // Instead, we use the "fast" style here to prevent re-initialization.
-  ::testing::FLAGS_gtest_death_test_style = "fast";
+  GTEST_FLAG_SET(death_test_style, "fast");
   Init();
   test_delegate_->set_thaw_renderers_result(false);
 
@@ -218,14 +216,14 @@ TEST_F(RendererFreezerTest, ErrorThawingRenderers) {
 
 class RendererFreezerTestWithExtensions : public RendererFreezerTest {
  public:
-  RendererFreezerTestWithExtensions() {}
+  RendererFreezerTestWithExtensions() = default;
 
   RendererFreezerTestWithExtensions(const RendererFreezerTestWithExtensions&) =
       delete;
   RendererFreezerTestWithExtensions& operator=(
       const RendererFreezerTestWithExtensions&) = delete;
 
-  ~RendererFreezerTestWithExtensions() override {}
+  ~RendererFreezerTestWithExtensions() override = default;
 
   // testing::Test overrides.
   void SetUp() override {
@@ -248,8 +246,6 @@ class RendererFreezerTestWithExtensions : public RendererFreezerTest {
         false /* autoupdate_enabled*/);
   }
   void TearDown() override {
-    extensions::ExtensionSystem::Get(profile_)->Shutdown();
-
     profile_ = nullptr;
 
     profile_manager_->DeleteAllTestingProfiles();
@@ -265,21 +261,18 @@ class RendererFreezerTestWithExtensions : public RendererFreezerTest {
   void CreateRenderProcessForExtension(const extensions::Extension* extension) {
     std::unique_ptr<content::MockRenderProcessHostFactory> rph_factory(
         new content::MockRenderProcessHostFactory());
-    scoped_refptr<content::SiteInstance> site_instance(
-        extensions::ProcessManager::Get(profile_)->GetSiteInstanceForURL(
-            extensions::BackgroundInfo::GetBackgroundURL(extension)));
-    content::RenderProcessHost* rph =
-        rph_factory->CreateRenderProcessHost(profile_, site_instance.get());
+    content::RenderProcessHost* rph = rph_factory->CreateRenderProcessHost(
+        profile_, /*site_instance=*/nullptr);
 
     // Fake that the RenderProcessHost is hosting the gcm app.
-    extensions::ProcessMap::Get(profile_)
-        ->Insert(extension->id(), rph->GetID(), site_instance->GetId());
+    extensions::ProcessMap::Get(profile_)->Insert(extension->id(),
+                                                  rph->GetID());
 
     SimulateRenderProcessHostCreated(rph);
   }
 
   // Owned by |profile_manager_|.
-  raw_ptr<TestingProfile, ExperimentalAsh> profile_;
+  raw_ptr<TestingProfile> profile_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
 
  private:
@@ -314,22 +307,20 @@ TEST_F(RendererFreezerTestWithExtensions, DoesNotFreezeGcmExtensionRenderers) {
   scoped_refptr<const extensions::Extension> gcm_app =
       extensions::ExtensionBuilder()
           .SetManifest(
-              base::Value::Dict()
+              base::DictValue()
                   .Set("name", "GCM App")
                   .Set("version", "1.0.0")
                   .Set("manifest_version", 2)
-                  .Set("app", base::Value::Dict().Set(
+                  .Set("app", base::DictValue().Set(
                                   "background",
-                                  base::Value::Dict().Set(
-                                      "scripts", base::Value::List().Append(
+                                  base::DictValue().Set(
+                                      "scripts", base::ListValue().Append(
                                                      "background.js"))))
-                  .Set("permissions", base::Value::List().Append("gcm")))
+                  .Set("permissions", base::ListValue().Append("gcm")))
           .Build();
 
   // Now install it and give it a renderer.
-  extensions::ExtensionSystem::Get(profile_)
-      ->extension_service()
-      ->AddExtension(gcm_app.get());
+  extensions::ExtensionRegistrar::Get(profile_)->AddExtension(gcm_app.get());
   CreateRenderProcessForExtension(gcm_app.get());
 
   EXPECT_EQ(kSetShouldNotFreezeRenderer, test_delegate_->GetActions());
@@ -344,21 +335,20 @@ TEST_F(RendererFreezerTestWithExtensions, FreezesNonGcmExtensionRenderers) {
   scoped_refptr<const extensions::Extension> background_app =
       extensions::ExtensionBuilder()
           .SetManifest(
-              base::Value::Dict()
+              base::DictValue()
                   .Set("name", "Background App")
                   .Set("version", "1.0.0")
                   .Set("manifest_version", 2)
-                  .Set("app", base::Value::Dict().Set(
+                  .Set("app", base::DictValue().Set(
                                   "background",
-                                  base::Value::Dict().Set(
-                                      "scripts", base::Value::List().Append(
+                                  base::DictValue().Set(
+                                      "scripts", base::ListValue().Append(
                                                      "background.js")))))
           .Build();
 
   // Now install it and give it a renderer.
-  extensions::ExtensionSystem::Get(profile_)
-      ->extension_service()
-      ->AddExtension(background_app.get());
+  extensions::ExtensionRegistrar::Get(profile_)->AddExtension(
+      background_app.get());
   CreateRenderProcessForExtension(background_app.get());
 
   EXPECT_EQ(kSetShouldFreezeRenderer, test_delegate_->GetActions());

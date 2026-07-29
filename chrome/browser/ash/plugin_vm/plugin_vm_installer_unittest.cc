@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -16,11 +17,9 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
-#include "base/test/metrics/histogram_tester.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_drive_image_download_service.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_image_download_client.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_installer_factory.h"
-#include "chrome/browser/ash/plugin_vm/plugin_vm_metrics_util.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_pref_names.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_test_helper.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_util.h"
@@ -43,7 +42,6 @@
 #include "google_apis/common/api_error_codes.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace plugin_vm {
 
@@ -54,7 +52,6 @@ using ::testing::_;
 using ::testing::AnyNumber;
 using ::testing::AtLeast;
 using ::testing::DoubleEq;
-using ::testing::Invoke;
 using ::testing::InvokeWithoutArgs;
 using ::testing::Mock;
 using ::testing::StrictMock;
@@ -80,8 +77,6 @@ const char kHash2[] =
 const int64_t kDefaultRequiredFreeDiskSpaceGB = 20LL;
 const int kRequiredFreeDiskSpaceGB = 40;
 const int64_t kBytesPerGigabyte = 1024 * 1024 * 1024;
-
-constexpr char kFailureReasonHistogram[] = "PluginVm.SetupFailureReason";
 
 }  // namespace
 
@@ -189,9 +184,6 @@ class PluginVmInstallerTestBase : public testing::Test {
 
     fake_concierge_client_ = ash::FakeConciergeClient::Get();
 
-    ash::DlcserviceClient::InitializeFake();
-    fake_dlcservice_client_ =
-        static_cast<ash::FakeDlcserviceClient*>(ash::DlcserviceClient::Get());
     ash::FakeSpacedClient::InitializeFake();
   }
 
@@ -204,13 +196,12 @@ class PluginVmInstallerTestBase : public testing::Test {
     ash::VmPluginDispatcherClient::Shutdown();
     ash::DebugDaemonClient::Shutdown();
     ash::ConciergeClient::Shutdown();
-    ash::DlcserviceClient::Shutdown();
     ash::FakeSpacedClient::Shutdown();
   }
 
   void SetPluginVmImagePref(std::string url, std::string hash) {
     ScopedDictPrefUpdate update(profile_->GetPrefs(), prefs::kPluginVmImage);
-    base::Value::Dict& plugin_vm_image = update.Get();
+    base::DictValue& plugin_vm_image = update.Get();
     plugin_vm_image.Set("url", url);
     plugin_vm_image.Set("hash", hash);
   }
@@ -276,14 +267,13 @@ class PluginVmInstallerTestBase : public testing::Test {
   content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<PluginVmTestHelper> plugin_vm_test_helper_;
-  raw_ptr<PluginVmInstaller, ExperimentalAsh> installer_;
+  raw_ptr<PluginVmInstaller, DanglingUntriaged> installer_;
   std::unique_ptr<MockObserver> observer_;
 
   // A pointer to a singleton object which is valid until
   // ConciergeClient::Shutdown() is called.
-  raw_ptr<ash::FakeConciergeClient, ExperimentalAsh> fake_concierge_client_;
-  // Owned by ash::DBusThreadManager
-  raw_ptr<ash::FakeDlcserviceClient, ExperimentalAsh> fake_dlcservice_client_;
+  raw_ptr<ash::FakeConciergeClient, DanglingUntriaged> fake_concierge_client_;
+  ash::FakeDlcserviceClient fake_dlcservice_client_;
 
  private:
   void CreateProfile() {
@@ -326,11 +316,9 @@ class PluginVmInstallerDownloadServiceTest : public PluginVmInstallerTestBase {
     client_ = std::make_unique<PluginVmImageDownloadClient>(profile_.get());
     download_service_->set_client(client_.get());
     installer_->SetDownloadServiceForTesting(download_service_.get());
-    histogram_tester_ = std::make_unique<base::HistogramTester>();
   }
 
   void TearDown() override {
-    histogram_tester_.reset();
     download_service_.reset();
     client_.reset();
 
@@ -338,7 +326,6 @@ class PluginVmInstallerDownloadServiceTest : public PluginVmInstallerTestBase {
   }
 
   std::unique_ptr<download::test::TestDownloadService> download_service_;
-  std::unique_ptr<base::HistogramTester> histogram_tester_;
 
  private:
   std::unique_ptr<PluginVmImageDownloadClient> client_;
@@ -392,11 +379,10 @@ class PluginVmInstallerDriveTest : public PluginVmInstallerTestBase {
 
     installer_->SetDriveDownloadServiceForTesting(
         std::move(drive_download_service));
-    histogram_tester_ = std::make_unique<base::HistogramTester>();
   }
 
   void TearDown() override {
-    histogram_tester_.reset();
+
 
     PluginVmInstallerTestBase::TearDown();
   }
@@ -411,26 +397,10 @@ class PluginVmInstallerDriveTest : public PluginVmInstallerTestBase {
     return fake_drive_service_ptr;
   }
 
-  raw_ptr<PluginVmDriveImageDownloadService, ExperimentalAsh>
+  raw_ptr<PluginVmDriveImageDownloadService, DanglingUntriaged>
       drive_download_service_;
-  raw_ptr<drive::FakeDriveService, ExperimentalAsh> fake_drive_service_;
-  std::unique_ptr<base::HistogramTester> histogram_tester_;
+  raw_ptr<drive::FakeDriveService, DanglingUntriaged> fake_drive_service_;
 };
-
-TEST_F(PluginVmInstallerDownloadServiceTest, ProgressUpdates) {
-  SetupConciergeForSuccessfulDiskImageImport(fake_concierge_client_);
-
-  // Override default expectation so unexpected calls will fail the test.
-  EXPECT_CALL(*observer_, OnProgressUpdated(_)).Times(0);
-
-  EXPECT_CALL(*observer_, OnProgressUpdated(DoubleEq(0.01)));
-  EXPECT_CALL(*observer_, OnProgressUpdated(DoubleEq(0.45)));
-  EXPECT_CALL(*observer_, OnProgressUpdated(DoubleEq(0.725)));
-
-  ExpectObserverEventsUntil(InstallingState::kImporting);
-  EXPECT_CALL(*observer_, OnImported());
-  StartAndRunToCompletion();
-}
 
 TEST_F(PluginVmInstallerDownloadServiceTest, InsufficientDisk) {
   installer_->SetFreeDiskSpaceForTesting(
@@ -438,10 +408,6 @@ TEST_F(PluginVmInstallerDownloadServiceTest, InsufficientDisk) {
   ExpectObserverEventsUntil(InstallingState::kCheckingDiskSpace);
   EXPECT_CALL(*observer_, OnError(FailureReason::INSUFFICIENT_DISK_SPACE));
   StartAndRunToCompletion();
-  histogram_tester_->ExpectUniqueSample(
-      kFailureReasonHistogram, FailureReason::INSUFFICIENT_DISK_SPACE, 1);
-  histogram_tester_->ExpectUniqueSample(kPluginVmSetupResultHistogram,
-                                        PluginVmSetupResult::kError, 1);
 }
 
 TEST_F(PluginVmInstallerDownloadServiceTest, InsufficientDiskWhenSetInPolicy) {
@@ -452,8 +418,6 @@ TEST_F(PluginVmInstallerDownloadServiceTest, InsufficientDiskWhenSetInPolicy) {
   ExpectObserverEventsUntil(InstallingState::kCheckingDiskSpace);
   EXPECT_CALL(*observer_, OnError(FailureReason::INSUFFICIENT_DISK_SPACE));
   StartAndRunToCompletion();
-  histogram_tester_->ExpectUniqueSample(
-      kFailureReasonHistogram, FailureReason::INSUFFICIENT_DISK_SPACE, 1);
 }
 
 TEST_F(PluginVmInstallerDownloadServiceTest, VmExists) {
@@ -470,9 +434,6 @@ TEST_F(PluginVmInstallerDownloadServiceTest, VmExists) {
   ExpectObserverEventsUntil(InstallingState::kCheckingForExistingVm);
   EXPECT_CALL(*observer_, OnVmExists());
   StartAndRunToCompletion();
-
-  histogram_tester_->ExpectUniqueSample(
-      kPluginVmSetupResultHistogram, PluginVmSetupResult::kVmAlreadyExists, 1);
 }
 
 TEST_F(PluginVmInstallerDownloadServiceTest, InvalidVmExists) {
@@ -490,9 +451,6 @@ TEST_F(PluginVmInstallerDownloadServiceTest, InvalidVmExists) {
   ExpectObserverEventsUntil(InstallingState::kCheckingForExistingVm);
   EXPECT_CALL(*observer_, OnError(FailureReason::EXISTING_IMAGE_INVALID));
   StartAndRunToCompletion();
-
-  histogram_tester_->ExpectUniqueSample(
-      kFailureReasonHistogram, FailureReason::EXISTING_IMAGE_INVALID, 1);
 }
 
 TEST_F(PluginVmInstallerDownloadServiceTest, CancelOnVmExistsCheck) {
@@ -506,99 +464,6 @@ TEST_F(PluginVmInstallerDownloadServiceTest, CancelOnVmExistsCheck) {
   run_loop.Run();
   installer_->Cancel();
   task_environment_.RunUntilIdle();
-
-  histogram_tester_->ExpectUniqueSample(
-      kPluginVmSetupResultHistogram,
-      PluginVmSetupResult::kUserCancelledCheckingForExistingVm, 1);
-}
-
-TEST_F(PluginVmInstallerDownloadServiceTest, DownloadPluginVmImageParamsTest) {
-  SetupConciergeForSuccessfulDiskImageImport(fake_concierge_client_);
-
-  ExpectObserverEventsUntil(InstallingState::kImporting);
-  EXPECT_CALL(*observer_, OnImported());
-
-  StartAndRunUntil(InstallingState::kDownloadingImage);
-
-  std::string guid = installer_->GetCurrentDownloadGuid();
-  const absl::optional<download::DownloadParams>& params =
-      download_service_->GetDownload(guid);
-  ASSERT_TRUE(params.has_value());
-  EXPECT_EQ(guid, params->guid);
-  EXPECT_EQ(download::DownloadClient::PLUGIN_VM_IMAGE, params->client);
-  EXPECT_EQ(GURL(kUrl), params->request_params.url);
-
-  // Finishing image processing.
-  task_environment_.RunUntilIdle();
-}
-
-TEST_F(PluginVmInstallerDownloadServiceTest, OnlyOneImageIsProcessedTest) {
-  SetupConciergeForSuccessfulDiskImageImport(fake_concierge_client_);
-
-  ExpectObserverEventsUntil(InstallingState::kImporting);
-  EXPECT_CALL(*observer_, OnImported());
-
-  StartAndRunUntil(InstallingState::kDownloadingImage);
-
-  EXPECT_TRUE(installer_->IsProcessing());
-
-  RunUntil(InstallingState::kImporting);
-
-  EXPECT_TRUE(installer_->IsProcessing());
-
-  task_environment_.RunUntilIdle();
-
-  EXPECT_FALSE(installer_->IsProcessing());
-
-  histogram_tester_->ExpectUniqueSample(kPluginVmSetupResultHistogram,
-                                        PluginVmSetupResult::kSuccess, 1);
-}
-
-TEST_F(PluginVmInstallerDownloadServiceTest,
-       CanProceedWithANewImageWhenSucceededTest) {
-  SetupConciergeForSuccessfulDiskImageImport(fake_concierge_client_);
-
-  ExpectObserverEventsUntil(InstallingState::kImporting);
-  EXPECT_CALL(*observer_, OnImported());
-  StartAndRunToCompletion();
-  VerifyExpectations();
-
-  EXPECT_FALSE(installer_->IsProcessing());
-  ExpectObserverEventsUntil(InstallingState::kImporting);
-  EXPECT_CALL(*observer_, OnImported());
-
-  // As it is deleted after successful importing.
-  installer_->SetDownloadedImageForTesting(CreateZipFile());
-  StartAndRunToCompletion();
-
-  histogram_tester_->ExpectUniqueSample(kPluginVmSetupResultHistogram,
-                                        PluginVmSetupResult::kSuccess, 2);
-}
-
-TEST_F(PluginVmInstallerDownloadServiceTest,
-       CanProceedWithANewImageWhenFailedTest) {
-  SetupConciergeForSuccessfulDiskImageImport(fake_concierge_client_);
-
-  ExpectObserverEventsUntil(InstallingState::kDownloadingImage);
-  EXPECT_CALL(*observer_, OnError(FailureReason::DOWNLOAD_FAILED_ABORTED));
-
-  StartAndRunUntil(InstallingState::kDownloadingImage);
-  std::string guid = installer_->GetCurrentDownloadGuid();
-  download_service_->SetFailedDownload(guid, false);
-  task_environment_.RunUntilIdle();
-  VerifyExpectations();
-
-  EXPECT_FALSE(installer_->IsProcessing());
-
-  ExpectObserverEventsUntil(InstallingState::kImporting);
-  EXPECT_CALL(*observer_, OnImported());
-
-  StartAndRunToCompletion();
-
-  histogram_tester_->ExpectBucketCount(kPluginVmSetupResultHistogram,
-                                       PluginVmSetupResult::kError, 1);
-  histogram_tester_->ExpectBucketCount(kPluginVmSetupResultHistogram,
-                                       PluginVmSetupResult::kSuccess, 1);
 }
 
 TEST_F(PluginVmInstallerDownloadServiceTest, CancelledDownloadTest) {
@@ -608,11 +473,6 @@ TEST_F(PluginVmInstallerDownloadServiceTest, CancelledDownloadTest) {
   StartAndRunUntil(InstallingState::kDownloadingImage);
   installer_->Cancel();
   task_environment_.RunUntilIdle();
-
-  histogram_tester_->ExpectTotalCount(kFailureReasonHistogram, 0);
-  histogram_tester_->ExpectUniqueSample(
-      kPluginVmSetupResultHistogram,
-      PluginVmSetupResult::kUserCancelledDownloadingPluginVmImage, 1);
 }
 
 TEST_F(PluginVmInstallerDownloadServiceTest, ImportNonExistingImageTest) {
@@ -623,19 +483,6 @@ TEST_F(PluginVmInstallerDownloadServiceTest, ImportNonExistingImageTest) {
 
   installer_->SetDownloadedImageForTesting(base::FilePath());
   StartAndRunToCompletion();
-}
-
-TEST_F(PluginVmInstallerDownloadServiceTest, ImportFailedOutOfSpaceTest) {
-  SetupConciergeForFailedDiskImageImport(
-      fake_concierge_client_,
-      vm_tools::concierge::DISK_STATUS_NOT_ENOUGH_SPACE);
-
-  ExpectObserverEventsUntil(InstallingState::kImporting);
-  EXPECT_CALL(*observer_, OnError(FailureReason::OUT_OF_DISK_SPACE));
-  StartAndRunToCompletion();
-
-  histogram_tester_->ExpectBucketCount(kPluginVmSetupResultHistogram,
-                                       PluginVmSetupResult::kError, 1);
 }
 
 TEST_F(PluginVmInstallerDownloadServiceTest, CancelledImportTest) {
@@ -649,10 +496,6 @@ TEST_F(PluginVmInstallerDownloadServiceTest, CancelledImportTest) {
   EXPECT_CALL(*observer_, OnCancelFinished());
   installer_->Cancel();
   task_environment_.RunUntilIdle();
-
-  histogram_tester_->ExpectUniqueSample(
-      kPluginVmSetupResultHistogram,
-      PluginVmSetupResult::kUserCancelledImportingPluginVmImage, 1);
 }
 
 TEST_F(PluginVmInstallerDownloadServiceTest, EmptyPluginVmImageUrlTest) {
@@ -660,9 +503,6 @@ TEST_F(PluginVmInstallerDownloadServiceTest, EmptyPluginVmImageUrlTest) {
   ExpectObserverEventsUntil(InstallingState::kDownloadingDlc);
   EXPECT_CALL(*observer_, OnError(FailureReason::INVALID_IMAGE_URL));
   StartAndRunToCompletion();
-
-  histogram_tester_->ExpectUniqueSample(kFailureReasonHistogram,
-                                        FailureReason::INVALID_IMAGE_URL, 1);
 }
 
 TEST_F(PluginVmInstallerDownloadServiceTest, VerifyDownloadTest) {
@@ -747,7 +587,7 @@ TEST_F(PluginVmInstallerDriveTest, CancelledDriveDownloadTest) {
 
 TEST_F(PluginVmInstallerDriveTest, SuccessfulDriveDownloadTest) {
   SetPluginVmImagePref(kDriveUrl, kHash);
-  fake_dlcservice_client_->set_install_error(dlcservice::kErrorNone);
+  fake_dlcservice_client_.set_install_error(dlcservice::kErrorNone);
 
   ExpectObserverEventsUntil(InstallingState::kImporting);
   EXPECT_CALL(*observer_, OnDownloadProgressUpdated(_, std::strlen(kContent)))
@@ -755,60 +595,46 @@ TEST_F(PluginVmInstallerDriveTest, SuccessfulDriveDownloadTest) {
   EXPECT_CALL(*observer_, OnError(_));
 
   StartAndRunToCompletion();
-  histogram_tester_->ExpectUniqueSample(kPluginVmDlcUseResultHistogram,
-                                        PluginVmDlcUseResult::kDlcSuccess, 1);
 }
 
 TEST_F(PluginVmInstallerDriveTest, InstallingPluginVmDlcNeedReboot) {
   SetPluginVmImagePref(kDriveUrl, kHash);
-  fake_dlcservice_client_->set_install_error(dlcservice::kErrorNeedReboot);
+  fake_dlcservice_client_.set_install_error(dlcservice::kErrorNeedReboot);
 
   ExpectObserverEventsUntil(InstallingState::kDownloadingDlc);
   EXPECT_CALL(*observer_, OnError(FailureReason::DLC_NEED_REBOOT));
 
   StartAndRunToCompletion();
-  histogram_tester_->ExpectUniqueSample(
-      kPluginVmDlcUseResultHistogram, PluginVmDlcUseResult::kNeedRebootDlcError,
-      1);
 }
 
 TEST_F(PluginVmInstallerDriveTest, InstallingPluginVmDlcNeedSpace) {
   SetPluginVmImagePref(kDriveUrl, kHash);
-  fake_dlcservice_client_->set_install_error(dlcservice::kErrorAllocation);
+  fake_dlcservice_client_.set_install_error(dlcservice::kErrorAllocation);
 
   ExpectObserverEventsUntil(InstallingState::kDownloadingDlc);
   EXPECT_CALL(*observer_, OnError(FailureReason::DLC_NEED_SPACE));
 
   StartAndRunToCompletion();
-  histogram_tester_->ExpectUniqueSample(
-      kPluginVmDlcUseResultHistogram, PluginVmDlcUseResult::kNeedSpaceDlcError,
-      1);
 }
 
 TEST_F(PluginVmInstallerDriveTest, InstallingPluginVmDlcWhenUnsupported) {
   SetPluginVmImagePref(kDriveUrl, kHash);
-  fake_dlcservice_client_->set_install_error(dlcservice::kErrorInvalidDlc);
+  fake_dlcservice_client_.set_install_error(dlcservice::kErrorInvalidDlc);
 
   ExpectObserverEventsUntil(InstallingState::kDownloadingDlc);
   EXPECT_CALL(*observer_, OnError(FailureReason::DLC_UNSUPPORTED));
 
   StartAndRunToCompletion();
-  histogram_tester_->ExpectUniqueSample(kPluginVmDlcUseResultHistogram,
-                                        PluginVmDlcUseResult::kInvalidDlcError,
-                                        1);
 }
 
 TEST_F(PluginVmInstallerDriveTest, InstallingPluginVmDlcWhenNoImageFound) {
   SetPluginVmImagePref(kDriveUrl, kHash);
-  fake_dlcservice_client_->set_install_error(dlcservice::kErrorNoImageFound);
+  fake_dlcservice_client_.set_install_error(dlcservice::kErrorNoImageFound);
 
   ExpectObserverEventsUntil(InstallingState::kDownloadingDlc);
   EXPECT_CALL(*observer_, OnError(FailureReason::DLC_INTERNAL));
 
   StartAndRunToCompletion();
-  histogram_tester_->ExpectUniqueSample(
-      kPluginVmDlcUseResultHistogram,
-      PluginVmDlcUseResult::kNoImageFoundDlcError, 1);
 }
 
 }  // namespace plugin_vm

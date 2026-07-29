@@ -4,6 +4,7 @@
 
 #include "chrome/browser/web_applications/test/test_file_utils.h"
 
+#include <cstdint>
 #include <utility>
 
 #include "base/files/file_path.h"
@@ -12,12 +13,12 @@
 namespace web_app {
 
 scoped_refptr<TestFileUtils> TestFileUtils::Create(
-    std::map<base::FilePath, base::FilePath> read_file_rerouting) {
+    absl::flat_hash_map<base::FilePath, base::FilePath> read_file_rerouting) {
   return base::MakeRefCounted<TestFileUtils>(std::move(read_file_rerouting));
 }
 
 TestFileUtils::TestFileUtils(
-    std::map<base::FilePath, base::FilePath> read_file_rerouting)
+    absl::flat_hash_map<base::FilePath, base::FilePath> read_file_rerouting)
     : read_file_rerouting_(std::move(read_file_rerouting)) {}
 
 TestFileUtils::~TestFileUtils() = default;
@@ -27,43 +28,62 @@ void TestFileUtils::SetRemainingDiskSpaceSize(int remaining_disk_space) {
 }
 
 void TestFileUtils::SetNextDeleteFileRecursivelyResult(
-    absl::optional<bool> delete_result) {
+    std::optional<bool> delete_result) {
   delete_file_recursively_result_ = delete_result;
 }
 
-int TestFileUtils::WriteFile(const base::FilePath& filename,
-                             const char* data,
-                             int size) {
+void TestFileUtils::SetDeleteFileRecursivelyResult(const base::FilePath& path,
+                                                   bool result) {
+  delete_file_recursively_results_[path] = result;
+}
+
+bool TestFileUtils::WriteFile(const base::FilePath& filename,
+                              base::span<const uint8_t> file_data) {
   if (remaining_disk_space_ != kNoLimit) {
-    if (size > remaining_disk_space_) {
+    int data_size = base::checked_cast<int>(file_data.size());
+    if (data_size > remaining_disk_space_) {
       // Disk full:
       const int size_written = remaining_disk_space_;
-      if (size_written > 0)
-        FileUtilsWrapper::WriteFile(filename, data, size_written);
+      if (size_written > 0) {
+        FileUtilsWrapper::WriteFile(filename, file_data);
+      }
       remaining_disk_space_ = 0;
       return size_written;
     }
 
-    remaining_disk_space_ -= size;
+    remaining_disk_space_ -= file_data.size();
   }
 
-  return FileUtilsWrapper::WriteFile(filename, data, size);
+  return FileUtilsWrapper::WriteFile(filename, file_data);
 }
 
 bool TestFileUtils::ReadFileToString(const base::FilePath& path,
                                      std::string* contents) {
-  for (const std::pair<const base::FilePath, base::FilePath>& route :
-       read_file_rerouting_) {
-    if (route.first == path)
-      return FileUtilsWrapper::ReadFileToString(route.second, contents);
+  auto it = read_file_rerouting_.find(path);
+  if (it != read_file_rerouting_.end()) {
+    return FileUtilsWrapper::ReadFileToString(it->second, contents);
   }
   return FileUtilsWrapper::ReadFileToString(path, contents);
 }
 
+bool TestFileUtils::DeleteFile(const base::FilePath& path, bool recursive) {
+  deleted_files_.push_back(path);
+  return FileUtilsWrapper::DeleteFile(path, recursive);
+}
+
 bool TestFileUtils::DeleteFileRecursively(const base::FilePath& path) {
+  deleted_files_.push_back(path);
+  auto it = delete_file_recursively_results_.find(path);
+  if (it != delete_file_recursively_results_.end()) {
+    return it->second;
+  }
   return delete_file_recursively_result_
              ? *delete_file_recursively_result_
              : FileUtilsWrapper::DeleteFileRecursively(path);
+}
+
+TestFileUtils* TestFileUtils::AsTestFileUtils() {
+  return this;
 }
 
 }  // namespace web_app

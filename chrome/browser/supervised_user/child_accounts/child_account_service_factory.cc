@@ -4,42 +4,50 @@
 
 #include "chrome/browser/supervised_user/child_accounts/child_account_service_factory.h"
 
+#include "base/check.h"
 #include "base/feature_list.h"
+#include "base/functional/bind.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/supervised_user/child_accounts/child_account_service.h"
 #include "chrome/browser/supervised_user/supervised_user_browser_utils.h"
 #include "chrome/browser/supervised_user/supervised_user_service_factory.h"
-#include "chrome/browser/sync/sync_service_factory.h"
+#include "components/prefs/pref_service.h"
+#include "components/supervised_user/core/browser/child_account_service.h"
 #include "components/supervised_user/core/common/features.h"
 
 // static
-ChildAccountService* ChildAccountServiceFactory::GetForProfile(
+supervised_user::ChildAccountService* ChildAccountServiceFactory::GetForProfile(
     Profile* profile) {
-  return static_cast<ChildAccountService*>(
+  return static_cast<supervised_user::ChildAccountService*>(
       GetInstance()->GetServiceForBrowserContext(profile, true));
 }
 
 // static
 ChildAccountServiceFactory* ChildAccountServiceFactory::GetInstance() {
-  return base::Singleton<ChildAccountServiceFactory>::get();
+  static base::NoDestructor<ChildAccountServiceFactory> instance;
+  return instance.get();
 }
 
 ChildAccountServiceFactory::ChildAccountServiceFactory()
     : ProfileKeyedServiceFactory(
           "ChildAccountService",
-          base::FeatureList::IsEnabled(
-              supervised_user::kUpdateSupervisedUserFactoryCreation)
-              ? supervised_user::BuildProfileSelectionsForRegularAndGuest()
-              : supervised_user::BuildProfileSelectionsLegacy()) {
+          supervised_user::BuildProfileSelectionsForRegularAndGuest()) {
   DependsOn(IdentityManagerFactory::GetInstance());
-  DependsOn(SyncServiceFactory::GetInstance());
-  DependsOn(SupervisedUserServiceFactory::GetInstance());
+  // Required to consume changes indicated by this service.
+  DependsOn(supervised_user::SupervisedUserServiceFactory::GetInstance());
 }
 
 ChildAccountServiceFactory::~ChildAccountServiceFactory() = default;
 
-KeyedService* ChildAccountServiceFactory::BuildServiceInstanceFor(
-    content::BrowserContext* profile) const {
-  return new ChildAccountService(static_cast<Profile*>(profile));
+std::unique_ptr<KeyedService>
+ChildAccountServiceFactory::BuildServiceInstanceForBrowserContext(
+    content::BrowserContext* context) const {
+  Profile* profile = static_cast<Profile*>(context);
+
+  CHECK(profile->GetPrefs());
+  CHECK(supervised_user::SupervisedUserServiceFactory::GetForProfile(profile));
+
+  return std::make_unique<supervised_user::ChildAccountService>(
+      *profile->GetPrefs(), IdentityManagerFactory::GetForProfile(profile),
+      base::BindOnce(&supervised_user::AssertChildStatusOfTheUser, profile));
 }

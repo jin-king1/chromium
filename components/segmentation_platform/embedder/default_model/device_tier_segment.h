@@ -6,7 +6,6 @@
 #define COMPONENTS_SEGMENTATION_PLATFORM_EMBEDDER_DEFAULT_MODEL_DEVICE_TIER_SEGMENT_H_
 
 #include "components/segmentation_platform/public/model_provider.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace segmentation_platform {
 
@@ -14,8 +13,22 @@ struct Config;
 
 // Segmentation device tier segment model provider. Provides a default
 // model and metadata for the device tier segment target.
-class DeviceTierSegment : public ModelProvider {
+class DeviceTierSegment : public DefaultModelProvider {
  public:
+  enum Label {
+    kLabelNone = 0,
+    kLabelLow = 1,
+    kLabelMedium = 2,
+    kLabelHigh = 3,
+    kLabelCount
+  };
+  enum Feature {
+    kFeatureDeviceRamInMb,
+    kFeatureDeviceOsVersionNumber,
+    kFeatureDevicePpi,
+    kFeatureCount
+  };
+
   DeviceTierSegment();
   ~DeviceTierSegment() override = default;
 
@@ -26,11 +39,10 @@ class DeviceTierSegment : public ModelProvider {
   static std::unique_ptr<Config> GetConfig();
 
   // ModelProvider implementation.
-  void InitAndFetchModel(
-      const ModelUpdatedCallback& model_updated_callback) override;
+  std::unique_ptr<ModelConfig> GetModelConfig() override;
+
   void ExecuteModelWithInput(const ModelProvider::Request& inputs,
                              ExecutionCallback callback) override;
-  bool ModelAvailable() override;
 };
 
 }  // namespace segmentation_platform

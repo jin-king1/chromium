@@ -2,67 +2,115 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
+/**
+ * @fileoverview 'passwords-importer' is a component for importing passwords
+ * from a .csv file. It is a state machine that transitions through several
+ * states, managed by the `dialogState_` property.
+ *
+ * The user initiates the import process, but the initial interaction differs
+ * based on their account type:
+ *
+ * - For "Account Store" users: The user
+ *   clicks on the entire "Import passwords" row. This action transitions the
+ *   state to `STORE_PICKER`, where they can choose to save passwords to their
+ *   account or the local device. After making a selection, they click the
+ *   "Select file" button to continue.
+ * - For other users: A "Select file" button is displayed directly on the
+ *   row. Clicking this button bypasses the store picker and immediately
+ *   transitions the state to `IN_PROGRESS`, starting the file selection
+ *   process.
+ *
+ * The rest of the flow is as follows:
+ *
+ * 1.  File Processing (`IN_PROGRESS`): The user is prompted to select a
+ *     `.csv` file. While the file is being read and processed, a spinner is
+ *     shown.
+ *
+ * 2.  Resolution: After processing, the machine transitions to one of the
+ *     following terminal states:
+ *     - `SUCCESS`: The passwords were imported successfully.
+ *     - `CONFLICTS`: The file contained passwords that already exist. The
+ *       user is prompted to select which ones to overwrite.
+ *     - `ERROR`: An error occurred (e.g., bad file format, file too
+ *       large).
+ *     - `ALREADY_ACTIVE`: Another import process was already in progress in
+ *       another window.
+ *
+ * 3.  Completion (`NO_DIALOG`): From any of the resolution states, closing
+ *     the dialog resets the state machine back to `NO_DIALOG`.
+ */
+
 import 'chrome://resources/cr_elements/cr_button/cr_button.js';
+import 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
+import 'chrome://resources/cr_elements/cr_dialog/cr_dialog.js';
+import 'chrome://resources/cr_elements/cr_icon/cr_icon.js';
+import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
+import 'chrome://resources/cr_elements/cr_spinner_style.css.js';
 import 'chrome://resources/cr_elements/md_select.css.js';
-import 'chrome://resources/polymer/v3_0/iron-icon/iron-icon.js';
-import 'chrome://resources/polymer/v3_0/paper-spinner/paper-spinner-lite.js';
 import './site_favicon.js';
 import './dialogs/password_preview_item.js';
 
-import {CrCheckboxElement} from 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
-import {CrLinkRowElement} from 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
+import type {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
+import type {CrCheckboxElement} from 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
+import type {CrLinkRowElement} from 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
 import {I18nMixin} from 'chrome://resources/cr_elements/i18n_mixin.js';
-import {assert, assertNotReached} from 'chrome://resources/js/assert_ts.js';
+import {assert, assertNotReached} from 'chrome://resources/js/assert.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PluralStringProxyImpl} from 'chrome://resources/js/plural_string_proxy.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
-import {PasswordManagerImpl, PasswordManagerProxy} from './password_manager_proxy.js';
+import type {ImportEntry, ImportResults, PasswordManagerProxy} from './password_manager_proxy.js';
+import {ImportEntryStatus, ImportResultsStatus, PasswordManagerImpl} from './password_manager_proxy.js';
 import {getTemplate} from './passwords_importer.html.js';
 import {Page, Router} from './router.js';
 
 export interface PasswordsImporterElement {
   $: {
     linkRow: CrLinkRowElement,
+    selectFileButtonLinkRow: CrButtonElement,
   };
 }
 
+/**
+ * The states of the importer. See the file-level comment for more details on
+ * the state machine.
+ *
+ *                 +------------------+
+ *                 |    NO_DIALOG     |
+ *                 +------------------+
+ *                        |
+ *                        v
+ *                 +------------------+
+ *                 |   STORE_PICKER   | (If isAccountStoreUser)
+ *                 +------------------+
+ *                        |
+ *                        v (file selection)
+ *                 +------------------+
+ *                 |   IN_PROGRESS    |
+ *                 +------------------+
+ *                        |
+ *     +------------------+------------------+------------------+
+ *     |                  |                  |                  |
+ *     v                  v                  v                  v
+ * +-------+      +-----------+      +-----------+      +----------------+
+ * | ERROR |      | CONFLICTS |      |  SUCCESS  |      | ALREADY_ACTIVE |
+ * +-------+      +-----------+      +-----------+      +----------------+
+ *     |                  |                  |                  |
+ *     +------------------+------------------+------------------+
+ *                        |
+ *                        v
+ *                 +------------------+
+ *                 |    NO_DIALOG     |
+ *                 +------------------+
+ */
 enum DialogState {
   NO_DIALOG,
+  IN_PROGRESS,
   STORE_PICKER,
   SUCCESS,
   ERROR,
   ALREADY_ACTIVE,
   CONFLICTS,
-}
-
-/**
- * Should be kept in sync with
- * |password_manager::metrics_util::PasswordsImportDesktopInteractions|.
- * These values are persisted to logs. Entries should not be renumbered and
- * numeric values should never be reused.
- */
-enum PasswordsImportDesktopInteractions {
-  DIALOG_OPENED_FROM_THREE_DOT_MENU = 0,
-  DIALOG_OPENED_FROM_EMPTY_STATE = 1,
-  CANCELED_BEFORE_FILE_SELECT = 2,
-  UPM_STORE_PICKER_OPENED = 3,
-  UPM_FILE_SELECT_LAUNCHED = 4,
-  UPM_VIEW_PASSWORDS_CLICKED = 5,
-  CONFLICTS_CANCELED = 6,
-  CONFLICTS_REAUTH_FAILED = 7,
-  CONFLICTS_SKIP_CLICKED = 8,
-  CONFLICTS_REPLACE_CLICKED = 9,
-  // Must be last.
-  COUNT = 10,
-}
-
-function recordPasswordsImportInteraction(
-    interaction: PasswordsImportDesktopInteractions) {
-  chrome.metricsPrivate.recordEnumerationValue(
-      'PasswordManager.Import.DesktopInteractions', interaction,
-      PasswordsImportDesktopInteractions.COUNT);
 }
 
 const PasswordsImporterElementBase = I18nMixin(PolymerElement);
@@ -78,19 +126,22 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
 
   static get properties() {
     return {
-      enablePasswordsImportM2_: {
-        type: Boolean,
-        value() {
-          return loadTimeData.getBoolean('enablePasswordsImportM2');
-        },
-      },
-
-      inProgress_: {
+      isUserSyncingPasswords: {
         type: Boolean,
         value: false,
       },
 
-      dialogState_: Number,
+      isAccountStoreUser: {
+        type: Boolean,
+        value: false,
+      },
+
+      accountEmail: String,
+
+      dialogState_: {
+        type: Number,
+        value: DialogState.NO_DIALOG,
+      },
 
       dialogStateEnum_: {
         type: Object,
@@ -106,7 +157,11 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
 
       selectedStoreOption_: String,
 
-      results_: Object,
+      results_: {
+        type: Object,
+        value: null,
+      },
+
       successDescription_: String,
       failedImportsSummary_: String,
       rowsWithUnknownErrorsSummary_: String,
@@ -128,12 +183,6 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
         value: false,
       },
 
-      showSelectFileButton_: {
-        type: Boolean,
-        computed: 'computeShowSelectFileButton_(isAccountStoreUser,' +
-            'inProgress_)',
-      },
-
       bannerDescription_: {
         type: String,
         computed: 'computeBannerDescription_(isUserSyncingPasswords,' +
@@ -149,35 +198,29 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
     ];
   }
 
-  isUserSyncingPasswords: boolean;
-  isAccountStoreUser: boolean;
-  accountEmail: string;
+  declare isUserSyncingPasswords: boolean;
+  declare isAccountStoreUser: boolean;
+  declare accountEmail: string;
 
-  private enablePasswordsImportM2_: boolean;
-  // TODO(crbug/1432962): Add DialogState.IN_PROGRESS instead.
-  private inProgress_: boolean;
-  private dialogState_: DialogState = DialogState.NO_DIALOG;
+  declare private dialogState_: DialogState;
   // Refers both to syncing users with sync enabled for passwords and account
   // store users who choose to import passwords to their account.
   private passwordsSavedToAccount_: boolean;
-  private selectedStoreOption_: string;
-  private showSelectFileButton_: boolean;
-  private bannerDescription_: string;
-  private results_: chrome.passwordsPrivate.ImportResults|null = null;
-  private conflicts_: chrome.passwordsPrivate.ImportEntry[];
-  private conflictsSelectedForReplace_: number[];
-  private successDescription_: string;
-  private conflictsDialogTitle_: string;
-  private failedImportsSummary_: string;
-  private rowsWithUnknownErrorsSummary_: string;
-  private showRowsWithUnknownErrorsSummary_: boolean;
+  declare private selectedStoreOption_: string;
+  declare private bannerDescription_: string;
+  declare private results_: ImportResults|null;
+  declare private conflicts_: ImportEntry[];
+  declare private conflictsSelectedForReplace_: number[];
+  declare private successDescription_: string;
+  declare private conflictsDialogTitle_: string;
+  declare private failedImportsSummary_: string;
+  declare private rowsWithUnknownErrorsSummary_: string;
+  declare private showRowsWithUnknownErrorsSummary_: boolean;
   private passwordManager_: PasswordManagerProxy =
       PasswordManagerImpl.getInstance();
 
   launchImport() {
-    recordPasswordsImportInteraction(
-        PasswordsImportDesktopInteractions.DIALOG_OPENED_FROM_EMPTY_STATE);
-    this.inProgress_ = true;
+    this.dialogState_ = DialogState.IN_PROGRESS;
     // Timeout is needed to allow Polymer to render the Settings page before the
     // system file picker has been opened.
     setTimeout(() => {
@@ -191,29 +234,17 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
 
   private updateDefaultStore_() {
     if (this.isAccountStoreUser) {
-      PasswordManagerImpl.getInstance().isAccountStoreDefault().then(
-          isAccountStoreDefault => {
-            this.selectedStoreOption_ = isAccountStoreDefault ?
-                chrome.passwordsPrivate.PasswordStoreSet.ACCOUNT :
-                chrome.passwordsPrivate.PasswordStoreSet.DEVICE;
-          });
+      this.selectedStoreOption_ =
+          chrome.passwordsPrivate.PasswordStoreSet.ACCOUNT;
     }
   }
 
   private updatePasswordsSavedToAccount_() {
-    if (this.isUserSyncingPasswords) {
-      this.passwordsSavedToAccount_ = true;
-    } else {
-      this.passwordsSavedToAccount_ = false;
-    }
+    this.passwordsSavedToAccount_ = this.isUserSyncingPasswords;
   }
 
   private isState_(state: DialogState): boolean {
     return this.dialogState_ === state;
-  }
-
-  private computeShowSelectFileButton_(): boolean {
-    return !this.inProgress_ && !this.isAccountStoreUser;
   }
 
   private computeBannerDescription_(): string {
@@ -228,20 +259,32 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
     return this.i18n('importPasswordsDescriptionDevice');
   }
 
+  private getAriaDescription_(bannerDescription: string): string {
+    return [
+      this.i18n('importPasswords'),
+      bannerDescription,
+    ].join('. ');
+  }
+
   private onBannerClick_() {
-    if (this.isAccountStoreUser && !this.inProgress_ &&
-        this.isState_(DialogState.NO_DIALOG)) {
-      recordPasswordsImportInteraction(
-          PasswordsImportDesktopInteractions.UPM_STORE_PICKER_OPENED);
-      this.inProgress_ = true;
+    if (this.isAccountStoreUser && this.isState_(DialogState.NO_DIALOG)) {
       this.dialogState_ = DialogState.STORE_PICKER;
     }
   }
 
   private closeDialog_() {
     this.dialogState_ = DialogState.NO_DIALOG;
-    // TODO(crbug/1432962): Make sure that focus behaves correctly when the
-    // dialog is closed.
+    // When the dialog closes, restore focus to the element that opened it.
+    // For account-store users, this is the entire link-row. For other users,
+    // it's the "Select file" button. A timeout is needed to ensure that focus
+    // is restored only after the dialog has completely closed.
+    setTimeout(() => {
+      if (this.shouldHideSelectFileButton_()) {
+        this.$.linkRow.focus();
+      } else {
+        this.$.selectFileButtonLinkRow.focus();
+      }
+    });
   }
 
   private async resetImporter() {
@@ -255,28 +298,18 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
               '#deleteFileOption');
       assert(deleteFileOption);
       deleteFile = deleteFileOption.checked;
-      chrome.metricsPrivate.recordBoolean(
-          'PasswordManager.Import.FileDeletionSelected', deleteFile);
     }
     await this.passwordManager_.resetImporter(deleteFile);
   }
 
   private async onCloseClick_() {
-    if (this.isState_(DialogState.CONFLICTS)) {
-      recordPasswordsImportInteraction(
-          PasswordsImportDesktopInteractions.CONFLICTS_CANCELED);
-    }
     await this.resetImporter();
     this.closeDialog_();
-    this.inProgress_ = false;
   }
 
   private async onViewPasswordsClick_() {
-    recordPasswordsImportInteraction(
-        PasswordsImportDesktopInteractions.UPM_VIEW_PASSWORDS_CLICKED);
     await this.resetImporter();
     this.closeDialog_();
-    this.inProgress_ = false;
     Router.getInstance().navigateTo(Page.PASSWORDS);
   }
 
@@ -284,7 +317,7 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
     // Clear selected rows from previous import, so it won’t affect the
     // following import.
     this.conflictsSelectedForReplace_ = [];
-    this.inProgress_ = true;
+    this.dialogState_ = DialogState.IN_PROGRESS;
     // For "non-account-store-users" users passwords are stored in the "profile"
     // (DEVICE) store.
     let destinationStore = chrome.passwordsPrivate.PasswordStoreSet.DEVICE;
@@ -299,30 +332,21 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
         destinationStore = chrome.passwordsPrivate.PasswordStoreSet.ACCOUNT;
       }
     }
-    // Close the dialog while import is in progress or the user selects a file.
-    this.closeDialog_();
 
     this.results_ =
         await this.passwordManager_.importPasswords(destinationStore);
     await this.processResults_();
-    this.inProgress_ = false;
   }
 
   private async onSelectFileClick_() {
-    recordPasswordsImportInteraction(
-        PasswordsImportDesktopInteractions.UPM_FILE_SELECT_LAUNCHED);
     await this.selectFileHelper_();
   }
 
   private async continueImportHelper_(selectedIds: number[]) {
-    this.inProgress_ = true;
+    this.dialogState_ = DialogState.IN_PROGRESS;
     // Close the dialog while import is in progress.
-    this.closeDialog_();
     this.results_ = await this.passwordManager_.continueImport(selectedIds);
-    if (this.results_.status ===
-        chrome.passwordsPrivate.ImportResultsStatus.DISMISSED) {
-      recordPasswordsImportInteraction(
-          PasswordsImportDesktopInteractions.CONFLICTS_REAUTH_FAILED);
+    if (this.results_.status === ImportResultsStatus.kDismissed) {
       // When re-auth fails, restore the conflicts dialog.
       this.dialogState_ = DialogState.CONFLICTS;
       return;
@@ -331,14 +355,10 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
   }
 
   private async onSkipClick_() {
-    recordPasswordsImportInteraction(
-        PasswordsImportDesktopInteractions.CONFLICTS_SKIP_CLICKED);
     await this.continueImportHelper_(/*selectedIds=*/[]);
   }
 
   private async onReplaceClick_() {
-    recordPasswordsImportInteraction(
-        PasswordsImportDesktopInteractions.CONFLICTS_REPLACE_CLICKED);
     await this.continueImportHelper_(this.conflictsSelectedForReplace_);
   }
 
@@ -363,17 +383,17 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
   private async processResults_() {
     assert(this.results_);
     switch (this.results_.status) {
-      case chrome.passwordsPrivate.ImportResultsStatus.SUCCESS:
+      case ImportResultsStatus.kSuccess:
         await this.handleSuccess_();
         return;
-      case chrome.passwordsPrivate.ImportResultsStatus.MAX_FILE_SIZE:
-      case chrome.passwordsPrivate.ImportResultsStatus.IO_ERROR:
-      case chrome.passwordsPrivate.ImportResultsStatus.UNKNOWN_ERROR:
-      case chrome.passwordsPrivate.ImportResultsStatus.NUM_PASSWORDS_EXCEEDED:
-      case chrome.passwordsPrivate.ImportResultsStatus.BAD_FORMAT:
+      case ImportResultsStatus.kMaxFileSize:
+      case ImportResultsStatus.kIoError:
+      case ImportResultsStatus.kUnknownError:
+      case ImportResultsStatus.kNumPasswordsExceeded:
+      case ImportResultsStatus.kBadFormat:
         this.dialogState_ = DialogState.ERROR;
         break;
-      case chrome.passwordsPrivate.ImportResultsStatus.CONFLICTS:
+      case ImportResultsStatus.kConflicts:
         this.conflictsDialogTitle_ =
             await PluralStringProxyImpl.getInstance().getPluralString(
                 'importPasswordsConflictsTitle',
@@ -381,23 +401,21 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
         this.conflicts_ = this.results_.displayedEntries;
         this.dialogState_ = DialogState.CONFLICTS;
         break;
-      case chrome.passwordsPrivate.ImportResultsStatus.IMPORT_ALREADY_ACTIVE:
+      case ImportResultsStatus.kImportAlreadyActive:
         this.dialogState_ = DialogState.ALREADY_ACTIVE;
         break;
-      case chrome.passwordsPrivate.ImportResultsStatus.DISMISSED:
-        // Dialog state should not change if a system file picker was dismissed.
+      case ImportResultsStatus.kDismissed:
+        this.dialogState_ = DialogState.NO_DIALOG;
         break;
       default:
         assertNotReached();
     }
   }
 
-  private getFailedImportsWithKnownErrors_():
-      chrome.passwordsPrivate.ImportEntry[] {
+  private getFailedImportsWithKnownErrors_(): ImportEntry[] {
     assert(this.results_);
     return this.results_.displayedEntries.filter(
-        (entry) => entry.status !==
-            chrome.passwordsPrivate.ImportEntryStatus.UNKNOWN_ERROR);
+        (entry) => entry.status !== ImportEntryStatus.kUnknownError);
   }
 
   private async handleSuccess_() {
@@ -406,8 +424,7 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
       const rowsWithUnknownErrorCount =
           this.results_.displayedEntries
               .filter(
-                  (entry) => entry.status ===
-                      chrome.passwordsPrivate.ImportEntryStatus.UNKNOWN_ERROR)
+                  (entry) => entry.status === ImportEntryStatus.kUnknownError)
               .length;
       this.failedImportsSummary_ =
           await PluralStringProxyImpl.getInstance().getPluralString(
@@ -451,14 +468,14 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
   private getErrorDialogDescription_(): TrustedHTML {
     assert(this.results_);
     switch (this.results_.status) {
-      case chrome.passwordsPrivate.ImportResultsStatus.MAX_FILE_SIZE:
+      case ImportResultsStatus.kMaxFileSize:
         return this.i18nAdvanced('importPasswordsFileSizeExceeded');
-      case chrome.passwordsPrivate.ImportResultsStatus.IO_ERROR:
-      case chrome.passwordsPrivate.ImportResultsStatus.UNKNOWN_ERROR:
+      case ImportResultsStatus.kIoError:
+      case ImportResultsStatus.kUnknownError:
         return this.i18nAdvanced('importPasswordsUnknownError');
-      case chrome.passwordsPrivate.ImportResultsStatus.NUM_PASSWORDS_EXCEEDED:
+      case ImportResultsStatus.kNumPasswordsExceeded:
         return this.i18nAdvanced('importPasswordsLimitExceeded');
-      case chrome.passwordsPrivate.ImportResultsStatus.BAD_FORMAT:
+      case ImportResultsStatus.kBadFormat:
         return this.i18nAdvanced('importPasswordsBadFormatError', {
           attrs: ['class'],
           substitutions: [
@@ -486,25 +503,16 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
   }
 
   private shouldHideLinkRowIcon_(): boolean {
-    return this.inProgress_ || this.showSelectFileButton_;
+    return !this.isAccountStoreUser || this.isState_(DialogState.IN_PROGRESS);
   }
 
-  private shouldHideTipBox_(): boolean {
-    // Tip box is only shown in "success" state if all passwords were imported.
-    // Only shown in Passwords Import M1.
-    if (this.enablePasswordsImportM2_) {
-      return true;
-    }
-    assert(this.results_);
-    return !!this.results_.displayedEntries.length;
+  private shouldHideSelectFileButton_(): boolean {
+    return this.isAccountStoreUser || this.isState_(DialogState.IN_PROGRESS);
   }
 
   private shouldHideDeleteFileOption_(): boolean {
     // "Delete file" checkbox is only shown in "success" state if all passwords
     // were imported.
-    if (!this.enablePasswordsImportM2_) {
-      return true;
-    }
     assert(this.results_);
     return !!this.results_.displayedEntries.length;
   }
@@ -521,38 +529,37 @@ export class PasswordsImporterElement extends PasswordsImporterElementBase {
         this.accountEmail);
   }
 
-  private getFailedEntryErrorMessage_(
-      status: chrome.passwordsPrivate.ImportEntryStatus): string {
-    // TODO(crbug/1434221): Use constants for length limits.
+  private getFailedEntryErrorMessage_(status: ImportEntryStatus): string {
+    // TODO(crbug.com/40264637): Use constants for length limits.
     switch (status) {
-      case chrome.passwordsPrivate.ImportEntryStatus.MISSING_PASSWORD:
+      case ImportEntryStatus.kMissingPassword:
         return this.i18n('importPasswordsMissingPassword');
-      case chrome.passwordsPrivate.ImportEntryStatus.MISSING_URL:
+      case ImportEntryStatus.kMissingUrl:
         return this.i18n('importPasswordsMissingURL');
-      case chrome.passwordsPrivate.ImportEntryStatus.INVALID_URL:
+      case ImportEntryStatus.kInvalidUrl:
         return this.i18n('importPasswordsInvalidURL');
-      case chrome.passwordsPrivate.ImportEntryStatus.LONG_URL:
+      case ImportEntryStatus.kLongUrl:
         return this.i18n('importPasswordsLongURL');
-      case chrome.passwordsPrivate.ImportEntryStatus.LONG_PASSWORD:
+      case ImportEntryStatus.kLongPassword:
         return this.i18n('importPasswordsLongPassword');
-      case chrome.passwordsPrivate.ImportEntryStatus.LONG_USERNAME:
+      case ImportEntryStatus.kLongUsername:
         return this.i18n('importPasswordsLongUsername');
-      case chrome.passwordsPrivate.ImportEntryStatus.CONFLICT_PROFILE:
+      case ImportEntryStatus.kConflictProfile:
         if (this.isUserSyncingPasswords) {
           return this.i18n(
               'importPasswordsConflictAccount',
               this.i18n('localPasswordManager'), this.accountEmail);
         }
         return this.i18n('importPasswordsConflictDevice');
-      case chrome.passwordsPrivate.ImportEntryStatus.CONFLICT_ACCOUNT:
+      case ImportEntryStatus.kConflictAccount:
         return this.i18n(
             'importPasswordsConflictAccount', this.i18n('localPasswordManager'),
             this.accountEmail);
-      case chrome.passwordsPrivate.ImportEntryStatus.LONG_NOTE:
-      case chrome.passwordsPrivate.ImportEntryStatus.LONG_CONCATENATED_NOTE:
+      case ImportEntryStatus.kLongNote:
+      case ImportEntryStatus.kLongConcatenatedNote:
         return this.i18n('importPasswordsLongNote');
-      case chrome.passwordsPrivate.ImportEntryStatus.UNKNOWN_ERROR:
-      case chrome.passwordsPrivate.ImportEntryStatus.NON_ASCII_URL:
+      case ImportEntryStatus.kUnknownError:
+      case ImportEntryStatus.kNonAsciiUrl:
       default:
         assertNotReached();
     }

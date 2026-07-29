@@ -7,8 +7,8 @@ include_rules = [
   "+components/no_state_prefetch/browser",
   "+components/services/storage/privileged",
   "+components/services/storage/public",
-  "+components/services/storage/shared_storage",
   "+components/site_isolation",
+  "+components/webid",
   "+content/public/browser",
   "+content/public/common",
   "+content/public/test",
@@ -24,7 +24,7 @@ include_rules = [
 ]
 
 specific_include_rules = {
-  ".*test\.(cc|h)$": [
+  ".*test\\.(cc|h)$": [
     "+extensions/buildflags",
   ],
 }

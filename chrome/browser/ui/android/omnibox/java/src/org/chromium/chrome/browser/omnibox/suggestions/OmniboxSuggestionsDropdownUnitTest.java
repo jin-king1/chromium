@@ -4,168 +4,98 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions;
 
-import static junit.framework.Assert.assertEquals;
-import static junit.framework.Assert.assertFalse;
-import static junit.framework.Assert.assertNotNull;
-import static junit.framework.Assert.assertTrue;
-
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doReturn;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+
+import static org.chromium.ui.test.util.MockitoHelper.clearInvocations;
 
 import android.content.Context;
-import android.graphics.Rect;
 import android.view.ContextThemeWrapper;
-import android.view.View.MeasureSpec;
-import android.view.ViewGroup;
-import android.view.ViewGroup.MarginLayoutParams;
+import android.view.KeyEvent;
+import android.view.View;
+import android.widget.FrameLayout;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.recyclerview.widget.RecyclerView.LayoutParams;
-import androidx.recyclerview.widget.RecyclerView.RecycledViewPool;
+import androidx.recyclerview.widget.RecyclerView;
 import androidx.test.core.app.ApplicationProvider;
-import androidx.test.filters.SmallTest;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.TestRule;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
-import org.robolectric.annotation.LooperMode;
-import org.robolectric.annotation.LooperMode.Mode;
-import org.robolectric.shadows.ShadowLooper;
+import org.robolectric.annotation.Config;
 
-import org.chromium.base.Callback;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.Feature;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestionsDropdownEmbedder.OmniboxAlignment;
-import org.chromium.chrome.browser.omnibox.test.R;
-import org.chromium.chrome.test.util.browser.Features;
-import org.chromium.chrome.test.util.browser.Features.DisableFeatures;
-import org.chromium.chrome.test.util.browser.Features.EnableFeatures;
-import org.chromium.components.browser_ui.styles.ChromeColors;
-import org.chromium.ui.base.WindowDelegate;
+import org.chromium.base.test.RobolectricUtil;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.chrome.browser.omnibox.R;
+import org.chromium.chrome.browser.omnibox.suggestions.OmniboxSuggestionsDropdown.SuggestionLayoutScrollListener;
+import org.chromium.components.omnibox.OmniboxFeatureList;
+import org.chromium.components.omnibox.suggestions.OmniboxSuggestionUiType;
+import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
+import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
+import org.chromium.ui.modelutil.PropertyModel;
 
-/**
- * Unit tests for {@link OmniboxSuggestionsDropdown}.
- */
+/** Unit tests for {@link OmniboxSuggestionsDropdown}. */
 @RunWith(BaseRobolectricTestRunner.class)
+@Config(sdk = BaseRobolectricTestRunner.MIN_SDK)
 public class OmniboxSuggestionsDropdownUnitTest {
-    public @Rule TestRule mProcessor = new Features.JUnitProcessor();
     public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
     private @Mock Runnable mDropdownScrollListener;
     private @Mock Runnable mDropdownScrollToTopListener;
-    private @Mock WindowDelegate mWindowDelegate;
     private @Mock OmniboxSuggestionsDropdownAdapter mAdapter;
-    private @Mock RecycledViewPool mPool;
+    private @Mock View mView;
+    private @Mock OmniboxSuggestionsDropdown.NavigationListener mNavigationListener;
 
     private Context mContext;
-
     private OmniboxSuggestionsDropdown mDropdown;
     private OmniboxSuggestionsDropdown.SuggestionLayoutScrollListener mListener;
-    private OmniboxAlignment mOmniboxAlignment;
-    private ObservableSupplierImpl<OmniboxAlignment> mOmniboxAlignmentSupplier =
-            new ObservableSupplierImpl<>();
-    private boolean mIsTablet;
-    private boolean mAttachedToWindow;
-    private OmniboxSuggestionsDropdownEmbedder mEmbedder =
-            new OmniboxSuggestionsDropdownEmbedder() {
-                @NonNull
-                @Override
-                public WindowDelegate getWindowDelegate() {
-                    return mWindowDelegate;
-                }
-
-                @Override
-                public boolean isTablet() {
-                    return mIsTablet;
-                }
-
-                @Override
-                public void onAttachedToWindow() {
-                    mAttachedToWindow = true;
-                }
-
-                @Override
-                public void onDetachedFromWindow() {
-                    mAttachedToWindow = false;
-                }
-
-                @Override
-                public OmniboxAlignment addAlignmentObserver(Callback<OmniboxAlignment> obs) {
-                    return mOmniboxAlignmentSupplier.addObserver(obs);
-                }
-
-                @Override
-                public void removeAlignmentObserver(Callback<OmniboxAlignment> obs) {
-                    mOmniboxAlignmentSupplier.removeObserver(obs);
-                }
-
-                @Nullable
-                @Override
-                public OmniboxAlignment getCurrentAlignment() {
-                    return mOmniboxAlignmentSupplier.get();
-                }
-            };
+    private FrameLayout.LayoutParams mLayoutParams;
+    private final SettableNonNullObservableSupplier<Boolean> mChipVisibilitySupplier =
+            ObservableSuppliers.createNonNull(false);
 
     @Before
     public void setUp() {
-        mContext = new ContextThemeWrapper(
-                ApplicationProvider.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
-        mDropdown = new OmniboxSuggestionsDropdown(mContext, mPool);
+        mContext =
+                new ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        mListener = spy(new OmniboxSuggestionsDropdown.SuggestionLayoutScrollListener(mContext));
+        when(mListener.getItemCount()).thenReturn(3);
+        when(mListener.findViewByPosition(anyInt())).thenReturn(mView);
+        when(mView.isFocusable()).thenReturn(true);
+        mDropdown = spy(new OmniboxSuggestionsDropdown(mContext, null, mListener));
+        mDropdown.setId(R.id.omnibox_suggestions_dropdown);
         mDropdown.setAdapter(mAdapter);
-        mListener = mDropdown.getLayoutScrollListener();
+
+        mLayoutParams = new FrameLayout.LayoutParams(0, 0);
+        mDropdown.setLayoutParams(mLayoutParams);
     }
 
     @After
     public void tearDown() {
-        mListener.resetKeyboardShownState();
+        mListener.resetScrollState();
     }
 
     @Test
-    @SmallTest
-    @Feature("Omnibox")
-    @EnableFeatures({ChromeFeatureList.OMNIBOX_MODERNIZE_VISUAL_UPDATE})
-    @CommandLineFlags.
-    Add({"enable-features=" + ChromeFeatureList.OMNIBOX_MODERNIZE_VISUAL_UPDATE + "<Study",
-            "force-fieldtrials=Study/Group",
-            "force-fieldtrial-params=Study.Group:enable_modernize_visual_update_on_tablet/true"})
-    public void
-    testBackgroundColor_withOmniboxModernizeVisualUpdateFlags() {
-        assertEquals(mDropdown.getStandardBgColor(),
-                ChromeColors.getSurfaceColor(
-                        mContext, R.dimen.omnibox_suggestion_dropdown_bg_elevation));
-        assertEquals(mDropdown.getIncognitoBgColor(),
-                mContext.getColor(R.color.omnibox_dropdown_bg_incognito));
-    }
-
-    @Test
-    @SmallTest
-    @Feature("Omnibox")
-    @DisableFeatures({ChromeFeatureList.OMNIBOX_MODERNIZE_VISUAL_UPDATE})
-    public void testBackgroundColor_withoutOmniboxModernizeVisualUpdateFlags() {
-        assertEquals(
-                mDropdown.getStandardBgColor(), ChromeColors.getDefaultThemeColor(mContext, false));
-        assertEquals(
-                mDropdown.getIncognitoBgColor(), ChromeColors.getDefaultThemeColor(mContext, true));
-    }
-
-    @Test
-    @SmallTest
     public void testScrollListener_keyboardShouldDismissOnScrollAttemptFromTop() {
-        mDropdown.setSuggestionDropdownScrollListener(mDropdownScrollListener);
+        mListener.setSuggestionDropdownScrollListener(mDropdownScrollListener);
 
         // Scroll attempt should suppress the scroll and emit keyboard dismiss.
         assertEquals(0, mListener.updateKeyboardVisibilityAndScroll(10, 10));
@@ -179,9 +109,8 @@ public class OmniboxSuggestionsDropdownUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollListener_keyboardShouldDismissOnScrollAttemptFromScrolledList() {
-        mDropdown.setSuggestionDropdownScrollListener(mDropdownScrollListener);
+        mListener.setSuggestionDropdownScrollListener(mDropdownScrollListener);
 
         // Scroll attempt should suppress the scroll and emit keyboard dismiss.
         assertEquals(0, mListener.updateKeyboardVisibilityAndScroll(10, 10));
@@ -195,10 +124,9 @@ public class OmniboxSuggestionsDropdownUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollListener_keyboardShouldShowOnScrollToTop() {
-        mDropdown.setSuggestionDropdownScrollListener(mDropdownScrollListener);
-        mDropdown.setSuggestionDropdownOverscrolledToTopListener(mDropdownScrollToTopListener);
+        mListener.setSuggestionDropdownScrollListener(mDropdownScrollListener);
+        mListener.setSuggestionDropdownOverscrolledToTopListener(mDropdownScrollToTopListener);
 
         // Scroll attempt should suppress the scroll and emit keyboard dismiss.
         assertEquals(0, mListener.updateKeyboardVisibilityAndScroll(10, 10));
@@ -209,7 +137,13 @@ public class OmniboxSuggestionsDropdownUnitTest {
         assertEquals(-5, mListener.updateKeyboardVisibilityAndScroll(-5, -5));
         verifyNoMoreInteractions(mDropdownScrollListener);
 
-        // Overscroll to top. Expect the keyboard to be called in.
+        // Overscroll to top. This is part of the same gesture.
+        // Expect to see keyboard state unchanged.
+        assertEquals(-5, mListener.updateKeyboardVisibilityAndScroll(-5, -10));
+        verifyNoMoreInteractions(mDropdownScrollToTopListener);
+
+        // Overscroll to top again, but this time as a new gesture.
+        mListener.onNewGesture();
         assertEquals(-5, mListener.updateKeyboardVisibilityAndScroll(-5, -10));
         verify(mDropdownScrollToTopListener, times(1)).run();
         verifyNoMoreInteractions(mDropdownScrollToTopListener);
@@ -220,43 +154,56 @@ public class OmniboxSuggestionsDropdownUnitTest {
     }
 
     @Test
-    @SmallTest
-    public void testScrollListener_notDismissingKeyboardWhenScrollDoesNotHappen() {
-        mDropdown.setSuggestionDropdownScrollListener(mDropdownScrollListener);
+    public void testScrollListener_dismissingKeyboardWhenScrollDoesNotHappen() {
+        // In some cases the list may be long enough to stretch below the keyboard, but not long
+        // enough to be scrollable. We want to dismiss the keyboard in these cases, too.
+        mListener.setSuggestionDropdownScrollListener(mDropdownScrollListener);
+        mListener.setSuggestionDropdownOverscrolledToTopListener(mDropdownScrollToTopListener);
 
         // Pretend we're scrolling down (delta=10) but there is no content to move to (scroll=0).
         assertEquals(0, mListener.updateKeyboardVisibilityAndScroll(0, 10));
-        // Confirm that we're not hiding the keyboard.
-        verifyNoMoreInteractions(mDropdownScrollListener);
+        // Confirm that we're hiding the keyboard.
+        verify(mDropdownScrollListener).run();
 
+        // Simulate scroll up as part of the same gesture. Observe that no events are emitted.
+        assertEquals(0, mListener.updateKeyboardVisibilityAndScroll(0, -10));
+        verifyNoMoreInteractions(mDropdownScrollToTopListener);
+
+        // Begin a new gesture.
         // Pretend we're scrolling up now (delta=-10) but we're already on top and can't move.
+        mListener.onNewGesture();
         assertEquals(0, mListener.updateKeyboardVisibilityAndScroll(0, -10));
         // Confirm that we're not trying to show the keyboard.
-        verifyNoMoreInteractions(mDropdownScrollListener);
+        verify(mDropdownScrollToTopListener).run();
+
+        verifyNoMoreInteractions(mDropdownScrollListener, mDropdownScrollToTopListener);
     }
 
     @Test
-    @SmallTest
-    public void testScrollListener_notDismissingKeyboardWhenTheListIsOnlyBarelyUnderTheKeyboard() {
-        mDropdown.setSuggestionDropdownScrollListener(mDropdownScrollListener);
+    public void testScrollListener_dismissingKeyboardWhenTheListIsOnlyBarelyUnderTheKeyboard() {
+        mListener.setSuggestionDropdownScrollListener(mDropdownScrollListener);
+        mListener.setSuggestionDropdownOverscrolledToTopListener(mDropdownScrollToTopListener);
 
-        // We want to scroll by 10px, but there's only 1px of content. Don't hide the keyboard.
-        assertEquals(1, mListener.updateKeyboardVisibilityAndScroll(1, 10));
-        verifyNoMoreInteractions(mDropdownScrollListener);
+        // We want to scroll by 10px, but there's only 1px of slack. This means the suggestions list
+        // spans entirely under the keyboard. Hide the keyboard.
+        assertEquals(0, mListener.updateKeyboardVisibilityAndScroll(1, 10));
+        verify(mDropdownScrollListener).run();
 
-        // We want to scroll by 10px, but there's only 9px of content. Don't hide the keyboard.
-        assertEquals(9, mListener.updateKeyboardVisibilityAndScroll(9, 10));
-        verifyNoMoreInteractions(mDropdownScrollListener);
-
-        // But then, if we scroll back up, we likely should not ask for keyboard to show.
+        // Expect no more events emitted during the same gesture.
         assertEquals(-9, mListener.updateKeyboardVisibilityAndScroll(-9, -10));
-        verifyNoMoreInteractions(mDropdownScrollListener);
+        verifyNoMoreInteractions(mDropdownScrollToTopListener);
+
+        // Reset keyboard state as part of the new gesture.
+        mListener.onNewGesture();
+        assertEquals(-9, mListener.updateKeyboardVisibilityAndScroll(-9, -10));
+        verify(mDropdownScrollToTopListener).run();
+
+        verifyNoMoreInteractions(mDropdownScrollListener, mDropdownScrollToTopListener);
     }
 
     @Test
-    @SmallTest
     public void testScrollListener_reemitsKeyboardDismissOnReset() {
-        mDropdown.setSuggestionDropdownScrollListener(mDropdownScrollListener);
+        mListener.setSuggestionDropdownScrollListener(mDropdownScrollListener);
 
         // Scroll attempt should suppress the scroll and emit keyboard dismiss.
         // This time the scroll happens, even if just by one pixel.
@@ -265,7 +212,7 @@ public class OmniboxSuggestionsDropdownUnitTest {
         verifyNoMoreInteractions(mDropdownScrollListener);
 
         // Simulate lists being shown again.
-        mListener.resetKeyboardShownState();
+        mListener.resetScrollState();
 
         // Scroll attempt should suppress the scroll and emit keyboard dismiss.
         // Condition: the list is long enough that the scroll distance equals to delta.
@@ -275,7 +222,6 @@ public class OmniboxSuggestionsDropdownUnitTest {
     }
 
     @Test
-    @SmallTest
     public void testScrollListener_inactiveWhenObserverNotEquipped() {
         // Note: do not equip the listeners (no calls to setSuggestionDropdownScrollListener() and
         // setSuggestionDropdownOverscrolledToTopListener).
@@ -291,142 +237,193 @@ public class OmniboxSuggestionsDropdownUnitTest {
     }
 
     @Test
-    @SmallTest
-    public void testAlignmentProvider_windowAttachment() {
-        mDropdown.setEmbedder(mEmbedder);
-        assertFalse(mAttachedToWindow);
+    public void translateChildrenVertical() {
+        View childView = mock(View.class);
 
-        mDropdown.onAttachedToWindow();
-        assertTrue(mAttachedToWindow);
+        mDropdown.translateChildrenVertical(45.6f);
+        mDropdown.onChildAttachedToWindow(childView);
+        verify(childView).setTranslationY(45.6f);
 
-        mDropdown.onDetachedFromWindow();
-        assertFalse(mAttachedToWindow);
+        mDropdown.onChildDetachedFromWindow(childView);
+        verify(childView).setTranslationY(0.0f);
     }
 
     @Test
-    @SmallTest
-    public void testAlignmentProvider_paddingChange() {
-        assertEquals(0, mDropdown.getMeasuredWidth());
+    public void setChildAlpha() {
+        View childView = mock(View.class);
 
-        mDropdown.setEmbedder(mEmbedder);
-        mDropdown.onAttachedToWindow();
-        mOmniboxAlignment = new OmniboxAlignment(0, 100, 600, 0, 10, 10);
-        mOmniboxAlignmentSupplier.set(mOmniboxAlignment);
-        layoutDropdown(600, 800);
-        assertEquals(600, mDropdown.getMeasuredWidth());
-        assertEquals(10, mDropdown.getPaddingLeft());
-        assertEquals(10, mDropdown.getPaddingRight());
+        mDropdown.setChildAlpha(0.6f);
+        mDropdown.onChildAttachedToWindow(childView);
+        verify(childView).setAlpha(0.6f);
 
-        mOmniboxAlignment = new OmniboxAlignment(0, 100, 600, 0, 50, 50);
-        mOmniboxAlignmentSupplier.set(mOmniboxAlignment);
-        ShadowLooper.runUiThreadTasks();
-
-        assertEquals(50, mDropdown.getPaddingLeft());
-        assertEquals(50, mDropdown.getPaddingRight());
+        mDropdown.onChildDetachedFromWindow(childView);
+        verify(childView).setAlpha(1.0f);
     }
 
     @Test
-    @SmallTest
-    public void testAlignmentProvider_widthChange() {
-        mDropdown.setEmbedder(mEmbedder);
-        mDropdown.onAttachedToWindow();
-        mOmniboxAlignment = new OmniboxAlignment(0, 100, 600, 0, 10, 10);
-        mOmniboxAlignmentSupplier.set(mOmniboxAlignment);
-        layoutDropdown(600, 800);
-        assertEquals(600, mDropdown.getMeasuredWidth());
-
-        mOmniboxAlignment = new OmniboxAlignment(0, 100, 400, 0, 10, 10);
-        mOmniboxAlignmentSupplier.set(mOmniboxAlignment);
-        ShadowLooper.runUiThreadTasks();
-        assertTrue(mDropdown.isLayoutRequested());
-
-        layoutDropdown(600, 800);
-        assertEquals(400, mDropdown.getMeasuredWidth());
-        assertFalse(mDropdown.isLayoutRequested());
+    public void onSizeChanged_callsUpdateVisualScrollState() {
+        mDropdown.onSizeChanged(1, 2, 3, 4);
+        verify(mListener).updateVisualScrollState();
     }
 
     @Test
-    @SmallTest
-    public void testAlignmentProvider_topChange() {
-        mDropdown.setEmbedder(mEmbedder);
-        mDropdown.onAttachedToWindow();
-        mDropdown.setLayoutParams(new LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        mOmniboxAlignment = new OmniboxAlignment(0, 100, 600, 0, 10, 10);
-        mOmniboxAlignmentSupplier.set(mOmniboxAlignment);
-        layoutDropdown(600, 800);
-
-        MarginLayoutParams layoutParams = (MarginLayoutParams) mDropdown.getLayoutParams();
-        assertNotNull(layoutParams);
-        assertEquals(100, layoutParams.topMargin);
-        assertEquals(800 - 100, mDropdown.getMeasuredHeight());
-
-        mOmniboxAlignment = new OmniboxAlignment(0, 54, 600, 0, 10, 10);
-        mOmniboxAlignmentSupplier.set(mOmniboxAlignment);
-        layoutDropdown(600, 800);
-
-        layoutParams = (MarginLayoutParams) mDropdown.getLayoutParams();
-        assertNotNull(layoutParams);
-        assertEquals(54, layoutParams.topMargin);
-        assertEquals(800 - 54, mDropdown.getMeasuredHeight());
+    public void updateVisualScrollState_atTop_scrolls() {
+        mListener.updateVisualScrollState();
+        verify(mListener).postOnAnimation(any());
     }
 
     @Test
-    @SmallTest
-    @EnableFeatures({ChromeFeatureList.OMNIBOX_CONSUMERS_IME_INSETS})
-    public void testAlignmentProvider_heightChange() {
-        mDropdown.setEmbedder(mEmbedder);
-        mDropdown.onAttachedToWindow();
-        mDropdown.setLayoutParams(new LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        int height = 400;
-        mOmniboxAlignment = new OmniboxAlignment(0, 80, 600, height, 10, 10);
-        mOmniboxAlignmentSupplier.set(mOmniboxAlignment);
-        layoutDropdown(600, 800);
+    public void updateVisualScrollState_notAtTop_doesNotScroll() {
+        // Scroll down to move away from the top.
+        mListener.updateKeyboardVisibilityAndScroll(10, 10);
+        clearInvocations(mListener);
 
-        assertEquals(height, mDropdown.getMeasuredHeight());
-
-        height = 300;
-        mOmniboxAlignment = new OmniboxAlignment(0, 80, 600, height, 10, 10);
-        mOmniboxAlignmentSupplier.set(mOmniboxAlignment);
-        layoutDropdown(600, 800);
-
-        assertEquals(height, mDropdown.getMeasuredHeight());
+        mListener.updateVisualScrollState();
+        verify(mListener, times(0)).postOnAnimation(any());
     }
 
     @Test
-    @SmallTest
-    @LooperMode(Mode.PAUSED)
-    public void testAlignmentProvider_changeDuringlayout() {
-        mDropdown = Mockito.spy(new OmniboxSuggestionsDropdown(mContext, mPool));
-        mDropdown.setAdapter(mAdapter);
-        mDropdown.setEmbedder(mEmbedder);
-        mDropdown.onAttachedToWindow();
-
-        doReturn(true).when(mDropdown).isInLayout();
-        mOmniboxAlignment = new OmniboxAlignment(0, 80, 400, 600, 10, 10);
-        mOmniboxAlignmentSupplier.set(mOmniboxAlignment);
-
-        mDropdown.layout(0, 0, 600, 800);
-        assertFalse(mDropdown.isLayoutRequested());
-
-        // The posted task should re-request layout.
-        Mockito.clearInvocations(mDropdown);
-        ShadowLooper.runUiThreadTasks();
-        verify(mDropdown).requestLayout();
+    public void onKeyDown_beforeShownDoesNotHandleTabNavigation() {
+        when(mDropdown.isShown()).thenReturn(false);
+        assertFalse(
+                mDropdown.onKeyDown(
+                        KeyEvent.KEYCODE_TAB,
+                        new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_TAB)));
+        assertFalse(
+                mDropdown.onKeyDown(
+                        KeyEvent.KEYCODE_TAB,
+                        new KeyEvent(
+                                0,
+                                0,
+                                KeyEvent.ACTION_DOWN,
+                                KeyEvent.KEYCODE_TAB,
+                                0,
+                                KeyEvent.META_SHIFT_ON)));
     }
 
-    private void layoutDropdown(int width, int height) {
-        doAnswer((invocation) -> {
-            Rect r = invocation.getArgument(0);
-            r.set(0, 0, 0, height);
-            return true;
-        })
-                .when(mWindowDelegate)
-                .getWindowVisibleDisplayFrame(any(Rect.class));
-        int widthSpec = MeasureSpec.makeMeasureSpec(width, MeasureSpec.AT_MOST);
-        int heightSpec = MeasureSpec.makeMeasureSpec(height, MeasureSpec.AT_MOST);
-        mDropdown.measure(widthSpec, heightSpec);
-        mDropdown.layout(0, 0, mDropdown.getMeasuredWidth(), mDropdown.getMeasuredHeight());
+    @Test
+    public void onKeyDown_handlesTabNavigationEvents() {
+        when(mDropdown.isShown()).thenReturn(true);
+
+        // Tab should be handled the first time to put focus on the first item.
+        assertTrue(
+                mDropdown.onKeyDown(
+                        KeyEvent.KEYCODE_TAB,
+                        new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_TAB)));
+
+        // Tab should be handled to move to the next item.
+        assertTrue(
+                mDropdown.onKeyDown(
+                        KeyEvent.KEYCODE_TAB,
+                        new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_TAB)));
+
+        // Shift+Tab should be handled to bring focus back to the first item.
+        assertTrue(
+                mDropdown.onKeyDown(
+                        KeyEvent.KEYCODE_TAB,
+                        new KeyEvent(
+                                0,
+                                0,
+                                KeyEvent.ACTION_DOWN,
+                                KeyEvent.KEYCODE_TAB,
+                                0,
+                                KeyEvent.META_SHIFT_ON)));
+
+        // Other modifiers should be ignored.
+        // We expect super.onKeyDown to be called, which we can't directly verify.
+        // But we can verify that our adapter methods are not called.
+        // And we can check the return value. Let's assume super.onKeyDown returns false.
+        assertFalse(
+                mDropdown.onKeyDown(
+                        KeyEvent.KEYCODE_TAB,
+                        new KeyEvent(
+                                0,
+                                0,
+                                KeyEvent.ACTION_DOWN,
+                                KeyEvent.KEYCODE_TAB,
+                                0,
+                                KeyEvent.META_CTRL_ON)));
+        assertFalse(
+                mDropdown.onKeyDown(
+                        KeyEvent.KEYCODE_TAB,
+                        new KeyEvent(
+                                0,
+                                0,
+                                KeyEvent.ACTION_DOWN,
+                                KeyEvent.KEYCODE_TAB,
+                                0,
+                                KeyEvent.META_ALT_ON)));
+    }
+
+    @Test
+    @EnableFeatures(OmniboxFeatureList.RESET_SUGGESTIONS_SCROLL)
+    public void testOnLayoutChildren_flagEnabled_scrolledToTop() {
+        mListener.onLayoutChildren(null, new RecyclerView.State());
+        verify(mListener).scrollToPositionWithOffset(0, 0);
+    }
+
+    @Test
+    @DisableFeatures(OmniboxFeatureList.RESET_SUGGESTIONS_SCROLL)
+    public void testOnLayoutChildren_flagDisabled_noScroll() {
+        mListener.onLayoutChildren(null, new RecyclerView.State());
+        verify(mListener, times(0)).scrollToPositionWithOffset(anyInt(), anyInt());
+    }
+
+    @Test
+    public void testSetAllowParkingAtSentinel() {
+        SelectionController controller = mDropdown.getSelectionControllerForTesting();
+
+        mDropdown.setAllowParkingAtSentinel(true);
+        assertTrue(controller.isParkedAtSentinel());
+
+        mDropdown.setAllowParkingAtSentinel(false);
+        assertFalse(controller.isParkedAtSentinel());
+    }
+
+    @Test
+    public void testNavigationListener_notifiedOnKeyDown() {
+        mDropdown.setNavigationListener(mNavigationListener);
+        when(mDropdown.isShown()).thenReturn(true);
+
+        mDropdown.onKeyDown(
+                KeyEvent.KEYCODE_TAB,
+                new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_TAB, 0));
+
+        verify(mNavigationListener).onNavigationStateChange(anyBoolean());
+    }
+
+    @Test
+    @EnableFeatures(OmniboxFeatureList.OMNIBOX_ASYNC_VIEW_INFLATION)
+    public void testRecycledViewPool_NotClearedAndReused() {
+        ModelList listItems = new ModelList();
+        var listener = new SuggestionLayoutScrollListener(mContext);
+        OmniboxSuggestionsDropdown dropdown =
+                new OmniboxSuggestionsDropdown(mContext, null, listener);
+        // Setting model list initializes the real adapter and view pool.
+        dropdown.setModelList(listItems);
+
+        PreWarmingRecycledViewPool pool =
+                (PreWarmingRecycledViewPool) dropdown.getRecycledViewPool();
+
+        RobolectricUtil.runAllBackgroundAndUiIncludingDelayed();
+
+        // Verify pool is initially pre-warmed.
+        assertEquals(
+                PreWarmingRecycledViewPool.PRE_WARMED_DEFAULT_VIEW_COUNT,
+                pool.getRecycledViewCount(OmniboxSuggestionUiType.DEFAULT));
+
+        listItems.add(
+                new ListItem(
+                        OmniboxSuggestionUiType.DEFAULT,
+                        new PropertyModel(SuggestionCommonProperties.ALL_KEYS)));
+
+        // Force layout to trigger recycler interactions (binding the item).
+        dropdown.measure(0, 0);
+        dropdown.layout(0, 0, 100, 100);
+
+        // Verify that the pool was not cleared and one view was reused.
+        assertEquals(
+                PreWarmingRecycledViewPool.PRE_WARMED_DEFAULT_VIEW_COUNT - 1,
+                pool.getRecycledViewCount(OmniboxSuggestionUiType.DEFAULT));
     }
 }

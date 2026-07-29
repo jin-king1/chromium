@@ -6,8 +6,8 @@
 
 #include <memory>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "components/guest_view/common/guest_view_constants.h"
 #include "components/guest_view/renderer/guest_view_request.h"
@@ -45,7 +45,7 @@ class GuestViewContainer::RenderFrameLifetimeObserver
   void OnDestruct() override;
 
  private:
-  GuestViewContainer* const container_;
+  const raw_ptr<GuestViewContainer> container_;
 };
 
 GuestViewContainer::RenderFrameLifetimeObserver::RenderFrameLifetimeObserver(
@@ -63,7 +63,7 @@ GuestViewContainer::GuestViewContainer(content::RenderFrame* render_frame,
     : element_instance_id_(element_instance_id),
       render_frame_lifetime_observer_(
           std::make_unique<RenderFrameLifetimeObserver>(this, render_frame)) {
-  DCHECK(!base::Contains(GetContainerMap(), element_instance_id));
+  DCHECK(!GetContainerMap().contains(element_instance_id));
   GetContainerMap().insert(std::make_pair(element_instance_id, this));
 }
 
@@ -165,8 +165,9 @@ void GuestViewContainer::RunDestructionCallback(bool embedder_frame_destroyed) {
     v8::Local<v8::Function> callback = v8::Local<v8::Function>::New(
         destruction_isolate_, destruction_callback_);
     v8::Local<v8::Context> context;
-    if (!callback->GetCreationContext().ToLocal(&context))
+    if (!callback->GetCreationContext(destruction_isolate_).ToLocal(&context)) {
       return;
+    }
 
     v8::Context::Scope context_scope(context);
     v8::MicrotasksScope microtasks(destruction_isolate_,

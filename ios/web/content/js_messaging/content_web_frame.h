@@ -9,11 +9,13 @@
 #import <string>
 
 #import "base/cancelable_callback.h"
+#import "base/memory/weak_ptr.h"
 #import "base/values.h"
 #import "ios/web/js_messaging/web_frame_internal.h"
 #import "ios/web/public/js_messaging/web_frame.h"
 #import "ios/web/public/web_state_observer.h"
 #import "url/gurl.h"
+#import "url/origin.h"
 
 namespace content {
 class RenderFrameHost;
@@ -41,15 +43,16 @@ class ContentWebFrame : public WebFrame,
   WebFrameInternal* GetWebFrameInternal() override;
   std::string GetFrameId() const override;
   bool IsMainFrame() const override;
-  GURL GetSecurityOrigin() const override;
+  url::Origin GetSecurityOrigin() const override;
+  GURL GetUrl() const override;
   BrowserState* GetBrowserState() override;
+  base::WeakPtr<WebFrame> AsWeakPtr() override;
 
+  bool CallJavaScriptFunction(const std::string& name,
+                              const base::ListValue& parameters) override;
   bool CallJavaScriptFunction(
       const std::string& name,
-      const std::vector<base::Value>& parameters) override;
-  bool CallJavaScriptFunction(
-      const std::string& name,
-      const std::vector<base::Value>& parameters,
+      const base::ListValue& parameters,
       base::OnceCallback<void(const base::Value*)> callback,
       base::TimeDelta timeout) override;
 
@@ -59,18 +62,40 @@ class ContentWebFrame : public WebFrame,
       base::OnceCallback<void(const base::Value*)> callback) override;
   bool ExecuteJavaScript(const std::u16string& script,
                          ExecuteJavaScriptCallbackWithError callback) override;
+  bool ExecuteAsyncJavaScript(
+      const std::u16string& script,
+      const base::DictValue& parameters,
+      ExecuteJavaScriptCallbackWithError callback) override;
+  bool CallAsyncJavaScriptFunction(
+      const std::string& name,
+      const base::DictValue& parameters,
+      ExecuteJavaScriptCallbackWithError callback) override;
 
   // WebFrameInternal:
   bool CallJavaScriptFunctionInContentWorld(
       const std::string& name,
-      const std::vector<base::Value>& parameters,
+      const base::ListValue& parameters,
       JavaScriptContentWorld* content_world) override;
   bool CallJavaScriptFunctionInContentWorld(
       const std::string& name,
-      const std::vector<base::Value>& parameters,
+      const base::ListValue& parameters,
       JavaScriptContentWorld* content_world,
       base::OnceCallback<void(const base::Value*)> callback,
       base::TimeDelta timeout) override;
+  bool ExecuteJavaScriptInContentWorld(
+      const std::u16string& script,
+      JavaScriptContentWorld* content_world,
+      ExecuteJavaScriptCallbackWithError callback) override;
+  bool ExecuteAsyncJavaScriptInContentWorld(
+      const std::u16string& script,
+      const base::DictValue& parameters,
+      JavaScriptContentWorld* content_world,
+      ExecuteJavaScriptCallbackWithError callback) override;
+  bool CallAsyncJavaScriptFunctionInContentWorld(
+      const std::string& name,
+      const base::DictValue& parameters,
+      JavaScriptContentWorld* content_world,
+      ExecuteJavaScriptCallbackWithError callback) override;
 
   // WebStateObserver:
   void WebStateDestroyed(WebState* web_state) override;
@@ -88,6 +113,8 @@ class ContentWebFrame : public WebFrame,
 
   // The RenderFrameHost corresponding to this frame.
   raw_ptr<content::RenderFrameHost> render_frame_host_;
+
+  base::WeakPtrFactory<ContentWebFrame> weak_ptr_factory_{this};
 };
 
 }  // namespace web

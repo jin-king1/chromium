@@ -32,14 +32,11 @@ NonMainThreadTaskQueue::NonMainThreadTaskQueue(
       web_scheduling_priority_(params.web_scheduling_priority),
       thread_task_runner_(std::move(thread_task_runner)),
       task_runner_with_default_task_type_(
-          base::FeatureList::IsEnabled(
-              features::kUseBlinkSchedulerTaskRunnerWithCustomDeleter)
-              ? WrapTaskRunner(task_queue_->task_runner())
-              : task_queue_->task_runner()) {
+          WrapTaskRunner(task_queue_->task_runner())) {
   // Throttling needs |should_notify_observers| to get task timing.
   DCHECK(!params.can_be_throttled || spec.should_notify_observers)
       << "Throttled queue is not supported with |!should_notify_observers|";
-  if (task_queue_->HasImpl() && spec.should_notify_observers) {
+  if (spec.should_notify_observers) {
     if (params.can_be_throttled) {
       throttler_.emplace(task_queue_.get(),
                          non_main_thread_scheduler->GetTickClock());
@@ -60,7 +57,7 @@ NonMainThreadTaskQueue::~NonMainThreadTaskQueue() = default;
 void NonMainThreadTaskQueue::ShutdownTaskQueue() {
   non_main_thread_scheduler_ = nullptr;
   throttler_.reset();
-  task_queue_->ShutdownTaskQueue();
+  task_queue_.reset();
 }
 
 void NonMainThreadTaskQueue::OnTaskCompleted(
@@ -69,6 +66,10 @@ void NonMainThreadTaskQueue::OnTaskCompleted(
     base::LazyNow* lazy_now) {
   // |non_main_thread_scheduler_| can be nullptr in tests.
   if (non_main_thread_scheduler_) {
+    // The last ref to `non_main_thread_scheduler_` might be released as part of
+    // this task's cleanup microtasks, make sure it lives through its own
+    // cleanup: crbug.com/1464113.
+    auto self_ref = WrapRefCounted(this);
     non_main_thread_scheduler_->OnTaskCompleted(this, task, task_timing,
                                                 lazy_now);
   }
@@ -85,10 +86,12 @@ void NonMainThreadTaskQueue::RemoveFromBudgetPool(base::TimeTicks now,
 }
 
 void NonMainThreadTaskQueue::IncreaseThrottleRefCount() {
+  CHECK(throttler_);
   throttler_->IncreaseThrottleRefCount();
 }
 
 void NonMainThreadTaskQueue::DecreaseThrottleRefCount() {
+  CHECK(throttler_);
   throttler_->DecreaseThrottleRefCount();
 }
 
@@ -114,7 +117,7 @@ void NonMainThreadTaskQueue::OnWebSchedulingPriorityChanged() {
 
   bool is_continuation =
       *web_scheduling_queue_type_ == WebSchedulingQueueType::kContinuationQueue;
-  absl::optional<TaskPriority> priority;
+  std::optional<TaskPriority> priority;
   switch (web_scheduling_priority_.value()) {
     case WebSchedulingPriority::kUserBlockingPriority:
       priority = is_continuation ? TaskPriority::kHighPriorityContinuation
@@ -135,20 +138,13 @@ void NonMainThreadTaskQueue::OnWebSchedulingPriorityChanged() {
 
 scoped_refptr<base::SingleThreadTaskRunner>
 NonMainThreadTaskQueue::CreateTaskRunner(TaskType task_type) {
-  scoped_refptr<base::SingleThreadTaskRunner> task_runner =
-      task_queue_->CreateTaskRunner(static_cast<int>(task_type));
-  if (base::FeatureList::IsEnabled(
-          features::kUseBlinkSchedulerTaskRunnerWithCustomDeleter)) {
-    return WrapTaskRunner(std::move(task_runner));
-  }
-  return task_runner;
+  return WrapTaskRunner(
+      task_queue_->CreateTaskRunner(static_cast<int>(task_type)));
 }
 
 scoped_refptr<BlinkSchedulerSingleThreadTaskRunner>
 NonMainThreadTaskQueue::WrapTaskRunner(
     scoped_refptr<base::SingleThreadTaskRunner> task_runner) {
-  DCHECK(base::FeatureList::IsEnabled(
-      features::kUseBlinkSchedulerTaskRunnerWithCustomDeleter));
   // `thread_task_runner_` can be null if the default task runner wasn't set up
   // prior to creating this task queue. That's okay because the lifetime of
   // task queues created early matches the thead scheduler.

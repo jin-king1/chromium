@@ -3,8 +3,11 @@
 // found in the LICENSE file.
 
 #include "ui/accessibility/platform/ax_platform_node_base.h"
+
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/accessibility/platform/ax_platform_for_test.h"
 #include "ui/accessibility/platform/ax_platform_node_unittest.h"
 #include "ui/accessibility/platform/test_ax_node_wrapper.h"
 #include "ui/accessibility/test_ax_tree_update.h"
@@ -19,10 +22,11 @@ void SetIsInvisible(AXTree* tree, int id, bool invisible) {
   AXTreeUpdate update;
   update.nodes.resize(1);
   update.nodes[0] = tree->GetFromId(id)->data();
-  if (invisible)
+  if (invisible) {
     update.nodes[0].AddState(ax::mojom::State::kInvisible);
-  else
+  } else {
     update.nodes[0].RemoveState(ax::mojom::State::kInvisible);
+  }
   tree->Unserialize(update);
 }
 
@@ -557,10 +561,10 @@ TEST_F(AXPlatformNodeTest, CompareTo) {
   // Test for two nodes that do not share the same root. They should not be
   // comparable.
   AXPlatformNodeDelegate detached_delegate;
-  AXPlatformNodeBase* detached_node = static_cast<AXPlatformNodeBase*>(
-      AXPlatformNode::Create(&detached_delegate));
-  EXPECT_EQ(absl::nullopt, n1->CompareTo(*detached_node));
-  detached_node->Destroy();
+  AXPlatformNode::Pointer detached_node =
+      AXPlatformNode::Create(detached_delegate);
+  EXPECT_EQ(std::nullopt,
+            n1->CompareTo(static_cast<AXPlatformNodeBase&>(*detached_node)));
   detached_node = nullptr;
 
   // Create a test vector of all the tree nodes arranged in a pre-order
@@ -578,7 +582,7 @@ TEST_F(AXPlatformNodeTest, CompareTo) {
       else if (lhs->GetData().id > rhs->GetData().id)
         expected_result = 1;
 
-      EXPECT_NE(absl::nullopt, lhs->CompareTo(*rhs));
+      EXPECT_NE(std::nullopt, lhs->CompareTo(*rhs));
       int actual_result = 0;
       if (lhs->CompareTo(*rhs) < 0)
         actual_result = -1;
@@ -684,6 +688,46 @@ TEST_F(AXPlatformNodeTest, HypertextOffsetFromEndpoint) {
     EXPECT_EQ(link->GetHypertextOffsetFromEndpoint(link, 0), 0);
     EXPECT_EQ(link->GetHypertextOffsetFromEndpoint(link, 1), 4);
   }
+}
+
+TEST_F(AXPlatformNodeTest, CanvasAnnotationName) {
+  AXNodeData root_data;
+  root_data.id = 1;
+  root_data.role = ax::mojom::Role::kRootWebArea;
+
+  AXNodeData canvas_node;
+  canvas_node.id = 2;
+  canvas_node.role = ax::mojom::Role::kCanvas;
+  canvas_node.AddStringAttribute(ax::mojom::StringAttribute::kCanvasAnnotation,
+                                 "captured_text");
+
+  AXNodeData canvas_node_with_name;
+  canvas_node_with_name.id = 3;
+  canvas_node_with_name.role = ax::mojom::Role::kCanvas;
+  canvas_node_with_name.SetName("author_name");
+  canvas_node_with_name.AddStringAttribute(
+      ax::mojom::StringAttribute::kCanvasAnnotation, "captured_text");
+
+  root_data.child_ids = {canvas_node.id, canvas_node_with_name.id};
+
+  AXTreeUpdate update;
+  update.root_id = 1;
+  update.nodes = {root_data, canvas_node, canvas_node_with_name};
+
+  AXTree* tree = Init(update);
+
+  ScopedAXModeSetter ax_mode_setter(kAXModeComplete);
+
+  AXPlatformNodeBase* root = static_cast<AXPlatformNodeBase*>(
+      TestAXNodeWrapper::GetOrCreate(tree, tree->root())->ax_platform_node());
+
+  AXPlatformNodeBase* canvas = static_cast<AXPlatformNodeBase*>(
+      AXPlatformNode::FromNativeViewAccessible(root->ChildAtIndex(0)));
+  EXPECT_EQ(canvas->GetName(), "captured_text");
+
+  AXPlatformNodeBase* canvas_with_name = static_cast<AXPlatformNodeBase*>(
+      AXPlatformNode::FromNativeViewAccessible(root->ChildAtIndex(1)));
+  EXPECT_EQ(canvas_with_name->GetName(), "author_name. captured_text");
 }
 
 }  // namespace ui

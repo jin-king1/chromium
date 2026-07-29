@@ -9,24 +9,38 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
+#include "base/containers/span.h"
+#include "base/files/file.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
-#include "base/strings/string_piece.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "google_apis/common/request_sender.h"
 #include "google_apis/common/task_util.h"
 #include "google_apis/credentials_mode.h"
 #include "net/base/load_flags.h"
 #include "net/http/http_request_headers.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
+
+#if BUILDFLAG(IS_POSIX)
+#include <fcntl.h>
+#include <sys/stat.h>
+
+#include "base/files/scoped_file.h"
+#include "base/posix/eintr_wrapper.h"
+#include "base/threading/scoped_blocking_call.h"
+#endif
 
 namespace {
 
@@ -50,12 +64,41 @@ std::string GetResponseHeadersAsString(
   return response_head.headers->raw_headers();
 }
 
+// Returns the "reason" field from a type.googleapis.com/google.rpc.ErrorInfo
+// dictionary if found in `details`.
+std::optional<std::string> ExtractReasonFromErrorDetails(
+    const base::ListValue& details) {
+  const char kErrorDetailsTypeKey[] = "@type";
+  const char kErrorDetailsTypeName[] =
+      "type.googleapis.com/google.rpc.ErrorInfo";
+  const char kErrorDetailsReasonKey[] = "reason";
+
+  for (const base::Value& detail : details) {
+    const base::DictValue* dict = detail.GetIfDict();
+    if (!dict) {
+      continue;
+    }
+
+    if (const std::string* type = dict->FindString(kErrorDetailsTypeKey)) {
+      if (*type != kErrorDetailsTypeName) {
+        continue;
+      }
+
+      if (const std::string* reason =
+              dict->FindString(kErrorDetailsReasonKey)) {
+        return *reason;
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
 }  // namespace
 
 namespace google_apis {
 
-absl::optional<std::string> MapJsonErrorToReason(
-    const std::string& error_body) {
+std::optional<std::string> MapJsonErrorToReason(const std::string& error_body) {
   DVLOG(1) << error_body;
   const char kErrorKey[] = "error";
   const char kErrorErrorsKey[] = "errors";
@@ -63,20 +106,22 @@ absl::optional<std::string> MapJsonErrorToReason(
   const char kErrorMessageKey[] = "message";
   const char kErrorCodeKey[] = "code";
 
+  const char kErrorDetailsKey[] = "details";
+
   std::unique_ptr<const base::Value> value(google_apis::ParseJson(error_body));
-  const base::Value::Dict* dictionary = value ? value->GetIfDict() : nullptr;
-  const base::Value::Dict* error =
+  const base::DictValue* dictionary = value ? value->GetIfDict() : nullptr;
+  const base::DictValue* error =
       dictionary ? dictionary->FindDict(kErrorKey) : nullptr;
   if (error) {
     // Get error message and code.
     const std::string* message = error->FindString(kErrorMessageKey);
-    absl::optional<int> code = error->FindInt(kErrorCodeKey);
+    std::optional<int> code = error->FindInt(kErrorCodeKey);
     DLOG(ERROR) << "code: " << (code ? code.value() : OTHER_ERROR)
                 << ", message: " << (message ? *message : "");
 
     // Returns the reason of the first error.
-    if (const base::Value::List* errors = error->FindList(kErrorErrorsKey)) {
-      const base::Value::Dict* first_error = errors->front().GetIfDict();
+    if (const base::ListValue* errors = error->FindList(kErrorErrorsKey)) {
+      const base::DictValue* first_error = errors->front().GetIfDict();
       if (first_error) {
         const std::string* reason = first_error->FindString(kErrorReasonKey);
         if (reason) {
@@ -84,12 +129,23 @@ absl::optional<std::string> MapJsonErrorToReason(
         }
       }
     }
+
+    // Also check for the error reason in "details" as specified in
+    // https://google.aip.dev/193.
+    if (const base::ListValue* details = error->FindList(kErrorDetailsKey)) {
+      std::optional<std::string> reason =
+          ExtractReasonFromErrorDetails(*details);
+      if (reason) {
+        return reason;
+      }
+    }
   }
-  return absl::nullopt;
+  return std::nullopt;
 }
 
 std::unique_ptr<base::Value> ParseJson(const std::string& json) {
-  auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(json);
+  auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(
+      json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!parsed_json.has_value()) {
     std::string trimmed_json;
     if (json.size() < 80) {
@@ -164,7 +220,7 @@ void UrlFetchRequestBase::StartAfterPrepare(
   DCHECK(callback);
   DCHECK(re_authenticate_callback_.is_null());
 
-  const GURL url = GetURL();
+  GURL url = GetURL();
   ApiErrorCode error_code;
   if (IsSuccessfulErrorCode(code))
     error_code = code;
@@ -190,7 +246,7 @@ void UrlFetchRequestBase::StartAfterPrepare(
   DVLOG(1) << "URL: " << url.spec();
 
   auto request = std::make_unique<network::ResourceRequest>();
-  request->url = url;
+  request->url = std::move(url);
   request->method = HttpRequestMethodToString(GetRequestType());
   request->load_flags = net::LOAD_DISABLE_CACHE;
   request->credentials_mode = GetOmitCredentialsModeForGaiaRequests();
@@ -200,7 +256,8 @@ void UrlFetchRequestBase::StartAfterPrepare(
   // headers, so calling it for each header will result in only the last header
   // being set in request headers.
   if (!custom_user_agent.empty())
-    request->headers.SetHeader("User-Agent", custom_user_agent);
+    request->headers.SetHeader(net::HttpRequestHeaders::kUserAgent,
+                               custom_user_agent);
   request->headers.AddHeaderFromString(kGDataVersionHeader);
   request->headers.AddHeaderFromString(
       base::StringPrintf(kAuthorizationHeaderFormat, access_token.data()));
@@ -290,14 +347,29 @@ UrlFetchRequestBase::DownloadData::~DownloadData() {
 bool UrlFetchRequestBase::WriteFileData(std::string file_data,
                                         DownloadData* download_data) {
   if (!download_data->output_file.IsValid()) {
+#if BUILDFLAG(IS_POSIX)
+    // The output path may refer to a temporary file that was created in
+    // advance and is being reopened here, so do not follow symbolic links.
+    base::ScopedBlockingCall scoped_blocking_call(
+        FROM_HERE, base::BlockingType::MAY_BLOCK);
+    base::ScopedFD fd(
+        HANDLE_EINTR(open(download_data->output_file_path.value().c_str(),
+                          O_CREAT | O_TRUNC | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
+                          S_IRUSR | S_IWUSR)));
+    if (!fd.is_valid()) {
+      return false;
+    }
+    download_data->output_file = base::File(std::move(fd));
+#else
     download_data->output_file.Initialize(
         download_data->output_file_path,
         base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
+#endif
     if (!download_data->output_file.IsValid())
       return false;
   }
-  if (download_data->output_file.WriteAtCurrentPos(file_data.data(),
-                                                   file_data.size()) == -1) {
+  if (!download_data->output_file.WriteAtCurrentPosAndCheck(
+          base::as_byte_span(file_data))) {
     download_data->output_file.Close();
     return false;
   }
@@ -331,7 +403,7 @@ void UrlFetchRequestBase::OnWriteComplete(
   std::move(resume).Run();
 }
 
-void UrlFetchRequestBase::OnDataReceived(base::StringPiece string_piece,
+void UrlFetchRequestBase::OnDataReceived(std::string_view string_piece,
                                          base::OnceClosure resume) {
   if (!download_data_->get_content_callback.is_null()) {
     download_data_->get_content_callback.Run(
@@ -351,8 +423,7 @@ void UrlFetchRequestBase::OnDataReceived(base::StringPiece string_piece,
     return;
   }
 
-  download_data_->response_body.append(string_piece.data(),
-                                       string_piece.size());
+  download_data_->response_body.append(string_piece);
   std::move(resume).Run();
 }
 
@@ -379,7 +450,7 @@ void UrlFetchRequestBase::OnOutputFileClosed(bool success) {
     }
     if (!download_data_->response_body.empty()) {
       if (!IsSuccessfulErrorCode(error_code_.value())) {
-        absl::optional<std::string> reason =
+        std::optional<std::string> reason =
             MapJsonErrorToReason(download_data_->response_body);
         if (reason.has_value())
           error_code_ = MapReasonToError(error_code_.value(), reason.value());

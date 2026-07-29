@@ -2,20 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "components/privacy_sandbox/privacy_sandbox_settings.h"
+
+#include <memory>
+#include <string>
+#include <utility>
+
 #include "base/command_line.h"
-#include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_constants.h"
 #include "chrome/browser/privacy_sandbox/privacy_sandbox_settings_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
-#include "components/privacy_sandbox/privacy_sandbox_features.h"
-#include "components/privacy_sandbox/privacy_sandbox_settings.h"
 #include "components/privacy_sandbox/privacy_sandbox_test_util.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/browsing_data_remover_test_util.h"
@@ -24,13 +26,26 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 
-class PrivacySandboxSettingsBrowserTest : public InProcessBrowserTest {
+class PrivacySandboxSettingsBrowserTest
+    : public MixinBasedInProcessBrowserTest {
  public:
   void SetUpOnMainThread() override {
     host_resolver()->AddRule("*", "127.0.0.1");
     https_server_.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
     https_server_.AddDefaultHandlers(GetChromeTestDataDir());
 
+    FinishSetUp();
+  }
+
+  // TODO(crbug.com/40285326): This fails with the field trial testing config.
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    MixinBasedInProcessBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch("disable-field-trial-config");
+  }
+
+  // Virtual so that derived classes can delay starting the server and/or
+  // register different handlers.
+  virtual void FinishSetUp() {
     https_server_.RegisterRequestHandler(
         base::BindRepeating(&PrivacySandboxSettingsBrowserTest::HandleRequest,
                             base::Unretained(this)));
@@ -43,7 +58,7 @@ class PrivacySandboxSettingsBrowserTest : public InProcessBrowserTest {
       const net::test_server::HttpRequest& request) {
     const GURL& url = request.GetURL();
 
-    if (url.path() == "/clear_site_data_header_cookies") {
+    if (url.GetPath() == "/clear_site_data_header_cookies") {
       auto response = std::make_unique<net::test_server::BasicHttpResponse>();
       response->AddCustomHeader("Clear-Site-Data", "\"cookies\"");
       response->set_code(net::HTTP_OK);
@@ -58,7 +73,7 @@ class PrivacySandboxSettingsBrowserTest : public InProcessBrowserTest {
 
   void ClearAllCookies() {
     content::BrowsingDataRemover* remover =
-        browser()->profile()->GetBrowsingDataRemover();
+        browser()->GetProfile()->GetBrowsingDataRemover();
     content::BrowsingDataRemoverCompletionObserver observer(remover);
     remover->RemoveAndReply(
         base::Time(), base::Time::Max(),
@@ -68,7 +83,8 @@ class PrivacySandboxSettingsBrowserTest : public InProcessBrowserTest {
   }
 
   privacy_sandbox::PrivacySandboxSettings* privacy_sandbox_settings() {
-    return PrivacySandboxSettingsFactory::GetForProfile(browser()->profile());
+    return PrivacySandboxSettingsFactory::GetForProfile(
+        browser()->GetProfile());
   }
 
   content::WebContents* web_contents() {
@@ -115,31 +131,4 @@ IN_PROC_BROWSER_TEST_F(PrivacySandboxSettingsBrowserTest,
 
   EXPECT_EQ(base::Time(),
             privacy_sandbox_settings()->TopicsDataAccessibleSince());
-}
-
-IN_PROC_BROWSER_TEST_F(PrivacySandboxSettingsBrowserTest,
-                       SettingsAreNotOverridden) {
-  privacy_sandbox_settings()->SetPrivacySandboxEnabled(false);
-  EXPECT_FALSE(privacy_sandbox_settings()->IsPrivacySandboxEnabled());
-  EXPECT_FALSE(base::FeatureList::IsEnabled(
-      privacy_sandbox::kOverridePrivacySandboxSettingsLocalTesting));
-}
-
-class PrivacySandboxSettingsAdsApisFlagBrowserTest
-    : public PrivacySandboxSettingsBrowserTest {
- public:
-  PrivacySandboxSettingsAdsApisFlagBrowserTest() {
-    base::CommandLine::ForCurrentProcess()->AppendSwitch(
-        switches::kEnablePrivacySandboxAdsApis);
-  }
-};
-
-IN_PROC_BROWSER_TEST_F(PrivacySandboxSettingsAdsApisFlagBrowserTest,
-                       FollowsOverrideBehavior) {
-  privacy_sandbox_settings()->SetPrivacySandboxEnabled(false);
-  EXPECT_TRUE(privacy_sandbox_settings()->IsPrivacySandboxEnabled());
-
-  // The flag should enable this feature.
-  EXPECT_TRUE(base::FeatureList::IsEnabled(
-      privacy_sandbox::kOverridePrivacySandboxSettingsLocalTesting));
 }

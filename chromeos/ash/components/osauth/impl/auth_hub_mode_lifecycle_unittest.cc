@@ -5,17 +5,19 @@
 #include "chromeos/ash/components/osauth/impl/auth_hub_mode_lifecycle.h"
 
 #include <memory>
+#include <utility>
 
-#include "base/functional/callback_helpers.h"
+#include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/gmock_move_support.h"
 #include "base/test/task_environment.h"
-#include "base/test/test_future.h"
-#include "chromeos/ash/components/osauth/impl/auth_hub_impl.h"
+#include "base/time/time.h"
+#include "chromeos/ash/components/osauth/impl/auth_hub_common.h"
 #include "chromeos/ash/components/osauth/impl/auth_hub_mode_lifecycle.h"
 #include "chromeos/ash/components/osauth/impl/auth_parts_impl.h"
-#include "chromeos/ash/components/osauth/public/auth_hub.h"
+#include "chromeos/ash/components/osauth/public/auth_factor_engine.h"
+#include "chromeos/ash/components/osauth/public/common_types.h"
 #include "chromeos/ash/components/osauth/test_support/mock_auth_factor_engine.h"
 #include "chromeos/ash/components/osauth/test_support/mock_auth_factor_engine_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -31,7 +33,6 @@ using base::test::RunOnceCallback;
 using testing::_;
 using testing::ByMove;
 using testing::Eq;
-using testing::Invoke;
 using testing::Mock;
 using testing::Return;
 using testing::StrictMock;
@@ -41,10 +42,7 @@ class MockModeLifecycleOwner : public AuthHubModeLifecycle::Owner {
   MockModeLifecycleOwner() = default;
   ~MockModeLifecycleOwner() override = default;
 
-  MOCK_METHOD(void,
-              OnReadyForMode,
-              (AuthHubMode, AuthHubModeLifecycle::EnginesMap),
-              (override));
+  MOCK_METHOD(void, OnReadyForMode, (AuthHubMode, AuthEnginesMap), (override));
   MOCK_METHOD(void, OnExitedMode, (AuthHubMode), (override));
   MOCK_METHOD(void, OnModeShutdown, (), (override));
 };
@@ -53,7 +51,7 @@ class AuthHubModeLifecycleTest : public ::testing::Test {
  protected:
   AuthHubModeLifecycleTest() { parts_ = AuthPartsImpl::CreateTestInstance(); }
 
-  ~AuthHubModeLifecycleTest() override {}
+  ~AuthHubModeLifecycleTest() override = default;
 
   void SetEngineExpectations(MockAuthFactorEngine* engine,
                              AshAuthFactor factor,
@@ -65,10 +63,9 @@ class AuthHubModeLifecycleTest : public ::testing::Test {
           .WillOnce(RunOnceCallback<0>(factor));
     } else {
       EXPECT_CALL(*engine, InitializeCommon(_))
-          .WillOnce(
-              Invoke([&, factor](AuthFactorEngine::CommonInitCallback cb) {
-                init_callbacks_[factor] = std::move(cb);
-              }));
+          .WillOnce([&, factor](AuthFactorEngine::CommonInitCallback cb) {
+            init_callbacks_[factor] = std::move(cb);
+          });
     }
   }
 
@@ -79,12 +76,12 @@ class AuthHubModeLifecycleTest : public ::testing::Test {
     EXPECT_CALL(*factory, GetFactor()).WillRepeatedly(Return(factor));
     EXPECT_CALL(*factory, CreateEngine(_))
         .Times(times)
-        .WillRepeatedly(Invoke([&, auto_init, factor](AuthHubMode mode) {
+        .WillRepeatedly([&, auto_init, factor](AuthHubMode mode) {
           auto engine = std::make_unique<StrictMock<MockAuthFactorEngine>>();
           SetEngineExpectations(engine.get(), factor, auto_init);
           engines_[factor] = engine.get();
           return engine;
-        }));
+        });
     parts_->RegisterEngineFactory(std::move(factory));
   }
 
@@ -95,17 +92,17 @@ class AuthHubModeLifecycleTest : public ::testing::Test {
     EXPECT_CALL(*factory, GetFactor()).WillRepeatedly(Return(factor));
     EXPECT_CALL(*factory, CreateEngine(Eq(AuthHubMode::kInSession)))
         .Times(times)
-        .WillRepeatedly(Invoke([&, auto_init, factor](AuthHubMode) {
+        .WillRepeatedly([&, auto_init, factor](AuthHubMode) {
           auto engine = std::make_unique<StrictMock<MockAuthFactorEngine>>();
           SetEngineExpectations(engine.get(), factor, auto_init);
           engines_[factor] = engine.get();
           return engine;
-        }));
+        });
     ON_CALL(*factory, CreateEngine(Eq(AuthHubMode::kLoginScreen)))
-        .WillByDefault(Invoke([&](AuthHubMode) {
+        .WillByDefault([&](AuthHubMode) {
           delete engines_[factor];
           return std::unique_ptr<MockAuthFactorEngine>();
-        }));
+        });
     parts_->RegisterEngineFactory(std::move(factory));
   }
 
@@ -115,7 +112,9 @@ class AuthHubModeLifecycleTest : public ::testing::Test {
   std::unique_ptr<AuthPartsImpl> parts_;
   StrictMock<MockModeLifecycleOwner> owner_;
   AuthHubModeLifecycle lifecycle_{&owner_};
-  base::flat_map<AshAuthFactor, base::raw_ptr<MockAuthFactorEngine>> engines_;
+  base::flat_map<AshAuthFactor,
+                 raw_ptr<MockAuthFactorEngine, AcrossTasksDanglingUntriaged>>
+      engines_;
   base::flat_map<AshAuthFactor, AuthFactorEngine::CommonInitCallback>
       init_callbacks_;
 };
@@ -131,7 +130,7 @@ TEST_F(AuthHubModeLifecycleTest, SingleFactorInitShutdown) {
   EXPECT_FALSE(lifecycle_.IsReady());
   Mock::VerifyAndClearExpectations(&owner_);
 
-  AuthHubModeLifecycle::EnginesMap engines;
+  AuthEnginesMap engines;
   EXPECT_CALL(owner_, OnReadyForMode(Eq(AuthHubMode::kLoginScreen), _))
       .WillOnce(MoveArg<1>(&engines));
 
@@ -148,7 +147,7 @@ TEST_F(AuthHubModeLifecycleTest, SingleFactorInitShutdown) {
   EXPECT_CALL(*engines_[kOneFactor], ShutdownCommon(_))
       .WillOnce(MoveArg<0>(&callback));
 
-  lifecycle_.Shutdown();
+  lifecycle_.SwitchToMode(AuthHubMode::kNone);
 
   // Should not notify immediately.
   EXPECT_FALSE(lifecycle_.IsReady());
@@ -180,7 +179,7 @@ TEST_F(AuthHubModeLifecycleTest, SingleFactorShutdownEarly) {
   EXPECT_CALL(*engines_[kOneFactor], ShutdownCommon(_))
       .WillOnce(MoveArg<0>(&callback));
 
-  lifecycle_.Shutdown();
+  lifecycle_.SwitchToMode(AuthHubMode::kNone);
 
   // Eventually engine initializes.
   ASSERT_TRUE(init_callbacks_.contains(kOneFactor));
@@ -233,7 +232,7 @@ TEST_F(AuthHubModeLifecycleTest, SingleFactorReInitialization) {
 
   // Should finish shutdown and proceed to initialization for second
   // requested mode.
-  AuthHubModeLifecycle::EnginesMap engines;
+  AuthEnginesMap engines;
   EXPECT_CALL(owner_, OnReadyForMode(Eq(AuthHubMode::kInSession), _))
       .WillOnce(MoveArg<1>(&engines));
 
@@ -264,7 +263,7 @@ TEST_F(AuthHubModeLifecycleTest, FactorInitializationTimeout) {
 
   EXPECT_CALL(*engines_[kOneFactor], InitializationTimedOut());
 
-  AuthHubModeLifecycle::EnginesMap engines;
+  AuthEnginesMap engines;
   EXPECT_CALL(owner_, OnReadyForMode(Eq(AuthHubMode::kLoginScreen), _))
       .WillOnce(MoveArg<1>(&engines));
 
@@ -287,7 +286,7 @@ TEST_F(AuthHubModeLifecycleTest, FactorInitializationTimeout) {
   EXPECT_CALL(owner_, OnExitedMode(Eq(AuthHubMode::kLoginScreen)));
   EXPECT_CALL(owner_, OnModeShutdown());
 
-  lifecycle_.Shutdown();
+  lifecycle_.SwitchToMode(AuthHubMode::kNone);
 }
 
 // Check logic when one of the engines takes too long to shut down.
@@ -295,7 +294,7 @@ TEST_F(AuthHubModeLifecycleTest, FactorShutdownTimeout) {
   ExpectLoginFactor(kOneFactor);
   ExpectLoginFactor(kAnotherFactor);
 
-  AuthHubModeLifecycle::EnginesMap engines;
+  AuthEnginesMap engines;
   EXPECT_CALL(owner_, OnReadyForMode(Eq(AuthHubMode::kLoginScreen), _))
       .WillOnce(MoveArg<1>(&engines));
 
@@ -312,7 +311,7 @@ TEST_F(AuthHubModeLifecycleTest, FactorShutdownTimeout) {
   EXPECT_CALL(*engines_[kAnotherFactor], ShutdownCommon(_))
       .WillOnce(RunOnceCallback<0>(kAnotherFactor));
 
-  lifecycle_.Shutdown();
+  lifecycle_.SwitchToMode(AuthHubMode::kNone);
 
   // Should not notify immediately.
   EXPECT_FALSE(lifecycle_.IsReady());

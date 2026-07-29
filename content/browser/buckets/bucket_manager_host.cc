@@ -4,13 +4,14 @@
 
 #include "content/browser/buckets/bucket_manager_host.h"
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/ranges/algorithm.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "base/types/pass_key.h"
 #include "components/services/storage/public/cpp/buckets/bucket_info.h"
+#include "content/browser/buckets/bucket_host.h"
 #include "content/browser/buckets/bucket_manager.h"
 #include "content/browser/buckets/bucket_utils.h"
 #include "content/browser/storage_partition_impl.h"
@@ -87,7 +88,7 @@ void BucketManagerHost::OpenBucket(const std::string& name,
       // Only grant persistence if permitted.
       if (receivers_.current_context() &&
           receivers_.current_context()->GetPermissionStatus(
-              blink::PermissionType::DURABLE_STORAGE) ==
+              blink::PermissionType::PERSISTENT_STORAGE) ==
               blink::mojom::PermissionStatus::GRANTED) {
         params.persistent = policies->persisted;
       }
@@ -131,18 +132,17 @@ void BucketManagerHost::OpenBucket(const std::string& name,
 
 void BucketManagerHost::GetBucketForDevtools(
     const std::string& name,
-    GetBucketForDevtoolsCallback callback) {
+    mojo::PendingReceiver<blink::mojom::BucketHost> receiver) {
   GetQuotaManagerProxy()->GetBucketByNameUnsafe(
-      storage_key_, name, blink::mojom::StorageType::kTemporary,
-      base::SequencedTaskRunner::GetCurrentDefault(),
-      base::BindOnce(&BucketManagerHost::DidGetBucket,
+      storage_key_, name, base::SequencedTaskRunner::GetCurrentDefault(),
+      base::BindOnce(&BucketManagerHost::DidGetBucketForDevtools,
                      weak_factory_.GetWeakPtr(), receivers_.current_context(),
-                     std::move(callback)));
+                     std::move(receiver)));
 }
 
 void BucketManagerHost::Keys(KeysCallback callback) {
   GetQuotaManagerProxy()->GetBucketsForStorageKey(
-      storage_key_, blink::mojom::StorageType::kTemporary,
+      storage_key_,
       /*delete_expired=*/true, base::SequencedTaskRunner::GetCurrentDefault(),
       base::BindOnce(&BucketManagerHost::DidGetBuckets,
                      weak_factory_.GetWeakPtr(), std::move(callback)));
@@ -162,7 +162,7 @@ void BucketManagerHost::DeleteBucket(const std::string& name,
 }
 
 void BucketManagerHost::RemoveBucketHost(storage::BucketId id) {
-  DCHECK(base::Contains(bucket_map_, id));
+  DCHECK(bucket_map_.contains(id));
   bucket_map_.erase(id);
 }
 
@@ -201,10 +201,12 @@ void BucketManagerHost::DidGetBucket(
         case storage::QuotaError::kNone:
         case storage::QuotaError::kEntryExistsError:
         case storage::QuotaError::kFileOperationError:
-          NOTREACHED_NORETURN();
+          NOTREACHED();
         case storage::QuotaError::kNotFound:
         case storage::QuotaError::kDatabaseError:
+        case storage::QuotaError::kDatabaseDisabled:
         case storage::QuotaError::kUnknownError:
+        case storage::QuotaError::kStorageKeyError:
           return blink::mojom::BucketError::kUnknown;
       }
     }(result.error().quota_error);
@@ -225,13 +227,34 @@ void BucketManagerHost::DidGetBucket(
                           blink::mojom::BucketError::kUnknown);
 }
 
+void BucketManagerHost::DidGetBucketForDevtools(
+    base::WeakPtr<BucketContext> bucket_context,
+    mojo::PendingReceiver<blink::mojom::BucketHost> receiver,
+    storage::QuotaErrorOr<storage::BucketInfo> result) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  if (!bucket_context || !result.has_value()) {
+    return;
+  }
+
+  const auto& bucket = result.value();
+  auto it = bucket_map_.find(bucket.id);
+  if (it == bucket_map_.end()) {
+    it = bucket_map_
+             .emplace(bucket.id, std::make_unique<BucketHost>(this, bucket))
+             .first;
+  }
+
+  it->second->PassStorageBucketBinding(bucket_context, std::move(receiver));
+}
+
 void BucketManagerHost::DidGetBuckets(
     KeysCallback callback,
     storage::QuotaErrorOr<std::set<storage::BucketInfo>> buckets) {
   std::vector<std::string> keys;
   for (const auto& bucket : buckets.value_or(std::set<storage::BucketInfo>())) {
     if (!bucket.is_default()) {
-      keys.insert(base::ranges::upper_bound(keys, bucket.name), bucket.name);
+      keys.insert(std::ranges::upper_bound(keys, bucket.name), bucket.name);
     }
   }
   std::move(callback).Run(keys, buckets.has_value());

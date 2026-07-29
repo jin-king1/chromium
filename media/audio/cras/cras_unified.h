@@ -17,6 +17,8 @@
 #include <memory>
 
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/memory/raw_ptr.h"
 #include "media/audio/audio_io.h"
 #include "media/audio/cras/audio_manager_cras_base.h"
 #include "media/audio/system_glitch_reporter.h"
@@ -24,6 +26,8 @@
 #include "media/base/audio_parameters.h"
 
 namespace media {
+
+class CrasUnifiedStreamProxy;
 
 // Implementation of AudioOuputStream for Chrome OS using the Chrome OS audio
 // server.
@@ -56,6 +60,8 @@ class MEDIA_EXPORT CrasUnifiedStream : public AudioOutputStream {
   void GetVolume(double* volume) override;
 
  private:
+  friend class CrasUnifiedStreamProxy;
+
   // Handles captured audio and fills the output with audio to be played.
   static int UnifiedCallback(struct libcras_stream_cb_data* data);
 
@@ -65,12 +71,17 @@ class MEDIA_EXPORT CrasUnifiedStream : public AudioOutputStream {
                          int err,
                          void* arg);
 
-  // Writes audio for a playback stream.
-  uint32_t WriteAudio(size_t frames,
-                      uint8_t* buffer,
-                      const timespec* latency_ts);
+  // Forwarded to from the static callbacks via CrasUnifiedStreamProxy, but only
+  // after the proxy has confirmed under its lock that this stream is still
+  // alive. This guarantees these never run on a freed stream.
+  int OnUnifiedCallback(struct libcras_stream_cb_data* data);
+  int OnStreamError(cras_client* client, cras_stream_id_t stream_id, int err);
 
-  // Deals with an error that occured in the stream.  Called from StreamError().
+  // Writes audio for a playback stream.
+  uint32_t WriteAudio(base::span<int16_t> buffer, const timespec* latency_ts);
+
+  // Deals with an error that occurred in the stream.  Called from
+  // StreamError().
   void NotifyStreamError(int err);
 
   // There is 3 main reasons for output audio glitches.
@@ -87,7 +98,7 @@ class MEDIA_EXPORT CrasUnifiedStream : public AudioOutputStream {
   void ReportAndResetStats();
 
   // The client used to communicate with the audio server.
-  struct libcras_client* client_ = NULL;
+  raw_ptr<struct libcras_client, DanglingUntriaged> client_ = nullptr;
 
   // ID of the playing stream.
   cras_stream_id_t stream_id_ = 0;
@@ -102,10 +113,10 @@ class MEDIA_EXPORT CrasUnifiedStream : public AudioOutputStream {
   float volume_ = 1.0;
 
   // Audio manager that created us.  Used to report that we've been closed.
-  AudioManagerCrasBase* const manager_;
+  raw_ptr<AudioManagerCrasBase, DanglingUntriaged> const manager_;
 
   // Callback to get audio samples.
-  AudioSourceCallback* source_callback_ = NULL;
+  raw_ptr<AudioSourceCallback, DanglingUntriaged> source_callback_ = nullptr;
 
   // Container for exchanging data with AudioSourceCallback::OnMoreData().
   const std::unique_ptr<AudioBus> output_bus_;
@@ -134,6 +145,11 @@ class MEDIA_EXPORT CrasUnifiedStream : public AudioOutputStream {
   AudioGlitchInfo::Accumulator glitch_info_accumulator_;
 
   std::unique_ptr<AmplitudePeakDetector> peak_detector_;
+
+  // Thread-safe proxy registered with libcras as the callback user argument.
+  // It is detached on Stop()/Close() so that a late real-time callback from the
+  // libcras thread cannot reach this stream after it has been freed.
+  std::unique_ptr<CrasUnifiedStreamProxy> proxy_;
 };
 
 }  // namespace media

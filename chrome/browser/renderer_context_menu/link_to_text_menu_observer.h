@@ -5,15 +5,26 @@
 #ifndef CHROME_BROWSER_RENDERER_CONTEXT_MENU_LINK_TO_TEXT_MENU_OBSERVER_H_
 #define CHROME_BROWSER_RENDERER_CONTEXT_MENU_LINK_TO_TEXT_MENU_OBSERVER_H_
 
+#include <stddef.h>
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "components/renderer_context_menu/render_view_context_menu_observer.h"
 #include "components/shared_highlighting/core/common/shared_highlighting_metrics.h"
 #include "content/public/browser/render_frame_host.h"
-#include "services/service_manager/public/cpp/interface_provider.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "third_party/blink/public/mojom/annotation/annotation.mojom-shared.h"
 #include "third_party/blink/public/mojom/link_to_text/link_to_text.mojom.h"
 #include "url/gurl.h"
 
 class RenderViewContextMenuProxy;
+class ToastController;
 
 // A class that implements the menu item for copying selected text and a link
 // to the selected text to the user's clipboard.
@@ -21,7 +32,8 @@ class LinkToTextMenuObserver : public RenderViewContextMenuObserver {
  public:
   static std::unique_ptr<LinkToTextMenuObserver> Create(
       RenderViewContextMenuProxy* proxy,
-      content::GlobalRenderFrameHostId render_frame_host_id);
+      content::GlobalRenderFrameHostId render_frame_host_id,
+      ToastController* toast_controller);
 
   LinkToTextMenuObserver(const LinkToTextMenuObserver&) = delete;
   LinkToTextMenuObserver& operator=(const LinkToTextMenuObserver&) = delete;
@@ -40,9 +52,9 @@ class LinkToTextMenuObserver : public RenderViewContextMenuObserver {
  private:
   friend class MockLinkToTextMenuObserver;
 
-  explicit LinkToTextMenuObserver(
-      RenderViewContextMenuProxy* proxy,
-      content::GlobalRenderFrameHostId render_frame_host_id);
+  LinkToTextMenuObserver(RenderViewContextMenuProxy* proxy,
+                         content::GlobalRenderFrameHostId render_frame_host_id,
+                         ToastController* toast_controller);
 
   // Requests link generation if needed.
   void RequestLinkGeneration();
@@ -91,6 +103,8 @@ class LinkToTextMenuObserver : public RenderViewContextMenuObserver {
 
   mojo::Remote<blink::mojom::TextFragmentReceiver> remote_;
   raw_ptr<RenderViewContextMenuProxy> proxy_;
+  raw_ptr<ToastController> const toast_controller_;
+
   GURL url_;
   GURL raw_url_;
   content::GlobalRenderFrameHostId render_frame_host_id_;
@@ -108,10 +122,15 @@ class LinkToTextMenuObserver : public RenderViewContextMenuObserver {
   // True when the context menu was opened with text selected.
   bool open_from_new_selection_ = false;
 
-  absl::optional<std::string> generated_link_;
+  std::optional<std::string> generated_link_;
 
   // True when generation is completed.
   bool is_generation_complete_ = false;
+
+  // Set when the context menu was opened with an annotation (with a value
+  // corresponding to the type of annotation). We show different menu items
+  // based on the type.
+  std::optional<blink::mojom::AnnotationType> annotation_type_;
 
   base::WeakPtrFactory<LinkToTextMenuObserver> weak_ptr_factory_{this};
 };

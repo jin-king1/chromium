@@ -6,21 +6,23 @@
 #define CHROME_BROWSER_ASH_PLUGIN_VM_PLUGIN_VM_MANAGER_IMPL_H_
 
 #include <memory>
+#include <optional>
+
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "chrome/browser/ash/guest_os/guest_os_dlc_helper.h"
+#include "chrome/browser/ash/guest_os/vm_starting_observer.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_manager.h"
-#include "chrome/browser/ash/plugin_vm/plugin_vm_metrics_util.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_uninstaller_notification.h"
 #include "chrome/browser/ash/plugin_vm/plugin_vm_util.h"
-#include "chrome/browser/ash/vm_starting_observer.h"
 #include "chromeos/ash/components/dbus/vm_concierge/concierge_service.pb.h"
 #include "chromeos/ash/components/dbus/vm_plugin_dispatcher/vm_plugin_dispatcher.pb.h"
 #include "chromeos/ash/components/dbus/vm_plugin_dispatcher/vm_plugin_dispatcher_client.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
+class ApplicationLocaleStorage;
 class Profile;
 
 namespace plugin_vm {
@@ -48,7 +50,10 @@ class PluginVmManagerImpl : public PluginVmManager,
  public:
   using LaunchPluginVmCallback = base::OnceCallback<void(bool success)>;
 
-  explicit PluginVmManagerImpl(Profile* profile);
+  // `application_locale_storage` must be non-null, and must outlive `this`.
+  PluginVmManagerImpl(
+      const ApplicationLocaleStorage* application_locale_storage,
+      Profile* profile);
 
   PluginVmManagerImpl(const PluginVmManagerImpl&) = delete;
   PluginVmManagerImpl& operator=(const PluginVmManagerImpl&) = delete;
@@ -103,7 +108,7 @@ class PluginVmManagerImpl : public PluginVmManager,
   void OnListVms(
       base::OnceCallback<void(bool default_vm_exists)> success_callback,
       base::OnceClosure error_callback,
-      absl::optional<vm_tools::plugin_dispatcher::ListVmResponse> reply);
+      std::optional<vm_tools::plugin_dispatcher::ListVmResponse> reply);
 
   // The flow to launch a Plugin Vm. We'll probably want to add additional
   // abstraction around starting the services in the future but this is
@@ -111,12 +116,12 @@ class PluginVmManagerImpl : public PluginVmManager,
   void OnListVmsForLaunch(bool default_vm_exists);
   void StartVm();
   void OnStartVm(
-      absl::optional<vm_tools::plugin_dispatcher::StartVmResponse> reply);
+      std::optional<vm_tools::plugin_dispatcher::StartVmResponse> reply);
   void ShowVm();
   void OnShowVm(
-      absl::optional<vm_tools::plugin_dispatcher::ShowVmResponse> reply);
+      std::optional<vm_tools::plugin_dispatcher::ShowVmResponse> reply);
   void OnGetVmInfoForSharing(
-      absl::optional<vm_tools::concierge::GetVmInfoResponse> reply);
+      std::optional<vm_tools::concierge::GetVmInfoResponse> reply);
   void OnDefaultSharedDirExists(const base::FilePath& dir, bool exists);
   void UninstallSucceeded();
 
@@ -127,17 +132,17 @@ class PluginVmManagerImpl : public PluginVmManager,
 
   // The flow to relaunch Plugin Vm.
   void OnSuspendVmForRelaunch(
-      absl::optional<vm_tools::plugin_dispatcher::SuspendVmResponse> reply);
+      std::optional<vm_tools::plugin_dispatcher::SuspendVmResponse> reply);
   void OnRelaunchVmComplete(bool success);
 
   // The flow to uninstall Plugin Vm.
   void OnListVmsForUninstall(bool default_vm_exists);
   void StopVmForUninstall();
   void OnStopVmForUninstall(
-      absl::optional<vm_tools::plugin_dispatcher::StopVmResponse> reply);
+      std::optional<vm_tools::plugin_dispatcher::StopVmResponse> reply);
   void DestroyDiskImage();
   void OnDestroyDiskImage(
-      absl::optional<vm_tools::concierge::DestroyDiskImageResponse> response);
+      std::optional<vm_tools::concierge::DestroyDiskImageResponse> response);
 
   // Called when UninstallPluginVm() is unsuccessful.
   void UninstallFailed(
@@ -148,7 +153,9 @@ class PluginVmManagerImpl : public PluginVmManager,
   // policy changes.
   void OnAvailabilityChanged(bool is_allowed, bool is_configured);
 
-  raw_ptr<Profile, ExperimentalAsh> profile_;
+  const raw_ref<const ApplicationLocaleStorage> application_locale_storage_;
+
+  raw_ptr<Profile> profile_;
   std::string owner_id_;
   uint64_t seneschal_server_handle_ = 0;
 

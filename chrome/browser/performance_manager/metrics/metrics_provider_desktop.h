@@ -5,8 +5,15 @@
 #ifndef CHROME_BROWSER_PERFORMANCE_MANAGER_METRICS_METRICS_PROVIDER_DESKTOP_H_
 #define CHROME_BROWSER_PERFORMANCE_MANAGER_METRICS_METRICS_PROVIDER_DESKTOP_H_
 
+#include <optional>
+
+#include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/performance_manager/public/user_tuning/user_performance_tuning_manager.h"
+#include "base/system/sys_info.h"
+#include "base/task/thread_pool.h"
+#include "base/threading/sequence_bound.h"
+#include "build/build_config.h"
+#include "chrome/browser/performance_manager/public/user_tuning/battery_saver_mode_manager.h"
 #include "components/metrics/metrics_provider.h"
 #include "components/prefs/pref_change_registrar.h"
 
@@ -23,13 +30,13 @@ class ScopedTimeInModeTracker;
 // available physical memory. Only present on desktop platforms.
 class MetricsProviderDesktop : public ::metrics::MetricsProvider,
                                public performance_manager::user_tuning::
-                                   UserPerformanceTuningManager::Observer {
+                                   BatterySaverModeManager::Observer {
  public:
   enum class EfficiencyMode {
     // No efficiency mode for the entire upload window
     kNormal = 0,
-    // In high efficiency mode for the entire upload window
-    kHighEfficiency = 1,
+    // In memory saver mode for the entire upload window
+    kMemorySaver = 1,
     // In battery saver mode for the entire upload window
     kBatterySaver = 2,
     // Both modes enabled for the entire upload window
@@ -57,16 +64,43 @@ class MetricsProviderDesktop : public ::metrics::MetricsProvider,
 
   explicit MetricsProviderDesktop(PrefService* local_state);
 
-  // UserPerformanceTuningManager::Observer:
-  void OnBatterySaverModeChanged(bool is_active) override;
+  // BatterySaverModeManager::Observer:
+  void OnBatterySaverActiveChanged(bool is_active) override;
 
-  void OnHighEfficiencyPrefChanged();
+  void OnMemorySaverPrefChanged();
   void OnTuningModesChanged();
   EfficiencyMode ComputeCurrentMode() const;
-  bool IsHighEfficiencyEnabled() const;
+  bool IsMemorySaverEnabled() const;
 
-  void RecordAvailableMemoryMetrics();
   void ResetTrackers();
+
+#if defined(ARCH_CPU_X86_FAMILY) && BUILDFLAG(IS_WIN)
+#define SHOULD_COLLECT_CPU_FREQUENCY_METRICS() true
+#else
+#define SHOULD_COLLECT_CPU_FREQUENCY_METRICS() false
+#endif  // defined(ARCH_CPU_X86_FAMILY) && BUILDFLAG(IS_WIN)
+
+#if SHOULD_COLLECT_CPU_FREQUENCY_METRICS()
+  static void RecordCpuFrequencyMetrics(base::TimeTicks should_run_at);
+  static void ScheduleCpuFrequencyTask();
+  static void PostCpuFrequencyEstimation();
+#endif  // SHOULD_COLLECT_CPU_FREQUENCY_METRICS()
+
+  class DiskMetricsThreadPoolGetter {
+   public:
+    std::optional<base::SysInfo::DiskSpaceInfo> ComputeDiskMetrics(
+        const base::FilePath& user_data_dir);
+  };
+
+  // Sets the value to be returned by ComputeDiskMetrics in tests. To stop
+  // overriding the return value, pass std::nullopt.
+  void SetDiskMetricsForTesting(
+      std::optional<base::SysInfo::DiskSpaceInfo> metrics);
+
+  void RecordDiskMetrics();
+  void PostDiskMetricsTask();
+  void SavePendingDiskMetrics(
+      std::optional<base::SysInfo::DiskSpaceInfo> metrics);
 
   PrefChangeRegistrar pref_change_registrar_;
   const raw_ptr<PrefService> local_state_;
@@ -76,10 +110,13 @@ class MetricsProviderDesktop : public ::metrics::MetricsProvider,
 
   bool initialized_ = false;
 
-  base::RepeatingTimer available_memory_metrics_timer_;
+  base::SequenceBound<DiskMetricsThreadPoolGetter> disk_metrics_getter_;
+  std::optional<base::SysInfo::DiskSpaceInfo> pending_disk_metrics_;
 
   std::unique_ptr<ScopedTimeInModeTracker> battery_saver_mode_tracker_;
-  std::unique_ptr<ScopedTimeInModeTracker> high_efficiency_mode_tracker_;
+  std::unique_ptr<ScopedTimeInModeTracker> memory_saver_mode_tracker_;
+
+  std::optional<base::SysInfo::DiskSpaceInfo> disk_metrics_for_testing_;
 };
 
 }  // namespace performance_manager

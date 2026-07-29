@@ -5,9 +5,12 @@
   },
 
   data: [
+    "back-forward-cache-restoration",
+    "container",
     "element",
     "event",
     "first-input",
+    "interaction-contentful-paint",
     "largest-contentful-paint",
     "layout-shift",
     "long-animation-frame",
@@ -18,9 +21,12 @@
     "paint",
     "resource",
     "script",
+    "scroll",
     "soft-navigation",
     "taskattribution",
+    "unknown",
     "visibility-state",
-    "back-forward-cache-restoration",
+    "window",
+    "mark-conditional",
   ],
 }

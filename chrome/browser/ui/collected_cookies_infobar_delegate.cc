@@ -11,8 +11,10 @@
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/infobar.h"
 #include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 
 // static
 void CollectedCookiesInfoBarDelegate::Create(
@@ -22,10 +24,9 @@ void CollectedCookiesInfoBarDelegate::Create(
           new CollectedCookiesInfoBarDelegate())));
 }
 
-CollectedCookiesInfoBarDelegate::CollectedCookiesInfoBarDelegate()
-    : ConfirmInfoBarDelegate() {}
+CollectedCookiesInfoBarDelegate::CollectedCookiesInfoBarDelegate() = default;
 
-CollectedCookiesInfoBarDelegate::~CollectedCookiesInfoBarDelegate() {}
+CollectedCookiesInfoBarDelegate::~CollectedCookiesInfoBarDelegate() = default;
 
 infobars::InfoBarDelegate::InfoBarIdentifier
 CollectedCookiesInfoBarDelegate::GetIdentifier() const {
@@ -33,7 +34,9 @@ CollectedCookiesInfoBarDelegate::GetIdentifier() const {
 }
 
 const gfx::VectorIcon& CollectedCookiesInfoBarDelegate::GetVectorIcon() const {
-  return vector_icons::kCookieIcon;
+  return features::IsRoundedIconsEnabled()
+             ? vector_icons::kSettingsIcon
+             : vector_icons::kSettingsChromeRefreshOldIcon;
 }
 
 std::u16string CollectedCookiesInfoBarDelegate::GetMessageText() const {

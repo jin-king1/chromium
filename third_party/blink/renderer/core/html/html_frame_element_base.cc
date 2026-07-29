@@ -47,6 +47,8 @@
 #include "third_party/blink/renderer/core/page/focus_controller.h"
 #include "third_party/blink/renderer/core/page/page.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 
 namespace blink {
 
@@ -57,42 +59,18 @@ HTMLFrameElementBase::HTMLFrameElementBase(const QualifiedName& tag_name,
       margin_width_(-1),
       margin_height_(-1) {}
 
-bool HTMLFrameElementBase::IsURLAllowed() const {
-  if (url_.empty())
-    return true;
-
-  const KURL& complete_url = GetDocument().CompleteURL(url_);
-
-  if (contentWindow() && complete_url.ProtocolIsJavaScript()) {
-    // Check if the caller can execute script in the context of the content
-    // frame. NB: This check can be invoked without any JS on the stack for some
-    // parser operations. In such case, we use the origin of the frame element's
-    // containing document as the caller context.
-    v8::Isolate* isolate = GetExecutionContext()->GetIsolate();
-    LocalDOMWindow* accessing_window = isolate->InContext()
-                                           ? CurrentDOMWindow(isolate)
-                                           : GetDocument().domWindow();
-    if (!BindingSecurity::ShouldAllowAccessTo(
-            accessing_window, contentWindow(),
-            BindingSecurity::ErrorReportOption::kReport)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 void HTMLFrameElementBase::OpenURL(bool replace_current_item) {
-  if (!IsURLAllowed())
+  LocalFrame* parent_frame = GetDocument().GetFrame();
+  if (!parent_frame) {
     return;
+  }
 
   if (url_.empty())
-    url_ = AtomicString(BlankURL().GetString());
-
-  LocalFrame* parent_frame = GetDocument().GetFrame();
-  if (!parent_frame)
-    return;
-
+    url_ = AtomicString(BlankUrl().GetString());
   KURL url = GetDocument().CompleteURL(url_);
+  if (ContentFrame() && !parent_frame->CanNavigate(*ContentFrame(), url)) {
+    return;
+  }
 
   // There is no (easy) way to tell if |url_| is relative at this point. That
   // is determined in the KURL constructor. If we fail to create an absolute
@@ -103,8 +81,8 @@ void HTMLFrameElementBase::OpenURL(bool replace_current_item) {
         MakeGarbageCollected<ConsoleMessage>(
             mojom::ConsoleMessageSource::kRendering,
             mojom::ConsoleMessageLevel::kWarning,
-            "Invalid relative frame source URL (" + url_ +
-                ") within data URL."));
+            StrCat({"Invalid relative frame source URL (", url_,
+                    ") within data URL."})));
   }
   LoadOrRedirectSubframe(url, frame_name_, replace_current_item);
 }
@@ -122,20 +100,20 @@ void HTMLFrameElementBase::ParseAttribute(
           ContentFrame()->GetFrameToken(), srcdoc_value);
     }
     if (!value.IsNull()) {
-      SetLocation(SrcdocURL().GetString());
+      SetLocation(SrcdocUrl().GetString());
     } else {
       const AtomicString& src_value = FastGetAttribute(html_names::kSrcAttr);
       if (!src_value.IsNull()) {
-        SetLocation(StripLeadingAndTrailingHTMLSpaces(src_value));
+        SetLocation(StripLeadingAndTrailingHtmlSpaces(src_value));
       } else if (!params.old_value.IsNull()) {
         // We're resetting kSrcdocAttr, but kSrcAttr has no value, so load
         // about:blank. https://crbug.com/1233143
-        SetLocation(BlankURL());
+        SetLocation(BlankUrl().GetString());
       }
     }
   } else if (name == html_names::kSrcAttr &&
              !FastHasAttribute(html_names::kSrcdocAttr)) {
-    SetLocation(StripLeadingAndTrailingHTMLSpaces(value));
+    SetLocation(StripLeadingAndTrailingHtmlSpaces(value));
   } else if (name == html_names::kIdAttr) {
     // Important to call through to base for the id attribute so the hasID bit
     // gets set.
@@ -144,9 +122,9 @@ void HTMLFrameElementBase::ParseAttribute(
   } else if (name == html_names::kNameAttr) {
     frame_name_ = value;
   } else if (name == html_names::kMarginwidthAttr) {
-    SetMarginWidth(value.ToInt());
+    SetMarginWidth(StringToIntLoose(value).value_or(0));
   } else if (name == html_names::kMarginheightAttr) {
-    SetMarginHeight(value.ToInt());
+    SetMarginHeight(StringToIntLoose(value).value_or(0));
   } else if (name == html_names::kScrollingAttr) {
     // https://html.spec.whatwg.org/multipage/rendering.html#the-page:
     // If [the scrolling] attribute's value is an ASCII
@@ -154,12 +132,13 @@ void HTMLFrameElementBase::ParseAttribute(
     // the user agent is expected to prevent any scrollbars from being shown for
     // the viewport of the Document's browsing context, regardless of the
     // 'overflow' property that applies to that viewport.
-    if (EqualIgnoringASCIICase(value, "off") ||
-        EqualIgnoringASCIICase(value, "noscroll") ||
-        EqualIgnoringASCIICase(value, "no"))
+    if (EqualIgnoringAsciiCase(value, "off") ||
+        EqualIgnoringAsciiCase(value, "noscroll") ||
+        EqualIgnoringAsciiCase(value, "no")) {
       SetScrollbarMode(mojom::blink::ScrollbarMode::kAlwaysOff);
-    else
+    } else {
       SetScrollbarMode(mojom::blink::ScrollbarMode::kAuto);
+    }
   } else if (name == html_names::kOnbeforeunloadAttr) {
     // FIXME: should <frame> elements have beforeunload handlers?
     SetAttributeEventListener(
@@ -173,7 +152,7 @@ void HTMLFrameElementBase::ParseAttribute(
 }
 
 scoped_refptr<const SecurityOrigin>
-HTMLFrameElementBase::GetOriginForPermissionsPolicy() const {
+HTMLFrameElementBase::MakeOriginForPermissionsPolicy() const {
   // Sandboxed frames have a unique origin.
   if ((GetFramePolicy().sandbox_flags &
        network::mojom::blink::WebSandboxFlags::kOrigin) !=
@@ -200,9 +179,6 @@ void HTMLFrameElementBase::SetNameAndOpenURL() {
 Node::InsertionNotificationRequest HTMLFrameElementBase::InsertedInto(
     ContainerNode& insertion_point) {
   HTMLFrameOwnerElement::InsertedInto(insertion_point);
-  // We should never have a content frame at the point where we got inserted
-  // into a tree.
-  SECURITY_CHECK(!ContentFrame());
   return kInsertionShouldCallDidNotifySubtreeInsertions;
 }
 
@@ -226,18 +202,24 @@ void HTMLFrameElementBase::AttachLayoutTree(AttachContext& context) {
     SetEmbeddedContentView(ContentFrame()->View());
 }
 
-void HTMLFrameElementBase::SetLocation(const String& str) {
+void HTMLFrameElementBase::SetLocation(const StringView& str) {
   url_ = AtomicString(str);
 
   if (isConnected())
     OpenURL(false);
 }
 
-bool HTMLFrameElementBase::SupportsFocus() const {
-  return true;
-}
-
 int HTMLFrameElementBase::DefaultTabIndex() const {
+  // The logic in focus_controller.cc requires frames to return
+  // true for IsFocusable(). However, frames are not actually
+  // focusable, and focus_controller.cc takes care of moving
+  // focus within the frame focus scope.
+  // TODO(crbug.com/1444450) It would be better to remove this
+  // override entirely, and make SupportsFocus() return false.
+  // That would require adding logic in focus_controller.cc that
+  // ignores IsFocusable for HTMLFrameElementBase. At that point,
+  // AXObject::IsKeyboardFocusable() can also have special case
+  // code removed.
   return 0;
 }
 
@@ -280,7 +262,7 @@ void HTMLFrameElementBase::SetScrollbarMode(
   if (contentDocument()) {
     contentDocument()->WillChangeFrameOwnerProperties(
         margin_width_, margin_height_, scrollbar_mode, IsDisplayNone(),
-        GetColorScheme());
+        GetColorScheme(), GetPreferredColorScheme());
   }
   scrollbar_mode_ = scrollbar_mode;
   FrameOwnerPropertiesChanged();
@@ -293,7 +275,7 @@ void HTMLFrameElementBase::SetMarginWidth(int margin_width) {
   if (contentDocument()) {
     contentDocument()->WillChangeFrameOwnerProperties(
         margin_width, margin_height_, scrollbar_mode_, IsDisplayNone(),
-        GetColorScheme());
+        GetColorScheme(), GetPreferredColorScheme());
   }
   margin_width_ = margin_width;
   FrameOwnerPropertiesChanged();
@@ -306,7 +288,7 @@ void HTMLFrameElementBase::SetMarginHeight(int margin_height) {
   if (contentDocument()) {
     contentDocument()->WillChangeFrameOwnerProperties(
         margin_width_, margin_height, scrollbar_mode_, IsDisplayNone(),
-        GetColorScheme());
+        GetColorScheme(), GetPreferredColorScheme());
   }
   margin_height_ = margin_height;
   FrameOwnerPropertiesChanged();

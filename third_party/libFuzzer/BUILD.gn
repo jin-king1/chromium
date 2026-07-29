@@ -27,6 +27,8 @@ source_set("libfuzzer") {
     "src/FuzzerExtFunctionsWeak.cpp",
     "src/FuzzerExtFunctionsWindows.cpp",
     "src/FuzzerExtraCounters.cpp",
+    "src/FuzzerExtraCountersDarwin.cpp",
+    "src/FuzzerExtraCountersWindows.cpp",
     "src/FuzzerFork.cpp",
     "src/FuzzerIO.cpp",
     "src/FuzzerIOPosix.cpp",
@@ -43,10 +45,22 @@ source_set("libfuzzer") {
     "src/FuzzerUtilPosix.cpp",
     "src/FuzzerUtilWindows.cpp",
   ]
+  if (!using_sanitizer) {
+    sources += [ "src/FuzzerInterceptors.cpp" ]
+  }
 
   configs -= fuzzing_engine_remove_configs
   configs += fuzzing_engine_add_configs
-  configs += [ ":warnings" ]
+  configs += [
+    ":warnings",
+    "//build/config/compiler:no_exit_time_destructors",
+  ]
+
+  if (is_android) {
+    # Bypasses the "initial-exec" TLS model in libFuzzer's FuzzerPlatform.h
+    # which causes dlopen() crashes when fuzzers are packaged as Android APKs.
+    defines = [ "tls_model(x)=" ]
+  }
 
   deps = []
   if (is_fuchsia) {
@@ -63,15 +77,5 @@ source_set("libfuzzer_main") {
   sources = []
   if (!is_ios) {
     sources += [ "src/FuzzerMain.cpp" ]
-  }
-}
-
-if (use_afl) {
-  source_set("afl_driver") {
-    sources = [ "src/afl/afl_driver.cpp" ]
-
-    configs -= fuzzing_engine_remove_configs
-    configs += fuzzing_engine_add_configs
-    configs += [ ":warnings" ]
   }
 }

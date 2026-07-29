@@ -10,7 +10,6 @@ import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.verify;
 
 import android.content.Intent;
-import android.media.AudioManager;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -26,7 +25,9 @@ import org.chromium.media_session.mojom.MediaSessionAction;
  * handles intent actions correctly.
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(manifest = Config.NONE, shadows = {MediaNotificationTestShadowResources.class})
+@Config(
+        manifest = Config.NONE,
+        shadows = {MediaNotificationTestShadowResources.class})
 public class MediaNotificationServiceActionsTest extends MediaNotificationTestBase {
     @Test
     public void testProcessIntentWithNoAction() {
@@ -99,19 +100,11 @@ public class MediaNotificationServiceActionsTest extends MediaNotificationTestBa
     }
 
     @Test
-    public void testProcessNotificationButtonAction_Noisy() {
-        setUpService();
-
-        mService.getImpl().processIntent(new Intent(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
-        verify(getController()).onPause(MediaNotificationListener.ACTION_SOURCE_HEADSET_UNPLUG);
-    }
-
-    @Test
     public void testProcessNotificationButtonAction_PreviousTrack() {
         setUpService();
 
-        mService.getImpl().processIntent(
-                new Intent(MediaNotificationController.ACTION_PREVIOUS_TRACK));
+        mService.getImpl()
+                .processIntent(new Intent(MediaNotificationController.ACTION_PREVIOUS_TRACK));
         verify(getController()).onMediaSessionAction(MediaSessionAction.PREVIOUS_TRACK);
     }
 
@@ -127,8 +120,8 @@ public class MediaNotificationServiceActionsTest extends MediaNotificationTestBa
     public void testProcessNotificationButtonAction_SeekForward() {
         setUpService();
 
-        mService.getImpl().processIntent(
-                new Intent(MediaNotificationController.ACTION_SEEK_FORWARD));
+        mService.getImpl()
+                .processIntent(new Intent(MediaNotificationController.ACTION_SEEK_FORWARD));
         verify(getController()).onMediaSessionAction(MediaSessionAction.SEEK_FORWARD);
     }
 
@@ -136,8 +129,8 @@ public class MediaNotificationServiceActionsTest extends MediaNotificationTestBa
     public void testProcessNotificationButtonAction_SeekBackward() {
         setUpService();
 
-        mService.getImpl().processIntent(
-                new Intent(MediaNotificationController.ACTION_SEEK_BACKWARD));
+        mService.getImpl()
+                .processIntent(new Intent(MediaNotificationController.ACTION_SEEK_BACKWARD));
         verify(getController()).onMediaSessionAction(MediaSessionAction.SEEK_BACKWARD);
     }
 }

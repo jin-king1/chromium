@@ -17,7 +17,6 @@
 #include "ash/quick_pair/scanning/fast_pair/fast_pair_scanner_impl.h"
 #include "ash/quick_pair/scanning/scanner_broker.h"
 #include "ash/test/ash_test_base.h"
-#include "base/memory/raw_ptr.h"
 #include "chromeos/ash/components/network/network_state_test_helper.h"
 #include "chromeos/ash/services/quick_pair/mock_quick_pair_process_manager.h"
 #include "chromeos/ash/services/quick_pair/quick_pair_process.h"
@@ -41,21 +40,12 @@ class FakeFastPairScannerFactory
  public:
   // FastPairScannerImpl::Factory:
   scoped_refptr<ash::quick_pair::FastPairScanner> CreateInstance() override {
-    auto fake_fast_pair_scanner =
-        base::MakeRefCounted<ash::quick_pair::FakeFastPairScanner>();
-    fake_fast_pair_scanner_ = fake_fast_pair_scanner.get();
-    return fake_fast_pair_scanner;
+    return base::MakeRefCounted<ash::quick_pair::FakeFastPairScanner>();
   }
 
-  ~FakeFastPairScannerFactory() override = default;
+  FakeFastPairScannerFactory() { SetFactoryForTesting(this); }
 
-  ash::quick_pair::FakeFastPairScanner* fake_fast_pair_scanner() {
-    return fake_fast_pair_scanner_;
-  }
-
- private:
-  raw_ptr<ash::quick_pair::FakeFastPairScanner, ExperimentalAsh>
-      fake_fast_pair_scanner_ = nullptr;
+  ~FakeFastPairScannerFactory() override { SetFactoryForTesting(nullptr); }
 };
 
 class FakeFastPairDiscoverableScanner
@@ -71,12 +61,12 @@ class FakeFastPairDiscoverableScanner
 
   void TriggerDeviceFoundCallback(
       scoped_refptr<ash::quick_pair::Device> device) {
-    std::move(found_callback_).Run(device);
+    std::move(found_callback_).Run(std::move(device));
   }
 
   void TriggerDeviceLostCallback(
       scoped_refptr<ash::quick_pair::Device> device) {
-    std::move(lost_callback_).Run(device);
+    std::move(lost_callback_).Run(std::move(device));
   }
 
  private:
@@ -94,26 +84,20 @@ class FakeFastPairDiscoverableScannerFactory
       ash::quick_pair::DeviceCallback found_callback,
       ash::quick_pair::DeviceCallback lost_callback) override {
     create_instance_ = true;
-    auto fake_fast_pair_discoverable_scanner =
-        std::make_unique<FakeFastPairDiscoverableScanner>(
-            std::move(found_callback), std::move(lost_callback));
-    fake_fast_pair_discoverable_scanner_ =
-        fake_fast_pair_discoverable_scanner.get();
-    return fake_fast_pair_discoverable_scanner;
+    return std::make_unique<FakeFastPairDiscoverableScanner>(
+        std::move(found_callback), std::move(lost_callback));
   }
 
-  ~FakeFastPairDiscoverableScannerFactory() override = default;
+  FakeFastPairDiscoverableScannerFactory() { SetFactoryForTesting(this); }
 
-  FakeFastPairDiscoverableScanner* fake_fast_pair_discoverable_scanner() {
-    return fake_fast_pair_discoverable_scanner_;
+  ~FakeFastPairDiscoverableScannerFactory() override {
+    SetFactoryForTesting(nullptr);
   }
 
   bool create_instance() { return create_instance_; }
 
  protected:
   bool create_instance_ = false;
-  raw_ptr<FakeFastPairDiscoverableScanner, ExperimentalAsh>
-      fake_fast_pair_discoverable_scanner_ = nullptr;
 };
 
 class FakeFastPairNotDiscoverableScanner
@@ -129,12 +113,12 @@ class FakeFastPairNotDiscoverableScanner
 
   void TriggerDeviceFoundCallback(
       scoped_refptr<ash::quick_pair::Device> device) {
-    std::move(found_callback_).Run(device);
+    std::move(found_callback_).Run(std::move(device));
   }
 
   void TriggerDeviceLostCallback(
       scoped_refptr<ash::quick_pair::Device> device) {
-    std::move(lost_callback_).Run(device);
+    std::move(lost_callback_).Run(std::move(device));
   }
 
  private:
@@ -152,27 +136,20 @@ class FakeFastPairNotDiscoverableScannerFactory
                  ash::quick_pair::DeviceCallback found_callback,
                  ash::quick_pair::DeviceCallback lost_callback) override {
     create_instance_ = true;
-    auto fake_fast_pair_not_discoverable_scanner =
-        std::make_unique<FakeFastPairNotDiscoverableScanner>(
-            std::move(found_callback), std::move(lost_callback));
-    fake_fast_pair_not_discoverable_scanner_ =
-        fake_fast_pair_not_discoverable_scanner.get();
-    return fake_fast_pair_not_discoverable_scanner;
+    return std::make_unique<FakeFastPairNotDiscoverableScanner>(
+        std::move(found_callback), std::move(lost_callback));
   }
 
-  ~FakeFastPairNotDiscoverableScannerFactory() override = default;
+  FakeFastPairNotDiscoverableScannerFactory() { SetFactoryForTesting(this); }
 
-  FakeFastPairNotDiscoverableScanner*
-  fake_fast_pair_not_discoverable_scanner() {
-    return fake_fast_pair_not_discoverable_scanner_;
+  ~FakeFastPairNotDiscoverableScannerFactory() override {
+    SetFactoryForTesting(nullptr);
   }
 
   bool create_instance() { return create_instance_; }
 
  protected:
   bool create_instance_ = false;
-  raw_ptr<FakeFastPairNotDiscoverableScanner, ExperimentalAsh>
-      fake_fast_pair_not_discoverable_scanner_ = nullptr;
 };
 
 }  // namespace
@@ -180,38 +157,26 @@ class FakeFastPairNotDiscoverableScannerFactory
 namespace ash {
 namespace quick_pair {
 
-class ScannerBrokerImplTest : public AshTestBase,
+class ScannerBrokerImplTest : public NoSessionAshTestBase,
                               public ScannerBroker::Observer {
  public:
   void SetUp() override {
-    AshTestBase::SetUp();
+    NoSessionAshTestBase::SetUp();
 
     adapter_ =
         base::MakeRefCounted<testing::NiceMock<device::MockBluetoothAdapter>>();
     device::BluetoothAdapterFactory::SetAdapterForTesting(adapter_);
-
-    scanner_factory_ = std::make_unique<FakeFastPairScannerFactory>();
-    FastPairScannerImpl::Factory::SetFactoryForTesting(scanner_factory_.get());
-
-    discoverable_scanner_factory_ =
-        std::make_unique<FakeFastPairDiscoverableScannerFactory>();
-    FastPairDiscoverableScannerImpl::Factory::SetFactoryForTesting(
-        discoverable_scanner_factory_.get());
-
-    not_discoverable_scanner_factory_ =
-        std::make_unique<FakeFastPairNotDiscoverableScannerFactory>();
-    FastPairNotDiscoverableScannerImpl::Factory::SetFactoryForTesting(
-        not_discoverable_scanner_factory_.get());
 
     process_manager_ = std::make_unique<MockQuickPairProcessManager>();
     quick_pair_process::SetProcessManager(process_manager_.get());
   }
 
   void TearDown() override {
-    scanner_broker_->RemoveObserver(this);
+    if (scanner_broker_) {
+      scanner_broker_->RemoveObserver(this);
+    }
     scanner_broker_.reset();
-    ClearLogin();
-    AshTestBase::TearDown();
+    NoSessionAshTestBase::TearDown();
   }
 
   void CreateScannerBroker() {
@@ -221,35 +186,43 @@ class ScannerBrokerImplTest : public AshTestBase,
   }
 
   void Login(user_manager::UserType user_type) {
-    SimulateUserLogin(kUserEmail, user_type);
+    SimulateUserLogin({kUserEmail, user_type});
+  }
+
+  auto* discoverable_scanner_for_test() {
+    // The test fixture installs a test factory, so this downcast is safe.
+    return static_cast<FakeFastPairDiscoverableScanner*>(
+        scanner_broker_->discoverable_scanner_for_test());
+  }
+
+  auto* not_discoverable_scanner_for_test() {
+    // The test fixture installs a test factory, so this downcast is safe.
+    return static_cast<FakeFastPairNotDiscoverableScanner*>(
+        scanner_broker_->not_discoverable_scanner_for_test());
   }
 
   void TriggerDiscoverableDeviceFound() {
     auto device = base::MakeRefCounted<Device>(
         kValidModelId, kTestDeviceAddress, Protocol::kFastPairInitial);
-    discoverable_scanner_factory_->fake_fast_pair_discoverable_scanner()
-        ->TriggerDeviceFoundCallback(device);
+    discoverable_scanner_for_test()->TriggerDeviceFoundCallback(device);
   }
 
   void TriggerNotDiscoverableDeviceFound() {
     auto device = base::MakeRefCounted<Device>(
         kValidModelId, kTestDeviceAddress, Protocol::kFastPairInitial);
-    not_discoverable_scanner_factory_->fake_fast_pair_not_discoverable_scanner()
-        ->TriggerDeviceFoundCallback(device);
+    not_discoverable_scanner_for_test()->TriggerDeviceFoundCallback(device);
   }
 
   void TriggerDiscoverableDeviceLost() {
     auto device = base::MakeRefCounted<Device>(
         kValidModelId, kTestDeviceAddress, Protocol::kFastPairInitial);
-    discoverable_scanner_factory_->fake_fast_pair_discoverable_scanner()
-        ->TriggerDeviceLostCallback(device);
+    discoverable_scanner_for_test()->TriggerDeviceLostCallback(device);
   }
 
   void TriggerNotDiscoverableDeviceLost() {
     auto device = base::MakeRefCounted<Device>(
         kValidModelId, kTestDeviceAddress, Protocol::kFastPairInitial);
-    not_discoverable_scanner_factory_->fake_fast_pair_not_discoverable_scanner()
-        ->TriggerDeviceLostCallback(device);
+    not_discoverable_scanner_for_test()->TriggerDeviceLostCallback(device);
   }
 
   void OnDeviceFound(scoped_refptr<Device> device) override {
@@ -264,27 +237,25 @@ class ScannerBrokerImplTest : public AshTestBase,
   bool device_found_ = false;
   bool device_lost_ = false;
   scoped_refptr<testing::NiceMock<device::MockBluetoothAdapter>> adapter_;
-  std::unique_ptr<FakeFastPairScannerFactory> scanner_factory_;
-  std::unique_ptr<FakeFastPairDiscoverableScannerFactory>
-      discoverable_scanner_factory_;
-  std::unique_ptr<FakeFastPairNotDiscoverableScannerFactory>
-      not_discoverable_scanner_factory_;
+  FakeFastPairScannerFactory scanner_factory_;
+  FakeFastPairDiscoverableScannerFactory discoverable_scanner_factory_;
+  FakeFastPairNotDiscoverableScannerFactory not_discoverable_scanner_factory_;
   std::unique_ptr<QuickPairProcessManager> process_manager_;
-  std::unique_ptr<ScannerBroker> scanner_broker_;
+  std::unique_ptr<ScannerBrokerImpl> scanner_broker_;
 };
 
 TEST_F(ScannerBrokerImplTest, RegularUser_DiscoverableFound) {
-  Login(user_manager::UserType::USER_TYPE_REGULAR);
+  Login(user_manager::UserType::kRegular);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
   CreateScannerBroker();
 
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
   EXPECT_FALSE(device_found_);
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
   TriggerDiscoverableDeviceFound();
   base::RunLoop().RunUntilIdle();
@@ -292,17 +263,17 @@ TEST_F(ScannerBrokerImplTest, RegularUser_DiscoverableFound) {
 }
 
 TEST_F(ScannerBrokerImplTest, ChildUser_DiscoverableFound) {
-  Login(user_manager::UserType::USER_TYPE_CHILD);
+  Login(user_manager::UserType::kChild);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
   CreateScannerBroker();
 
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
   EXPECT_FALSE(device_found_);
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
   TriggerDiscoverableDeviceFound();
   base::RunLoop().RunUntilIdle();
@@ -310,17 +281,17 @@ TEST_F(ScannerBrokerImplTest, ChildUser_DiscoverableFound) {
 }
 
 TEST_F(ScannerBrokerImplTest, RegularUser_NotDiscoverableFound) {
-  Login(user_manager::UserType::USER_TYPE_REGULAR);
+  Login(user_manager::UserType::kRegular);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
 
   CreateScannerBroker();
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
   EXPECT_FALSE(device_found_);
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
   TriggerNotDiscoverableDeviceFound();
   base::RunLoop().RunUntilIdle();
@@ -328,16 +299,16 @@ TEST_F(ScannerBrokerImplTest, RegularUser_NotDiscoverableFound) {
 }
 
 TEST_F(ScannerBrokerImplTest, GuestUser_DiscoverableFound) {
-  Login(user_manager::UserType::USER_TYPE_GUEST);
+  Login(user_manager::UserType::kGuest);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
   CreateScannerBroker();
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
   EXPECT_FALSE(device_found_);
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
   TriggerDiscoverableDeviceFound();
   base::RunLoop().RunUntilIdle();
@@ -345,92 +316,94 @@ TEST_F(ScannerBrokerImplTest, GuestUser_DiscoverableFound) {
 }
 
 TEST_F(ScannerBrokerImplTest, GuestUser_NotDiscoverableNotCreated) {
-  Login(user_manager::UserType::USER_TYPE_GUEST);
+  Login(user_manager::UserType::kGuest);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
 
   CreateScannerBroker();
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 }
 
 TEST_F(ScannerBrokerImplTest, GuestUser_RegularUserLogsIn) {
-  Login(user_manager::UserType::USER_TYPE_GUEST);
+  Login(user_manager::UserType::kGuest);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
 
   CreateScannerBroker();
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
-  Login(user_manager::UserType::USER_TYPE_REGULAR);
+  ClearLogin();
+  Login(user_manager::UserType::kRegular);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
 }
 
 TEST_F(ScannerBrokerImplTest, RegularUser_GuestUserLogsIn) {
-  Login(user_manager::UserType::USER_TYPE_REGULAR);
+  Login(user_manager::UserType::kRegular);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
 
   CreateScannerBroker();
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
-  Login(user_manager::UserType::USER_TYPE_GUEST);
+  ClearLogin();
+  Login(user_manager::UserType::kGuest);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
 }
 
 TEST_F(ScannerBrokerImplTest, PublicUser_NotDiscoverableNotCreated) {
-  Login(user_manager::UserType::USER_TYPE_PUBLIC_ACCOUNT);
+  Login(user_manager::UserType::kPublicAccount);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
 
   CreateScannerBroker();
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 }
 
 TEST_F(ScannerBrokerImplTest, Kiosk_NotDiscoverableNotCreated) {
-  Login(user_manager::UserType::USER_TYPE_KIOSK_APP);
+  Login(user_manager::UserType::kKioskChromeApp);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
 
   CreateScannerBroker();
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 }
 
 TEST_F(ScannerBrokerImplTest, RegularUser_DiscoverableLost) {
-  Login(user_manager::UserType::USER_TYPE_REGULAR);
+  Login(user_manager::UserType::kRegular);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
   CreateScannerBroker();
 
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
   EXPECT_FALSE(device_found_);
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
   TriggerDiscoverableDeviceLost();
   base::RunLoop().RunUntilIdle();
@@ -438,17 +411,17 @@ TEST_F(ScannerBrokerImplTest, RegularUser_DiscoverableLost) {
 }
 
 TEST_F(ScannerBrokerImplTest, RegularUser_NotDiscoverableLost) {
-  Login(user_manager::UserType::USER_TYPE_REGULAR);
+  Login(user_manager::UserType::kRegular);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
 
   CreateScannerBroker();
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
   EXPECT_FALSE(device_found_);
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
   TriggerNotDiscoverableDeviceLost();
   base::RunLoop().RunUntilIdle();
@@ -456,16 +429,16 @@ TEST_F(ScannerBrokerImplTest, RegularUser_NotDiscoverableLost) {
 }
 
 TEST_F(ScannerBrokerImplTest, GuestUser_DiscoverableLost) {
-  Login(user_manager::UserType::USER_TYPE_GUEST);
+  Login(user_manager::UserType::kGuest);
   base::RunLoop().RunUntilIdle();
 
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
   CreateScannerBroker();
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
   EXPECT_FALSE(device_found_);
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
   TriggerDiscoverableDeviceLost();
   base::RunLoop().RunUntilIdle();
@@ -473,22 +446,22 @@ TEST_F(ScannerBrokerImplTest, GuestUser_DiscoverableLost) {
 }
 
 TEST_F(ScannerBrokerImplTest, StopScanning_Regular) {
-  Login(user_manager::UserType::USER_TYPE_REGULAR);
+  Login(user_manager::UserType::kRegular);
   base::RunLoop().RunUntilIdle();
 
   CreateScannerBroker();
-  EXPECT_FALSE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_FALSE(discoverable_scanner_factory_->create_instance());
+  EXPECT_FALSE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_FALSE(discoverable_scanner_factory_.create_instance());
 
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 
   scanner_broker_->StopScanning(Protocol::kFastPairInitial);
 
   scanner_broker_->StartScanning(Protocol::kFastPairInitial);
-  EXPECT_TRUE(not_discoverable_scanner_factory_->create_instance());
-  EXPECT_TRUE(discoverable_scanner_factory_->create_instance());
+  EXPECT_TRUE(not_discoverable_scanner_factory_.create_instance());
+  EXPECT_TRUE(discoverable_scanner_factory_.create_instance());
 }
 
 }  // namespace quick_pair

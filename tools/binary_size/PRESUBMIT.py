@@ -8,7 +8,6 @@ See http://dev.chromium.org/developers/how-tos/depottools/presubmit-scripts
 for more details about the presubmit API built into depot_tools.
 """
 
-USE_PYTHON3 = True
 PRESUBMIT_VERSION = '2.0.0'
 
 
@@ -17,8 +16,44 @@ def CheckPyLint(input_api, output_api):
   # These tools don't run on Windows so these tests don't work and give many
   # verbose and cryptic failure messages.
   if input_api.sys.platform != 'win32':
+    disabled_warnings = [
+        'bad-indentation',
+        'cell-var-from-loop',
+        'consider-using-enumerate',
+        'consider-using-from-import',
+        'consider-using-generator',
+        'consider-using-in',
+        'consider-using-with',
+        'deprecated-method',
+        'deprecated-module',
+        'duplicate-code',
+        'exec-used',
+        'inconsistent-return-statements',
+        'line-too-long',
+        'logging-not-lazy',
+        'method-cache-max-size-none',
+        'missing-module-docstring',
+        'possibly-used-before-assignment',
+        'protected-access',
+        'redundant-u-string-prefix',
+        'singleton-comparison',
+        'superfluous-parens',
+        'undefined-variable',
+        'unnecessary-lambda-assignment',
+        'unnecessary-semicolon',
+        'unspecified-encoding',
+        'unsubscriptable-object',
+        'unused-import',
+        'use-dict-literal',
+        'use-maxsplit-arg',
+        'use-yield-from',
+        'used-before-assignment',
+    ]
     output.extend(
-        input_api.canned_checks.RunPylint(input_api, output_api, version='2.6'))
+        input_api.canned_checks.RunPylint(input_api,
+                                          output_api,
+                                          disabled_warnings=disabled_warnings,
+                                          version='3.2'))
   return output
 
 
@@ -32,10 +67,7 @@ def CheckRunUnitTests(input_api, output_api):
         output_api,
         input_api.PresubmitLocalPath(),
         files_to_check=[r'.+_test\.py$'],
-        files_to_skip=[],
-        run_on_python2=False,
-        run_on_python3=True,
-        skip_shebang_check=True)
+        files_to_skip=[])
     output.extend(input_api.RunTests(py_tests, False))
   return output
 

@@ -4,19 +4,19 @@
 
 #include "chromeos/ash/components/network/hotspot_state_handler.h"
 
-#include "base/containers/contains.h"
 #include "chromeos/ash/components/dbus/shill/shill_manager_client.h"
 #include "chromeos/ash/components/network/hotspot_util.h"
 #include "chromeos/ash/components/network/metrics/hotspot_metrics_helper.h"
 #include "chromeos/ash/components/network/network_event_log.h"
+#include "chromeos/dbus/power/power_policy_controller.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 
 namespace ash {
 
 namespace {
 
-size_t GetActiveClientCount(const base::Value::Dict& status) {
-  const base::Value::List* active_clients =
+size_t GetActiveClientCount(const base::DictValue& status) {
+  const base::ListValue* active_clients =
       status.FindList(shill::kTetheringStatusClientsProperty);
   if (!active_clients) {
     NET_LOG(ERROR) << shill::kTetheringStatusClientsProperty << " not found in "
@@ -27,6 +27,42 @@ size_t GetActiveClientCount(const base::Value::Dict& status) {
 }
 
 }  // namespace
+
+HotspotStateHandler::ActiveClientCount::ActiveClientCount() = default;
+
+HotspotStateHandler::ActiveClientCount::~ActiveClientCount() {
+  DisableWakeLock();
+}
+
+void HotspotStateHandler::ActiveClientCount::Set(size_t value) {
+  value_ = value;
+  if (value_ > 0) {
+    EnableWakeLock();
+  } else {
+    DisableWakeLock();
+  }
+}
+
+size_t HotspotStateHandler::ActiveClientCount::Get() const {
+  return value_;
+}
+
+void HotspotStateHandler::ActiveClientCount::EnableWakeLock() {
+  if (!wake_lock_id_.has_value()) {
+    NET_LOG(EVENT) << "Enable wake lock";
+    wake_lock_id_ = chromeos::PowerPolicyController::Get()->AddSystemWakeLock(
+        chromeos::PowerPolicyController::WakeLockReason::REASON_OTHER,
+        "Clients connected to hotspot");
+  }
+}
+
+void HotspotStateHandler::ActiveClientCount::DisableWakeLock() {
+  if (wake_lock_id_.has_value()) {
+    NET_LOG(EVENT) << "Disable wake lock";
+    chromeos::PowerPolicyController::Get()->RemoveWakeLock(*wake_lock_id_);
+    wake_lock_id_.reset();
+  }
+}
 
 HotspotStateHandler::HotspotStateHandler() = default;
 
@@ -62,13 +98,13 @@ HotspotStateHandler::GetHotspotState() const {
   return hotspot_state_;
 }
 
-const absl::optional<hotspot_config::mojom::DisableReason>
+const std::optional<hotspot_config::mojom::DisableReason>
 HotspotStateHandler::GetDisableReason() const {
   return disable_reason_;
 }
 
 size_t HotspotStateHandler::GetHotspotActiveClientCount() const {
-  return active_client_count_;
+  return active_client_count_.Get();
 }
 
 void HotspotStateHandler::OnPropertyChanged(const std::string& key,
@@ -79,13 +115,13 @@ void HotspotStateHandler::OnPropertyChanged(const std::string& key,
 }
 
 void HotspotStateHandler::OnManagerProperties(
-    absl::optional<base::Value::Dict> properties) {
+    std::optional<base::DictValue> properties) {
   if (!properties) {
     NET_LOG(ERROR) << "HotspotStateHandler: Failed to get manager properties.";
     return;
   }
 
-  const base::Value::Dict* status =
+  const base::DictValue* status =
       properties->FindDict(shill::kTetheringStatusProperty);
   if (!status) {
     NET_LOG(EVENT) << "HotspotStateHandler: No dict value for: "
@@ -95,7 +131,7 @@ void HotspotStateHandler::OnManagerProperties(
   }
 }
 
-void HotspotStateHandler::UpdateHotspotStatus(const base::Value::Dict& status) {
+void HotspotStateHandler::UpdateHotspotStatus(const base::DictValue& status) {
   const std::string* state =
       status.FindString(shill::kTetheringStatusStateProperty);
   if (!state) {
@@ -114,22 +150,24 @@ void HotspotStateHandler::UpdateHotspotStatus(const base::Value::Dict& status) {
   }
 
   if (mojom_state != hotspot_config::mojom::HotspotState::kEnabled) {
-    active_client_count_ = 0;
+    active_client_count_.Set(0);
     return;
   }
   size_t active_client_count = GetActiveClientCount(status);
-  if (active_client_count == active_client_count_)
+  if (active_client_count == active_client_count_.Get()) {
     return;
+  }
 
-  active_client_count_ = active_client_count;
+  active_client_count_.Set(active_client_count);
+
   NotifyHotspotStatusChanged();
 }
 
-void HotspotStateHandler::UpdateDisableReason(const base::Value::Dict& status) {
+void HotspotStateHandler::UpdateDisableReason(const base::DictValue& status) {
   const std::string* idle_reason =
       status.FindString(shill::kTetheringStatusIdleReasonProperty);
   if (!idle_reason) {
-    disable_reason_ = absl::nullopt;
+    disable_reason_ = std::nullopt;
     NET_LOG(EVENT) << "HotspotStateHandler: No string value for: "
                    << shill::kTetheringStatusIdleReasonProperty << " in "
                    << shill::kTetheringStatusProperty;
@@ -144,8 +182,9 @@ void HotspotStateHandler::UpdateDisableReason(const base::Value::Dict& status) {
 }
 
 void HotspotStateHandler::NotifyHotspotStatusChanged() {
-  for (auto& observer : observer_list_)
+  for (auto& observer : observer_list_) {
     observer.OnHotspotStatusChanged();
+  }
 }
 
 }  // namespace ash

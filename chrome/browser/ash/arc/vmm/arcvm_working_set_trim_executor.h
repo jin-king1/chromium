@@ -7,9 +7,9 @@
 
 #include <string>
 
-#include "ash/components/arc/mojom/memory.mojom-forward.h"
 #include "base/functional/callback_forward.h"
 #include "base/timer/elapsed_timer.h"
+#include "chromeos/ash/experiences/arc/mojom/memory.mojom-forward.h"
 
 namespace content {
 class BrowserContext;
@@ -20,7 +20,8 @@ namespace arc {
 enum class ArcVmReclaimType {
   kReclaimNone = 0,
   kReclaimGuestPageCaches,
-  kReclaimAll,  // both guest page caches and shmem
+  kReclaimAll,           // drop guest page caches and do zram reclaim
+  kReclaimAllGuestOnly,  // drop guest page caches and do guest zram reclaim
 };
 
 class ArcVmWorkingSetTrimExecutor {
@@ -48,10 +49,17 @@ class ArcVmWorkingSetTrimExecutor {
   static void OnArcVmMemoryGuestReclaim(
       std::unique_ptr<base::ElapsedTimer> elapsed_timer,
       ResultCallback callback,
+      bool should_reclaim_from_host,
+      int page_limit,
       arc::mojom::ReclaimResultPtr result);
 
   static void LogErrorAndInvokeCallback(const char* error,
                                         ResultCallback callback);
+
+  // Global-like indicator var, set true when starting trim, and set false in
+  // the result callback of trim.
+  // Use this var in order to prevent double trim from different caller.
+  static bool is_trimming_;
 };
 }  // namespace arc
 

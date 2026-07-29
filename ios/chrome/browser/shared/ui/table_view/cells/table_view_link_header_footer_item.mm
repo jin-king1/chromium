@@ -5,24 +5,23 @@
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
 
 #import "base/check_op.h"
-#import "base/containers/contains.h"
-#import "ios/chrome/browser/net/crurl.h"
+#import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/common/string_util.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/table_view/table_view_cells_constants.h"
 #import "ios/chrome/common/ui/util/text_view_util.h"
-#import "net/base/mac/url_conversions.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+#import "net/base/apple/url_conversions.h"
 
 namespace {
 
 // Padding used on the top and bottom edges of the cell.
 const CGFloat kVerticalPadding = 8;
+
+// Horizontal padding used to align the header/footer with the section items.
+const CGFloat kHorizontalSpacingToAlignWithItems = 16.0;
 
 }  // namespace
 
@@ -53,13 +52,17 @@ const CGFloat kVerticalPadding = 8;
 
 #pragma mark CollectionViewItem
 
-- (void)configureHeaderFooterView:(TableViewLinkHeaderFooterView*)headerFooter
-                       withStyler:(ChromeTableViewStyler*)styler {
-  [super configureHeaderFooterView:headerFooter withStyler:styler];
+- (void)configureHeaderFooterView:(TableViewLinkHeaderFooterView*)headerFooter {
+  [super configureHeaderFooterView:headerFooter];
 
   if ([self.urls count] != 0) {
     headerFooter.urls = self.urls;
   }
+
+  if (self.forceIndents) {
+    [headerFooter setForceIndents:YES];
+  }
+
   UIColor* textColor = self.textColor
                            ? self.textColor
                            : [UIColor colorNamed:kTextSecondaryColor];
@@ -77,6 +80,10 @@ const CGFloat kVerticalPadding = 8;
 
 @implementation TableViewLinkHeaderFooterView {
   NSArray<CrURL*>* urls_;
+  // Leading constaint for item.
+  NSLayoutConstraint* leadingConstraint_;
+  // Trailing constraint for item.
+  NSLayoutConstraint* trailingConstraint_;
 }
 
 @synthesize textView = _textView;
@@ -100,18 +107,21 @@ const CGFloat kVerticalPadding = 8;
 
     [self.contentView addSubview:_textView];
 
+    leadingConstraint_ = [_textView.leadingAnchor
+        constraintEqualToAnchor:self.contentView.leadingAnchor
+                       constant:ChromeTableViewHorizontalPadding()];
+    trailingConstraint_ = [_textView.trailingAnchor
+        constraintEqualToAnchor:self.contentView.trailingAnchor
+                       constant:-ChromeTableViewHorizontalPadding()];
+
     [NSLayoutConstraint activateConstraints:@[
       [_textView.topAnchor constraintEqualToAnchor:self.contentView.topAnchor
                                           constant:kVerticalPadding],
       [_textView.bottomAnchor
           constraintEqualToAnchor:self.contentView.bottomAnchor
                          constant:-kVerticalPadding],
-      [_textView.trailingAnchor
-          constraintEqualToAnchor:self.contentView.trailingAnchor
-                         constant:-HorizontalPadding()],
-      [_textView.leadingAnchor
-          constraintEqualToAnchor:self.contentView.leadingAnchor
-                         constant:HorizontalPadding()],
+      trailingConstraint_,
+      leadingConstraint_,
     ]];
   }
   return self;
@@ -120,19 +130,42 @@ const CGFloat kVerticalPadding = 8;
 - (void)prepareForReuse {
   [super prepareForReuse];
   self.textView.text = nil;
+  self.textView.selectable = YES;
+  self.textView.linkTextAttributes =
+      @{NSForegroundColorAttributeName : [UIColor colorNamed:kBlueColor]};
   self.delegate = nil;
   self.urls = @[];
+  self.forceIndents = NO;
 }
 
 #pragma mark - Properties
 
 - (void)setText:(NSString*)text withColor:(UIColor*)color {
+  [self setText:text withColor:color textAlignment:NSTextAlignmentNatural];
+}
+
+- (void)setText:(NSString*)text
+        withColor:(UIColor*)color
+    textAlignment:(NSTextAlignment)textAlignment {
+  [self setText:text
+          withColor:color
+      textAlignment:textAlignment
+               font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+}
+
+- (void)setText:(NSString*)text
+        withColor:(UIColor*)color
+    textAlignment:(NSTextAlignment)textAlignment
+             font:(UIFont*)font {
   StringWithTags parsedString = ParseStringWithLinks(text);
+  NSMutableParagraphStyle* paragraphStyle =
+      [[NSMutableParagraphStyle alloc] init];
+  paragraphStyle.alignment = textAlignment;
 
   NSDictionary* textAttributes = @{
-    NSFontAttributeName :
-        [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote],
-    NSForegroundColorAttributeName : color
+    NSFontAttributeName : font,
+    NSForegroundColorAttributeName : color,
+    NSParagraphStyleAttributeName : paragraphStyle
   };
 
   NSMutableAttributedString* attributedText =
@@ -162,19 +195,33 @@ const CGFloat kVerticalPadding = 8;
   urls_ = urls;
 }
 
-#pragma mark - UITextViewDelegate
+- (void)setForceIndents:(BOOL)forceIndents {
+  leadingConstraint_.constant = forceIndents
+                                    ? kHorizontalSpacingToAlignWithItems
+                                    : ChromeTableViewHorizontalPadding();
+  trailingConstraint_.constant = forceIndents
+                                     ? -kHorizontalSpacingToAlignWithItems
+                                     : -ChromeTableViewHorizontalPadding();
+}
 
-- (BOOL)textView:(UITextView*)textView
-    shouldInteractWithURL:(NSURL*)URL
-                  inRange:(NSRange)characterRange
-              interaction:(UITextItemInteraction)interaction {
+- (void)setLinkEnabled:(BOOL)enabled {
+  self.textView.selectable = enabled;
+  _textView.linkTextAttributes = @{
+    NSForegroundColorAttributeName :
+        [UIColor colorNamed:enabled ? kBlueColor : kDisabledTintColor]
+  };
+}
+
+- (UIAction*)textView:(UITextView*)textView
+    primaryActionForTextItem:(UITextItem*)textItem
+               defaultAction:(UIAction*)defaultAction {
   DCHECK(self.textView == textView);
-  CrURL* crurl = [[CrURL alloc] initWithNSURL:URL];
+  CrURL* crurl = [[CrURL alloc] initWithNSURL:textItem.link];
   DCHECK(crurl.gurl.is_valid());
-  // DCHECK(base::Contains(self.urls, gURL));
-  [self.delegate view:self didTapLinkURL:crurl];
-  // Returns NO as the app is handling the opening of the URL.
-  return NO;
+  __weak __typeof(self) weakSelf = self;
+  return [UIAction actionWithHandler:^(UIAction* action) {
+    [weakSelf.delegate view:weakSelf didTapLinkURL:crurl];
+  }];
 }
 
 - (void)textViewDidChangeSelection:(UITextView*)textView {

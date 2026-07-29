@@ -54,18 +54,19 @@ class ASH_PUBLIC_EXPORT HoldingSpaceClient {
   virtual void OpenItems(const std::vector<const HoldingSpaceItem*>& items,
                          SuccessCallback callback) = 0;
 
-  // Attempts to open the My Files folder.
-  // Success is returned via the supplied `callback`.
-  virtual void OpenMyFiles(SuccessCallback callback) = 0;
-
   // Pins the specified `file_paths`.
   virtual void PinFiles(const std::vector<base::FilePath>& file_paths) = 0;
 
   // Pins the specified holding space `items`.
   virtual void PinItems(const std::vector<const HoldingSpaceItem*>& items) = 0;
 
-  // Remove file suggestions specified by absolute file paths.
-  virtual void RemoveFileSuggestions(
+  // Refreshes suggestions. Note that this intentionally does *not* invalidate
+  // the file suggest service's item suggest cache which is too expensive for
+  // holding space to invalidate.
+  virtual void RefreshSuggestions() = 0;
+
+  // Removes suggestions associated with the specified `absolute_file_paths`.
+  virtual void RemoveSuggestions(
       const std::vector<base::FilePath>& absolute_file_paths) = 0;
 
   // Attempts to show the specified holding space `item` in its folder.

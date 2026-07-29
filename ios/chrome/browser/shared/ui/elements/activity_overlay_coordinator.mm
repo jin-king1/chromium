@@ -7,10 +7,6 @@
 #import "ios/chrome/browser/shared/ui/elements/activity_overlay_view_controller.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 @interface ActivityOverlayCoordinator ()
 // View controller that displays an activity indicator.
 @property(nonatomic, strong) UIViewController* activityOverlayViewController;
@@ -21,9 +17,6 @@
 @synthesize activityOverlayViewController = _activityOverlayViewController;
 
 - (void)start {
-  if (self.activityOverlayViewController) {
-    return;
-  }
   self.activityOverlayViewController =
       [[ActivityOverlayViewController alloc] initWithNibName:nil bundle:nil];
   [self.baseViewController
@@ -44,9 +37,6 @@
 }
 
 - (void)stop {
-  if (!self.activityOverlayViewController) {
-    return;
-  }
   [self.activityOverlayViewController willMoveToParentViewController:nil];
   [self.activityOverlayViewController.view removeFromSuperview];
   [self.activityOverlayViewController removeFromParentViewController];

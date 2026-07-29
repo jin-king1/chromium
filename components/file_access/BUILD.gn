@@ -18,10 +18,9 @@ component("file_access") {
 
   defines = [ "IS_FILE_ACCESS_IMPL" ]
 
-  deps = [
-    "//base",
-    "//url:url",
-  ]
+  deps = [ "//base" ]
+
+  public_deps = [ "//url" ]
 }
 
 source_set("unit_tests") {
@@ -37,7 +36,6 @@ source_set("unit_tests") {
     ":test_support",
     "//base",
     "//base/test:test_support",
-    "//storage/browser:browser",
     "//testing/gmock",
     "//testing/gtest",
   ]

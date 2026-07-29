@@ -7,13 +7,12 @@
 
 #import <UIKit/UIKit.h>
 
-#import "ios/web/common/crw_content_view.h"
 #import "ios/web/public/ui/crw_web_view_proxy.h"
+#import "ios/web/web_state/ui/crw_content_view.h"
 
 @class CRWWebController;
 
-// TODO(crbug.com/546152): Rename class to CRWContentViewProxyImpl.
-@interface CRWWebViewProxyImpl : NSObject<CRWWebViewProxy>
+@interface CRWWebViewProxyImpl : NSObject <CRWWebViewProxy>
 
 // Used by CRWWebController to set the content view being managed.
 // `contentView`'s scroll view property will be managed by the

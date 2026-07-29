@@ -23,8 +23,6 @@
 #include "components/viz/service/display/direct_renderer.h"
 #include "components/viz/test/fake_output_surface.h"
 #include "components/viz/test/fake_skia_output_surface.h"
-#include "components/viz/test/test_gles2_interface.h"
-#include "gpu/GLES2/gl2extchromium.h"
 
 namespace cc {
 
@@ -223,7 +221,7 @@ TEST_P(LayerTreeHostCopyRequestTestMultipleRequestsOutOfOrder, Test) {
   RunTest(compositor_mode());
 }
 
-// TODO(crbug.com/564832): Remove this test when the workaround it tests is no
+// TODO(crbug.com/40447355): Remove this test when the workaround it tests is no
 // longer needed.
 class LayerTreeHostCopyRequestCompletionCausesCommit
     : public LayerTreeHostCopyRequestTest {
@@ -538,7 +536,7 @@ class LayerTreeHostTestHiddenSurfaceNotAllocatedForSubtreeCopyRequest
   std::unique_ptr<TestLayerTreeFrameSink> CreateLayerTreeFrameSink(
       const viz::RendererSettings& renderer_settings,
       double refresh_rate,
-      scoped_refptr<viz::ContextProvider> compositor_context_provider,
+      scoped_refptr<viz::RasterContextProvider> compositor_context_provider,
       scoped_refptr<viz::RasterContextProvider> worker_context_provider)
       override {
     auto frame_sink = LayerTreeHostCopyRequestTest::CreateLayerTreeFrameSink(
@@ -571,8 +569,8 @@ class LayerTreeHostTestHiddenSurfaceNotAllocatedForSubtreeCopyRequest
       const viz::AggregatedRenderPassList& render_passes) override {
     EXPECT_TRUE(will_draw_and_swap) << did_swap_;
     if (did_swap_) {
-      // TODO(crbug.com/564832): Ignore the extra frame that occurs due to copy
-      // completion. This can be removed when the extra commit is removed.
+      // TODO(crbug.com/40447355): Ignore the extra frame that occurs due to
+      // copy completion. This can be removed when the extra commit is removed.
       EXPECT_EQ(1u, render_passes.size());
       return;
     }
@@ -592,7 +590,7 @@ class LayerTreeHostTestHiddenSurfaceNotAllocatedForSubtreeCopyRequest
     EXPECT_FALSE(
         renderer->HasAllocatedResourcesForTesting(parent_render_pass_id));
 
-    // TODO(crbug.com/564832): Ignore the extra frame that occurs due to copy
+    // TODO(crbug.com/40447355): Ignore the extra frame that occurs due to copy
     // completion. This can be removed when the extra commit is removed.
     if (did_swap_) {
       EXPECT_FALSE(
@@ -607,7 +605,15 @@ class LayerTreeHostTestHiddenSurfaceNotAllocatedForSubtreeCopyRequest
     did_swap_ = true;
   }
 
-  void AfterTest() override { EXPECT_TRUE(did_swap_); }
+  void AfterTest() override {
+    EXPECT_TRUE(did_swap_);
+
+    // Clear frame_sink_ to prevent dangling pointer access during destruction.
+    // LayerTreeHost owns the TestLayerTreeFrameSink and releases it immediately
+    // after this method is called.
+    frame_sink_ = nullptr;
+    LayerTreeHostCopyRequestTest::AfterTest();
+  }
 
   viz::AggregatedRenderPassId parent_render_pass_id;
   viz::AggregatedRenderPassId copy_layer_render_pass_id;
@@ -828,7 +834,6 @@ class LayerTreeHostTestAsyncTwoReadbacksWithoutDraw
         break;
       default:
         NOTREACHED();
-        break;
     }
 
     ++callback_count_;
@@ -857,7 +862,8 @@ TEST_P(LayerTreeHostTestAsyncTwoReadbacksWithoutDraw, Test) {
 }
 
 class LayerTreeHostCopyRequestTestDeleteSharedImage
-    : public LayerTreeHostCopyRequestTest {
+    : public LayerTreeHostCopyRequestTest,
+      public gpu::TestSharedImageInterfaceClient {
  protected:
   std::unique_ptr<viz::DisplayCompositorMemoryAndTaskController>
   CreateDisplayControllerOnThread() override {
@@ -867,7 +873,8 @@ class LayerTreeHostCopyRequestTestDeleteSharedImage
   }
   std::unique_ptr<viz::SkiaOutputSurface> CreateSkiaOutputSurfaceOnThread(
       viz::DisplayCompositorMemoryAndTaskController*) override {
-    display_context_provider_ = viz::TestContextProvider::Create();
+    display_context_provider_ = viz::TestContextProvider::CreateGLES();
+    display_context_provider_->SharedImageInterface()->SetClient(this);
     display_context_provider_->BindToCurrentSequence();
     return viz::FakeSkiaOutputSurface::Create3d(display_context_provider_);
   }
@@ -893,8 +900,8 @@ class LayerTreeHostCopyRequestTestDeleteSharedImage
     EXPECT_EQ(gfx::Size(10, 10).ToString(), result->size().ToString());
     EXPECT_EQ(result->format(), viz::CopyOutputResult::Format::RGBA);
     EXPECT_EQ(result->destination(),
-              viz::CopyOutputResult::Destination::kNativeTextures);
-    EXPECT_NE(result->GetTextureResult(), nullptr);
+              viz::CopyOutputResult::Destination::kSharedImage);
+    EXPECT_NE(result->GetSharedImage().get(), nullptr);
 
     // Save the result for later.
     EXPECT_FALSE(result_);
@@ -907,7 +914,7 @@ class LayerTreeHostCopyRequestTestDeleteSharedImage
   void InsertCopyRequest() {
     copy_layer_->RequestCopyOfOutput(std::make_unique<viz::CopyOutputRequest>(
         viz::CopyOutputRequest::ResultFormat::RGBA,
-        viz::CopyOutputResult::Destination::kNativeTextures,
+        viz::CopyOutputResult::Destination::kSharedImage,
         base::BindOnce(&LayerTreeHostCopyRequestTestDeleteSharedImage::
                            ReceiveCopyRequestOutputAndCommit,
                        base::Unretained(this))));
@@ -915,27 +922,8 @@ class LayerTreeHostCopyRequestTestDeleteSharedImage
 
   void DestroyCopyResultAndCheckNumSharedImages() {
     EXPECT_TRUE(result_);
+    // We expect DidDestroySharedImage to be called after releasing the result.
     result_.reset();
-
-    ImplThreadTaskRunner()->PostTask(
-        FROM_HERE,
-        base::BindOnce(&LayerTreeHostCopyRequestTestDeleteSharedImage::
-                           CheckNumSharedImagesAfterReadbackDestroyed,
-                       base::Unretained(this)));
-  }
-
-  void CheckNumSharedImagesAfterReadbackDestroyed() {
-    // After the copy we had |num_shared_images_after_readback_| many shared
-    // images, but releasing the copy output request should cause the shared
-    // image in the request to be destroyed by the compositor, so we should have
-    // 1 less by now.
-    EXPECT_EQ(num_shared_images_after_readback_ - 1,
-              display_context_provider_->SharedImageInterface()
-                  ->shared_image_count());
-
-    // Drop the reference to the context provider on the compositor thread.
-    display_context_provider_.reset();
-    EndTest();
   }
 
   void DisplayDidDrawAndSwapOnThread() override {
@@ -977,6 +965,20 @@ class LayerTreeHostCopyRequestTestDeleteSharedImage
     }
   }
 
+  void DidDestroySharedImage() override {
+    // After the copy we had |num_shared_images_after_readback_| many shared
+    // images, but releasing the copy output request should cause the shared
+    // image in the request to be destroyed by the compositor, so we should have
+    // 1 less by now.
+    EXPECT_EQ(num_shared_images_after_readback_ - 1,
+              display_context_provider_->SharedImageInterface()
+                  ->shared_image_count());
+
+    // Drop the reference to the context provider on the compositor thread.
+    display_context_provider_.reset();
+    EndTest();
+  }
+
   scoped_refptr<viz::TestContextProvider> display_context_provider_;
   int num_swaps_ = 0;
   size_t num_shared_images_without_readback_ = 0;
@@ -1011,7 +1013,7 @@ class LayerTreeHostCopyRequestTestCountSharedImages
   }
   std::unique_ptr<viz::SkiaOutputSurface> CreateSkiaOutputSurfaceOnThread(
       viz::DisplayCompositorMemoryAndTaskController*) override {
-    display_context_provider_ = viz::TestContextProvider::Create();
+    display_context_provider_ = viz::TestContextProvider::CreateGLES();
     display_context_provider_->BindToCurrentSequence();
     return viz::FakeSkiaOutputSurface::Create3d(display_context_provider_);
   }
@@ -1059,7 +1061,7 @@ class LayerTreeHostCopyRequestTestCountSharedImages
   std::unique_ptr<TestLayerTreeFrameSink> CreateLayerTreeFrameSink(
       const viz::RendererSettings& renderer_settings,
       double refresh_rate,
-      scoped_refptr<viz::ContextProvider> compositor_context_provider,
+      scoped_refptr<viz::RasterContextProvider> compositor_context_provider,
       scoped_refptr<viz::RasterContextProvider> worker_context_provider)
       override {
     // Since this test counts shared images and SkiaRenderer uses shared images
@@ -1120,7 +1122,7 @@ class LayerTreeHostCopyRequestTestCreatesSharedImage
     // Request a normal texture copy. This should create a new shared image.
     copy_layer_->RequestCopyOfOutput(std::make_unique<viz::CopyOutputRequest>(
         viz::CopyOutputRequest::ResultFormat::RGBA,
-        viz::CopyOutputResult::Destination::kNativeTextures,
+        viz::CopyOutputResult::Destination::kSharedImage,
         base::BindOnce(
             &LayerTreeHostCopyRequestTestCreatesSharedImage::CopyOutputCallback,
             base::Unretained(this))));
@@ -1130,15 +1132,15 @@ class LayerTreeHostCopyRequestTestCreatesSharedImage
     EXPECT_FALSE(result->IsEmpty());
     EXPECT_EQ(result->format(), viz::CopyOutputResult::Format::RGBA);
     EXPECT_EQ(result->destination(),
-              viz::CopyOutputResult::Destination::kNativeTextures);
-    ASSERT_NE(nullptr, result->GetTextureResult());
-    release_ = result->TakeTextureOwnership();
-    EXPECT_EQ(1u, release_.size());
+              viz::CopyOutputResult::Destination::kSharedImage);
+    ASSERT_NE(result->GetSharedImage().get(), nullptr);
+    release_ = result->TakeSharedImageOwnership();
+    ASSERT_TRUE(release_);
   }
 
   void AfterTest() override {
-    for (auto& release : release_) {
-      std::move(release).Run(gpu::SyncToken(), false);
+    if (release_) {
+      std::move(release_).Run(gpu::SyncToken(), false);
     }
 
     // Except the copy to have made a new shared image.
@@ -1146,7 +1148,7 @@ class LayerTreeHostCopyRequestTestCreatesSharedImage
               num_shared_images_with_readback_);
   }
 
-  viz::CopyOutputResult::ReleaseCallbacks release_;
+  viz::ReleaseCallback release_;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,
@@ -1205,7 +1207,7 @@ class LayerTreeHostCopyRequestTestDestroyBeforeCopy
         std::unique_ptr<viz::CopyOutputRequest> request =
             std::make_unique<viz::CopyOutputRequest>(
                 viz::CopyOutputRequest::ResultFormat::RGBA,
-                viz::CopyOutputResult::Destination::kNativeTextures,
+                viz::CopyOutputResult::Destination::kSharedImage,
                 base::BindOnce(&LayerTreeHostCopyRequestTestDestroyBeforeCopy::
                                    CopyOutputCallback,
                                base::Unretained(this)));
@@ -1297,7 +1299,7 @@ class LayerTreeHostCopyRequestTestShutdownBeforeCopy
         std::unique_ptr<viz::CopyOutputRequest> request =
             std::make_unique<viz::CopyOutputRequest>(
                 viz::CopyOutputRequest::ResultFormat::RGBA,
-                viz::CopyOutputResult::Destination::kNativeTextures,
+                viz::CopyOutputResult::Destination::kSharedImage,
                 base::BindOnce(&LayerTreeHostCopyRequestTestShutdownBeforeCopy::
                                    CopyOutputCallback,
                                base::Unretained(this)));
@@ -1379,7 +1381,7 @@ class LayerTreeHostCopyRequestTestMultipleDrawsHiddenCopyRequest
   }
 
   DrawResult PrepareToDrawOnThread(LayerTreeHostImpl* host_impl,
-                                   LayerTreeHostImpl::FrameData* frame_data,
+                                   FrameData* frame_data,
                                    DrawResult draw_result) override {
     LayerImpl* root = host_impl->active_tree()->root_layer();
     LayerImpl* child = host_impl->active_tree()->LayerById(child_->id());
@@ -1387,8 +1389,8 @@ class LayerTreeHostCopyRequestTestMultipleDrawsHiddenCopyRequest
     bool saw_root = false;
     bool saw_child = false;
     for (EffectTreeLayerListIterator it(host_impl->active_tree());
-         it.state() != EffectTreeLayerListIterator::State::END; ++it) {
-      if (it.state() == EffectTreeLayerListIterator::State::LAYER) {
+         it.state() != EffectTreeLayerListIterator::State::kEnd; ++it) {
+      if (it.state() == EffectTreeLayerListIterator::State::kLayer) {
         if (it.current_layer() == root)
           saw_root = true;
         else if (it.current_layer() == child)
@@ -1413,7 +1415,8 @@ class LayerTreeHostCopyRequestTestMultipleDrawsHiddenCopyRequest
         EXPECT_TRUE(saw_child);
         // Make another draw happen after doing the copy request.
         host_impl->SetViewportDamage(gfx::Rect(1, 1));
-        host_impl->SetNeedsRedraw();
+        host_impl->SetNeedsRedraw(/*animation_only=*/false,
+                                  /*skip_if_inside_draw=*/false);
         break;
       case 3:
         // If LayerTreeHostImpl does the wrong thing, it will try to draw the

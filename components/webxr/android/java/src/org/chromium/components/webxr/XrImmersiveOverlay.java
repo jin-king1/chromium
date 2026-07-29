@@ -4,6 +4,8 @@
 
 package org.chromium.components.webxr;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.pm.ActivityInfo;
@@ -14,14 +16,20 @@ import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 
-import androidx.annotation.NonNull;
+import androidx.core.graphics.Insets;
+import androidx.core.view.WindowInsetsCompat;
 
 import org.chromium.base.Log;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.content_public.browser.ScreenOrientationDelegate;
 import org.chromium.content_public.browser.ScreenOrientationProvider;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
+import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
+import org.chromium.ui.insets.InsetObserver;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -30,8 +38,12 @@ import java.util.Map;
  * Provides a fullscreen overlay for immersive sessions, allows tailoring setup/etc. due to the
  * particular needs of AR/VR sessions via the XrImmersiveOverlay.Delegate interface.
  */
+@NullMarked
 public class XrImmersiveOverlay
-        implements SurfaceHolder.Callback2, View.OnTouchListener, ScreenOrientationDelegate {
+        implements SurfaceHolder.Callback2,
+                View.OnTouchListener,
+                ScreenOrientationDelegate,
+                InsetObserver.WindowInsetsConsumer {
     /**
      * Abstraction layer for runtime-specific configuration that needs to happen when setting up a
      * SurfaceView.
@@ -85,6 +97,12 @@ public class XrImmersiveOverlay
          * Configuration.ORIENTATION_UNDEFINED
          */
         int getDesiredOrientation();
+
+        /**
+         * Returns whether the size of the rendering surface should be the size of the entire
+         * display or should have the size of cutout areas into account.
+         */
+        boolean useDisplaySizes();
     }
 
     private static final String TAG = "XrImmersiveOverlay";
@@ -98,26 +116,26 @@ public class XrImmersiveOverlay
     private Delegate mOverlayDelegate;
     private Activity mActivity;
     private boolean mSurfaceReportedReady;
-    private Integer mRestoreOrientation;
+    private @Nullable Integer mRestoreOrientation;
     private boolean mCleanupInProgress;
     private XrSurfaceView mXrSurfaceView;
     private WebContents mWebContents;
-    private boolean mUseOverlay;
 
     // Set containing all currently touching pointers.
     private HashMap<Integer, PointerData> mPointerIdToData;
     // ID of primary pointer (if present).
-    private Integer mPrimaryPointerId;
+    private @Nullable Integer mPrimaryPointerId;
 
-    public void show(@NonNull Delegate overlayDelegate, @NonNull WebContents webContents,
-            @NonNull XrSessionCoordinator caller) {
+    @Initializer
+    public void show(
+            Delegate overlayDelegate, WebContents webContents, XrSessionCoordinator caller) {
         if (DEBUG_LOGS) Log.i(TAG, "constructor");
         mXrSessionCoordinator = caller;
 
         mWebContents = webContents;
         mOverlayDelegate = overlayDelegate;
 
-        mActivity = XrSessionCoordinator.getActivity(webContents);
+        mActivity = assumeNonNull(XrSessionCoordinator.getActivity(webContents));
 
         mPointerIdToData = new HashMap<Integer, PointerData>();
         mPrimaryPointerId = null;
@@ -125,9 +143,19 @@ public class XrImmersiveOverlay
         // Choose a concrete implementation to create a drawable Surface and make it fullscreen.
         // It forwards SurfaceHolder callbacks and touch events to this XrImmersiveOverlay object.
         mXrSurfaceView = new XrSurfaceView();
+
+        // Register as an Insets consumer so that we can ensure we are probably rendered.
+        WindowAndroid windowAndroid = mWebContents.getTopLevelNativeWindow();
+        if (windowAndroid != null && windowAndroid.getInsetObserver() != null) {
+            windowAndroid
+                    .getInsetObserver()
+                    .addInsetsConsumer(
+                            this,
+                            InsetObserver.WindowInsetsConsumer.InsetConsumerSource.WEBXR_OVERLAY);
+        }
     }
 
-    private class PointerData {
+    private static class PointerData {
         public float x;
         public float y;
         public boolean touching;
@@ -140,9 +168,8 @@ public class XrImmersiveOverlay
     }
 
     private class XrSurfaceView {
-        private SurfaceView mSurfaceView;
-        private WebContentsObserver mWebContentsObserver;
-        private boolean mDomSurfaceNeedsConfiguring;
+        private @Nullable SurfaceView mSurfaceView;
+        private final WebContentsObserver mWebContentsObserver;
         private boolean mSurfaceViewNeedsDestruction;
         private boolean mDestructionFromVisibilityChanged;
 
@@ -189,28 +216,29 @@ public class XrImmersiveOverlay
 
             mOverlayDelegate.parentAndShowSurfaceView(mSurfaceView);
 
-            mWebContentsObserver = new WebContentsObserver() {
-                @Override
-                public void didToggleFullscreenModeForTab(
-                        boolean enteredFullscreen, boolean willCauseResize) {
-                    if (DEBUG_LOGS) {
-                        Log.i(TAG,
-                                "didToggleFullscreenModeForTab(), enteredFullscreen="
-                                        + enteredFullscreen);
-                    }
+            mWebContentsObserver =
+                    new WebContentsObserver(mWebContents) {
+                        @Override
+                        public void didToggleFullscreenModeForTab(
+                                boolean enteredFullscreen, boolean willCauseResize) {
+                            if (DEBUG_LOGS) {
+                                Log.i(
+                                        TAG,
+                                        "didToggleFullscreenModeForTab(), enteredFullscreen="
+                                                + enteredFullscreen);
+                            }
 
-                    if (!enteredFullscreen) {
-                        cleanupAndExit();
-                    }
-                }
-            };
-
-            // Watch for fullscreen exit triggered from JS, this needs to end the session.
-            mWebContents.addObserver(mWebContentsObserver);
+                            // Watch for fullscreen exit triggered from JS, this needs to end the
+                            // session.
+                            if (!enteredFullscreen) {
+                                cleanupAndExit();
+                            }
+                        }
+                    };
         }
 
         public void destroy() {
-            mWebContents.removeObserver(mWebContentsObserver);
+            mWebContentsObserver.observe(null);
 
             if (!(DEFER_SURFACE_VIEW_DESTRUCTION && mDestructionFromVisibilityChanged)) {
                 removeAndDestroySurfaceView();
@@ -235,21 +263,35 @@ public class XrImmersiveOverlay
         // touches. Ignore batching since we're only sending one ray pose per frame.
 
         if (DEBUG_LOGS) {
-            Log.i(TAG,
-                    "Received motion event, action: " + MotionEvent.actionToString(ev.getAction())
-                            + ", pointer count: " + ev.getPointerCount()
-                            + ", action index: " + ev.getActionIndex());
+            Log.i(
+                    TAG,
+                    "Received motion event, action: "
+                            + MotionEvent.actionToString(ev.getAction())
+                            + ", pointer count: "
+                            + ev.getPointerCount()
+                            + ", action index: "
+                            + ev.getActionIndex());
             for (int i = 0; i < ev.getPointerCount(); i++) {
-                Log.i(TAG,
-                        "Pointer index: " + i + ", id: " + ev.getPointerId(i) + ", coordinates: ("
-                                + ev.getX(i) + ", " + ev.getY(i) + ")");
+                Log.i(
+                        TAG,
+                        "Pointer index: "
+                                + i
+                                + ", id: "
+                                + ev.getPointerId(i)
+                                + ", coordinates: ("
+                                + ev.getX(i)
+                                + ", "
+                                + ev.getY(i)
+                                + ")");
             }
         }
 
         final int action = ev.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_UP
+        if (action == MotionEvent.ACTION_DOWN
+                || action == MotionEvent.ACTION_UP
                 || action == MotionEvent.ACTION_POINTER_DOWN
-                || action == MotionEvent.ACTION_POINTER_UP || action == MotionEvent.ACTION_CANCEL
+                || action == MotionEvent.ACTION_POINTER_UP
+                || action == MotionEvent.ACTION_CANCEL
                 || action == MotionEvent.ACTION_MOVE) {
             // ACTION_DOWN - gesture starts. Pointer with index 0 will be considered as a primary
             // pointer until it's raised. Then, there will be no primary pointer until the
@@ -260,13 +302,16 @@ public class XrImmersiveOverlay
                 // Remember primary pointer's ID. The start of the gesture is the only time when the
                 // primary pointer is set.
                 mPrimaryPointerId = pointerId;
-                PointerData previousData = mPointerIdToData.put(
-                        mPrimaryPointerId, new PointerData(ev.getX(0), ev.getY(0), true));
+                PointerData previousData =
+                        mPointerIdToData.put(
+                                mPrimaryPointerId, new PointerData(ev.getX(0), ev.getY(0), true));
 
                 if (previousData != null) {
                     // Not much we can do here, just log and continue.
-                    Log.w(TAG,
-                            "New pointer with ID " + pointerId
+                    Log.w(
+                            TAG,
+                            "New pointer with ID "
+                                    + pointerId
                                     + " introduced by ACTION_DOWN when old pointer with the same ID"
                                     + " already exists.");
                 }
@@ -295,13 +340,18 @@ public class XrImmersiveOverlay
 
                 if (DEBUG_LOGS) Log.i(TAG, "New pointer, ID=" + pointerId);
 
-                PointerData previousData = mPointerIdToData.put(pointerId,
-                        new PointerData(ev.getX(pointerIndex), ev.getY(pointerIndex), true));
+                PointerData previousData =
+                        mPointerIdToData.put(
+                                pointerId,
+                                new PointerData(
+                                        ev.getX(pointerIndex), ev.getY(pointerIndex), true));
 
                 if (previousData != null) {
                     // Not much we can do here, just log and continue.
-                    Log.w(TAG,
-                            "New pointer with ID " + pointerId
+                    Log.w(
+                            TAG,
+                            "New pointer with ID "
+                                    + pointerId
                                     + " introduced by ACTION_POINTER_DOWN when old pointer with the"
                                     + " same ID already exists.");
                 }
@@ -327,8 +377,10 @@ public class XrImmersiveOverlay
                     // The pointer with ID that was not previously known has been somehow introduced
                     // outside of ACTION_DOWN / ACTION_POINTER_DOWN - this should never happen!
                     // Nevertheless, it happens in the wild, so ignore the pointer to prevent crash.
-                    Log.w(TAG,
-                            "Pointer with ID " + pointerId
+                    Log.w(
+                            TAG,
+                            "Pointer with ID "
+                                    + pointerId
                                     + " not found in mPointerIdToData, ignoring ACTION_POINTER_UP"
                                     + " for it.");
                 } else {
@@ -356,8 +408,12 @@ public class XrImmersiveOverlay
                     // and ACTION_POINTER_DOWN, but it did not seem to happen in this case. In case
                     // logs are enabled, log this information.
                     if (DEBUG_LOGS && pd == null) {
-                        Log.i(TAG,
-                                "Pointer with ID " + pointerId + " (index " + i
+                        Log.i(
+                                TAG,
+                                "Pointer with ID "
+                                        + pointerId
+                                        + " (index "
+                                        + i
                                         + ") not found in mPointerIdToData. Known pointer IDs:");
                         for (Map.Entry<Integer, PointerData> entry : mPointerIdToData.entrySet()) {
                             Log.i(TAG, "ID=" + entry.getKey());
@@ -369,8 +425,12 @@ public class XrImmersiveOverlay
                         // introduced outside of ACTION_DOWN / ACTION_POINTER_DOWN - this should
                         // never happen! Nevertheless, it happens in the wild, so ignore the pointer
                         // to prevent crash.
-                        Log.w(TAG,
-                                "Pointer with ID " + pointerId + "(index " + i
+                        Log.w(
+                                TAG,
+                                "Pointer with ID "
+                                        + pointerId
+                                        + "(index "
+                                        + i
                                         + ") not found in mPointerIdToData, ignoring ACTION_MOVE"
                                         + " for it.");
                         continue;
@@ -399,8 +459,10 @@ public class XrImmersiveOverlay
         for (Map.Entry<Integer, PointerData> entry : mPointerIdToData.entrySet()) {
             mXrSessionCoordinator.onDrawingSurfaceTouch(
                     mPrimaryPointerId != null && mPrimaryPointerId.equals(entry.getKey()),
-                    gestureEnded ? false : entry.getValue().touching, entry.getKey().intValue(),
-                    entry.getValue().x, entry.getValue().y);
+                    gestureEnded ? false : entry.getValue().touching,
+                    entry.getKey().intValue(),
+                    entry.getValue().x,
+                    entry.getValue().y);
         }
     }
 
@@ -438,13 +500,19 @@ public class XrImmersiveOverlay
         // transport even if the currently-visible part in the surface view is smaller than this. We
         // shouldn't get resize events since we're using FLAG_LAYOUT_STABLE and are locking screen
         // orientation.
+        assumeNonNull(mWebContents.getTopLevelNativeWindow());
         DisplayAndroid display = mWebContents.getTopLevelNativeWindow().getDisplay();
         if (mSurfaceReportedReady) {
             int rotation = display.getRotation();
             if (DEBUG_LOGS) {
-                Log.i(TAG,
-                        "surfaceChanged ignoring change to width=" + width + " height=" + height
-                                + " rotation=" + rotation);
+                Log.i(
+                        TAG,
+                        "surfaceChanged ignoring change to width="
+                                + width
+                                + " height="
+                                + height
+                                + " rotation="
+                                + rotation);
             }
             return;
         }
@@ -466,8 +534,9 @@ public class XrImmersiveOverlay
 
         // If we have a desired orientation and it does not equal the current orientation, then we
         // will need to swap dimensions.
-        boolean swapScreenDimensions = desiredOrientation != Configuration.ORIENTATION_UNDEFINED
-                && desiredOrientation != currentOrientation;
+        boolean swapScreenDimensions =
+                desiredOrientation != Configuration.ORIENTATION_UNDEFINED
+                        && desiredOrientation != currentOrientation;
 
         mActivity.setRequestedOrientation(requestOrientation);
 
@@ -478,27 +547,45 @@ public class XrImmersiveOverlay
         // after the session starts, but the session doesn't start until we report the drawing
         // surface being ready (including a configured size), so we use the reported size of the
         // display assuming that's what the fullscreen mode will use.
-        int screenWidth =
-                !swapScreenDimensions ? display.getDisplayWidth() : display.getDisplayHeight();
-        int screenHeight =
-                !swapScreenDimensions ? display.getDisplayHeight() : display.getDisplayWidth();
+        if (mOverlayDelegate.useDisplaySizes()) {
+            int screenWidth = display.getDisplayWidth();
+            int screenHeight = display.getDisplayHeight();
 
-        if (width < screenWidth || height < screenHeight) {
-            if (DEBUG_LOGS) {
-                Log.i(TAG,
-                        "surfaceChanged adjusting size from " + width + "x" + height + " to "
-                                + screenWidth + "x" + screenHeight);
+            if (width < screenWidth || height < screenHeight) {
+                if (DEBUG_LOGS) {
+                    Log.i(
+                            TAG,
+                            "surfaceChanged adjusting size from "
+                                    + width
+                                    + "x"
+                                    + height
+                                    + " to"
+                                    + screenWidth
+                                    + "x"
+                                    + screenHeight);
+                }
+                width = screenWidth;
+                height = screenHeight;
             }
-            width = screenWidth;
-            height = screenHeight;
+        }
+
+        if (swapScreenDimensions) {
+            // Swap width and height.
+            int auxWidth = width;
+            width = height;
+            height = auxWidth;
         }
 
         int rotation = display.getRotation();
         if (DEBUG_LOGS) {
             Log.i(TAG, "surfaceChanged size=" + width + "x" + height + " rotation=" + rotation);
         }
-        mXrSessionCoordinator.onDrawingSurfaceReady(holder.getSurface(),
-                mWebContents.getTopLevelNativeWindow(), rotation, width, height);
+        mXrSessionCoordinator.onDrawingSurfaceReady(
+                holder.getSurface(),
+                mWebContents.getTopLevelNativeWindow(),
+                rotation,
+                width,
+                height);
         mSurfaceReportedReady = true;
     }
 
@@ -537,6 +624,33 @@ public class XrImmersiveOverlay
         ScreenOrientationProvider.getInstance().setOrientationDelegate(null);
         if (mRestoreOrientation != null) mActivity.setRequestedOrientation(mRestoreOrientation);
         mRestoreOrientation = null;
+
+        if (!mWebContents.isDestroyed()) {
+            WindowAndroid windowAndroid = mWebContents.getTopLevelNativeWindow();
+            if (windowAndroid != null && windowAndroid.getInsetObserver() != null) {
+                windowAndroid.getInsetObserver().removeInsetsConsumer(this);
+            }
+        }
+    }
+
+    @Override // InsetObserver.WindowInsetsConsumer
+    public WindowInsetsCompat onApplyWindowInsets(View view, WindowInsetsCompat insets) {
+        // On devices with three button navigation enabled, something about the raw camera access
+        // feature can cause our layout to get "squished" because it ends up blocking out space for
+        // the status bar, which doesn't happen when gesture navigation is enabled. This ensures
+        // that we properly take up the entire screen, as we expect we do in the `surfaceChanged`
+        // callback.
+        // We also consume IME (keyboard) insets here. In 3-button navigation mode, showing the
+        // keyboard forces the navigation bar to become visible for safety/accessibility. This
+        // temporarily exits the immersive fullscreen layout state, triggering Android's fallback
+        // 'adjustResize' behavior which shrinks the View (and squishes the WebGL canvas).
+        // Consuming the IME insets here forces the View to ignore the keyboard size and maintain
+        // its size, preserving the layout viewport. In gesture mode, this is less of an issue as
+        // the immersive state is preserved without navigation buttons to restore.
+        return new WindowInsetsCompat.Builder(insets)
+                .setInsets(WindowInsetsCompat.Type.statusBars(), Insets.NONE)
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
+                .build();
     }
 
     /**
@@ -557,8 +671,10 @@ public class XrImmersiveOverlay
             case Configuration.ORIENTATION_PORTRAIT:
                 return ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
             default:
-                Log.e(TAG,
-                        "Unexpected configurationOrientation: " + configurationOrientation
+                Log.e(
+                        TAG,
+                        "Unexpected configurationOrientation: "
+                                + configurationOrientation
                                 + " using default of 'Locked'.");
                 return ActivityInfo.SCREEN_ORIENTATION_LOCKED;
         }

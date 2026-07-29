@@ -10,7 +10,7 @@
 
 #include "ash/ash_export.h"
 #include "base/memory/raw_ptr.h"
-#include "ui/base/models/simple_menu_model.h"
+#include "ui/menus/simple_menu_model.h"
 
 namespace ash {
 
@@ -27,6 +27,7 @@ class ASH_EXPORT ShelfContextMenuModel : public ui::SimpleMenuModel,
   // intention that it will be logged, add checks to ensure stability of the
   // enum and update the ChromeOSUICommands enum listing in
   // tools/metrics/histograms/enums.xml.
+  // LINT.IfChange(CommandId)
   enum CommandId {
     MENU_ASH_START = 500,  // Offset to avoid conflicts with other menus.
     MENU_AUTO_HIDE = MENU_ASH_START,
@@ -38,10 +39,16 @@ class ASH_EXPORT ShelfContextMenuModel : public ui::SimpleMenuModel,
     MENU_PERSONALIZATION_HUB = 506,
     MENU_HIDE_CONTINUE_SECTION = 507,
     MENU_SHOW_CONTINUE_SECTION = 508,
+    MENU_HIDE_DESK_NAME = 509,
+    MENU_SHOW_DESK_NAME = 510,
+    MENU_TASK_MANAGER = 511,
     MENU_ASH_END
   };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/apps/enums.xml:ChromeOSUICommands)
 
-  ShelfContextMenuModel(ShelfItemDelegate* delegate, int64_t display_id);
+  ShelfContextMenuModel(ShelfItemDelegate* delegate,
+                        int64_t display_id,
+                        bool menu_in_shelf);
 
   ShelfContextMenuModel(const ShelfContextMenuModel&) = delete;
   ShelfContextMenuModel& operator=(const ShelfContextMenuModel&) = delete;
@@ -56,8 +63,9 @@ class ASH_EXPORT ShelfContextMenuModel : public ui::SimpleMenuModel,
   // Add shelf auto-hide, shelf alignment, and wallpaper context menu items.
   void AddShelfAndWallpaperItems();
 
-  raw_ptr<ShelfItemDelegate, ExperimentalAsh> delegate_;
+  raw_ptr<ShelfItemDelegate> delegate_;
   const int64_t display_id_;
+  const bool menu_in_shelf_;
   std::unique_ptr<ui::SimpleMenuModel> alignment_submenu_;
 };
 

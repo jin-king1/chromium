@@ -52,8 +52,9 @@ const uint8_t kOriginTrialSha2Hash[] = {
 // static
 void OriginTrialsComponentInstallerPolicy::GetComponentHash(
     std::vector<uint8_t>* hash) {
-  if (!hash)
+  if (!hash) {
     return;
+  }
   hash->assign(std::begin(kOriginTrialSha2Hash),
                std::end(kOriginTrialSha2Hash));
 }
@@ -64,7 +65,7 @@ void OriginTrialsComponentInstallerPolicy::GetHash(
 }
 
 bool OriginTrialsComponentInstallerPolicy::VerifyInstallation(
-    const base::Value::Dict& manifest,
+    const base::DictValue& manifest,
     const base::FilePath& install_dir) const {
   // Test if the "origin-trials" key is present in the manifest.
   return manifest.contains(kManifestOriginTrialsKey);
@@ -81,7 +82,7 @@ bool OriginTrialsComponentInstallerPolicy::RequiresNetworkEncryption() const {
 
 update_client::CrxInstaller::Result
 OriginTrialsComponentInstallerPolicy::OnCustomInstall(
-    const base::Value::Dict& manifest,
+    const base::DictValue& manifest,
     const base::FilePath& install_dir) {
   return update_client::CrxInstaller::Result(0);
 }
@@ -91,7 +92,7 @@ void OriginTrialsComponentInstallerPolicy::OnCustomUninstall() {}
 void OriginTrialsComponentInstallerPolicy::ComponentReady(
     const base::Version& version,
     const base::FilePath& install_dir,
-    base::Value::Dict manifest) {}
+    base::DictValue manifest) {}
 
 base::FilePath OriginTrialsComponentInstallerPolicy::GetRelativeInstallDir()
     const {

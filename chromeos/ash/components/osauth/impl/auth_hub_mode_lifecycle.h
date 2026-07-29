@@ -5,11 +5,12 @@
 #ifndef CHROMEOS_ASH_COMPONENTS_OSAUTH_IMPL_AUTH_HUB_MODE_LIFECYCLE_H_
 #define CHROMEOS_ASH_COMPONENTS_OSAUTH_IMPL_AUTH_HUB_MODE_LIFECYCLE_H_
 
-#include "base/callback_list.h"
+#include "base/component_export.h"
 #include "base/containers/flat_map.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
-#include "chromeos/ash/components/osauth/public/auth_factor_engine.h"
+#include "chromeos/ash/components/osauth/impl/auth_hub_common.h"
 #include "chromeos/ash/components/osauth/public/common_types.h"
 
 namespace ash {
@@ -32,29 +33,32 @@ namespace ash {
 //    complete;
 //  * Destroying all engine instances;
 //  * Switching to another mode if necessary.
+// `AuthHubModeLifecycle` correctly handles attempt mode
+// initialization/shutdown, even if request to switch mode/shut down  was
+// requested in the middle of ongoing init/shutdown sequence.
+
 class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_OSAUTH) AuthHubModeLifecycle {
  public:
-  using EnginesMap =
-      base::flat_map<AshAuthFactor, base::raw_ptr<AuthFactorEngine>>;
-
   // Interface to interact with owning AuthHub:
-  class Owner {
+  class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_OSAUTH) Owner {
    public:
+    virtual ~Owner();
     virtual void OnReadyForMode(AuthHubMode mode,
-                                EnginesMap available_engines) = 0;
+                                AuthEnginesMap available_engines) = 0;
     virtual void OnExitedMode(AuthHubMode mode) = 0;
     virtual void OnModeShutdown() = 0;
-    virtual ~Owner() = default;
   };
 
   explicit AuthHubModeLifecycle(Owner* owner);
   ~AuthHubModeLifecycle();
 
   bool IsReady();
-  EnginesMap GetAvailableEngines();
+  AuthEnginesMap GetAvailableEngines();
+  AuthHubMode GetCurrentMode() const;
 
+  // Starts initialization sequence, or updates `target_mode_`, if stage is not
+  // `kUninitialized`, triggering `ShutDownEngines` if necessary.
   void SwitchToMode(AuthHubMode mode);
-  void Shutdown();
 
  private:
   enum class Stage {
@@ -65,10 +69,6 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_OSAUTH) AuthHubModeLifecycle {
   };
 
   struct EngineState;
-
-  // Starts initialization sequence, or updates `target_mode_`, if stage is not
-  // `kUninitialized`, triggering `ShutDownEngines` if necessary.
-  void SwitchToModeImpl(AuthHubMode mode);
 
   // Start initialization sequence.
   void InitializeEnginesForMode();
@@ -93,16 +93,16 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_OSAUTH) AuthHubModeLifecycle {
   // If there is a new `target_mode_`, would trigger `InitializeEnginesForMode`.
   void CheckShutdownStatus();
 
-  AuthHubMode mode_ = kNone;
-  AuthHubMode initializing_for_mode_ = kNone;
-  AuthHubMode target_mode_ = kNone;
+  AuthHubMode mode_ = AuthHubMode::kNone;
+  AuthHubMode initializing_for_mode_ = AuthHubMode::kNone;
+  AuthHubMode target_mode_ = AuthHubMode::kNone;
 
   Stage stage_ = Stage::kUninitialized;
 
   base::flat_map<AshAuthFactor, EngineState> engines_;
 
   base::OneShotTimer watchdog_;
-  base::raw_ptr<Owner> owner_;
+  raw_ptr<Owner> owner_;
   base::WeakPtrFactory<AuthHubModeLifecycle> weak_factory_{this};
 };
 

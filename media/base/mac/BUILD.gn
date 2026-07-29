@@ -14,6 +14,7 @@ source_set("mac") {
     "//media/audio",
     "//media/device_monitors",
     "//media/filters",
+    "//media/video",
   ]
 
   sources = [
@@ -37,10 +38,7 @@ source_set("mac") {
       "VideoToolbox.framework",
     ]
   }
-  configs += [
-    "//media:subcomponent_config",
-    "//build/config/compiler:enable_arc",
-  ]
+  configs += [ "//media:subcomponent_config" ]
 
   deps = [
     "//media/base",
@@ -51,8 +49,8 @@ source_set("mac") {
 source_set("unit_tests") {
   testonly = true
   sources = [
-    "channel_layout_util_mac_unittests.cc",
-    "video_frame_mac_unittests.cc",
+    "channel_layout_util_mac_unittest.cc",
+    "video_frame_mac_unittest.cc",
   ]
   frameworks = [
     "AudioToolbox.framework",

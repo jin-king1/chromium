@@ -12,7 +12,6 @@
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
-#include "chrome/test/base/testing_browser_process.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
@@ -25,8 +24,7 @@ constexpr char kLocalProxyUrl[] = "localhost:3128";
 
 // Encode the PAC script as a data: URL.
 std::string GetPacUrl(const char* pac_data) {
-  std::string b64_encoded;
-  base::Base64Encode(pac_data, &b64_encoded);
+  std::string b64_encoded = base::Base64Encode(pac_data);
   return "data:application/x-javascript-config;base64," + b64_encoded;
 }
 }  // namespace

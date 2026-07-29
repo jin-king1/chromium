@@ -6,6 +6,7 @@
 #include <stdint.h>
 
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "base/command_line.h"
@@ -13,10 +14,12 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/bind.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "media/base/cdm_callback_promise.h"
@@ -37,6 +40,7 @@
 #include "media/test/pipeline_integration_test_base.h"
 #include "media/test/test_media_source.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/abseil-cpp/absl/strings/ascii.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -76,9 +80,13 @@ constexpr int kAppendTimeMs = kAppendTimeSec * 1000;
 constexpr int k320WebMFileDurationMs = 2736;
 constexpr int k640WebMFileDurationMs = 2762;
 constexpr int kVP9WebMFileDurationMs = 2736;
-constexpr int kVP8AWebMFileDurationMs = 2734;
+constexpr int kVP8AWebMFileDurationMs = 2733;
 
 constexpr char kSfxLosslessHash[] = "3.03,2.86,2.99,3.31,3.57,4.06,";
+constexpr char kBear320x240AudioHash[] = "-3.59,-2.06,-0.43,2.15,0.77,-0.95,";
+constexpr char kSfxMp3Hash[] = "1.30,2.72,4.56,5.08,3.74,2.03,";
+
+constexpr char kSfxMseMp3Hash[] = "1.01,2.71,4.18,4.32,3.04,1.12,";
 
 // Hash for a full playthrough of "opus-trimming-test.(webm|ogg)".
 constexpr char kOpusEndTrimmingHash_1[] =
@@ -111,39 +119,21 @@ static base::Time kLiveTimelineOffset() {
   // 2012-11-10 12:34:56.789123456
   // Since base::Time only has a resolution of microseconds,
   // construct a base::Time for 2012-11-10 12:34:56.789123.
-  base::Time::Exploded exploded_time;
-  exploded_time.year = 2012;
-  exploded_time.month = 11;
-  exploded_time.day_of_month = 10;
-  exploded_time.day_of_week = 6;
-  exploded_time.hour = 12;
-  exploded_time.minute = 34;
-  exploded_time.second = 56;
-  exploded_time.millisecond = 789;
+  static constexpr base::Time::Exploded kExplodedTime = {.year = 2012,
+                                                         .month = 11,
+                                                         .day_of_week = 6,
+                                                         .day_of_month = 10,
+                                                         .hour = 12,
+                                                         .minute = 34,
+                                                         .second = 56,
+                                                         .millisecond = 789};
   base::Time timeline_offset;
-  EXPECT_TRUE(base::Time::FromUTCExploded(exploded_time, &timeline_offset));
+  EXPECT_TRUE(base::Time::FromUTCExploded(kExplodedTime, &timeline_offset));
 
   timeline_offset += base::Microseconds(123);
 
   return timeline_offset;
 }
-
-#if BUILDFLAG(IS_MAC)
-class ScopedVerboseLogEnabler {
- public:
-  ScopedVerboseLogEnabler() : old_level_(logging::GetMinLogLevel()) {
-    logging::SetMinLogLevel(-1);
-  }
-
-  ScopedVerboseLogEnabler(const ScopedVerboseLogEnabler&) = delete;
-  ScopedVerboseLogEnabler& operator=(const ScopedVerboseLogEnabler&) = delete;
-
-  ~ScopedVerboseLogEnabler() { logging::SetMinLogLevel(old_level_); }
-
- private:
-  const int old_level_;
-};
-#endif
 
 enum PromiseResult { RESOLVED, REJECTED };
 
@@ -211,8 +201,7 @@ class KeyProvidingApp : public FakeEncryptedMedia::AppBase {
     EXPECT_TRUE(LookupKey(key_ids[0], &key));
 
     // Update the session with the key ID and key.
-    std::string jwk = GenerateJWKSet(key.data(), key.size(), key_ids[0].data(),
-                                     key_ids[0].size());
+    std::string jwk = GenerateJWKSet(key, key_ids[0]);
     decryptor->UpdateSession(session_id,
                              std::vector<uint8_t>(jwk.begin(), jwk.end()),
                              CreatePromise(RESOLVED));
@@ -240,8 +229,9 @@ class KeyProvidingApp : public FakeEncryptedMedia::AppBase {
                                 AesDecryptor* decryptor) override {
     // Since only 1 session is created, skip the request if the |init_data|
     // has been seen before (no need to add the same key again).
-    if (init_data == prev_init_data_)
+    if (init_data == prev_init_data_) {
       return;
+    }
     prev_init_data_ = init_data;
 
     if (current_session_id_.empty()) {
@@ -275,8 +265,9 @@ class RotatingKeyProvidingApp : public KeyProvidingApp {
                                 const std::vector<uint8_t>& init_data,
                                 AesDecryptor* decryptor) override {
     // Skip the request if the |init_data| has been seen.
-    if (init_data == prev_init_data_)
+    if (init_data == prev_init_data_) {
       return;
+    }
     prev_init_data_ = init_data;
     ++num_distinct_need_key_calls_;
 
@@ -372,12 +363,14 @@ class PipelineIntegrationTest : public testing::Test,
     }
 
     Play();
-    if (!WaitUntilCurrentTimeIsAfter(start_seek_time))
+    if (!WaitUntilCurrentTimeIsAfter(start_seek_time)) {
       return false;
+    }
 
     source.Seek(seek_time, seek_file_position, seek_append_size);
-    if (!Seek(seek_time))
+    if (!Seek(seek_time)) {
       return false;
+    }
 
     source.EndOfStream();
 
@@ -387,15 +380,15 @@ class PipelineIntegrationTest : public testing::Test,
   }
 
   void OnEnabledAudioTracksChanged(
-      const std::vector<MediaTrack::Id>& enabled_track_ids) {
+      std::optional<MediaTrack::Id> enabled_track_id) {
     base::RunLoop run_loop;
-    pipeline_->OnEnabledAudioTracksChanged(enabled_track_ids,
+    pipeline_->OnEnabledAudioTracksChanged(std::move(enabled_track_id),
                                            run_loop.QuitClosure());
     run_loop.Run();
   }
 
   void OnSelectedVideoTrackChanged(
-      absl::optional<MediaTrack::Id> selected_track_id) {
+      std::optional<MediaTrack::Id> selected_track_id) {
     base::RunLoop run_loop;
     pipeline_->OnSelectedVideoTrackChanged(selected_track_id,
                                            run_loop.QuitClosure());
@@ -519,16 +512,13 @@ class MSEChangeTypeTest
     template <class ParamType>
     std::string operator()(
         const testing::TestParamInfo<ParamType>& info) const {
-      std::stringstream ss;
-      ss << std::get<0>(info.param) << "_AND_" << std::get<1>(info.param);
-      std::string s = ss.str();
+      std::string s = base::StrCat({std::get<0>(info.param).filename, "_AND_",
+                                    std::get<1>(info.param).filename});
       // Strip out invalid param name characters.
-      std::stringstream ss2;
-      for (size_t i = 0; i < s.size(); ++i) {
-        if (isalnum(s[i]) || s[i] == '_')
-          ss2 << s[i];
-      }
-      return ss2.str();
+      std::erase_if(s, [](char c) {
+        return !absl::ascii_isalnum(static_cast<unsigned char>(c)) && c != '_';
+      });
+      return s;
     }
   };
 
@@ -567,10 +557,11 @@ class MSEChangeTypeTest
     source.ChangeType(GetMimeTypeForFile(file_two.filename));
     scoped_refptr<DecoderBuffer> file_two_contents =
         ReadTestDataFile(file_two.filename);
-    source.AppendAtTime(file_one_end_time, file_two_contents->data(),
-                        file_two.append_bytes == kAppendWholeFile
-                            ? file_two_contents->data_size()
-                            : file_two.append_bytes);
+    source.AppendAtTime(
+        file_one_end_time,
+        file_two.append_bytes == kAppendWholeFile
+            ? *file_two_contents
+            : (*file_two_contents).first(file_two.append_bytes));
     source.EndOfStream();
     ranges = pipeline_->GetBufferedTimeRanges();
     EXPECT_EQ(1u, ranges.size());
@@ -702,8 +693,9 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackHashed) {
 
   ASSERT_TRUE(WaitUntilOnEnded());
 
-  EXPECT_EQ("f0be120a90a811506777c99a2cdf7cc1", GetVideoHash());
-  EXPECT_AUDIO_HASH("-3.59,-2.06,-0.43,2.15,0.77,-0.95,");
+  EXPECT_EQ("a6dbca10f0730373ab948df04b4bc16d7bca6d3a1593dc989b6e376487544bf5",
+            GetVideoHash());
+  EXPECT_AUDIO_HASH(kBear320x240AudioHash);
   EXPECT_TRUE(demuxer_->GetTimelineOffset().is_null());
 }
 
@@ -717,7 +709,7 @@ TEST_F(PipelineIntegrationTest, WaveLayoutChange) {
   ASSERT_TRUE(WaitUntilOnEnded());
 }
 
-// TODO(https://crbug.com/1354581): At most one of Playback9Channels48000hz and
+// TODO(crbug.com/40235621): At most one of Playback9Channels48000hz and
 // Playback9Channels44100hz will pass, because for 9+ channel files the hardware
 // sample rate has to match the file's sample rate. They are both disabled
 // because different CI configurations have different hardware sample rates. To
@@ -735,16 +727,10 @@ TEST_F(PipelineIntegrationTest, PlaybackStereo48000hz) {
 }
 
 TEST_F(PipelineIntegrationTest, PlaybackWithAudioTrackDisabledThenEnabled) {
-#if BUILDFLAG(IS_MAC)
-  // Enable scoped logs to help track down hangs.  http://crbug.com/1014646
-  ScopedVerboseLogEnabler scoped_log_enabler;
-#endif
-
   ASSERT_EQ(PIPELINE_OK, Start("bear-320x240.webm", kHashed | kNoClockless));
 
   // Disable audio.
-  std::vector<MediaTrack::Id> empty;
-  OnEnabledAudioTracksChanged(empty);
+  OnEnabledAudioTracksChanged(std::nullopt);
 
   // Seek to flush the pipeline and ensure there's no prerolled audio data.
   ASSERT_TRUE(Seek(base::TimeDelta()));
@@ -758,9 +744,7 @@ TEST_F(PipelineIntegrationTest, PlaybackWithAudioTrackDisabledThenEnabled) {
   EXPECT_AUDIO_HASH(kNullAudioHash);
 
   // Re-enable audio.
-  std::vector<MediaTrack::Id> audio_track_id;
-  audio_track_id.push_back(MediaTrack::Id("2"));
-  OnEnabledAudioTracksChanged(audio_track_id);
+  OnEnabledAudioTracksChanged(MediaTrack::Id("2"));
 
   // Restart playback from 500ms position.
   ASSERT_TRUE(Seek(k500ms));
@@ -772,15 +756,10 @@ TEST_F(PipelineIntegrationTest, PlaybackWithAudioTrackDisabledThenEnabled) {
 }
 
 TEST_F(PipelineIntegrationTest, PlaybackWithVideoTrackDisabledThenEnabled) {
-#if BUILDFLAG(IS_MAC)
-  // Enable scoped logs to help track down hangs.  http://crbug.com/1014646
-  ScopedVerboseLogEnabler scoped_log_enabler;
-#endif
-
   ASSERT_EQ(PIPELINE_OK, Start("bear-320x240.webm", kHashed | kNoClockless));
 
   // Disable video.
-  OnSelectedVideoTrackChanged(absl::nullopt);
+  OnSelectedVideoTrackChanged(std::nullopt);
 
   // Seek to flush the pipeline and ensure there's no prerolled video data.
   ASSERT_TRUE(Seek(base::TimeDelta()));
@@ -797,13 +776,16 @@ TEST_F(PipelineIntegrationTest, PlaybackWithVideoTrackDisabledThenEnabled) {
   // Verify that no video has been rendered, since we disabled video tracks.
   EXPECT_EQ(kNullVideoHash, GetVideoHash());
 
+  // Reset the hash before enabling the video track and seeking so that those
+  // frames are considered as part of the hash.
+  ResetVideoHash();
+
   // Re-enable video.
   OnSelectedVideoTrackChanged(MediaTrack::Id("1"));
 
   // Seek to flush video pipeline and reset the video hash again to clear state
   // if some prerolled frames got hashed after enabling video.
   ASSERT_TRUE(Seek(base::TimeDelta()));
-  ResetVideoHash();
 
   // Restart playback from 500ms position.
   ASSERT_TRUE(Seek(k500ms));
@@ -811,40 +793,30 @@ TEST_F(PipelineIntegrationTest, PlaybackWithVideoTrackDisabledThenEnabled) {
   ASSERT_TRUE(WaitUntilOnEnded());
 
   // Verify that video has been rendered after being enabled.
-  EXPECT_EQ("fd59357dfd9c144ab4fb8181b2de32c3", GetVideoHash());
+  EXPECT_EQ("38b8b5de49e2ada131674f90e4688dfc9309e6d194267e6f11992d25f11ea472",
+            GetVideoHash());
 }
 
 TEST_F(PipelineIntegrationTest, TrackStatusChangesBeforePipelineStarted) {
-  std::vector<MediaTrack::Id> empty_track_ids;
-  OnEnabledAudioTracksChanged(empty_track_ids);
-  OnSelectedVideoTrackChanged(absl::nullopt);
+  OnEnabledAudioTracksChanged(std::nullopt);
+  OnSelectedVideoTrackChanged(std::nullopt);
 }
 
 TEST_F(PipelineIntegrationTest, TrackStatusChangesAfterPipelineEnded) {
   ASSERT_EQ(PIPELINE_OK, Start("bear-320x240.webm", kHashed));
   Play();
   ASSERT_TRUE(WaitUntilOnEnded());
-  std::vector<MediaTrack::Id> track_ids;
   // Disable audio track.
-  OnEnabledAudioTracksChanged(track_ids);
+  OnEnabledAudioTracksChanged(std::nullopt);
   // Re-enable audio track.
-  track_ids.push_back(MediaTrack::Id("2"));
-  OnEnabledAudioTracksChanged(track_ids);
+  OnEnabledAudioTracksChanged(MediaTrack::Id("2"));
   // Disable video track.
-  OnSelectedVideoTrackChanged(absl::nullopt);
+  OnSelectedVideoTrackChanged(std::nullopt);
   // Re-enable video track.
   OnSelectedVideoTrackChanged(MediaTrack::Id("1"));
 }
 
-// TODO(https://crbug.com/1009964): Enable test when MacOS flake is fixed.
-#if BUILDFLAG(IS_MAC)
-#define MAYBE_TrackStatusChangesWhileSuspended \
-  DISABLED_TrackStatusChangesWhileSuspended
-#else
-#define MAYBE_TrackStatusChangesWhileSuspended TrackStatusChangesWhileSuspended
-#endif
-
-TEST_F(PipelineIntegrationTest, MAYBE_TrackStatusChangesWhileSuspended) {
+TEST_F(PipelineIntegrationTest, TrackStatusChangesWhileSuspended) {
   ASSERT_EQ(PIPELINE_OK, Start("bear-320x240.webm", kNoClockless));
   Play();
 
@@ -855,23 +827,20 @@ TEST_F(PipelineIntegrationTest, MAYBE_TrackStatusChangesWhileSuspended) {
       .Times(AnyNumber());
   EXPECT_CALL(*this, OnVideoOpacityChange(true)).Times(AnyNumber());
 
-  std::vector<MediaTrack::Id> track_ids;
-
   // Disable audio track.
-  OnEnabledAudioTracksChanged(track_ids);
+  OnEnabledAudioTracksChanged(std::nullopt);
   ASSERT_TRUE(Resume(TimestampMs(100)));
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(200)));
   ASSERT_TRUE(Suspend());
 
   // Re-enable audio track.
-  track_ids.push_back(MediaTrack::Id("2"));
-  OnEnabledAudioTracksChanged(track_ids);
+  OnEnabledAudioTracksChanged(MediaTrack::Id("2"));
   ASSERT_TRUE(Resume(TimestampMs(200)));
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(300)));
   ASSERT_TRUE(Suspend());
 
   // Disable video track.
-  OnSelectedVideoTrackChanged(absl::nullopt);
+  OnSelectedVideoTrackChanged(std::nullopt);
   ASSERT_TRUE(Resume(TimestampMs(300)));
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(400)));
   ASSERT_TRUE(Suspend());
@@ -893,16 +862,14 @@ TEST_F(PipelineIntegrationTest, ReinitRenderersWhileAudioTrackIsDisabled) {
   EXPECT_CALL(*this, OnVideoOpacityChange(true)).Times(AnyNumber());
 
   // Disable the audio track.
-  std::vector<MediaTrack::Id> track_ids;
-  OnEnabledAudioTracksChanged(track_ids);
+  OnEnabledAudioTracksChanged(std::nullopt);
   // pipeline.Suspend() releases renderers and pipeline.Resume() recreates and
   // reinitializes renderers while the audio track is disabled.
   ASSERT_TRUE(Suspend());
   ASSERT_TRUE(Resume(TimestampMs(100)));
   // Now re-enable the audio track, playback should continue successfully.
   EXPECT_CALL(*this, OnBufferingStateChange(BUFFERING_HAVE_ENOUGH, _)).Times(1);
-  track_ids.push_back(MediaTrack::Id("2"));
-  OnEnabledAudioTracksChanged(track_ids);
+  OnEnabledAudioTracksChanged(MediaTrack::Id("2"));
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(200)));
 
   Stop();
@@ -918,7 +885,7 @@ TEST_F(PipelineIntegrationTest, ReinitRenderersWhileVideoTrackIsDisabled) {
   EXPECT_CALL(*this, OnVideoOpacityChange(true)).Times(AnyNumber());
 
   // Disable the video track.
-  OnSelectedVideoTrackChanged(absl::nullopt);
+  OnSelectedVideoTrackChanged(std::nullopt);
   // pipeline.Suspend() releases renderers and pipeline.Resume() recreates and
   // reinitializes renderers while the video track is disabled.
   ASSERT_TRUE(Suspend());
@@ -936,13 +903,10 @@ TEST_F(PipelineIntegrationTest, PipelineStoppedWhileAudioRestartPending) {
 
   // Disable audio track first, to re-enable it later and stop the pipeline
   // (which destroys the media renderer) while audio restart is pending.
-  std::vector<MediaTrack::Id> track_ids;
-  OnEnabledAudioTracksChanged(track_ids);
+  OnEnabledAudioTracksChanged(std::nullopt);
 
   // Playback is paused while all audio tracks are disabled.
-
-  track_ids.push_back(MediaTrack::Id("2"));
-  OnEnabledAudioTracksChanged(track_ids);
+  OnEnabledAudioTracksChanged(MediaTrack::Id("2"));
   Stop();
 }
 
@@ -952,7 +916,7 @@ TEST_F(PipelineIntegrationTest, PipelineStoppedWhileVideoRestartPending) {
 
   // Disable video track first, to re-enable it later and stop the pipeline
   // (which destroys the media renderer) while video restart is pending.
-  OnSelectedVideoTrackChanged(absl::nullopt);
+  OnSelectedVideoTrackChanged(std::nullopt);
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(200)));
 
   OnSelectedVideoTrackChanged(MediaTrack::Id("1"));
@@ -965,9 +929,7 @@ TEST_F(PipelineIntegrationTest, SwitchAudioTrackDuringPlayback) {
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(100)));
   // The first audio track (TrackId=4) is enabled by default. This should
   // disable TrackId=4 and enable TrackId=5.
-  std::vector<MediaTrack::Id> track_ids;
-  track_ids.push_back(MediaTrack::Id("5"));
-  OnEnabledAudioTracksChanged(track_ids);
+  OnEnabledAudioTracksChanged(MediaTrack::Id("5"));
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(200)));
   Stop();
 }
@@ -980,6 +942,21 @@ TEST_F(PipelineIntegrationTest, SwitchVideoTrackDuringPlayback) {
   // disable TrackId=1 and enable TrackId=2.
   OnSelectedVideoTrackChanged(MediaTrack::Id("2"));
   ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(200)));
+  Stop();
+}
+
+TEST_F(PipelineIntegrationTest, MixSeekAndTrackSwitch) {
+  // We need something with multiple tracks.
+  ASSERT_EQ(PIPELINE_OK, Start("multitrack-3video-2audio.webm", kNoClockless));
+  Pause();
+  Seek(base::Seconds(8));
+  Play();
+  OnSelectedVideoTrackChanged(MediaTrack::Id("3"));
+  OnSelectedVideoTrackChanged(MediaTrack::Id("1"));
+  OnEnabledAudioTracksChanged({MediaTrack::Id("5")});
+  Seek(base::Seconds(0));
+  Play();
+  ASSERT_TRUE(WaitUntilCurrentTimeIsAfter(TimestampMs(100)));
   Stop();
 }
 
@@ -1276,8 +1253,9 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackLive) {
 
   ASSERT_TRUE(WaitUntilOnEnded());
 
-  EXPECT_EQ("f0be120a90a811506777c99a2cdf7cc1", GetVideoHash());
-  EXPECT_AUDIO_HASH("-3.59,-2.06,-0.43,2.15,0.77,-0.95,");
+  EXPECT_EQ("a6dbca10f0730373ab948df04b4bc16d7bca6d3a1593dc989b6e376487544bf5",
+            GetVideoHash());
+  EXPECT_AUDIO_HASH(kBear320x240AudioHash);
   EXPECT_EQ(kLiveTimelineOffset(), demuxer_->GetTimelineOffset());
 }
 
@@ -1483,8 +1461,7 @@ TEST_F(PipelineIntegrationTest, MSE_ConfigChange_AV1_WebM) {
   EXPECT_CALL(*this, OnVideoNaturalSizeChange(kNewSize)).Times(1);
   scoped_refptr<DecoderBuffer> second_file =
       ReadTestDataFile("bear-av1-640x480.webm");
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
   source.EndOfStream();
 
   Play();
@@ -1511,8 +1488,7 @@ TEST_F(PipelineIntegrationTest, MSE_ConfigChange_WebM) {
   EXPECT_CALL(*this, OnVideoNaturalSizeChange(kNewSize)).Times(1);
   scoped_refptr<DecoderBuffer> second_file =
       ReadTestDataFile("bear-640x360.webm");
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
   source.EndOfStream();
 
   Play();
@@ -1545,9 +1521,7 @@ TEST_F(PipelineIntegrationTest, MSE_AudioConfigChange_WebM) {
 
   scoped_refptr<DecoderBuffer> second_file =
       ReadTestDataFile("bear-320x240-audio-only-48khz.webm");
-  ASSERT_TRUE(source.AppendAtTime(base::Seconds(kAppendTimeSec),
-                                  second_file->data(),
-                                  second_file->data_size()));
+  ASSERT_TRUE(source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file));
   source.EndOfStream();
 
   Play();
@@ -1586,7 +1560,7 @@ TEST_F(PipelineIntegrationTest, MSE_RemoveUpdatesBufferedRanges) {
 // This test case imitates media playback with advancing media_time and
 // continuously adding new data. At some point we should reach the buffering
 // limit, after that MediaSource should evict some buffered data and that
-// evicted data shold be reflected in the change of media::Pipeline buffered
+// evicted data should be reflected in the change of media::Pipeline buffered
 // ranges (returned by GetBufferedTimeRanges). At that point the buffered ranges
 // will no longer start at 0.
 TEST_F(PipelineIntegrationTest, MSE_FillUpBuffer) {
@@ -1605,8 +1579,8 @@ TEST_F(PipelineIntegrationTest, MSE_FillUpBuffer) {
     source.Seek(media_time);
     // Ask MediaSource to evict buffered data if buffering limit has been
     // reached (the data will be evicted from the front of the buffered range).
-    source.EvictCodedFrames(media_time, file->data_size());
-    source.AppendAtTime(media_time, file->data(), file->data_size());
+    source.EvictCodedFrames(media_time, file->size());
+    source.AppendAtTime(media_time, *file);
     task_environment_.RunUntilIdle();
 
     buffered_ranges = pipeline_->GetBufferedTimeRanges();
@@ -1627,11 +1601,11 @@ TEST_F(PipelineIntegrationTest, MSE_GCWithDisabledVideoStream) {
   // larger than audio, so setting memory limits to half of file data_size will
   // ensure that video SourceBuffer is above memory limit and the audio
   // SourceBuffer is below the memory limit.
-  source.SetMemoryLimits(file->data_size() / 2);
+  source.SetMemoryLimits(file->size() / 2);
 
   // Disable the video track and start playback. Renderer won't read from the
   // disabled video stream, so the video stream read position should be 0.
-  OnSelectedVideoTrackChanged(absl::nullopt);
+  OnSelectedVideoTrackChanged(std::nullopt);
   Play();
 
   // Wait until audio playback advances past 2 seconds and call MSE GC algorithm
@@ -1663,8 +1637,7 @@ TEST_F(PipelineIntegrationTest, MSE_ConfigChange_Encrypted_WebM) {
   scoped_refptr<DecoderBuffer> second_file =
       ReadTestDataFile("bear-640x360-av_enc-av.webm");
 
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
   source.EndOfStream();
 
   Play();
@@ -1693,8 +1666,7 @@ TEST_F(PipelineIntegrationTest, MSE_ConfigChange_ClearThenEncrypted_WebM) {
   scoped_refptr<DecoderBuffer> second_file =
       ReadTestDataFile("bear-640x360-av_enc-av.webm");
 
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
   source.EndOfStream();
 
   Play();
@@ -1726,8 +1698,7 @@ TEST_F(PipelineIntegrationTest, MSE_ConfigChange_EncryptedThenClear_WebM) {
   scoped_refptr<DecoderBuffer> second_file =
       ReadTestDataFile("bear-640x360.webm");
 
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
   source.EndOfStream();
 
   Play();
@@ -1830,6 +1801,38 @@ TEST_F(PipelineIntegrationTest, MSE_FlacInMp4_Hashed) {
   EXPECT_AUDIO_HASH(kSfxLosslessHash);
 }
 
+TEST_F(PipelineIntegrationTest, MSE_fLaCInMp4_Hashed) {
+  TestMediaSource source("sfx-flac_frag.mp4", "audio/mp4; codecs=\"fLaC\"",
+                         kAppendWholeFile);
+  EXPECT_EQ(PIPELINE_OK,
+            StartPipelineWithMediaSource(&source, kHashed, nullptr));
+  source.EndOfStream();
+
+  EXPECT_EQ(1u, pipeline_->GetBufferedTimeRanges().size());
+  EXPECT_EQ(0, pipeline_->GetBufferedTimeRanges().start(0).InMilliseconds());
+  EXPECT_EQ(288, pipeline_->GetBufferedTimeRanges().end(0).InMilliseconds());
+
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_EQ(kNullVideoHash, GetVideoHash());
+  EXPECT_AUDIO_HASH(kSfxLosslessHash);
+}
+
+TEST_F(PipelineIntegrationTest, MSE_OpusInMp4) {
+  TestMediaSource source("sfx-opus_frag.mp4", "audio/mp4; codecs=\"Opus\"",
+                         kAppendWholeFile);
+  EXPECT_EQ(PIPELINE_OK,
+            StartPipelineWithMediaSource(&source, kHashed, nullptr));
+  source.EndOfStream();
+
+  EXPECT_EQ(1u, pipeline_->GetBufferedTimeRanges().size());
+  EXPECT_EQ(0, pipeline_->GetBufferedTimeRanges().start(0).InMilliseconds());
+  EXPECT_EQ(301, pipeline_->GetBufferedTimeRanges().end(0).InMilliseconds());
+
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+}
+
 TEST_F(PipelineIntegrationTest, BasicPlaybackHashed_MP3) {
   ASSERT_EQ(PIPELINE_OK, Start("sfx.mp3", kHashed));
 
@@ -1838,7 +1841,7 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackHashed_MP3) {
   ASSERT_TRUE(WaitUntilOnEnded());
 
   // Verify codec delay and preroll are stripped.
-  EXPECT_AUDIO_HASH("1.30,2.72,4.56,5.08,3.74,2.03,");
+  EXPECT_AUDIO_HASH(kSfxMp3Hash);
 }
 
 TEST_F(PipelineIntegrationTest, BasicPlaybackHashed_FlacInMp4) {
@@ -1928,7 +1931,7 @@ INSTANTIATE_TEST_SUITE_P(
     VBRSeeks_HasTOC,
     Mp3FastSeekIntegrationTest,
     ::testing::Values(Mp3FastSeekParams("bear-audio-10s-VBR-has-TOC.mp3",
-                                        "-0.08,-0.53,0.75,0.89,2.44,0.73,")));
+                                        "0.65,0.22,1.01,0.57,0.84,0.83,")));
 
 INSTANTIATE_TEST_SUITE_P(
     VBRSeeks_NoTOC,
@@ -1951,7 +1954,7 @@ TEST_F(PipelineIntegrationTest, MSE_MP3) {
   EXPECT_TRUE(WaitUntilOnEnded());
 
   // Verify that codec delay was stripped.
-  EXPECT_AUDIO_HASH("1.01,2.71,4.18,4.32,3.04,1.12,");
+  EXPECT_AUDIO_HASH(kSfxMseMp3Hash);
 }
 
 TEST_F(PipelineIntegrationTest, MSE_MP3_TimestampOffset) {
@@ -1967,8 +1970,7 @@ TEST_F(PipelineIntegrationTest, MSE_MP3_TimestampOffset) {
 
   scoped_refptr<DecoderBuffer> second_file = ReadTestDataFile("sfx.mp3");
   source.AppendAtTimeWithWindow(append_time, append_time + mp3_preroll_duration,
-                                kInfiniteDuration, second_file->data(),
-                                second_file->data_size());
+                                kInfiniteDuration, *second_file);
   source.EndOfStream();
 
   Play();
@@ -2024,9 +2026,9 @@ TEST_F(PipelineIntegrationTest, MSE_ADTS_TimestampOffset) {
       source.last_timestamp_offset() - adts_preroll_duration;
 
   scoped_refptr<DecoderBuffer> second_file = ReadTestDataFile("sfx.adts");
-  source.AppendAtTimeWithWindow(
-      append_time, append_time + adts_preroll_duration, kInfiniteDuration,
-      second_file->data(), second_file->data_size());
+  source.AppendAtTimeWithWindow(append_time,
+                                append_time + adts_preroll_duration,
+                                kInfiniteDuration, *second_file);
   source.EndOfStream();
 
   Play();
@@ -2058,20 +2060,9 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackHashed_M4A) {
   Play();
   ASSERT_TRUE(WaitUntilOnEnded());
 
-  // Verify preroll is stripped. This file uses a preroll of 2112 frames, which
-  // spans all three packets in the file. Postroll is not correctly stripped at
-  // present; see the note below.
-  EXPECT_AUDIO_HASH("3.84,4.25,4.33,3.58,3.27,3.16,");
-
-  // Note the above hash is incorrect since the <audio> path doesn't properly
-  // trim trailing silence at end of stream for AAC decodes. This isn't a huge
-  // deal since plain src= tags can't splice streams and MSE requires an
-  // explicit append window for correctness.
-  //
-  // The WebAudio path via AudioFileReader computes this correctly, so the hash
-  // below is taken from that test.
-  //
-  // EXPECT_AUDIO_HASH("3.77,4.53,4.75,3.48,3.67,3.76,");
+  // Verify preroll and postroll are correctly stripped. This file uses a
+  // preroll of 2112 frames, which spans all three packets in the file.
+  EXPECT_AUDIO_HASH("3.77,4.53,4.75,3.48,3.67,3.76,");
 }
 
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_WIN)
@@ -2090,7 +2081,7 @@ std::unique_ptr<AudioDecoder> CreateXheAacDecoder(
 }
 
 TEST_F(PipelineIntegrationTest, BasicPlaybackXHE_AAC) {
-  if (!IsSupportedAudioType(
+  if (!IsDecoderSupportedAudioType(
           {AudioCodec::kAAC, AudioCodecProfile::kXHE_AAC, false})) {
     GTEST_SKIP() << "Unsupported platform.";
   }
@@ -2112,12 +2103,12 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackXHE_AAC) {
   // provided by the operating system and will apply DRC based on device
   // specific params.
 
-  // TODO(crbug.com/1289825): Seeking doesn't always work properly when using
+  // TODO(crbug.com/40817722): Seeking doesn't always work properly when using
   // ffmpeg since it doesn't handle non-keyframe xHE-AAC samples properly.
 }
 
 TEST_F(PipelineIntegrationTest, MSE_BasicPlaybackXHE_AAC) {
-  if (!IsSupportedAudioType(
+  if (!IsDecoderSupportedAudioType(
           {AudioCodec::kAAC, AudioCodecProfile::kXHE_AAC, false})) {
     GTEST_SKIP() << "Unsupported platform.";
   }
@@ -2179,8 +2170,7 @@ TEST_F(PipelineIntegrationTest, MSE_ConfigChange_MP4) {
   EXPECT_CALL(*this, OnVideoNaturalSizeChange(kNewSize)).Times(1);
   scoped_refptr<DecoderBuffer> second_file =
       ReadTestDataFile("bear-1280x720-av_frag.mp4");
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
   source.EndOfStream();
 
   Play();
@@ -2215,8 +2205,7 @@ TEST_F(PipelineIntegrationTest, MSE_ConfigChange_Encrypted_MP4_CENC_VideoOnly) {
   EXPECT_CALL(*this, OnVideoNaturalSizeChange(kNewSize)).Times(1);
   scoped_refptr<DecoderBuffer> second_file =
       ReadTestDataFile("bear-1280x720-v_frag-cenc.mp4");
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
   source.EndOfStream();
 
   Play();
@@ -2242,8 +2231,7 @@ TEST_F(PipelineIntegrationTest,
   EXPECT_CALL(*this, OnVideoNaturalSizeChange(gfx::Size(1280, 720))).Times(1);
   scoped_refptr<DecoderBuffer> second_file =
       ReadTestDataFile("bear-1280x720-v_frag-cenc-key_rotation.mp4");
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
   source.EndOfStream();
 
   Play();
@@ -2269,8 +2257,7 @@ TEST_F(PipelineIntegrationTest, MSE_ConfigChange_ClearThenEncrypted_MP4_CENC) {
       ReadTestDataFile("bear-1280x720-v_frag-cenc.mp4");
   source.set_expected_append_result(
       TestMediaSource::ExpectedAppendResult::kFailure);
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
 
   source.EndOfStream();
 
@@ -2297,8 +2284,7 @@ TEST_F(PipelineIntegrationTest, MSE_ConfigChange_EncryptedThenClear_MP4_CENC) {
 
   source.set_expected_append_result(
       TestMediaSource::ExpectedAppendResult::kFailure);
-  source.AppendAtTime(base::Seconds(kAppendTimeSec), second_file->data(),
-                      second_file->data_size());
+  source.AppendAtTime(base::Seconds(kAppendTimeSec), *second_file);
 
   source.EndOfStream();
 
@@ -2326,9 +2312,7 @@ TEST_F(PipelineIntegrationTest, StereoAACMarkedAsMono) {
 
 // Verify files which change configuration midstream fail gracefully.
 TEST_F(PipelineIntegrationTest, MidStreamConfigChangesFail) {
-  ASSERT_EQ(PIPELINE_OK, Start("midstream_config_change.mp3"));
-  Play();
-  ASSERT_EQ(WaitUntilEndedOrError(), PIPELINE_ERROR_DECODE);
+  ASSERT_EQ(PIPELINE_ERROR_DECODE, Start("midstream_config_change.mp3"));
 }
 
 TEST_F(PipelineIntegrationTest, BasicPlayback_16x9AspectRatio) {
@@ -2677,11 +2661,6 @@ TEST_F(PipelineIntegrationTest, MSE_BasicPlayback_VideoOnly_MP4_HEV1) {
 #endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
 
 TEST_F(PipelineIntegrationTest, SeekWhilePaused) {
-#if BUILDFLAG(IS_MAC)
-  // Enable scoped logs to help track down hangs.  http://crbug.com/1014646
-  ScopedVerboseLogEnabler scoped_log_enabler;
-#endif
-
   // This test is flaky without kNoClockless, see crbug.com/796250.
   ASSERT_EQ(PIPELINE_OK, Start("bear-320x240.webm", kNoClockless));
 
@@ -2706,11 +2685,6 @@ TEST_F(PipelineIntegrationTest, SeekWhilePaused) {
 }
 
 TEST_F(PipelineIntegrationTest, SeekWhilePlaying) {
-#if BUILDFLAG(IS_MAC)
-  // Enable scoped logs to help track down hangs.  http://crbug.com/1014646
-  ScopedVerboseLogEnabler scoped_log_enabler;
-#endif
-
   // This test is flaky without kNoClockless, see crbug.com/796250.
   ASSERT_EQ(PIPELINE_OK, Start("bear-320x240.webm", kNoClockless));
 
@@ -2870,6 +2844,22 @@ TEST_F(PipelineIntegrationTest, BasicPlayback_VP9A_Odd_WebM) {
   EXPECT_EQ(last_video_frame_format_, PIXEL_FORMAT_I420A);
 }
 
+// Verify that VP9 422 video with alpha channel can be played back.
+TEST_F(PipelineIntegrationTest, BasicPlayback_VP9A_422_WebM) {
+  ASSERT_EQ(PIPELINE_OK, Start("bear-vp9a-422.webm"));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_EQ(last_video_frame_format_, PIXEL_FORMAT_I422A);
+}
+
+// Verify that VP9 444 video with alpha channel can be played back.
+TEST_F(PipelineIntegrationTest, BasicPlayback_VP9A_444_WebM) {
+  ASSERT_EQ(PIPELINE_OK, Start("bear-vp9a-444.webm"));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_EQ(last_video_frame_format_, PIXEL_FORMAT_I444A);
+}
+
 // Verify that VP9 video with 4:4:4 subsampling can be played back.
 TEST_F(PipelineIntegrationTest, P444_VP9_WebM) {
   ASSERT_EQ(PIPELINE_OK, Start("bear-320x240-P444.webm"));
@@ -2949,18 +2939,67 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackPositiveStartTime) {
   ASSERT_EQ(base::Microseconds(396000), demuxer_->GetStartTime());
 }
 
-#if BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
+class OpusPipelineIntegrationTest : public PipelineIntegrationTest {
+ public:
+  OpusPipelineIntegrationTest() {
+    scoped_feature_list_.InitAndEnableFeature(kDirectOpusAudioDecoding);
+  }
 
-// Ensures audio-video playback with missing or negative timestamps fails
-// instead of crashing.  See http://crbug.com/396864.
-TEST_F(PipelineIntegrationTest, BasicPlaybackChainedOggVideo) {
-  ASSERT_EQ(DEMUXER_ERROR_COULD_NOT_PARSE,
-            Start("double-bear.ogv", kUnreliableDuration));
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(OpusPipelineIntegrationTest, BasicPlaybackOpusWebmTrimmingHashed) {
+  ASSERT_EQ(PIPELINE_OK, Start("opus-trimming-test.webm", kHashed));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kOpusEndTrimmingHash_1);
+
+  // Seek within the pre-skip section, this should not cause a beep.
+  ASSERT_TRUE(Seek(base::Seconds(1)));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kOpusEndTrimmingHash_2);
+
+  // Seek somewhere outside of the pre-skip / end-trim section, this should
+  // behave normally.
+  ASSERT_TRUE(Seek(base::Seconds(6.36)));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kOpusEndTrimmingHash_3);
 }
+
+TEST_F(OpusPipelineIntegrationTest, BasicPlaybackOpusOggTrimmingHashed) {
+  ASSERT_EQ(PIPELINE_OK, Start("opus-trimming-test.ogg", kHashed));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kOpusEndTrimmingHash_1);
+
+  // Seek within the pre-skip section, this should not cause a beep.
+  ASSERT_TRUE(Seek(base::Seconds(1)));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kOpusEndTrimmingHash_2);
+
+  // Seek somewhere outside of the pre-skip / end-trim section, this should
+  // behave normally.
+  ASSERT_TRUE(Seek(base::Seconds(6.36)));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kOpusEndTrimmingHash_3);
+}
+
+TEST_F(OpusPipelineIntegrationTest, BasicPlayback_Opus441kHz) {
+  ASSERT_EQ(PIPELINE_OK, Start("sfx-opus-441.webm"));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+}
+
+#if BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
 
 // Tests that we signal ended even when audio runs longer than video track.
 TEST_F(PipelineIntegrationTest, BasicPlaybackAudioLongerThanVideo) {
-  ASSERT_EQ(PIPELINE_OK, Start("bear_audio_longer_than_video.ogv"));
+  ASSERT_EQ(PIPELINE_OK, Start("bear_audio_longer_than_video_vp8.ogv"));
   // Audio track is 2000ms. Video track is 1001ms. Duration should be higher
   // of the two.
   EXPECT_EQ(2000, pipeline_->GetMediaDuration().InMilliseconds());
@@ -2970,7 +3009,7 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackAudioLongerThanVideo) {
 
 // Tests that we signal ended even when audio runs shorter than video track.
 TEST_F(PipelineIntegrationTest, BasicPlaybackAudioShorterThanVideo) {
-  ASSERT_EQ(PIPELINE_OK, Start("bear_audio_shorter_than_video.ogv"));
+  ASSERT_EQ(PIPELINE_OK, Start("bear_audio_shorter_than_video_vp8.ogv"));
   // Audio track is 500ms. Video track is 1001ms. Duration should be higher of
   // the two.
   EXPECT_EQ(1001, pipeline_->GetMediaDuration().InMilliseconds());
@@ -2979,6 +3018,16 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackAudioShorterThanVideo) {
 }
 
 #if BUILDFLAG(USE_PROPRIETARY_CODECS)
+TEST_F(PipelineIntegrationTest, NegativeVideoTimestamps) {
+  ASSERT_EQ(PIPELINE_OK,
+            Start("sync2-trimmed.mp4", kHashed | kUnreliableDuration));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_EQ("dd059004f04a4d7a910123e5b306639a4559b5d7df7c0879d523649ff12a8a43",
+            GetVideoHash());
+  EXPECT_AUDIO_HASH("87.50,29.76,89.21,29.61,87.86,28.83,");
+}
+
 TEST_F(PipelineIntegrationTest, Rotated_Metadata_0) {
   ASSERT_EQ(PIPELINE_OK, Start("bear_rotate_0.mp4"));
   ASSERT_EQ(VIDEO_ROTATION_0,
@@ -3007,7 +3056,8 @@ TEST_F(PipelineIntegrationTest, Spherical) {
   ASSERT_EQ(PIPELINE_OK, Start("spherical.mp4", kHashed));
   Play();
   ASSERT_TRUE(WaitUntilOnEnded());
-  EXPECT_EQ("1cb7f980020d99ea852e22dd6bd8d9de", GetVideoHash());
+  EXPECT_EQ("ebb0ad0c2205c9c797f4303b0ed698a07c647c2f37692f227c12875591885877",
+            GetVideoHash());
 }
 
 TEST_F(PipelineIntegrationTest, BasicPlaybackHi10P) {
@@ -3018,6 +3068,17 @@ TEST_F(PipelineIntegrationTest, BasicPlaybackHi10P) {
   ASSERT_TRUE(WaitUntilOnEnded());
 }
 
+#if BUILDFLAG(ENABLE_HLS_DEMUXER)
+TEST_F(PipelineIntegrationTest, HLSMediaPlaylistTSavc1) {
+  ASSERT_EQ(PIPELINE_OK, StartPipelineWithHlsManifest("hls/mp_ts_avc1.m3u8"));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  // 320x192 video of which only 320x180 is visible.
+  EXPECT_EQ("8154a4c21175255af6728f2a9d8448d910a0dd90ff3c2ccd4a2df3bb03f9ca48",
+            GetVideoHash());
+}
+#endif
+
 // Verify that full-range H264 video has the right color space.
 TEST_F(PipelineIntegrationTest, Fullrange_H264) {
   ASSERT_EQ(PIPELINE_OK, Start("blackwhite_yuvj420p.mp4"));
@@ -3027,5 +3088,97 @@ TEST_F(PipelineIntegrationTest, Fullrange_H264) {
 }
 #endif  // BUILDFLAG(USE_PROPRIETARY_CODECS)
 #endif  // BUILDFLAG(ENABLE_FFMPEG_VIDEO_DECODERS)
+
+#if BUILDFLAG(ENABLE_SYMPHONIA)
+class SymphoniaPipelineIntegrationTest : public testing::Test,
+                                         public PipelineIntegrationTestBase {
+ public:
+  SymphoniaPipelineIntegrationTest() {
+    scoped_feature_list_.InitWithFeatures(
+        {kSymphoniaAudioDecoding, kSymphoniaMp3Decoding, kSymphoniaPcmDecoding,
+         kSymphoniaVorbisDecoding},
+        {} /*disabled_features=*/);
+  }
+
+ protected:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+TEST_F(SymphoniaPipelineIntegrationTest, BasicPlaybackHashed_MP3) {
+  ASSERT_EQ(PIPELINE_OK, Start("sfx.mp3", kHashed));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kSfxMp3Hash);
+}
+
+TEST_F(SymphoniaPipelineIntegrationTest, BasicPlayback_Flac) {
+  ASSERT_EQ(PIPELINE_OK, Start("sfx-flac.mp4", kHashed));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kSfxLosslessHash);
+}
+
+TEST_F(SymphoniaPipelineIntegrationTest, BasicPlayback_Vorbis) {
+  ASSERT_EQ(PIPELINE_OK, Start("bear-320x240.webm", kHashed));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kBear320x240AudioHash);
+}
+
+TEST_F(SymphoniaPipelineIntegrationTest, BasicPlayback_S32LE) {
+  ASSERT_EQ(PIPELINE_OK, Start("sfx_s32le.wav", kHashed));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kSfxLosslessHash);
+}
+
+TEST_F(SymphoniaPipelineIntegrationTest, BasicPlayback_F32LE) {
+  ASSERT_EQ(PIPELINE_OK, Start("sfx_f32le.wav", kHashed));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kSfxLosslessHash);
+}
+
+TEST_F(SymphoniaPipelineIntegrationTest, BasicPlayback_FLAC_File) {
+  ASSERT_EQ(PIPELINE_OK, Start("sfx.flac", kHashed));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kSfxLosslessHash);
+}
+
+TEST_F(SymphoniaPipelineIntegrationTest, BasicPlayback_Vorbis_AudioOnly) {
+  ASSERT_EQ(PIPELINE_OK, Start("bear-320x240-audio-only.webm", kHashed));
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  EXPECT_AUDIO_HASH(kBear320x240AudioHash);
+}
+
+#endif  // BUILDFLAG(ENABLE_SYMPHONIA)
+
+#if BUILDFLAG(ENABLE_IAMF_TOOLS) && BUILDFLAG(USE_PROPRIETARY_CODECS)
+TEST_F(PipelineIntegrationTest, MSE_BasicPlayback_Iamf_714) {
+  base::test::ScopedFeatureList scoped_feature_list(kIamfAudioDecoding);
+  TestMediaSource source("iamf_alternating_sine_waves_714.mp4",
+                         kAppendWholeFile);
+  EXPECT_EQ(PIPELINE_OK, StartPipelineWithMediaSource(&source));
+  source.EndOfStream();
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  source.Shutdown();
+  Stop();
+}
+
+TEST_F(PipelineIntegrationTest, MSE_BasicPlayback_Iamf_Stereo) {
+  base::test::ScopedFeatureList scoped_feature_list(kIamfAudioDecoding);
+  TestMediaSource source("iamf_alternating_sine_waves_stereo.mp4",
+                         kAppendWholeFile);
+  EXPECT_EQ(PIPELINE_OK, StartPipelineWithMediaSource(&source));
+  source.EndOfStream();
+  Play();
+  ASSERT_TRUE(WaitUntilOnEnded());
+  source.Shutdown();
+  Stop();
+}
+#endif  // BUILDFLAG(ENABLE_IAMF_TOOLS) && BUILDFLAG(USE_PROPRIETARY_CODECS)
 
 }  // namespace media

@@ -6,7 +6,6 @@
 #include <memory>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/memory/weak_ptr.h"
 #include "base/win/scoped_handle.h"
 #include "base/win/windows_types.h"
@@ -66,23 +65,23 @@ OpenXrPlatformHelperWindows::OpenXrPlatformHelperWindows() = default;
 OpenXrPlatformHelperWindows::~OpenXrPlatformHelperWindows() = default;
 
 std::unique_ptr<OpenXrGraphicsBinding>
-OpenXrPlatformHelperWindows::GetGraphicsBinding(
-    D3D11TextureHelper* texture_helper) {
-  CHECK(texture_helper);
-
+OpenXrPlatformHelperWindows::GetGraphicsBinding() {
   return std::make_unique<OpenXrGraphicsBindingD3D11>(
-      texture_helper, weak_ptr_factory_.GetWeakPtr());
+      weak_ptr_factory_.GetWeakPtr());
 }
 
-const void* OpenXrPlatformHelperWindows::GetPlatformCreateInfo(
-    const OpenXrCreateInfo& create_info) {
+void OpenXrPlatformHelperWindows::GetPlatformCreateInfo(
+    const device::OpenXrCreateInfo& create_info,
+    PlatformCreateInfoReadyCallback result_callback,
+    PlatormInitiatedShutdownCallback shutdown_callback) {
   // We have nothing we need to add to the "next" chain.
-  return nullptr;
+  std::move(result_callback).Run(nullptr);
 }
 
 device::mojom::XRDeviceData OpenXrPlatformHelperWindows::GetXRDeviceData() {
   device::mojom::XRDeviceData device_data;
-  device_data.is_ar_blend_mode_supported = IsArBlendModeSupported();
+  device_data.is_ar_blend_mode_supported =
+      IsArBlendModeSupported(GetOrCreateXrInstance());
   // Only set the LUID if it exists and is nonzero.
   if (LUID luid; TryGetLuid(&luid)) {
     device_data.luid = CHROME_LUID{luid.LowPart, luid.HighPart};
@@ -91,34 +90,18 @@ device::mojom::XRDeviceData OpenXrPlatformHelperWindows::GetXRDeviceData() {
   return device_data;
 }
 
-bool OpenXrPlatformHelperWindows::IsArBlendModeSupported() {
-  XrSystemId system;
-  if (XR_FAILED(
-          OpenXrApiWrapper::GetSystem(GetOrCreateXrInstance(), &system))) {
-    return false;
-  }
-
-  std::vector<XrEnvironmentBlendMode> environment_blend_modes =
-      OpenXrApiWrapper::GetSupportedBlendModes(GetOrCreateXrInstance(), system);
-
-  return base::Contains(environment_blend_modes,
-                        XR_ENVIRONMENT_BLEND_MODE_ADDITIVE) ||
-         base::Contains(environment_blend_modes,
-                        XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND);
-}
-
 // Returns the LUID of the adapter the OpenXR runtime is on. Returns false and
 // sets luid to {0, 0} if the LUID could not be determined. Also returns false
 // if the value of the retrieved LUID is {0, 0}.
-bool OpenXrPlatformHelperWindows::TryGetLuid(LUID* luid) {
+bool OpenXrPlatformHelperWindows::TryGetLuid(LUID* luid, XrSystemId system) {
   CHECK(luid);
   XrInstance instance = GetOrCreateXrInstance();
   if (instance == XR_NULL_HANDLE) {
     return false;
   }
 
-  XrSystemId system;
-  if (XR_FAILED(OpenXrApiWrapper::GetSystem(instance, &system))) {
+  if (system == XR_NULL_SYSTEM_ID &&
+      XR_FAILED(OpenXrApiWrapper::GetSystem(instance, &system))) {
     return false;
   }
 
@@ -157,13 +140,18 @@ bool OpenXrPlatformHelperWindows::IsApiAvailable() {
 }
 
 bool OpenXrPlatformHelperWindows::Initialize() {
-  // Nothing to do;
+  // Nothing to do.
   return true;
 }
 
-XrResult OpenXrPlatformHelperWindows::CreateInstance(
-    XrInstance* instance,
-    absl::optional<OpenXrCreateInfo> create_info) {
+void OpenXrPlatformHelperWindows::PrepareForSessionShutdown(
+    base::OnceClosure shutdown_ready_callback) {
+  // Nothing to do.
+  std::move(shutdown_ready_callback).Run();
+}
+
+XrResult OpenXrPlatformHelperWindows::CreateInstance(XrInstance* instance,
+                                                     void* create_info) {
   CHECK(instance);
 
   // The base-class expects CreatInstance to be called exactly once without a
@@ -198,7 +186,7 @@ XrInstance OpenXrPlatformHelperWindows::GetOrCreateXrInstance() {
   // CreateInstance fails, we'll just end up returning XR_NULL_HANDLE which is
   // fine. We don't actually need anything from the OpenXrCreateInfo to create
   // an instance on Windows.
-  (void)CreateInstance(&instance, absl::nullopt);
+  (void)CreateInstance(&instance, nullptr);
   return instance;
 }
 

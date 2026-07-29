@@ -32,6 +32,8 @@
 #include <libxslt/xsltutils.h>
 
 #include "base/check.h"
+#include "third_party/blink/renderer/core/xml/xslt_processor.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -74,7 +76,9 @@ static void ExsltNodeSetFunction(xmlXPathParserContextPtr ctxt, int nargs) {
   valuePush(ctxt, ret);
 }
 
-void RegisterXSLTExtensions(xsltTransformContextPtr ctxt) {
+void RegisterXSLTExtensions(xsltTransformContextPtr ctxt,
+                            const ExecutionContext* context) {
+  CHECK(XSLTProcessor::IsXSLTEnabled(context));
   xsltRegisterExtFunction(ctxt, (const xmlChar*)"node-set",
                           (const xmlChar*)"http://exslt.org/common",
                           ExsltNodeSetFunction);

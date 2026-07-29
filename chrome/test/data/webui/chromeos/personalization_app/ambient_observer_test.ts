@@ -3,15 +3,15 @@
 // found in the LICENSE file.
 
 import 'chrome://personalization/strings.m.js';
-import 'chrome://webui-test/mojo_webui_test_support.js';
 
-import {AmbientActionName, AmbientModeAlbum, AmbientObserver, emptyState, SetAlbumsAction, TopicSource} from 'chrome://personalization/js/personalization_app.js';
+import type {AmbientModeAlbum, SetAlbumsAction} from 'chrome://personalization/js/personalization_app.js';
+import {AmbientActionName, AmbientObserver, emptyState, TopicSource} from 'chrome://personalization/js/personalization_app.js';
 import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {assertDeepEquals, assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 
 import {baseSetup} from './personalization_app_test_utils.js';
-import {TestAmbientProvider} from './test_ambient_interface_provider.js';
-import {TestPersonalizationStore} from './test_personalization_store.js';
+import type {TestAmbientProvider} from './test_ambient_interface_provider.js';
+import type {TestPersonalizationStore} from './test_personalization_store.js';
 
 suite('AmbientObserverTest', function() {
   let ambientProvider: TestAmbientProvider;
@@ -58,7 +58,7 @@ suite('AmbientObserverTest', function() {
         title: 'Recent Highlights title',
         description: 'Recent Highlights description',
         topicSource: TopicSource.kGooglePhotos,
-        url: {url: 'asdf'},
+        url: 'asdf',
       },
       {
         id: 'abcdef',
@@ -67,7 +67,7 @@ suite('AmbientObserverTest', function() {
         title: 'Another album',
         description: 'Another album description',
         topicSource: TopicSource.kGooglePhotos,
-        url: {url: 'qwerty'},
+        url: 'qwerty',
       },
     ];
     personalizationStore.data.ambient.albums = initialAlbums;
@@ -77,15 +77,11 @@ suite('AmbientObserverTest', function() {
     ambientProvider.ambientObserverRemote!.onAlbumsChanged([
       {
         ...initialAlbums[0]!,
-        url: {
-          url: 'new-recent-highlights-url',
-        },
+        url: 'new-recent-highlights-url',
       },
       {
         ...initialAlbums[1]!,
-        url: {
-          url: 'new-regular-album-url',
-        },
+        url: 'new-regular-album-url',
       },
     ]);
 
@@ -94,9 +90,9 @@ suite('AmbientObserverTest', function() {
 
     assertEquals('RecentHighlights', albums[0]!.id);
     assertEquals(
-        'asdf', albums[0]!.url.url, 'kept original url for recent highlights');
+        'asdf', albums[0]!.url, 'kept original url for recent highlights');
     assertEquals(
-        'new-regular-album-url', albums[1]!.url.url,
+        'new-regular-album-url', albums[1]!.url,
         'used updated regular album url');
   });
 });
@@ -127,15 +123,6 @@ suite('GooglePhotosPreviewLoadPerformance', () => {
     assertFalse(AmbientObserver.shouldLogPreviewsLoadPerformance);
   });
 
-  test('sets to false if topic source is not kGooglePhotos', async () => {
-    ambientProvider.ambientObserverRemote!.onTopicSourceChanged(
-        TopicSource.kArtGallery);
-    personalizationStore.expectAction(AmbientActionName.SET_TOPIC_SOURCE);
-    await personalizationStore.waitForAction(
-        AmbientActionName.SET_TOPIC_SOURCE);
-    assertFalse(AmbientObserver.shouldLogPreviewsLoadPerformance);
-  });
-
   test('sets to false if already received preview images', async () => {
     personalizationStore.data.ambient.previews = [];
     ambientProvider.ambientObserverRemote!.onPreviewsFetched([]);
@@ -146,7 +133,7 @@ suite('GooglePhotosPreviewLoadPerformance', () => {
         'still true because no previews stored yet');
 
     personalizationStore.data.ambient.previews = [
-      {url: 'asdf'},
+      'asdf',
     ];
     ambientProvider.ambientObserverRemote!.onPreviewsFetched([]);
     personalizationStore.expectAction(AmbientActionName.SET_PREVIEWS);
@@ -157,7 +144,7 @@ suite('GooglePhotosPreviewLoadPerformance', () => {
   test('sets to false after receiving preview images', async () => {
     personalizationStore.data.ambient.previews = [];
     ambientProvider.ambientObserverRemote!.onPreviewsFetched([
-      {url: 'asdf'},
+      'asdf',
     ]);
     personalizationStore.expectAction(AmbientActionName.SET_PREVIEWS);
     await personalizationStore.waitForAction(AmbientActionName.SET_PREVIEWS);

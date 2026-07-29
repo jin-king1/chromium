@@ -3,10 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/command_line.h"
-#include "base/files/file_util.h"
 #include "base/run_loop.h"
-#include "build/chromeos_buildflags.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_base.h"
 #include "chrome/browser/media/webrtc/webrtc_browsertest_common.h"
@@ -20,7 +17,6 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings_types.h"
-#include "content/public/browser/notification_service.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -35,13 +31,13 @@
 
 class MediaStreamPermissionTest : public WebRtcTestBase {
  public:
-  MediaStreamPermissionTest() {}
+  MediaStreamPermissionTest() = default;
 
   MediaStreamPermissionTest(const MediaStreamPermissionTest&) = delete;
   MediaStreamPermissionTest& operator=(const MediaStreamPermissionTest&) =
       delete;
 
-  ~MediaStreamPermissionTest() override {}
+  ~MediaStreamPermissionTest() override = default;
 
   // InProcessBrowserTest:
   void SetUp() override {
@@ -67,7 +63,7 @@ class MediaStreamPermissionTest : public WebRtcTestBase {
                                           ContentSettingsType setting_to_clear,
                                           bool should_video_stop) {
     HostContentSettingsMap* settings_map =
-        HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+        HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
 
     content::WebContents* tab_contents = LoadTestPageInTab();
     ASSERT_EQ(tab_contents,
@@ -139,7 +135,7 @@ IN_PROC_BROWSER_TEST_F(MediaStreamPermissionTest, TestDenyingUserMedia) {
   GetUserMediaAndDeny(tab_contents);
 }
 
-// Disabled: https://crbug.com/1263442
+// Disabled: https://crbug.com/40800207
 #if defined(THREAD_SANITIZER)
 #define MAYBE_TestDismissingRequest DISABLED_TestDismissingRequest
 #else
@@ -196,7 +192,7 @@ IN_PROC_BROWSER_TEST_F(MediaStreamPermissionTest,
   GetUserMediaAndExpectAutoDenyWithoutPrompt(tab_contents);
 
   HostContentSettingsMap* settings_map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
 
   settings_map->ClearSettingsForOneType(ContentSettingsType::MEDIASTREAM_MIC);
   settings_map->ClearSettingsForOneType(

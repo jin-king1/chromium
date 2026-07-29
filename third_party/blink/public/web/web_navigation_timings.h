@@ -18,6 +18,10 @@ struct WebNavigationTimings {
   base::TimeTicks fetch_start;
   blink::mojom::ParentResourceTimingAccess parent_resource_timing_access =
       blink::mojom::ParentResourceTimingAccess::kDoNotReport;
+  base::TimeTicks critical_ch_restart;
+  // The total time spent in the previous page's lifecycle events (e.g.
+  // pagehide, visibilitychange) on navigation commit.
+  base::TimeDelta total_lifecycle_events_processing_time_on_commit;
 };
 
 }  // namespace blink

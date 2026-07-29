@@ -17,10 +17,11 @@ class CaptureModeBehavior;
 class CaptureModeSourceView;
 class CaptureModeTypeView;
 
-// A view that acts as the content view of the capture mode bar widget. It has
-// a set of buttons to toggle between image and video capture, and another set
-// of buttons to toggle between fullscreen, region, and window capture sources.
-// It also contains a settings button. The structure looks like this:
+// A view that acts as the content view of the capture mode bar widget for a
+// normal capture session. It has a set of buttons to toggle between image and
+// video capture, and another set of buttons to toggle between fullscreen,
+// region, and window capture sources. It also contains a settings button. The
+// structure looks like this:
 //
 //   +---------------------------------------------------------------+
 //   |  +----------------+  |                       |                |
@@ -39,9 +40,9 @@ class CaptureModeTypeView;
 //   NormalCaptureBarView
 //
 class ASH_EXPORT NormalCaptureBarView : public CaptureModeBarView {
- public:
-  METADATA_HEADER(NormalCaptureBarView);
+  METADATA_HEADER(NormalCaptureBarView, CaptureModeBarView)
 
+ public:
   // The `active_behavior` decides the capture bar configurations.
   explicit NormalCaptureBarView(CaptureModeBehavior* active_behavior);
   NormalCaptureBarView(const NormalCaptureBarView&) = delete;
@@ -49,15 +50,14 @@ class ASH_EXPORT NormalCaptureBarView : public CaptureModeBarView {
   ~NormalCaptureBarView() override;
 
   // CaptureModeBarView:
-  CaptureModeTypeView* capture_type_view() const override;
-  CaptureModeSourceView* capture_source_view() const override;
+  CaptureModeTypeView* GetCaptureTypeView() const override;
+  CaptureModeSourceView* GetCaptureSourceView() const override;
   void OnCaptureSourceChanged(CaptureModeSource new_source) override;
   void OnCaptureTypeChanged(CaptureModeType new_type) override;
 
  private:
-  raw_ptr<CaptureModeTypeView, ExperimentalAsh> capture_type_view_ = nullptr;
-  raw_ptr<CaptureModeSourceView, ExperimentalAsh> capture_source_view_ =
-      nullptr;
+  raw_ptr<CaptureModeTypeView> capture_type_view_ = nullptr;
+  raw_ptr<CaptureModeSourceView> capture_source_view_ = nullptr;
 };
 
 }  // namespace ash

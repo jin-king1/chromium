@@ -67,7 +67,7 @@ void FirstRunServiceBrowserTestBase::SetUpOnMainThread() {
 }
 
 Profile* FirstRunServiceBrowserTestBase::profile() const {
-  return browser()->profile();
+  return browser()->GetProfile();
 }
 
 FirstRunService* FirstRunServiceBrowserTestBase::fre_service() const {
@@ -79,6 +79,13 @@ std::u16string FirstRunServiceBrowserTestBase::GetProfileName() const {
       ->GetProfileAttributesStorage()
       .GetProfileAttributesWithPath(profile()->GetPath())
       ->GetLocalProfileName();
+}
+
+bool FirstRunServiceBrowserTestBase::IsUsingDefaultProfileName() const {
+  return g_browser_process->profile_manager()
+      ->GetProfileAttributesStorage()
+      .GetProfileAttributesWithPath(profile()->GetPath())
+      ->IsUsingDefaultName();
 }
 
 bool FirstRunServiceBrowserTestBase::IsProfileNameDefault() const {

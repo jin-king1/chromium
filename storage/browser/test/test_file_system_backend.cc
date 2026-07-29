@@ -47,6 +47,9 @@ class TestFileUtil : public LocalFileUtil {
                                      const FileSystemURL& file_system_url,
                                      base::FilePath* local_file_path) override {
     *local_file_path = base_path_.Append(file_system_url.path());
+    if (IsHiddenItem(*local_file_path)) {
+      return base::File::FILE_ERROR_NOT_FOUND;
+    }
     return base::File::FILE_OK;
   }
 
@@ -68,15 +71,6 @@ class TestFileSystemBackend::QuotaUtil : public FileSystemQuotaUtil,
   ~QuotaUtil() override = default;
 
   // FileSystemQuotaUtil overrides.
-  base::File::Error DeleteStorageKeyDataOnFileTaskRunner(
-      FileSystemContext* context,
-      QuotaManagerProxy* proxy,
-      const blink::StorageKey& storage_key,
-      FileSystemType type) override {
-    NOTREACHED();
-    return base::File::FILE_OK;
-  }
-
   void DeleteCachedDefaultBucket(
       const blink::StorageKey& storage_key) override {
     NOTREACHED();
@@ -88,7 +82,6 @@ class TestFileSystemBackend::QuotaUtil : public FileSystemQuotaUtil,
       const BucketLocator& bucket_locator,
       FileSystemType type) override {
     NOTREACHED();
-    return base::File::FILE_OK;
   }
 
   void PerformStorageCleanupOnFileTaskRunner(FileSystemContext* context,
@@ -99,20 +92,11 @@ class TestFileSystemBackend::QuotaUtil : public FileSystemQuotaUtil,
       const blink::StorageKey& storage_key,
       FileSystemType type) override {
     NOTREACHED();
-    return scoped_refptr<QuotaReservation>();
   }
 
-  std::vector<blink::StorageKey> GetStorageKeysForTypeOnFileTaskRunner(
+  std::vector<blink::StorageKey> GetDefaultStorageKeysOnFileTaskRunner(
       FileSystemType type) override {
     NOTREACHED();
-    return std::vector<blink::StorageKey>();
-  }
-
-  int64_t GetStorageKeyUsageOnFileTaskRunner(
-      FileSystemContext* context,
-      const blink::StorageKey& storage_key,
-      FileSystemType type) override {
-    return usage_;
   }
 
   int64_t GetBucketUsageOnFileTaskRunner(FileSystemContext* context,
@@ -122,14 +106,31 @@ class TestFileSystemBackend::QuotaUtil : public FileSystemQuotaUtil,
   }
 
   // FileUpdateObserver overrides.
-  void OnStartUpdate(const FileSystemURL& url) override {}
+  void AddRef() const override {}
+  void Release() const override {}
+
+  void Disable() override { is_disabled_ = true; }
+
+  void OnStartUpdate(const FileSystemURL& url) override {
+    if (is_disabled_) {
+      return;
+    }
+  }
   void OnUpdate(const FileSystemURL& url, int64_t delta) override {
+    if (is_disabled_) {
+      return;
+    }
     usage_ += delta;
   }
-  void OnEndUpdate(const FileSystemURL& url) override {}
+  void OnEndUpdate(const FileSystemURL& url) override {
+    if (is_disabled_) {
+      return;
+    }
+  }
 
  private:
   int64_t usage_;
+  bool is_disabled_ = false;
 };
 
 TestFileSystemBackend::TestFileSystemBackend(
@@ -192,6 +193,7 @@ void TestFileSystemBackend::InitializeCopyOrMoveFileValidatorFactory(
 
 std::unique_ptr<FileSystemOperation>
 TestFileSystemBackend::CreateFileSystemOperation(
+    OperationType type,
     const FileSystemURL& url,
     FileSystemContext* context,
     base::File::Error* error_code) const {
@@ -199,7 +201,7 @@ TestFileSystemBackend::CreateFileSystemOperation(
       std::make_unique<FileSystemOperationContext>(context));
   operation_context->set_update_observers(*GetUpdateObservers(url.type()));
   operation_context->set_change_observers(*GetChangeObservers(url.type()));
-  return FileSystemOperation::Create(url, context,
+  return FileSystemOperation::Create(type, url, context,
                                      std::move(operation_context));
 }
 

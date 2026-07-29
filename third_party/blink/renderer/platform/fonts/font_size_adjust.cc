@@ -4,40 +4,48 @@
 
 #include "third_party/blink/renderer/platform/fonts/font_size_adjust.h"
 
+#include "base/notreached.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
 
-unsigned FontSizeAdjust::GetHash() const {
-  unsigned computed_hash = 0;
-  // Normalize negative zero.
-  WTF::AddFloatToHash(computed_hash, value_);
-  WTF::AddIntToHash(computed_hash, static_cast<const unsigned>(metric_));
-  return computed_hash;
-}
+namespace {
 
-String FontSizeAdjust::ToString(Metric metric) const {
+StringView ToString(FontSizeAdjust::Metric metric) {
   switch (metric) {
-    case Metric::kCapHeight:
+    case FontSizeAdjust::Metric::kCapHeight:
       return "cap-height";
-    case Metric::kChWidth:
+    case FontSizeAdjust::Metric::kChWidth:
       return "ch-width";
-    case Metric::kIcWidth:
+    case FontSizeAdjust::Metric::kIcWidth:
       return "ic-width";
-    case Metric::kExHeight:
+    case FontSizeAdjust::Metric::kIcHeight:
+      return "ic-height";
+    case FontSizeAdjust::Metric::kExHeight:
       return "ex-height";
   }
   NOTREACHED();
+}
+
+}  // namespace
+
+unsigned FontSizeAdjust::GetHash() const {
+  unsigned computed_hash = 0;
+  AddFloatToHash(computed_hash, value_);
+  AddIntToHash(computed_hash, static_cast<const unsigned>(metric_));
+  AddIntToHash(computed_hash, static_cast<const unsigned>(type_));
+  return computed_hash;
 }
 
 String FontSizeAdjust::ToString() const {
   if (value_ == kFontSizeAdjustNone) {
     return "none";
   }
-  return metric_ == Metric::kExHeight
-             ? String::Format("%f", value_)
-             : String::Format("%s %f", ToString(metric_).Ascii().c_str(),
-                              value_);
+  String adjustment = IsFromFont() ? "from-font" : String::Number(value_);
+  if (metric_ == Metric::kExHeight) {
+    return adjustment;
+  }
+  return StrCat({::blink::ToString(metric_), " ", adjustment});
 }
 
 }  // namespace blink

@@ -7,7 +7,6 @@
 
 #include <stddef.h>
 
-#include <map>
 #include <memory>
 #include <string>
 #include <utility>
@@ -119,6 +118,8 @@ class DeviceCommandScreenshotJob : public RemoteCommandJob,
                           std::vector<ScreenshotData> upload_data);
 
   void StartScreenshotUpload(std::vector<ScreenshotData> upload_data);
+
+  void ReportResult(ResultType result_type, ResultCode result_code);
 
   // The URL to which the POST request should be directed.
   GURL upload_url_;

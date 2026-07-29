@@ -4,14 +4,16 @@
 
 #include "mojo/core/channel.h"
 
-#include <stdint.h>
 #include <windows.h>
+
+#include <stdint.h>
 
 #include <algorithm>
 #include <limits>
 #include <memory>
 #include <tuple>
 
+#include "base/compiler_specific.h"
 #include "base/containers/queue.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -69,7 +71,7 @@ class ChannelWin : public Channel,
         io_task_runner_(io_task_runner) {
     handle_ =
         connection_params.TakeEndpoint().TakePlatformHandle().TakeHandle();
-    CHECK(handle_.IsValid());
+    CHECK(handle_.is_valid());
   }
 
   ChannelWin(const ChannelWin&) = delete;
@@ -87,6 +89,8 @@ class ChannelWin : public Channel,
   }
 
   void Write(MessagePtr message) override {
+    RecordSentMessageMetricsSubsampled(message->data_num_bytes());
+
     if (remote_process().IsValid()) {
       // If we know the remote process handle, we transfer all outgoing handles
       // to the process now rewriting them in the message.
@@ -105,13 +109,15 @@ class ChannelWin : public Channel,
     bool write_error = false;
     {
       base::AutoLock lock(write_lock_);
-      if (reject_writes_)
+      if (reject_writes_) {
         return;
+      }
 
       bool write_now = !delay_writes_ && outgoing_messages_.IsEmpty();
       outgoing_messages_.Append(std::move(message));
-      if (write_now && !WriteNoLock(outgoing_messages_.GetFirst()))
+      if (write_now && !WriteNoLock(outgoing_messages_.GetFirst())) {
         reject_writes_ = write_error = true;
+      }
     }
     if (write_error) {
       // Do not synchronously invoke OnWriteError(). Write() may have been
@@ -132,23 +138,25 @@ class ChannelWin : public Channel,
                               size_t num_handles,
                               const void* extra_header,
                               size_t extra_header_size,
-                              std::vector<PlatformHandle>* handles,
-                              bool* deferred) override {
+                              std::vector<PlatformHandle>* handles) override {
     DCHECK(extra_header);
-    if (num_handles > std::numeric_limits<uint16_t>::max())
+    if (num_handles > std::numeric_limits<uint16_t>::max()) {
       return false;
+    }
     using HandleEntry = Channel::Message::HandleEntry;
     size_t handles_size = sizeof(HandleEntry) * num_handles;
-    if (handles_size > extra_header_size)
+    if (handles_size > extra_header_size) {
       return false;
+    }
     handles->reserve(num_handles);
     const HandleEntry* extra_header_handles =
         reinterpret_cast<const HandleEntry*>(extra_header);
     for (size_t i = 0; i < num_handles; i++) {
-      HANDLE handle_value =
-          base::win::Uint32ToHandle(extra_header_handles[i].handle);
-      if (PlatformHandleInTransit::IsPseudoHandle(handle_value))
+      HANDLE handle_value = base::win::Uint32ToHandle(
+          UNSAFE_TODO(extra_header_handles[i]).handle);
+      if (PlatformHandleInTransit::IsPseudoHandle(handle_value)) {
         return false;
+      }
       if (remote_process().IsValid() && handle_value != INVALID_HANDLE_VALUE) {
         // If we know the remote process's handle, we assume it doesn't know
         // ours; that means any handle values still belong to that process, and
@@ -176,7 +184,10 @@ class ChannelWin : public Channel,
 
   void StartOnIOThread() {
     base::CurrentThread::Get()->AddDestructionObserver(this);
-    base::CurrentIOThread::Get()->RegisterIOHandler(handle_.Get(), this);
+    if (!base::CurrentIOThread::Get()->RegisterIOHandler(handle_.get(), this)) {
+      OnError(Error::kConnectionFailed);
+      return;
+    }
 
     // Now that we have registered our IOHandler, we can start writing.
     {
@@ -196,14 +207,21 @@ class ChannelWin : public Channel,
   void ShutDownOnIOThread() {
     base::CurrentThread::Get()->RemoveDestructionObserver(this);
 
-    // TODO(https://crbug.com/583525): This function is expected to be called
+    {
+      // Prevent attempts to write if we've closed the handle.
+      base::AutoLock lock(write_lock_);
+      reject_writes_ = true;
+    }
+
+    // TODO(crbug.com/40455076): This function is expected to be called
     // once, and |handle_| should be valid at this point.
-    CHECK(handle_.IsValid());
-    CancelIo(handle_.Get());
-    if (leak_handle_)
-      std::ignore = handle_.Take();
-    else
+    CHECK(handle_.is_valid());
+    CancelIo(handle_.get());
+    if (leak_handle_) {
+      std::ignore = handle_.release();
+    } else {
       handle_.Close();
+    }
 
     // Allow |this| to be destroyed as soon as no IO is pending.
     self_ = nullptr;
@@ -212,8 +230,9 @@ class ChannelWin : public Channel,
   // base::CurrentThread::DestructionObserver:
   void WillDestroyCurrentMessageLoop() override {
     DCHECK(io_task_runner_->RunsTasksInCurrentSequence());
-    if (self_)
+    if (self_) {
       ShutDownOnIOThread();
+    }
   }
 
   // base::MessageLoop::IOHandler:
@@ -256,8 +275,9 @@ class ChannelWin : public Channel,
   }
 
   void OnWriteDone(size_t bytes_written) {
-    if (bytes_written == 0)
+    if (bytes_written == 0) {
       return;
+    }
 
     bool write_error = false;
     {
@@ -270,13 +290,15 @@ class ChannelWin : public Channel,
       Channel::MessagePtr message = outgoing_messages_.TakeFirst();
 
       // Overlapped WriteFile() to a pipe should always fully complete.
-      if (message->data_num_bytes() != bytes_written)
+      if (message->data_num_bytes() != bytes_written) {
         reject_writes_ = write_error = true;
-      else if (!WriteNextNoLock())
+      } else if (!WriteNextNoLock()) {
         reject_writes_ = write_error = true;
+      }
     }
-    if (write_error)
+    if (write_error) {
       OnWriteError(Error::kDisconnected);
+    }
   }
 
   void ReadMore(size_t next_read_size_hint) {
@@ -284,11 +306,17 @@ class ChannelWin : public Channel,
 
     size_t buffer_capacity = next_read_size_hint;
     char* buffer = GetReadBuffer(&buffer_capacity);
+    // A null buffer means the size computation for the buffer overflowed;
+    // break the connection.
+    if (!buffer) {
+      OnError(Error::kDisconnected);
+      return;
+    }
     DCHECK_GT(buffer_capacity, 0u);
 
     BOOL ok =
-        ::ReadFile(handle_.Get(), buffer, static_cast<DWORD>(buffer_capacity),
-                   NULL, &read_context_.overlapped);
+        ::ReadFile(handle_.get(), buffer, static_cast<DWORD>(buffer_capacity),
+                   NULL, read_context_.GetOverlapped());
     if (ok || GetLastError() == ERROR_IO_PENDING) {
       is_read_pending_ = true;
       AddRef();
@@ -312,12 +340,14 @@ class ChannelWin : public Channel,
     // process is if the remote process dies before receiving this message. At
     // that point, again, potential handle leaks don't matter.
     std::vector<PlatformHandleInTransit> handles = message->TakeHandles();
-    for (auto& handle : handles)
+    for (auto& handle : handles) {
       handle.CompleteTransit();
+    }
 
-    BOOL ok = WriteFile(handle_.Get(), message->data(),
+    DCHECK(handle_.is_valid());
+    BOOL ok = WriteFile(handle_.get(), message->data(),
                         static_cast<DWORD>(message->data_num_bytes()), NULL,
-                        &write_context_.overlapped);
+                        write_context_.GetOverlapped());
     if (ok || GetLastError() == ERROR_IO_PENDING) {
       is_write_pending_ = true;
       AddRef();
@@ -327,8 +357,12 @@ class ChannelWin : public Channel,
   }
 
   bool WriteNextNoLock() {
-    if (outgoing_messages_.IsEmpty())
+    if (outgoing_messages_.IsEmpty()) {
       return true;
+    }
+    if (reject_writes_) {
+      return false;
+    }
     return WriteNoLock(outgoing_messages_.GetFirst());
   }
 

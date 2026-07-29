@@ -4,10 +4,10 @@
 
 #include "third_party/blink/public/common/input/web_coalesced_input_event_mojom_traits.h"
 
+#include <algorithm>
 #include <memory>
 
-#include "base/containers/contains.h"
-#include "base/i18n/char_iterator.h"
+#include "base/strings/string_util.h"
 #include "base/time/time.h"
 #include "mojo/public/cpp/base/time_mojom_traits.h"
 #include "third_party/blink/public/common/input/web_gesture_event.h"
@@ -18,16 +18,6 @@
 
 namespace mojo {
 namespace {
-
-void CopyString(char16_t* dst, const std::u16string& text) {
-  size_t pos = 0;
-  for (base::i18n::UTF16CharIterator iter(text);
-       !iter.end() && pos < blink::WebKeyboardEvent::kTextLengthCap - 1;
-       iter.Advance()) {
-    dst[pos++] = iter.get();
-  }
-  dst[pos] = '\0';
-}
 
 blink::mojom::PointerDataPtr PointerDataFromPointerProperties(
     const blink::WebPointerProperties& pointer,
@@ -56,6 +46,8 @@ void PointerPropertiesFromPointerData(
   pointer_properties->is_raw_movement_event =
       pointer_data->is_raw_movement_event;
   pointer_properties->device_id = pointer_data->device_id;
+  pointer_properties->SetPositionInWidget(pointer_data->widget_position);
+  pointer_properties->SetPositionInScreen(pointer_data->screen_position);
 }
 
 void TouchPointPropertiesFromPointerData(
@@ -66,23 +58,6 @@ void TouchPointPropertiesFromPointerData(
   touch_point->radius_x = mojo_touch_point->radius_x;
   touch_point->radius_y = mojo_touch_point->radius_y;
   touch_point->rotation_angle = mojo_touch_point->rotation_angle;
-  touch_point->SetPositionInWidget(
-      mojo_touch_point->pointer_data->widget_position.x(),
-      mojo_touch_point->pointer_data->widget_position.y());
-  touch_point->SetPositionInScreen(
-      mojo_touch_point->pointer_data->screen_position.x(),
-      mojo_touch_point->pointer_data->screen_position.y());
-}
-
-// TODO(dtapuska): Remove once SetPositionInXXX moves to WebPointerProperties.
-void MouseEventPropertiesFromPointerData(
-    const blink::mojom::PointerDataPtr& pointer_data,
-    blink::WebMouseEvent* mouse_event) {
-  PointerPropertiesFromPointerData(pointer_data, mouse_event);
-  mouse_event->SetPositionInWidget(pointer_data->widget_position.x(),
-                                   pointer_data->widget_position.y());
-  mouse_event->SetPositionInScreen(pointer_data->screen_position.x(),
-                                   pointer_data->screen_position.y());
 }
 
 }  // namespace
@@ -118,8 +93,15 @@ bool StructTraits<blink::mojom::EventDataView,
     key_event->dom_key = key_data->dom_key;
     key_event->is_system_key = key_data->is_system_key;
     key_event->is_browser_shortcut = key_data->is_browser_shortcut;
-    CopyString(key_event->text, key_data->text);
-    CopyString(key_event->unmodified_text, key_data->unmodified_text);
+#if BUILDFLAG(IS_ANDROID)
+    key_event->is_confirmed_physical_keyboard_input =
+        key_data->is_confirmed_physical_keyboard_input;
+#endif
+    base::u16cstrlcpy(key_event->text.data(), key_data->text.c_str(),
+                      blink::WebKeyboardEvent::kTextLengthCap);
+    base::u16cstrlcpy(key_event->unmodified_text.data(),
+                      key_data->unmodified_text.c_str(),
+                      blink::WebKeyboardEvent::kTextLengthCap);
   } else if (blink::WebInputEvent::IsGestureEventType(type)) {
     blink::mojom::GestureDataPtr gesture_data;
     if (!event.ReadGestureData<blink::mojom::GestureDataPtr>(&gesture_data))
@@ -207,22 +189,24 @@ bool StructTraits<blink::mojom::EventDataView,
               gesture_data->scroll_data->inertial_phase;
           gesture_event->data.scroll_end.synthetic =
               gesture_data->scroll_data->synthetic;
+          gesture_event->data.scroll_end.delta_x_compensated =
+              gesture_data->scroll_data->delta_x;
+          gesture_event->data.scroll_end.delta_y_compensated =
+              gesture_data->scroll_data->delta_y;
           break;
         case blink::WebInputEvent::Type::kGestureScrollUpdate:
           gesture_event->data.scroll_update.delta_x =
               gesture_data->scroll_data->delta_x;
           gesture_event->data.scroll_update.delta_y =
               gesture_data->scroll_data->delta_y;
+          gesture_event->data.scroll_update.delta_x_unconstrained =
+              gesture_data->scroll_data->delta_x_unconstrained;
+          gesture_event->data.scroll_update.delta_y_unconstrained =
+              gesture_data->scroll_data->delta_y_unconstrained;
           gesture_event->data.scroll_update.delta_units =
               gesture_data->scroll_data->delta_units;
           gesture_event->data.scroll_update.inertial_phase =
               gesture_data->scroll_data->inertial_phase;
-          if (gesture_data->scroll_data->update_details) {
-            gesture_event->data.scroll_update.velocity_x =
-                gesture_data->scroll_data->update_details->velocity_x;
-            gesture_event->data.scroll_update.velocity_y =
-                gesture_data->scroll_data->update_details->velocity_y;
-          }
           break;
       }
     }
@@ -261,6 +245,12 @@ bool StructTraits<blink::mojom::EventDataView,
               gesture_data->tap_data->needs_wheel_event;
           break;
       }
+    }
+
+    if (gesture_data->tap_down_data &&
+        type == blink::WebInputEvent::Type::kGestureTapDown) {
+      gesture_event->data.tap_down.tap_down_count =
+          gesture_data->tap_down_data->tap_down_count;
     }
 
     if (gesture_data->fling_data) {
@@ -328,7 +318,7 @@ bool StructTraits<blink::mojom::EventDataView,
     blink::WebMouseEvent* mouse_event =
         static_cast<blink::WebMouseEvent*>(input_event.get());
 
-    MouseEventPropertiesFromPointerData(pointer_data, mouse_event);
+    PointerPropertiesFromPointerData(pointer_data, mouse_event);
     if (pointer_data->mouse_data) {
       mouse_event->click_count = pointer_data->mouse_data->click_count;
 
@@ -355,6 +345,7 @@ bool StructTraits<blink::mojom::EventDataView,
                 wheel_data->event_action);
         wheel_event->delta_units =
             static_cast<ui::ScrollGranularity>(wheel_data->delta_units);
+        wheel_event->rails_mode = wheel_data->rails_mode;
       }
     }
 
@@ -365,7 +356,7 @@ bool StructTraits<blink::mojom::EventDataView,
   ui::EventLatencyMetadata event_latency_metadata;
   if (!event.ReadEventLatencyMetadata(&event_latency_metadata)) {
     return false;
-  };
+  }
   input_event->GetModifiableEventLatencyMetadata() =
       std::move(event_latency_metadata);
   ui::LatencyInfo latency_info;
@@ -385,15 +376,18 @@ StructTraits<blink::mojom::EventDataView,
     return nullptr;
   const blink::WebKeyboardEvent* key_event =
       static_cast<const blink::WebKeyboardEvent*>(event->EventPointer());
-  // Assure char16_t[N] filds are null-terminated before converting
+  // Assure std::array<char16_t, N> fields are nul-terminated before converting
   // them to std::u16string.
-  CHECK(base::Contains(key_event->text, 0));
-  CHECK(base::Contains(key_event->unmodified_text, 0));
+  CHECK(std::ranges::contains(key_event->text, 0));
+  CHECK(std::ranges::contains(key_event->unmodified_text, 0));
   return blink::mojom::KeyData::New(
       key_event->dom_key, key_event->dom_code, key_event->windows_key_code,
       key_event->native_key_code, key_event->is_system_key,
-      key_event->is_browser_shortcut, key_event->text,
-      key_event->unmodified_text);
+      key_event->is_browser_shortcut,
+#if BUILDFLAG(IS_ANDROID)
+      key_event->is_confirmed_physical_keyboard_input,
+#endif
+      key_event->text.data(), key_event->unmodified_text.data());
 }
 
 // static
@@ -420,7 +414,8 @@ StructTraits<blink::mojom::EventDataView,
         wheel_event->acceleration_ratio_y, wheel_event->phase,
         wheel_event->momentum_phase, wheel_event->dispatch_type,
         static_cast<uint8_t>(wheel_event->event_action),
-        static_cast<uint8_t>(wheel_event->delta_units));
+        static_cast<uint8_t>(wheel_event->delta_units),
+        wheel_event->rails_mode);
   }
 
   return PointerDataFromPointerProperties(
@@ -454,6 +449,8 @@ StructTraits<blink::mojom::EventDataView,
       gesture_data->contact_size =
           gfx::Size(gesture_event->data.tap_down.width,
                     gesture_event->data.tap_down.height);
+      gesture_data->tap_down_data = blink::mojom::TapDownData::New(
+          gesture_event->data.tap_down.tap_down_count);
       break;
     case blink::WebInputEvent::Type::kGestureShowPress:
       gesture_data->contact_size =
@@ -491,13 +488,23 @@ StructTraits<blink::mojom::EventDataView,
           gesture_event->data.scroll_begin.inertial_phase,
           gesture_event->data.scroll_begin.synthetic,
           gesture_event->data.scroll_begin.pointer_count,
-          gesture_event->data.scroll_begin.cursor_control, nullptr);
+          gesture_event->data.scroll_begin.cursor_control,
+          // NOTE(crbug.com/479472367): ScrollBegin does not use unconstrained
+          // values.
+          gesture_event->data.scroll_begin.delta_x_hint,
+          gesture_event->data.scroll_begin.delta_y_hint);
       break;
     case blink::WebInputEvent::Type::kGestureScrollEnd:
       gesture_data->scroll_data = blink::mojom::ScrollData::New(
-          0, 0, gesture_event->data.scroll_end.delta_units, false,
+          gesture_event->data.scroll_end.delta_x_compensated,
+          gesture_event->data.scroll_end.delta_y_compensated,
+          gesture_event->data.scroll_end.delta_units, false,
           gesture_event->data.scroll_end.inertial_phase,
-          gesture_event->data.scroll_end.synthetic, 0, false, nullptr);
+          gesture_event->data.scroll_end.synthetic, 0, false,
+          // NOTE(crbug.com/479472367): ScrollEnd does not use unconstrained
+          // values.
+          gesture_event->data.scroll_end.delta_x_compensated,
+          gesture_event->data.scroll_end.delta_y_compensated);
       break;
     case blink::WebInputEvent::Type::kGestureScrollUpdate:
       gesture_data->scroll_data = blink::mojom::ScrollData::New(
@@ -505,9 +512,8 @@ StructTraits<blink::mojom::EventDataView,
           gesture_event->data.scroll_update.delta_y,
           gesture_event->data.scroll_update.delta_units, false,
           gesture_event->data.scroll_update.inertial_phase, false, 0, false,
-          blink::mojom::ScrollUpdate::New(
-              gesture_event->data.scroll_update.velocity_x,
-              gesture_event->data.scroll_update.velocity_y));
+          gesture_event->data.scroll_update.delta_x_unconstrained,
+          gesture_event->data.scroll_update.delta_y_unconstrained);
       break;
     case blink::WebInputEvent::Type::kGestureFlingStart:
       gesture_data->fling_data = blink::mojom::FlingData::New(

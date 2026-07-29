@@ -46,6 +46,7 @@ class CSSStyleGenerator(BaseGenerator):
             'colors': colors,
             'legacy_mappings': legacy_mappings,
             'typefaces': self.model.typefaces,
+            'font_faces': self.model.font_faces,
             'font_families': self.model.font_families,
             'untyped_css': self.model.untyped_css,
         }
@@ -103,6 +104,9 @@ class CSSStyleGenerator(BaseGenerator):
                 '$css_name-font-weight',
                 '$css_name-line-height',
             ])
+        elif variable_type == VariableType.FONT_FACE:
+            # Font faces are not individual attributes
+            pass
         elif variable_type == VariableType.LEGACY_MAPPING:
             # No Clients should be directly using any of the legacy mappings.
             pass
@@ -194,6 +198,11 @@ class CSSStyleGenerator(BaseGenerator):
 
     def CSSColorVar(self, name, color, mode, unscoped=False):
         '''Returns the CSS color representation given a color name and color'''
+        if unscoped:
+            var_name = self.ToCSSVarNameUnscoped(name)
+        else:
+            var_name = self.ToCSSVarName(name)
+
         if isinstance(color, ColorVar):
             return 'var(%s)' % self.ToCSSVarName(color.var)
 
@@ -202,14 +211,10 @@ class CSSStyleGenerator(BaseGenerator):
 
         if isinstance(color,
                       ((ColorRGB, ColorRGBVar))) and color.opacity.a != 1:
-            if unscoped:
-                var_name = self.ToCSSVarNameUnscoped(name)
-            else:
-                var_name = self.ToCSSVarName(name)
             return 'rgba(var(%s-rgb), %s)' % (var_name,
                                               self._CSSOpacity(color.opacity))
 
-        return 'rgb(var(%s-rgb))' % self.ToCSSVarName(name)
+        return 'rgb(var(%s-rgb))' % var_name
 
     def NeedsRGBVariant(self, color):
         return not isinstance(color, ColorBlend)

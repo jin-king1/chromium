@@ -7,16 +7,13 @@
 #include <memory>
 
 #include "base/functional/bind.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/task/sequence_manager/test/sequence_manager_for_test.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/simple_test_tick_clock.h"
-#include "base/test/test_mock_time_task_runner.h"
 #include "base/time/time.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/renderer/platform/scheduler/common/task_priority.h"
 #include "third_party/blink/renderer/platform/scheduler/common/throttling/cpu_time_budget_pool.h"
@@ -25,18 +22,10 @@
 #include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_priority.h"
 #include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_queue_type.h"
 #include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_task_queue.h"
+#include "third_party/blink/renderer/platform/scheduler/test/task_environment.h"
 #include "third_party/blink/renderer/platform/scheduler/test/web_scheduling_test_helper.h"
 #include "third_party/blink/renderer/platform/scheduler/worker/worker_thread_scheduler.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
-
-// TODO(crbug.com/960984): Fix memory leaks in tests and re-enable on LSAN.
-#ifdef LEAK_SANITIZER
-#define MAYBE_PausableTasks DISABLED_PausableTasks
-#define MAYBE_NestedPauseHandlesTasks DISABLED_NestedPauseHandlesTasks
-#else
-#define MAYBE_PausableTasks PausableTasks
-#define MAYBE_NestedPauseHandlesTasks NestedPauseHandlesTasks
-#endif
 
 using testing::ElementsAre;
 using testing::ElementsAreArray;
@@ -55,11 +44,11 @@ void AppendToVectorTestTask(Vector<String>* vector, String value) {
 void RunChainedTask(scoped_refptr<NonMainThreadTaskQueue> task_queue,
                     int count,
                     base::TimeDelta duration,
-                    scoped_refptr<base::TestMockTimeTaskRunner> environment,
+                    base::test::TaskEnvironment* environment,
                     Vector<base::TimeTicks>* tasks) {
   tasks->push_back(environment->GetMockTickClock()->NowTicks());
 
-  environment->AdvanceMockTickClock(duration);
+  environment->AdvanceClock(duration);
 
   if (count == 1)
     return;
@@ -84,7 +73,7 @@ class TestObject {
   ~TestObject() { ++(*counter_); }
 
  private:
-  int* counter_;
+  raw_ptr<int> counter_;
 };
 
 }  // namespace
@@ -102,6 +91,10 @@ class WorkerThreadSchedulerForTest : public WorkerThreadScheduler {
     return GetWorkerSchedulersForTesting();
   }
 
+  scoped_refptr<base::SingleThreadTaskRunner> DefaultTaskRunner() {
+    return DefaultTaskQueue()->GetTaskRunnerWithDefaultTaskType();
+  }
+
   using WorkerThreadScheduler::CreateBudgetPools;
   using WorkerThreadScheduler::SetCPUTimeBudgetPoolForTesting;
 };
@@ -116,23 +109,51 @@ class WorkerSchedulerForTest : public WorkerSchedulerImpl {
   using WorkerSchedulerImpl::UnpausableTaskQueue;
 };
 
+class TaskEnvironmentWithWorkerThreadScheduler
+    : public base::test::TaskEnvironment {
+ public:
+  using ValidTraits = base::test::TaskEnvironment::ValidTraits;
+
+  template <typename... Traits>
+    requires base::trait_helpers::AreValidTraits<ValidTraits, Traits...>
+  explicit TaskEnvironmentWithWorkerThreadScheduler(Traits... traits)
+      : TaskEnvironmentWithWorkerThreadScheduler(
+            CreateTaskEnvironmentWithPriorities(
+                blink::scheduler::CreatePrioritySettings(),
+                SubclassCreatesDefaultTaskRunner{},
+                traits...)) {}
+
+  ~TaskEnvironmentWithWorkerThreadScheduler() override {
+    if (scheduler_) {
+      scheduler_->Shutdown();
+    }
+  }
+
+  WorkerThreadSchedulerForTest* GetThreadScheduler() {
+    return scheduler_.get();
+  }
+
+ private:
+  explicit TaskEnvironmentWithWorkerThreadScheduler(
+      base::test::TaskEnvironment&& scoped_task_environment)
+      : base::test::TaskEnvironment(std::move(scoped_task_environment)) {
+    scheduler_ = std::make_unique<WorkerThreadSchedulerForTest>(
+        ThreadType::kTestThread, sequence_manager(), nullptr /* proxy */);
+    scheduler_->Init();
+    scheduler_->AttachToCurrentThread();
+    DeferredInitFromSubclass(scheduler_->DefaultTaskQueue()->GetTaskQueue());
+  }
+
+  std::unique_ptr<WorkerThreadSchedulerForTest> scheduler_;
+};
+
 class WorkerSchedulerImplTest : public testing::Test {
  public:
-  WorkerSchedulerImplTest()
-      : mock_task_runner_(new base::TestMockTimeTaskRunner()),
-        sequence_manager_(
-            base::sequence_manager::SequenceManagerForTest::Create(
-                nullptr,
-                mock_task_runner_,
-                mock_task_runner_->GetMockTickClock(),
-                base::sequence_manager::SequenceManager::Settings::Builder()
-                    .SetPrioritySettings(CreatePrioritySettings())
-                    .Build())),
-        scheduler_(new WorkerThreadSchedulerForTest(ThreadType::kTestThread,
-                                                    sequence_manager_.get(),
-                                                    nullptr /* proxy */)) {
-    mock_task_runner_->AdvanceMockTickClock(base::Microseconds(5000));
-    start_time_ = mock_task_runner_->NowTicks();
+  WorkerSchedulerImplTest() {
+    auto now = base::TimeTicks::Now();
+    task_environment_.AdvanceClock(
+        now.SnappedToNextTick(base::TimeTicks(), base::Seconds(1)) - now);
+    start_time_ = task_environment_.NowTicks();
   }
 
   WorkerSchedulerImplTest(const WorkerSchedulerImplTest&) = delete;
@@ -140,8 +161,7 @@ class WorkerSchedulerImplTest : public testing::Test {
   ~WorkerSchedulerImplTest() override = default;
 
   void SetUp() override {
-    scheduler_->Init();
-    scheduler_->AttachToCurrentThread();
+    scheduler_ = task_environment_.GetThreadScheduler();
     worker_scheduler_ =
         std::make_unique<WorkerSchedulerForTest>(scheduler_.get());
   }
@@ -151,13 +171,14 @@ class WorkerSchedulerImplTest : public testing::Test {
       worker_scheduler_->Dispose();
       worker_scheduler_.reset();
     }
+    scheduler_ = nullptr;
   }
 
   const base::TickClock* GetClock() {
-    return mock_task_runner_->GetMockTickClock();
+    return task_environment_.GetMockTickClock();
   }
 
-  void RunUntilIdle() { mock_task_runner_->FastForwardUntilNoTasksRemain(); }
+  void RunUntilIdle() { task_environment_.FastForwardUntilNoTasksRemain(); }
 
   // Helper for posting a task.
   void PostTestTask(Vector<String>* run_order,
@@ -171,15 +192,15 @@ class WorkerSchedulerImplTest : public testing::Test {
                     const String& task_descriptor,
                     base::SingleThreadTaskRunner& task_runner) {
     task_runner.PostTask(
-        FROM_HERE, WTF::BindOnce(&AppendToVectorTestTask,
-                                 WTF::Unretained(run_order), task_descriptor));
+        FROM_HERE, BindOnce(&AppendToVectorTestTask, Unretained(run_order),
+                            task_descriptor));
   }
 
  protected:
-  scoped_refptr<base::TestMockTimeTaskRunner> mock_task_runner_;
-  std::unique_ptr<base::sequence_manager::SequenceManagerForTest>
-      sequence_manager_;
-  std::unique_ptr<WorkerThreadSchedulerForTest> scheduler_;
+  TaskEnvironmentWithWorkerThreadScheduler task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME,
+      base::test::TaskEnvironment::ThreadingMode::MAIN_THREAD_ONLY};
+  raw_ptr<WorkerThreadSchedulerForTest> scheduler_;
   std::unique_ptr<WorkerSchedulerForTest> worker_scheduler_;
   base::TimeTicks start_time_;
   base::test::ScopedFeatureList feature_list_;
@@ -207,7 +228,7 @@ TEST_F(WorkerSchedulerImplTest, TestPostTasks) {
   RunUntilIdle();
   EXPECT_TRUE(run_order.empty());
 
-  worker_scheduler_.reset();
+  worker_scheduler_ = nullptr;
 }
 
 TEST_F(WorkerSchedulerImplTest, RegisterWorkerSchedulers) {
@@ -222,7 +243,7 @@ TEST_F(WorkerSchedulerImplTest, RegisterWorkerSchedulers) {
                                             worker_scheduler2.get()));
 
   worker_scheduler_->Dispose();
-  worker_scheduler_.reset();
+  worker_scheduler_ = nullptr;
 
   EXPECT_THAT(scheduler_->worker_schedulers(),
               testing::ElementsAre(worker_scheduler2.get()));
@@ -235,6 +256,9 @@ TEST_F(WorkerSchedulerImplTest, RegisterWorkerSchedulers) {
 TEST_F(WorkerSchedulerImplTest, ThrottleWorkerScheduler) {
   scheduler_->CreateBudgetPools();
 
+  EXPECT_FALSE(worker_scheduler_->ThrottleableTaskQueue()->IsThrottled());
+
+  scheduler_->OnLifecycleStateChanged(SchedulingLifecycleState::kHidden);
   EXPECT_FALSE(worker_scheduler_->ThrottleableTaskQueue()->IsThrottled());
 
   scheduler_->OnLifecycleStateChanged(SchedulingLifecycleState::kThrottled);
@@ -281,16 +305,15 @@ TEST_F(WorkerSchedulerImplTest, ThrottleWorkerScheduler_RunThrottledTasks) {
       ->PostTask(FROM_HERE,
                  base::BindOnce(&RunChainedTask,
                                 worker_scheduler_->ThrottleableTaskQueue(), 5,
-                                base::TimeDelta(), mock_task_runner_,
+                                base::TimeDelta(), &task_environment_,
                                 base::Unretained(&tasks)));
 
   RunUntilIdle();
 
-  EXPECT_THAT(tasks, ElementsAre(base::TimeTicks() + base::Seconds(1),
-                                 base::TimeTicks() + base::Seconds(2),
-                                 base::TimeTicks() + base::Seconds(3),
-                                 base::TimeTicks() + base::Seconds(4),
-                                 base::TimeTicks() + base::Seconds(5)));
+  EXPECT_THAT(tasks, ElementsAre(start_time_, start_time_ + base::Seconds(1),
+                                 start_time_ + base::Seconds(2),
+                                 start_time_ + base::Seconds(3),
+                                 start_time_ + base::Seconds(4)));
 }
 
 TEST_F(WorkerSchedulerImplTest,
@@ -314,19 +337,18 @@ TEST_F(WorkerSchedulerImplTest,
       ->PostTask(FROM_HERE,
                  base::BindOnce(&RunChainedTask,
                                 worker_scheduler_->ThrottleableTaskQueue(), 5,
-                                base::Milliseconds(100), mock_task_runner_,
+                                base::Milliseconds(100), &task_environment_,
                                 base::Unretained(&tasks)));
 
   RunUntilIdle();
 
-  EXPECT_THAT(tasks, ElementsAre(base::TimeTicks() + base::Seconds(1),
-                                 start_time_ + base::Seconds(10),
+  EXPECT_THAT(tasks, ElementsAre(start_time_, start_time_ + base::Seconds(10),
                                  start_time_ + base::Seconds(20),
                                  start_time_ + base::Seconds(30),
                                  start_time_ + base::Seconds(40)));
 }
 
-TEST_F(WorkerSchedulerImplTest, MAYBE_PausableTasks) {
+TEST_F(WorkerSchedulerImplTest, PausableTasks) {
   Vector<String> run_order;
   auto pause_handle = worker_scheduler_->Pause();
   // Tests interlacing pausable, throttable and unpausable tasks and
@@ -345,7 +367,7 @@ TEST_F(WorkerSchedulerImplTest, MAYBE_PausableTasks) {
   EXPECT_THAT(run_order, testing::ElementsAre("T3", "T1", "T2"));
 }
 
-TEST_F(WorkerSchedulerImplTest, MAYBE_NestedPauseHandlesTasks) {
+TEST_F(WorkerSchedulerImplTest, NestedPauseHandlesTasks) {
   Vector<String> run_order;
   auto pause_handle = worker_scheduler_->Pause();
   {
@@ -366,13 +388,14 @@ class WorkerSchedulerDelegateForTesting : public WorkerScheduler::Delegate {
 };
 
 MATCHER(BlockingDetailsHasCCNS, "Compares two blocking details.") {
-  bool vector_empty = arg.non_sticky_features_and_js_locations.empty();
+  bool vector_empty =
+      arg.non_sticky_features_and_js_locations->details_list.empty();
   bool vector_has_ccns =
-      arg.sticky_features_and_js_locations.Contains(
+      arg.sticky_features_and_js_locations->details_list.Contains(
           FeatureAndJSLocationBlockingBFCache(
               SchedulingPolicy::Feature::kMainResourceHasCacheControlNoStore,
               nullptr)) &&
-      arg.sticky_features_and_js_locations.Contains(
+      arg.sticky_features_and_js_locations->details_list.Contains(
           FeatureAndJSLocationBlockingBFCache(
               SchedulingPolicy::Feature::kMainResourceHasCacheControlNoCache,
               nullptr));
@@ -619,26 +642,107 @@ TEST_F(NonMainThreadWebSchedulingTaskQueueTest,
                                    "Timer", "BG-C", "BG"));
 }
 
+TEST_F(NonMainThreadWebSchedulingTaskQueueTest, TaskQueuesArePausable) {
+  Vector<String> run_order;
+  Vector<TestTaskSpecEntry> test_spec = {
+      {.descriptor = "UV",
+       .type_info = WebSchedulingParams(
+           {.queue_type = WebSchedulingQueueType::kTaskQueue,
+            .priority = WebSchedulingPriority::kUserVisiblePriority})},
+      {.descriptor = "UV-C",
+       .type_info = WebSchedulingParams(
+           {.queue_type = WebSchedulingQueueType::kContinuationQueue,
+            .priority = WebSchedulingPriority::kUserVisiblePriority})},
+      {.descriptor = "PostMessage", .type_info = TaskType::kPostedMessage},
+      {.descriptor = "WebLock", .type_info = TaskType::kWebLocks},
+      {.descriptor = "Timer",
+       .type_info = TaskType::kJavascriptTimerImmediate}};
+  web_scheduling_test_helper_->PostTestTasks(&run_order, test_spec);
+
+  std::unique_ptr<WorkerScheduler::PauseHandle> pause_handle(
+      worker_scheduler_->Pause());
+
+  // Only the queue associated with `TaskType::kWebLocks` is unpauseble.
+  RunUntilIdle();
+  EXPECT_THAT(run_order, testing::ElementsAre("WebLock"));
+}
+
+TEST_F(NonMainThreadWebSchedulingTaskQueueTest, TaskQueueDisposal) {
+  Vector<String> run_order;
+  Vector<TestTaskSpecEntry> test_spec = {
+      {.descriptor = "UV",
+       .type_info = WebSchedulingParams(
+           {.queue_type = WebSchedulingQueueType::kTaskQueue,
+            .priority = WebSchedulingPriority::kUserVisiblePriority})},
+      {.descriptor = "UV-C",
+       .type_info = WebSchedulingParams(
+           {.queue_type = WebSchedulingQueueType::kContinuationQueue,
+            .priority = WebSchedulingPriority::kUserVisiblePriority})},
+      {.descriptor = "PostMessage", .type_info = TaskType::kPostedMessage},
+      {.descriptor = "WebLock", .type_info = TaskType::kWebLocks},
+      {.descriptor = "Timer",
+       .type_info = TaskType::kJavascriptTimerImmediate}};
+  web_scheduling_test_helper_->PostTestTasks(&run_order, test_spec);
+
+  worker_scheduler_->Dispose();
+  // All queues should have been shut down, so no tasks should run.
+  RunUntilIdle();
+  EXPECT_EQ(run_order.size(), 0u);
+
+  worker_scheduler_.reset();
+}
+
+TEST_F(NonMainThreadWebSchedulingTaskQueueTest,
+       WebSchedulingTaskQueuesAreInitializedBasedOnPauseState) {
+  int counter = 0;
+
+  std::unique_ptr<WebSchedulingTaskQueue> queue =
+      worker_scheduler_->CreateWebSchedulingTaskQueue(
+          WebSchedulingQueueType::kTaskQueue,
+          WebSchedulingPriority::kUserVisiblePriority);
+  {
+    std::unique_ptr<WorkerScheduler::PauseHandle> pause_handle(
+        worker_scheduler_->Pause());
+
+    queue->GetTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+    RunUntilIdle();
+    EXPECT_EQ(counter, 0);
+  }
+
+  RunUntilIdle();
+  EXPECT_EQ(counter, 1);
+
+  queue = worker_scheduler_->CreateWebSchedulingTaskQueue(
+      WebSchedulingQueueType::kTaskQueue,
+      WebSchedulingPriority::kUserVisiblePriority);
+  queue->GetTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+  RunUntilIdle();
+  EXPECT_EQ(counter, 2);
+}
+
+TEST_F(WorkerSchedulerImplTest, WebSchedulingTaskQueueDestruction) {
+  // This just makes sure that destroying queues before and after disposal
+  // doesn't trigger any CHECKs or other issues.
+  std::unique_ptr<WebSchedulingTaskQueue> queue1 =
+      worker_scheduler_->CreateWebSchedulingTaskQueue(
+          WebSchedulingQueueType::kTaskQueue,
+          WebSchedulingPriority::kUserVisiblePriority);
+  std::unique_ptr<WebSchedulingTaskQueue> queue2 =
+      worker_scheduler_->CreateWebSchedulingTaskQueue(
+          WebSchedulingQueueType::kTaskQueue,
+          WebSchedulingPriority::kUserVisiblePriority);
+  queue2.reset();
+  worker_scheduler_->Dispose();
+  worker_scheduler_.reset();
+  queue1.reset();
+}
+
 enum class DeleterTaskRunnerEnabled { kEnabled, kDisabled };
 
-class WorkerSchedulerImplTaskRunnerWithCustomDeleterTest
-    : public WorkerSchedulerImplTest,
-      public ::testing::WithParamInterface<DeleterTaskRunnerEnabled> {
- public:
-  WorkerSchedulerImplTaskRunnerWithCustomDeleterTest() {
-    feature_list_.Reset();
-    if (GetParam() == DeleterTaskRunnerEnabled::kEnabled) {
-      feature_list_.InitWithFeatures(
-          {blink::features::kUseBlinkSchedulerTaskRunnerWithCustomDeleter}, {});
-    } else {
-      feature_list_.InitWithFeatures(
-          {}, {blink::features::kUseBlinkSchedulerTaskRunnerWithCustomDeleter});
-    }
-  }
-};
-
-TEST_P(WorkerSchedulerImplTaskRunnerWithCustomDeleterTest,
-       DeleteSoonAfterDispose) {
+TEST_F(WorkerSchedulerImplTest, DeleteSoonAfterDispose) {
   scoped_refptr<base::SingleThreadTaskRunner> task_runner =
       worker_scheduler_->GetTaskRunner(TaskType::kInternalTest);
   int counter = 0;
@@ -654,7 +758,7 @@ TEST_P(WorkerSchedulerImplTaskRunnerWithCustomDeleterTest,
   task_runner->PostTask(
       FROM_HERE, base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
   worker_scheduler_->Dispose();
-  worker_scheduler_.reset();
+  worker_scheduler_ = nullptr;
 
   // No more tasks should run after worker scheduler disposal.
   EXPECT_EQ(counter, 1);
@@ -663,33 +767,22 @@ TEST_P(WorkerSchedulerImplTaskRunnerWithCustomDeleterTest,
 
   std::unique_ptr<TestObject> test_object2 =
       std::make_unique<TestObject>(&counter);
-  TestObject* unowned_test_object2 = test_object2.get();
   task_runner->DeleteSoon(FROM_HERE, std::move(test_object2));
   EXPECT_EQ(counter, 1);
   RunUntilIdle();
-
-  // Without the custom task runner, this leaks.
-  if (GetParam() == DeleterTaskRunnerEnabled::kDisabled) {
-    EXPECT_EQ(counter, 1);
-    delete (unowned_test_object2);
-  } else {
-    EXPECT_EQ(counter, 2);
-  }
+  EXPECT_EQ(counter, 2);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    WorkerSchedulerImplTaskRunnerWithCustomDeleterTest,
-    testing::Values(DeleterTaskRunnerEnabled::kEnabled,
-                    DeleterTaskRunnerEnabled::kDisabled),
-    [](const testing::TestParamInfo<DeleterTaskRunnerEnabled>& info) {
-      switch (info.param) {
-        case DeleterTaskRunnerEnabled::kEnabled:
-          return "Enabled";
-        case DeleterTaskRunnerEnabled::kDisabled:
-          return "Disabled";
-      }
-    });
+// Regression test for crbug.com/493222148. This should not crash.
+TEST_F(WorkerSchedulerImplTest, LifecycleStateChangeAfterDispose) {
+  scheduler_->CreateBudgetPools();
+  // Simulate a worker invoking self.close() while a lifecycle change is
+  // pending.
+  worker_scheduler_->Dispose();
+  worker_scheduler_->OnLifecycleStateChanged(
+      SchedulingLifecycleState::kThrottled);
+  worker_scheduler_.reset();
+}
 
 }  // namespace worker_scheduler_unittest
 }  // namespace scheduler

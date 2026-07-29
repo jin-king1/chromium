@@ -33,15 +33,15 @@
 
 namespace blink {
 
-String ConvertHTMLTextToInterchangeFormat(const String& in, const Text& node) {
+String ConvertHtmlTextToInterchangeFormat(const String& in, const Text& node) {
   // Assume all the text comes from node.
   if (node.GetLayoutObject() &&
-      node.GetLayoutObject()->Style()->ShouldPreserveBreaks()) {
+      node.GetLayoutObject()->StyleRef().ShouldPreserveBreaks()) {
     return in;
   }
 
   const char kConvertedSpaceString[] = "<span>\xA0</span>";
-  static_assert((static_cast<unsigned char>('\xA0') == kNoBreakSpaceCharacter),
+  static_assert((static_cast<unsigned char>('\xA0') == uchar::kNoBreakSpace),
                 "\\xA0 should be non-breaking space");
 
   StringBuilder s;

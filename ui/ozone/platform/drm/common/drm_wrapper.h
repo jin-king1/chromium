@@ -7,14 +7,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/files/scoped_file.h"
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/display/types/gamma_ramp_rgb_entry.h"
@@ -27,7 +27,7 @@ typedef struct _drmModeModeInfo drmModeModeInfo;
 struct SkImageInfo;
 
 namespace display {
-struct GammaRampRGBEntry;
+class GammaCurve;
 }  // namespace display
 
 namespace ui {
@@ -46,7 +46,7 @@ class DrmPropertyBlobMetadata {
   uint32_t id() const { return id_; }
 
  private:
-  raw_ptr<DrmWrapper, ExperimentalAsh> drm_;  // Not owned;
+  raw_ptr<DrmWrapper> drm_;  // Not owned;
   uint32_t id_;
 };
 
@@ -134,6 +134,7 @@ class DrmWrapper {
 
   virtual bool SetMaster();
   virtual bool DropMaster();
+  virtual bool has_master() const;
 
   /**************
    * Dumb Buffers
@@ -181,8 +182,7 @@ class DrmWrapper {
    * Gamma
    *******/
 
-  virtual bool SetGammaRamp(uint32_t crtc_id,
-                            const std::vector<display::GammaRampRGBEntry>& lut);
+  virtual bool SetGammaRamp(uint32_t crtc_id, const display::GammaCurve& lut);
 
   /********
    * Planes
@@ -267,7 +267,7 @@ class DrmWrapper {
   // Adds trace records to |context|.
   virtual void WriteIntoTrace(perfetto::TracedDictionary dict) const;
 
-  virtual absl::optional<std::string> GetDriverName() const;
+  virtual std::optional<std::string> GetDriverName() const;
 
   // TODO(gildekel): remove once DrmWrapper and DrmDevice are completely
   // decoupled.
@@ -309,6 +309,11 @@ class DrmWrapper {
   bool is_atomic_ = false;
 
   const bool is_primary_device_;
+
+  // DRM master for a device is initially acquired implicitly in Chrome by
+  // opening the device node when no one else is holding the master, not through
+  // set master ioctl.
+  bool has_master_ = true;
 };
 
 }  // namespace ui

@@ -7,7 +7,6 @@ See http://dev.chromium.org/developers/how-tos/depottools/presubmit-scripts
 for more details about the presubmit API built into depot_tools.
 """
 
-USE_PYTHON3 = True
 
 _EXTRA_PATHS_COMPONENTS = [('testing', )]
 
@@ -31,7 +30,7 @@ def CommonChecks(input_api, output_api):
                                           output_api,
                                           extra_paths_list=pylint_extra_paths,
                                           pylintrc='pylintrc',
-                                          version='2.7'))
+                                          version='3.2'))
 
     # coveragetest.py is responsible for running unit tests in this directory
     tests.append(

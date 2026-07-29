@@ -8,8 +8,11 @@
 #include <utility>
 
 #include "base/android/jni_string.h"
+#include "base/check.h"
+#include "base/logging.h"
 #include "components/webxr/android/webxr_utils.h"
-#include "components/webxr/android/xr_jni_headers/XrSessionCoordinator_jni.h"
+#include "content/public/browser/global_routing_id.h"
+#include "content/public/common/child_process_id_util.h"
 #include "device/vr/android/compositor_delegate_provider.h"
 #include "device/vr/buildflags/buildflags.h"
 #include "gpu/ipc/common/gpu_surface_tracker.h"
@@ -22,6 +25,9 @@
 #include "device/vr/android/arcore/arcore_shim.h"
 #endif
 
+// Must come after all headers that specialize FromJniType() / ToJniType().
+#include "components/webxr/android/xr_jni_headers/XrSessionCoordinator_jni.h"
+
 using base::android::AttachCurrentThread;
 using base::android::ScopedJavaLocalRef;
 
@@ -33,7 +39,7 @@ XrSessionCoordinator::XrSessionCoordinator() {
     return;
   }
   ScopedJavaLocalRef<jobject> j_xr_session_coordinator =
-      Java_XrSessionCoordinator_create(env, (jlong)this);
+      Java_XrSessionCoordinator_create(env, (int64_t)this);
   if (j_xr_session_coordinator.is_null()) {
     return;
   }
@@ -46,60 +52,93 @@ XrSessionCoordinator::~XrSessionCoordinator() {
 }
 
 void XrSessionCoordinator::RequestArSession(
-    int render_process_id,
+    network::RendererProcessId render_process_id,
     int render_frame_id,
     bool use_overlay,
     bool can_render_dom_content,
     const device::CompositorDelegateProvider& compositor_delegate_provider,
     device::SurfaceReadyCallback ready_callback,
     device::SurfaceTouchCallback touch_callback,
-    device::SurfaceDestroyedCallback destroyed_callback) {
+    device::JavaShutdownCallback destroyed_callback) {
   DVLOG(1) << __func__;
   JNIEnv* env = AttachCurrentThread();
 
   surface_ready_callback_ = std::move(ready_callback);
   surface_touch_callback_ = std::move(touch_callback);
-  surface_destroyed_callback_ = std::move(destroyed_callback);
+  java_shutdown_callback_ = std::move(destroyed_callback);
 
   Java_XrSessionCoordinator_startArSession(
       env, j_xr_session_coordinator_,
       compositor_delegate_provider.GetJavaObject(),
-      webxr::GetJavaWebContents(render_process_id, render_frame_id),
+      webxr::GetJavaWebContents(content::GlobalRenderFrameHostId(
+          content::ToChildProcessId(render_process_id), render_frame_id)),
       use_overlay, can_render_dom_content);
 }
 
 void XrSessionCoordinator::RequestVrSession(
-    int render_process_id,
+    network::RendererProcessId render_process_id,
     int render_frame_id,
     const device::CompositorDelegateProvider& compositor_delegate_provider,
     device::SurfaceReadyCallback ready_callback,
     device::SurfaceTouchCallback touch_callback,
-    device::SurfaceDestroyedCallback destroyed_callback) {
+    device::JavaShutdownCallback destroyed_callback,
+    device::XrSessionButtonTouchedCallback button_touched_callback) {
   DVLOG(1) << __func__;
   JNIEnv* env = AttachCurrentThread();
 
   surface_ready_callback_ = std::move(ready_callback);
   surface_touch_callback_ = std::move(touch_callback);
-  surface_destroyed_callback_ = std::move(destroyed_callback);
+  java_shutdown_callback_ = std::move(destroyed_callback);
+  xr_button_touched_callback_ = std::move(button_touched_callback);
 
   Java_XrSessionCoordinator_startVrSession(
       env, j_xr_session_coordinator_,
       compositor_delegate_provider.GetJavaObject(),
-      webxr::GetJavaWebContents(render_process_id, render_frame_id));
+      webxr::GetJavaWebContents(content::GlobalRenderFrameHostId(
+          content::ToChildProcessId(render_process_id), render_frame_id)));
+}
+
+void XrSessionCoordinator::RequestXrSession(
+    network::RendererProcessId render_process_id,
+    int render_frame_id,
+    bool needs_separate_activity,
+    ActivityReadyCallback ready_callback,
+    device::JavaShutdownCallback shutdown_callback) {
+  DVLOG(1) << __func__
+           << ": needs_separate_activity=" << needs_separate_activity;
+  JNIEnv* env = AttachCurrentThread();
+
+  activity_ready_callback_ = std::move(ready_callback);
+  java_shutdown_callback_ = std::move(shutdown_callback);
+
+  Java_XrSessionCoordinator_startXrSession(
+      env, j_xr_session_coordinator_,
+      webxr::GetJavaWebContents(content::GlobalRenderFrameHostId(
+          content::ToChildProcessId(render_process_id), render_frame_id)),
+      needs_separate_activity);
 }
 
 void XrSessionCoordinator::EndSession() {
+  // A default constructed callback is null.
+  EndSession(device::JavaShutdownCallback());
+}
+
+void XrSessionCoordinator::EndSession(
+    device::JavaShutdownCallback shutdown_callback) {
   DVLOG(1) << __func__;
   JNIEnv* env = AttachCurrentThread();
+
+  if (shutdown_callback) {
+    java_shutdown_callback_ = std::move(shutdown_callback);
+  }
 
   Java_XrSessionCoordinator_endSession(env, j_xr_session_coordinator_);
 }
 
 void XrSessionCoordinator::OnDrawingSurfaceReady(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj,
-    const base::android::JavaParamRef<jobject>& surface,
-    const base::android::JavaParamRef<jobject>& java_root_window,
+    const base::android::JavaRef<jobject>& surface,
+    const base::android::JavaRef<jobject>& java_root_window,
     int rotation,
     int width,
     int height) {
@@ -109,9 +148,8 @@ void XrSessionCoordinator::OnDrawingSurfaceReady(
   gl::ScopedANativeWindow window(scoped_surface);
   gpu::SurfaceHandle surface_handle =
       gpu::GpuSurfaceTracker::Get()->AddSurfaceForNativeWidget(
-          gpu::GpuSurfaceTracker::SurfaceRecord(
-              std::move(scoped_surface),
-              /*can_be_used_with_surface_control=*/false));
+          gpu::SurfaceRecord(std::move(scoped_surface),
+                             /*can_be_used_with_surface_control=*/false));
   ui::WindowAndroid* root_window =
       ui::WindowAndroid::FromJavaWindowAndroid(java_root_window);
   display::Display::Rotation display_rotation =
@@ -120,25 +158,37 @@ void XrSessionCoordinator::OnDrawingSurfaceReady(
                               root_window, display_rotation, {width, height});
 }
 
-void XrSessionCoordinator::OnDrawingSurfaceTouch(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj,
-    bool primary,
-    bool touching,
-    int32_t pointer_id,
-    float x,
-    float y) {
+void XrSessionCoordinator::OnDrawingSurfaceTouch(JNIEnv* env,
+                                                 bool primary,
+                                                 bool touching,
+                                                 int32_t pointer_id,
+                                                 float x,
+                                                 float y) {
   DVLOG(3) << __func__ << ": pointer_id=" << pointer_id
            << " primary=" << primary << " touching=" << touching;
   surface_touch_callback_.Run(primary, touching, pointer_id, {x, y});
 }
 
-void XrSessionCoordinator::OnDrawingSurfaceDestroyed(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj) {
+void XrSessionCoordinator::OnJavaShutdown(JNIEnv* env) {
   DVLOG(1) << __func__ << ":::";
-  if (surface_destroyed_callback_) {
-    std::move(surface_destroyed_callback_).Run();
+  if (java_shutdown_callback_) {
+    std::move(java_shutdown_callback_).Run();
+  }
+}
+
+void XrSessionCoordinator::OnXrSessionButtonTouched(JNIEnv* env) {
+  DVLOG(1) << __func__ << ":::";
+  if (xr_button_touched_callback_) {
+    std::move(xr_button_touched_callback_).Run();
+  }
+}
+
+void XrSessionCoordinator::OnXrHostActivityReady(
+    JNIEnv* env,
+    const base::android::JavaRef<jobject>& activity) {
+  DVLOG(1) << __func__;
+  if (activity_ready_callback_) {
+    std::move(activity_ready_callback_).Run(activity);
   }
 }
 
@@ -146,8 +196,8 @@ bool XrSessionCoordinator::EnsureARCoreLoaded() {
 #if BUILDFLAG(ENABLE_ARCORE)
   DCHECK(device::IsArCoreSupported());
 
-  // TODO(crbug.com/884780): Allow loading the ARCore shim by name instead of by
-  // absolute path.
+  // TODO(crbug.com/41414239): Allow loading the ARCore shim by name instead of
+  // by absolute path.
   std::string path = base::android::BundleUtils::ResolveLibraryPath(
       /*library_name=*/"arcore_sdk_c", /*split_name=*/"");
 
@@ -175,10 +225,26 @@ ScopedJavaLocalRef<jobject> XrSessionCoordinator::GetCurrentActivityContext() {
   return Java_XrSessionCoordinator_getCurrentActivityContext(env);
 }
 
+ScopedJavaLocalRef<jobject> XrSessionCoordinator::GetActivityFrom(
+    network::RendererProcessId render_process_id,
+    int render_frame_id) {
+  return GetActivity(webxr::GetJavaWebContents(content::GlobalRenderFrameHostId(
+      content::ToChildProcessId(render_process_id), render_frame_id)));
+}
+
 // static
 ScopedJavaLocalRef<jobject> XrSessionCoordinator::GetApplicationContext() {
   JNIEnv* env = AttachCurrentThread();
   return Java_XrSessionCoordinator_getApplicationContext(env);
 }
 
+// static
+ScopedJavaLocalRef<jobject> XrSessionCoordinator::GetActivity(
+    ScopedJavaLocalRef<jobject> web_contents) {
+  JNIEnv* env = AttachCurrentThread();
+  return Java_XrSessionCoordinator_getActivity(env, web_contents);
+}
+
 }  // namespace webxr
+
+DEFINE_JNI(XrSessionCoordinator)

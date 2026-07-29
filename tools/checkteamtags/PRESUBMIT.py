@@ -9,9 +9,6 @@ details on the presubmit API.
 """
 
 
-USE_PYTHON3 = True
-
-
 def CheckChangeOnUpload(input_api, output_api):
   return _CommonChecks(input_api, output_api)
 
@@ -44,7 +41,16 @@ def _RunUnitTests(input_api, output_api):
 
 def _RunPyLint(input_api, output_api):
   """Runs unit tests for checkteamtags."""
+  disabled_warnings = [
+      'anomalous-backslash-in-string',
+      'bad-indentation',
+      'consider-using-from-import',
+      'consider-using-with',
+      'missing-module-docstring',
+      'unspecified-encoding',
+  ]
   tests = input_api.canned_checks.GetPylint(input_api,
                                             output_api,
-                                            version='2.7')
+                                            disabled_warnings=disabled_warnings,
+                                            version='3.2')
   return input_api.RunTests(tests)

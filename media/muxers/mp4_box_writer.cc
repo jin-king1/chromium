@@ -4,6 +4,8 @@
 
 #include "media/muxers/mp4_box_writer.h"
 
+#include <string_view>
+
 #include "base/big_endian.h"
 #include "media/muxers/box_byte_stream.h"
 #include "media/muxers/mp4_muxer_context.h"
@@ -16,18 +18,26 @@ Mp4BoxWriter::Mp4BoxWriter(const Mp4MuxerContext& context)
 
 Mp4BoxWriter::~Mp4BoxWriter() = default;
 
-void Mp4BoxWriter::WriteAndFlush() {
+size_t Mp4BoxWriter::WriteAndFlush() {
+  // It will write itself as well as children boxes.
   BoxByteStream writer;
 
-  // It will write itself as well as children boxes.
+  return WriteAndFlush(writer);
+}
+
+size_t Mp4BoxWriter::WriteAndFlush(BoxByteStream& writer) {
+  DCHECK(!writer.has_open_boxes());
+
+  // It will write to input writer as well as children boxes.
   Write(writer);
 
   // Update the total size on respective boxes.
   std::vector<uint8_t> buffer = writer.Flush();
 
   // Write the entire boxes to the blob.
-  context().GetOutputPositionTracker().WriteString(
-      base::StringPiece(reinterpret_cast<char*>(buffer.data()), buffer.size()));
+  context().GetOutputPositionTracker().WriteSpan(buffer);
+
+  return buffer.size();
 }
 
 void Mp4BoxWriter::WriteChildren(BoxByteStream& writer) {

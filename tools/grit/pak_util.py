@@ -63,13 +63,6 @@ def _MaybeDecompress(payload, brotli_path=None):
                               input=payload,
                               stdout=subprocess.PIPE,
                               check=True)
-      # I don't know why with "sudo apt-get install brotli", files come out 4
-      # bytes larger and the command doesn't fail.
-      if len(result.stdout) == len(payload) + 4:
-        sys.stderr.write('Brotli decompression failed. You likely need to use '
-                         'the version of brotli built by Chrome '
-                         '(out/Release/clang_x64/brotli).\n')
-        sys.exit(1)
       return result.stdout
     except subprocess.CalledProcessError as e:
       sys.stderr.write(str(e) + '\n')
@@ -156,7 +149,12 @@ def _PrintMain(args):
 
 
 def _ListMain(args):
-  pak = data_pack.ReadDataPack(args.pak_file)
+  try:
+    pak = data_pack.ReadDataPack(args.pak_file)
+  except data_pack.WrongFileVersion:
+    sys.stderr.write('Invalid .pak file. Maybe it is compressed?\n')
+    sys.exit(1)
+
   if args.textual_id or args.path:
     info_dict = data_pack.ReadGrdInfo(args.pak_file)
     fmt = ''.join([

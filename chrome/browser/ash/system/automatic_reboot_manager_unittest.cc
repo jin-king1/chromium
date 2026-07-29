@@ -4,19 +4,22 @@
 
 #include "chrome/browser/ash/system/automatic_reboot_manager.h"
 
+#include <optional>
 #include <string>
 
 #include "ash/constants/ash_paths.h"
+#include "ash/constants/ash_pref_names.h"
+#include "base/command_line.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
-#include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool/thread_pool_instance.h"
+#include "base/test/scoped_path_override.h"
 #include "base/test/simple_test_tick_clock.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_mock_time_task_runner.h"
@@ -27,18 +30,20 @@
 #include "base/values.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/system/automatic_reboot_manager_observer.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chromeos/ash/components/dbus/update_engine/fake_update_engine_client.h"
+#include "chromeos/ash/components/login/session/session_termination_manager.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "components/account_id/account_id.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/session_manager/session_manager_types.h"
 #include "components/user_manager/fake_user_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
 #include "content/public/browser/browser_thread.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -81,7 +86,7 @@ class MockUptimeProvider {
   }
 
  private:
-  raw_ptr<base::TestMockTimeTaskRunner, ExperimentalAsh> mock_time_task_runner_;
+  raw_ptr<base::TestMockTimeTaskRunner> mock_time_task_runner_;
 
   base::FilePath uptime_file_path_;
   base::TimeDelta uptime_offset_;
@@ -133,7 +138,7 @@ class MockAutomaticRebootManagerObserver
  private:
   void StopObserving();
 
-  raw_ptr<AutomaticRebootManager, ExperimentalAsh> automatic_reboot_manger_;
+  raw_ptr<AutomaticRebootManager> automatic_reboot_manger_;
 };
 
 }  // namespace
@@ -178,11 +183,6 @@ class AutomaticRebootManagerBasicTest : public testing::Test {
   // Sets the status of |update_engine_client_| to NEED_REBOOT for tests.
   void SetUpdateStatusNeedReboot();
 
-  FakeChromeUserManager* GetFakeUserManager() {
-    return static_cast<FakeChromeUserManager*>(
-        user_manager::UserManager::Get());
-  }
-
   void LogIn(user_manager::User* user);
 
   MockUptimeProvider* uptime_provider() const {
@@ -199,7 +199,7 @@ class AutomaticRebootManagerBasicTest : public testing::Test {
 
   // Shared account ID usable in each test.
   const AccountId account_id_ =
-      AccountId::FromUserEmailGaiaId("email", "123456");
+      AccountId::FromUserEmailGaiaId("email", GaiaId("123456"));
 
   // The uptime is read in the blocking thread pool and then processed on the
   // UI thread. This causes the UI thread to start processing the uptime when it
@@ -216,6 +216,8 @@ class AutomaticRebootManagerBasicTest : public testing::Test {
   std::unique_ptr<AutomaticRebootManager> automatic_reboot_manager_;
 
   base::ScopedTempDir temp_dir_;
+  std::optional<base::ScopedPathOverride> file_uptime_override_;
+  std::optional<base::ScopedPathOverride> file_reboot_needed_override_;
   base::FilePath update_reboot_needed_uptime_file_;
 
   bool reboot_after_update_ = false;
@@ -224,18 +226,20 @@ class AutomaticRebootManagerBasicTest : public testing::Test {
   base::SingleThreadTaskRunner::CurrentHandleOverrideForTesting
       single_thread_task_runner_current_default_handle_override_;
 
-  TestingPrefServiceSimple local_state_;
-  user_manager::ScopedUserManager user_manager_enabler_;
-  session_manager::SessionManager session_manager_;
+  user_manager::TypedScopedUserManager<ash::FakeChromeUserManager>
+      user_manager_;
+  session_manager::SessionManager session_manager_{
+      std::make_unique<session_manager::FakeSessionManagerDelegate>()};
 
-  raw_ptr<FakeUpdateEngineClient, ExperimentalAsh> update_engine_client_ =
+  ash::SessionTerminationManager session_termination_manager_;
+
+  raw_ptr<FakeUpdateEngineClient, DanglingUntriaged> update_engine_client_ =
       nullptr;  // Not owned.
 };
 
 enum AutomaticRebootManagerTestScenario {
   AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_LOGIN_SCREEN,
   AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_KIOSK_APP_SESSION,
-  AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_ARC_KIOSK_APP_SESSION,
   AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_NON_KIOSK_APP_SESSION,
 };
 
@@ -247,8 +251,7 @@ class AutomaticRebootManagerTest
     : public AutomaticRebootManagerBasicTest,
       public testing::WithParamInterface<AutomaticRebootManagerTestScenario> {
  protected:
-  AutomaticRebootManagerTest();
-  virtual ~AutomaticRebootManagerTest();
+  void SetUp() override;
 };
 
 void SaveUptimeToFile(const base::FilePath& path,
@@ -279,8 +282,8 @@ TestAutomaticRebootManagerTaskRunner::TestAutomaticRebootManagerTaskRunner()
     : uptime_provider_(new MockUptimeProvider(this)) {
 }
 
-TestAutomaticRebootManagerTaskRunner::~TestAutomaticRebootManagerTaskRunner() {
-}
+TestAutomaticRebootManagerTaskRunner::~TestAutomaticRebootManagerTaskRunner() =
+    default;
 
 void TestAutomaticRebootManagerTaskRunner::OnBeforeSelectingTask() {
   base::ThreadPoolInstance::Get()->FlushForTesting();
@@ -323,12 +326,12 @@ void MockAutomaticRebootManagerObserver::StopObserving() {
 AutomaticRebootManagerBasicTest::AutomaticRebootManagerBasicTest()
     : task_runner_(new TestAutomaticRebootManagerTaskRunner),
       single_thread_task_runner_current_default_handle_override_(task_runner_),
-      user_manager_enabler_(std::make_unique<FakeChromeUserManager>()) {}
+      user_manager_(std::make_unique<FakeChromeUserManager>()) {}
 
-AutomaticRebootManagerBasicTest::~AutomaticRebootManagerBasicTest() {
-}
+AutomaticRebootManagerBasicTest::~AutomaticRebootManagerBasicTest() = default;
 
 void AutomaticRebootManagerBasicTest::SetUp() {
+  session_manager_.OnUserManagerCreated(user_manager_.Get());
   ASSERT_TRUE(temp_dir_.CreateUniqueTempDir());
   const base::FilePath& temp_dir = temp_dir_.GetPath();
   const base::FilePath uptime_file = temp_dir.Append("uptime");
@@ -337,12 +340,12 @@ void AutomaticRebootManagerBasicTest::SetUp() {
   update_reboot_needed_uptime_file_ =
       temp_dir.Append("update_reboot_needed_uptime");
   ASSERT_TRUE(base::WriteFile(update_reboot_needed_uptime_file_, ""));
-  ASSERT_TRUE(base::PathService::Override(FILE_UPTIME, uptime_file));
-  ASSERT_TRUE(base::PathService::Override(FILE_UPDATE_REBOOT_NEEDED_UPTIME,
-                                          update_reboot_needed_uptime_file_));
-
-  TestingBrowserProcess::GetGlobal()->SetLocalState(&local_state_);
-  AutomaticRebootManager::RegisterPrefs(local_state_.registry());
+  file_uptime_override_.emplace(FILE_UPTIME, uptime_file, /*is_absolute=*/false,
+                                /*create=*/false);
+  file_reboot_needed_override_.emplace(FILE_UPDATE_REBOOT_NEEDED_UPTIME,
+                                       update_reboot_needed_uptime_file_,
+                                       /*is_absolute=*/false,
+                                       /*create=*/false);
 
   update_engine_client_ = UpdateEngineClient::InitializeFakeForTest();
   chromeos::PowerManagerClient::InitializeFake();
@@ -363,7 +366,6 @@ void AutomaticRebootManagerBasicTest::TearDown() {
 
   chromeos::PowerManagerClient::Shutdown();
   UpdateEngineClient::Shutdown();
-  TestingBrowserProcess::GetGlobal()->SetLocalState(nullptr);
 }
 
 void AutomaticRebootManagerBasicTest::SetUpdateRebootNeededUptime(
@@ -376,8 +378,8 @@ void AutomaticRebootManagerBasicTest::SetRebootAfterUpdate(
     bool reboot_after_update,
     bool expect_reboot) {
   reboot_after_update_ = reboot_after_update;
-  local_state_.SetManagedPref(
-      prefs::kRebootAfterUpdate,
+  TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetManagedPref(
+      ash::prefs::kRebootAfterUpdate,
       std::make_unique<base::Value>(reboot_after_update));
   task_runner_->RunUntilIdle();
   EXPECT_EQ(
@@ -390,10 +392,12 @@ void AutomaticRebootManagerBasicTest::SetUptimeLimit(
     bool expect_reboot) {
   uptime_limit_ = limit;
   if (limit.is_zero()) {
-    local_state_.RemoveManagedPref(prefs::kUptimeLimit);
+    TestingBrowserProcess::GetGlobal()
+        ->GetTestingLocalState()
+        ->RemoveManagedPref(ash::prefs::kUptimeLimit);
   } else {
-    local_state_.SetManagedPref(
-        prefs::kUptimeLimit,
+    TestingBrowserProcess::GetGlobal()->GetTestingLocalState()->SetManagedPref(
+        ash::prefs::kUptimeLimit,
         std::make_unique<base::Value>(static_cast<int>(limit.InSeconds())));
   }
   task_runner_->RunUntilIdle();
@@ -476,6 +480,7 @@ void AutomaticRebootManagerBasicTest::ExpectNoRebootRequest() {
 void AutomaticRebootManagerBasicTest::CreateAutomaticRebootManager(
     bool expect_reboot) {
   automatic_reboot_manager_ = std::make_unique<AutomaticRebootManager>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       task_runner_->GetMockClock(), task_runner_->GetMockTickClock());
   automatic_reboot_manager_observer_.Init(automatic_reboot_manager_.get());
   task_runner_->RunUntilIdle();
@@ -490,7 +495,7 @@ void AutomaticRebootManagerBasicTest::CreateAutomaticRebootManager(
   EXPECT_GE(uptime_processing_delay_, base::TimeDelta());
   EXPECT_LE(uptime_processing_delay_, base::Seconds(1));
 
-  if (GetFakeUserManager()->IsUserLoggedIn() || expect_reboot) {
+  if (user_manager_->IsUserLoggedIn() || expect_reboot) {
     VerifyLoginScreenIdleTimerIsStopped();
   } else {
     VerifyLoginScreenIdleTimerIsRunning();
@@ -562,12 +567,14 @@ void AutomaticRebootManagerBasicTest::SetUpdateStatusNeedReboot() {
 }
 
 void AutomaticRebootManagerBasicTest::LogIn(user_manager::User* user) {
-  const AccountId account_id = user->GetAccountId();
-  std::string username_hash = user->username_hash();
-  GetFakeUserManager()->UserLoggedIn(account_id, username_hash,
-                                     /*browser_restart=*/false,
-                                     /*is_child=*/false);
-  session_manager_.CreateSession(account_id, username_hash, true);
+  session_manager_.CreateSession(
+      user->GetAccountId(),
+      // TODO(crbug.com/278643115): Looks incorrect.
+      // User's username_hash should be set inside CreateSession via
+      // UserManager::UserLoggedIn().
+      user->username_hash(),
+      /*new_user=*/false,
+      /*has_active_session=*/false);
   session_manager_.SessionStarted();
   session_manager_.SetSessionState(session_manager::SessionState::ACTIVE);
 }
@@ -602,27 +609,20 @@ void AutomaticRebootManagerBasicTest::
       base::Seconds(60));
 }
 
-AutomaticRebootManagerTest::AutomaticRebootManagerTest() {
-  auto* user_manager = GetFakeUserManager();
-
+void AutomaticRebootManagerTest::SetUp() {
+  AutomaticRebootManagerBasicTest::SetUp();
   switch (GetParam()) {
     case AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_LOGIN_SCREEN:
       session_manager_.SetSessionState(
           session_manager::SessionState::LOGIN_PRIMARY);
       break;
     case AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_KIOSK_APP_SESSION:
-      LogIn(user_manager->AddKioskAppUser(account_id_));
-      break;
-    case AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_ARC_KIOSK_APP_SESSION:
-      LogIn(user_manager->AddArcKioskAppUser(account_id_));
+      LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
       break;
     case AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_NON_KIOSK_APP_SESSION:
-      LogIn(user_manager->AddUser(account_id_));
+      LogIn(user_manager_->AddUser(account_id_));
       break;
   }
-}
-
-AutomaticRebootManagerTest::~AutomaticRebootManagerTest() {
 }
 
 // Chrome is showing the login screen. The current uptime is 12 hours.
@@ -638,7 +638,7 @@ TEST_F(AutomaticRebootManagerBasicTest, LoginStopsIdleTimer) {
   VerifyNoRebootRequested();
 
   // Notify that a kiosk app session has been started.
-  LogIn(GetFakeUserManager()->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
 
   // Verify that the login screen idle timer is stopped.
   VerifyLoginScreenIdleTimerIsStopped();
@@ -660,7 +660,7 @@ TEST_F(AutomaticRebootManagerBasicTest, NonKioskLoginStopsIdleTimer) {
   VerifyNoRebootRequested();
 
   // Notify that a non-kiosk-app session has been started.
-  LogIn(GetFakeUserManager()->AddUser(account_id_));
+  LogIn(user_manager_->AddUser(account_id_));
 
   // Verify that the login screen idle timer is stopped.
   VerifyLoginScreenIdleTimerIsStopped();
@@ -710,7 +710,7 @@ TEST_F(AutomaticRebootManagerBasicTest, UserActivityResetsIdleTimer) {
 // Verifies that when the device is suspended and then resumes, it does not
 // immediately reboot.
 TEST_F(AutomaticRebootManagerBasicTest, ResumeNoPolicy) {
-  LogIn(GetFakeUserManager()->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
   uptime_provider()->SetUptime(base::Days(10));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -734,7 +734,7 @@ TEST_F(AutomaticRebootManagerBasicTest, ResumeNoPolicy) {
 // Verifies that when the device is suspended and then resumes, it does not
 // immediately reboot.
 TEST_F(AutomaticRebootManagerBasicTest, NonKioskResumeAppNoPolicy) {
-  LogIn(GetFakeUserManager()->AddUser(account_id_));
+  LogIn(user_manager_->AddUser(account_id_));
   uptime_provider()->SetUptime(base::Days(10));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -784,7 +784,7 @@ TEST_F(AutomaticRebootManagerBasicTest, LoginScreenResumeNoPolicy) {
 // Verifies that when the device is suspended and then resumes, it does not
 // immediately reboot.
 TEST_F(AutomaticRebootManagerBasicTest, ResumeBeforeGracePeriod) {
-  LogIn(GetFakeUserManager()->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
   uptime_provider()->SetUptime(base::Hours(12));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -814,7 +814,7 @@ TEST_F(AutomaticRebootManagerBasicTest, ResumeBeforeGracePeriod) {
 // Verifies that when the device is suspended and then resumes, it does not
 // immediately reboot.
 TEST_F(AutomaticRebootManagerBasicTest, NonKioskResumeBeforeGracePeriod) {
-  LogIn(GetFakeUserManager()->AddUser(account_id_));
+  LogIn(user_manager_->AddUser(account_id_));
   uptime_provider()->SetUptime(base::Hours(12));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -875,7 +875,7 @@ TEST_F(AutomaticRebootManagerBasicTest, LoginScreenResumeBeforeGracePeriod) {
 // Verifies that when the device is suspended and then resumes, it reboots
 // shortly after.
 TEST_F(AutomaticRebootManagerBasicTest, ResumeInGracePeriod) {
-  LogIn(GetFakeUserManager()->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
   uptime_provider()->SetUptime(base::Hours(12));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -903,7 +903,7 @@ TEST_F(AutomaticRebootManagerBasicTest, ResumeInGracePeriod) {
 // Verifies that when the device is suspended and then resumes, it does not
 // immediately reboot.
 TEST_F(AutomaticRebootManagerBasicTest, NonKioskResumeInGracePeriod) {
-  LogIn(GetFakeUserManager()->AddUser(account_id_));
+  LogIn(user_manager_->AddUser(account_id_));
   uptime_provider()->SetUptime(base::Hours(12));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -933,7 +933,7 @@ TEST_F(AutomaticRebootManagerBasicTest, NonKioskResumeInGracePeriod) {
 // Verifies that when the device is suspended and then resumes, it immediately
 // reboots.
 TEST_F(AutomaticRebootManagerBasicTest, ResumeAfterGracePeriod) {
-  LogIn(GetFakeUserManager()->AddKioskAppUser(account_id_));
+  LogIn(user_manager_->AddKioskChromeAppUser(account_id_));
   uptime_provider()->SetUptime(base::Hours(29) + base::Minutes(30));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -960,7 +960,7 @@ TEST_F(AutomaticRebootManagerBasicTest, ResumeAfterGracePeriod) {
 // Verifies that when the device is suspended and then resumes, it does not
 // immediately reboot.
 TEST_F(AutomaticRebootManagerBasicTest, NonKioskResumeAfterGracePeriod) {
-  LogIn(GetFakeUserManager()->AddUser(account_id_));
+  LogIn(user_manager_->AddUser(account_id_));
   uptime_provider()->SetUptime(base::Hours(29) + base::Minutes(30));
 
   // Verify that no reboot is requested and the device does not reboot
@@ -1034,9 +1034,8 @@ TEST_P(AutomaticRebootManagerTest, TerminateBeforeGracePeriod) {
   // Verify that a reboot is requested eventually and unless a non-kiosk-app
   // session is in progress, the device eventually reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_PERIODIC);
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The uptime limit is set to 6 hours. The current uptime is
@@ -1062,13 +1061,12 @@ TEST_P(AutomaticRebootManagerTest, TerminateInGracePeriod) {
 
   // Notify that the browser is terminating. Verify that the device immediately
   // reboots if a kiosk app session is in progress.
-  auto* user_manager = GetFakeUserManager();
-  NotifyTerminating(user_manager->IsLoggedInAsAnyKioskApp());
+  NotifyTerminating(user_manager_->IsLoggedInAsAnyKioskApp());
 
   // Verify that if a non-kiosk-app session is in progress, the device never
   // reboots.
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The current uptime is 12 hours.
@@ -1096,9 +1094,8 @@ TEST_P(AutomaticRebootManagerTest, BeforeUptimeLimitGracePeriod) {
   // Verify that a reboot is requested eventually and unless a non-kiosk-app
   // session is in progress, the device eventually reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_PERIODIC);
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The current uptime is 12 hours.
@@ -1126,9 +1123,8 @@ TEST_P(AutomaticRebootManagerTest, InUptimeLimitGracePeriod) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The current uptime is 10 days.
@@ -1150,14 +1146,13 @@ TEST_P(AutomaticRebootManagerTest, AfterUptimeLimitGracePeriod) {
   // Set the uptime limit. Verify that a reboot is requested and unless a
   // non-kiosk-app session is in progress, the the device immediately reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_PERIODIC);
-  auto* user_manager = GetFakeUserManager();
-  SetUptimeLimit(base::Hours(6), !user_manager->IsUserLoggedIn() ||
-                                     user_manager->IsLoggedInAsAnyKioskApp());
+  SetUptimeLimit(base::Hours(6), !user_manager_->IsUserLoggedIn() ||
+                                     user_manager_->IsLoggedInAsAnyKioskApp());
 
   // Verify that if a non-kiosk-app session is in progress, the device never
   // reboots.
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The uptime limit is set to 12 hours. The current uptime is
@@ -1264,9 +1259,8 @@ TEST_P(AutomaticRebootManagerTest, ExtendUptimeLimitBeforeGracePeriod) {
   // Verify that a reboot is requested eventually and unless a non-kiosk-app
   // session is in progress, the device eventually reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_PERIODIC);
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The uptime limit is set to 12 hours. The current uptime is
@@ -1304,9 +1298,8 @@ TEST_P(AutomaticRebootManagerTest, ExtendUptimeLimitInGracePeriod) {
   // Verify that a reboot is requested again eventually and unless a
   // non-kiosk-app session is in progress, the device eventually reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_PERIODIC);
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The uptime limit is set to 18 hours. The current uptime is
@@ -1343,9 +1336,8 @@ TEST_P(AutomaticRebootManagerTest, ShortenUptimeLimitBeforeToInGracePeriod) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The uptime limit is set to 24 hours. The current uptime is
@@ -1383,9 +1375,8 @@ TEST_P(AutomaticRebootManagerTest, ShortenUptimeLimitInToInGracePeriod) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The uptime limit is set to 24 hours. The current uptime is
@@ -1418,14 +1409,13 @@ TEST_P(AutomaticRebootManagerTest, ShortenUptimeLimitInToAfterGracePeriod) {
   // unless a non-kiosk-app session is in progress, the the device immediately
   // reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_PERIODIC);
-  auto* user_manager = GetFakeUserManager();
-  SetUptimeLimit(base::Hours(6), !user_manager->IsUserLoggedIn() ||
-                                     user_manager->IsLoggedInAsAnyKioskApp());
+  SetUptimeLimit(base::Hours(6), !user_manager_->IsUserLoggedIn() ||
+                                     user_manager_->IsLoggedInAsAnyKioskApp());
 
   // Verify that if a non-kiosk-app session is in progress, the device never
   // reboots.
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The current uptime is 12 hours.
@@ -1496,9 +1486,8 @@ TEST_P(AutomaticRebootManagerTest, Update) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The current uptime is 12 hours.
@@ -1549,9 +1538,8 @@ TEST_P(AutomaticRebootManagerTest, UpdateAfterUpdate) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The current uptime is 10 minutes.
@@ -1589,9 +1577,8 @@ TEST_P(AutomaticRebootManagerTest, UpdateBeforeMinimumUptime) {
   // Verify that a reboot is requested eventually and unless a non-kiosk-app
   // session is in progress, the device eventually reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_OS_UPDATE);
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The current uptime is 10 minutes.
@@ -1632,9 +1619,8 @@ TEST_P(AutomaticRebootManagerTest, UpdateBeforeMinimumUptimeWithSwitch) {
   // Verify that a reboot is requested eventually and unless a non-kiosk-app
   // session is in progress, the device eventually reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_OS_UPDATE);
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The current uptime is 10 minutes.
@@ -1657,20 +1643,19 @@ TEST_P(AutomaticRebootManagerTest, UpdateAndSuspendUntilInGracePeriod) {
   NotifyUpdateRebootNeeded();
 
   // Stay idle for 2 minutes on login screen. Verify no reboot is requested.
-  auto* user_manager = GetFakeUserManager();
-  if (!user_manager->IsUserLoggedIn()) {
+  if (!user_manager_->IsUserLoggedIn()) {
     FastForwardBy(base::Minutes(2), false);
   }
 
   // Simulate sleep for 1 hour. Verify that device immediately reboots unless a
   // session is in progress.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_OS_UPDATE);
-  SleepFor(base::Hours(1), !user_manager->IsUserLoggedIn());
+  SleepFor(base::Hours(1), !user_manager_->IsUserLoggedIn());
 
   // Wait for 1 more second in case a session is active. Verify that device
   // immediately reboots if it is a kiosk session.
-  if (user_manager->IsUserLoggedIn()) {
-    FastForwardBy(base::Seconds(1), user_manager->IsLoggedInAsAnyKioskApp());
+  if (user_manager_->IsUserLoggedIn()) {
+    FastForwardBy(base::Seconds(1), user_manager_->IsLoggedInAsAnyKioskApp());
   }
 }
 
@@ -1695,9 +1680,8 @@ TEST_P(AutomaticRebootManagerTest, UpdateAndSuspendUntilAfterGracePeriod) {
   // Simulate sleep for 25 hours. Verify that device immediately reboots unless
   // a non-kiosk-app session is in progress.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_OS_UPDATE);
-  auto* user_manager = GetFakeUserManager();
-  SleepFor(base::Hours(25), !user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  SleepFor(base::Hours(25), !user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. An update was applied and a reboot became necessary to
@@ -1736,9 +1720,8 @@ TEST_P(AutomaticRebootManagerTest, PolicyAfterUpdateInGracePeriod) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. An update was applied and a reboot became necessary to
@@ -1771,14 +1754,13 @@ TEST_P(AutomaticRebootManagerTest, PolicyAfterUpdateAfterGracePeriod) {
   // a reboot is requested and unless a non-kiosk-app session is in progress,
   // the the device immediately reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_OS_UPDATE);
-  auto* user_manager = GetFakeUserManager();
-  SetRebootAfterUpdate(true, !user_manager->IsUserLoggedIn() ||
-                                 user_manager->IsLoggedInAsAnyKioskApp());
+  SetRebootAfterUpdate(true, !user_manager_->IsUserLoggedIn() ||
+                                 user_manager_->IsLoggedInAsAnyKioskApp());
 
   // Verify that if a non-kiosk-app session is in progress, the device never
   // reboots.
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. An update was applied and a reboot became necessary to
@@ -1907,9 +1889,8 @@ TEST_P(AutomaticRebootManagerTest, UptimeLimitBeforeUpdate) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The policy to automatically reboot after an update is
@@ -1956,9 +1937,8 @@ TEST_P(AutomaticRebootManagerTest, UpdateBeforeUptimeLimit) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is running. The uptime limit is set to 24 hours. An update was applied
@@ -2111,14 +2091,13 @@ TEST_P(AutomaticRebootManagerTest, GracePeriodEnd) {
 
   // Fast forward the uptime by 1 second. Verify that unless a non-kiosk-app
   // session is in progress, the the device immediately reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardBy(base::Seconds(1), !user_manager->IsUserLoggedIn() ||
-                                      user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardBy(base::Seconds(1), !user_manager_->IsUserLoggedIn() ||
+                                      user_manager_->IsLoggedInAsAnyKioskApp());
 
   // Verify that if a non-kiosk-app session is in progress, the device never
   // reboots.
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. The current uptime is 10 days.
@@ -2160,9 +2139,8 @@ TEST_P(AutomaticRebootManagerTest, StartBeforeUptimeLimitGracePeriod) {
   // Verify that a reboot is requested eventually and unless a non-kiosk-app
   // session is in progress, the device eventually reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_PERIODIC);
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. The uptime limit is set to 6 hours. The current uptime is
@@ -2176,15 +2154,14 @@ TEST_P(AutomaticRebootManagerTest, StartAfterUptimeLimitGracePeriod) {
   // Verify that a reboot is requested and unless a non-kiosk-app session is in
   // progress, the the device immediately reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_PERIODIC);
-  auto* user_manager = GetFakeUserManager();
-  CreateAutomaticRebootManager(!user_manager->IsUserLoggedIn() ||
-                               user_manager->IsLoggedInAsAnyKioskApp());
+  CreateAutomaticRebootManager(!user_manager_->IsUserLoggedIn() ||
+                               user_manager_->IsLoggedInAsAnyKioskApp());
   VerifyRebootRequested(AutomaticRebootManagerObserver::REBOOT_REASON_PERIODIC);
 
   // Verify that if a non-kiosk-app session is in progress, the device never
   // reboots.
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. The uptime limit is set to 6 hours. The current uptime is
@@ -2206,9 +2183,8 @@ TEST_P(AutomaticRebootManagerTest, StartInUptimeLimitGracePeriod) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. An update was applied and a reboot became necessary to
@@ -2226,16 +2202,15 @@ TEST_P(AutomaticRebootManagerTest, StartAfterUpdateGracePeriod) {
   // Verify that a reboot is requested and unless a non-kiosk-app session is in
   // progress, the the device immediately reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_OS_UPDATE);
-  auto* user_manager = GetFakeUserManager();
-  CreateAutomaticRebootManager(!user_manager->IsUserLoggedIn() ||
-                               user_manager->IsLoggedInAsAnyKioskApp());
+  CreateAutomaticRebootManager(!user_manager_->IsUserLoggedIn() ||
+                               user_manager_->IsLoggedInAsAnyKioskApp());
   VerifyRebootRequested(
       AutomaticRebootManagerObserver::REBOOT_REASON_OS_UPDATE);
 
   // Verify that if a non-kiosk-app session is in progress, the device never
   // reboots.
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. An update was applied and a reboot became necessary to
@@ -2262,9 +2237,8 @@ TEST_P(AutomaticRebootManagerTest, StartInUpdateGracePeriod) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. An update was applied and a reboot became necessary to
@@ -2291,9 +2265,8 @@ TEST_P(AutomaticRebootManagerTest, StartBeforeUpdateGracePeriod) {
   // Verify that a reboot is requested eventually and unless a non-kiosk-app
   // session is in progress, the device eventually reboots.
   ExpectRebootRequest(AutomaticRebootManagerObserver::REBOOT_REASON_OS_UPDATE);
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. An update was applied and a reboot became necessary to
@@ -2349,9 +2322,8 @@ TEST_P(AutomaticRebootManagerTest, StartUpdateTimeLost) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. An update was applied and a reboot became necessary to
@@ -2435,9 +2407,8 @@ TEST_P(AutomaticRebootManagerTest, StartUptimeLimitBeforeUpdate) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. The uptime limit is set to 8 hours. Also, an update was
@@ -2465,9 +2436,8 @@ TEST_P(AutomaticRebootManagerTest, StartUpdateBeforeUptimeLimit) {
 
   // Verify that unless a non-kiosk-app session is in progress, the device
   // eventually reboots.
-  auto* user_manager = GetFakeUserManager();
-  FastForwardUntilNoTasksRemain(!user_manager->IsUserLoggedIn() ||
-                                user_manager->IsLoggedInAsAnyKioskApp());
+  FastForwardUntilNoTasksRemain(!user_manager_->IsUserLoggedIn() ||
+                                user_manager_->IsLoggedInAsAnyKioskApp());
 }
 
 // Chrome is starting. The uptime limit is set to 6 hours. Also, an update was
@@ -2500,7 +2470,6 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(
         AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_LOGIN_SCREEN,
         AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_KIOSK_APP_SESSION,
-        AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_ARC_KIOSK_APP_SESSION,
         AUTOMATIC_REBOOT_MANAGER_TEST_SCENARIO_NON_KIOSK_APP_SESSION));
 
 }  // namespace system

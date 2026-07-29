@@ -10,13 +10,14 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
-#include "base/ranges/algorithm.h"
 #include "base/task/current_thread.h"
 #include "base/trace_event/trace_event.h"
 #include "base/trace_event/traced_value.h"
@@ -50,20 +51,19 @@ bool ProcessDrmEvent(int fd, const DrmEventHandler& callback) {
   while (idx < len) {
     DCHECK_LE(static_cast<int>(sizeof(drm_event)), len - idx);
     drm_event event;
-    memcpy(&event, &buffer[idx], sizeof(event));
+    UNSAFE_TODO(memcpy(&event, &buffer[idx], sizeof(event)));
     switch (event.type) {
       case DRM_EVENT_FLIP_COMPLETE: {
         DCHECK_LE(static_cast<int>(sizeof(drm_event_vblank)), len - idx);
         drm_event_vblank vblank;
-        memcpy(&vblank, &buffer[idx], sizeof(vblank));
+        UNSAFE_TODO(memcpy(&vblank, &buffer[idx], sizeof(vblank)));
         std::unique_ptr<base::trace_event::TracedValue> drm_data(
             new base::trace_event::TracedValue());
         drm_data->SetInteger("frame_count", 1);
         drm_data->SetInteger("vblank.tv_sec", vblank.tv_sec);
         drm_data->SetInteger("vblank.tv_usec", vblank.tv_usec);
-        TRACE_EVENT_INSTANT1("benchmark,drm", "DrmEventFlipComplete",
-                             TRACE_EVENT_SCOPE_THREAD, "data",
-                             std::move(drm_data));
+        TRACE_EVENT_INSTANT("benchmark,drm", "DrmEventFlipComplete", "data",
+                            std::move(drm_data));
         // Warning: It is generally unsafe to manufacture TimeTicks values; but
         // here it is required for interfacing with libdrm. Assumption: libdrm
         // is providing the timestamp from the CLOCK_MONOTONIC POSIX clock.
@@ -80,7 +80,6 @@ bool ProcessDrmEvent(int fd, const DrmEventHandler& callback) {
         break;
       default:
         NOTREACHED();
-        break;
     }
 
     idx += event.length;
@@ -101,7 +100,7 @@ class DrmDevice::PageFlipManager {
   ~PageFlipManager() = default;
 
   void OnPageFlip(uint32_t frame, base::TimeTicks timestamp, uint64_t id) {
-    auto it = base::ranges::find(callbacks_, id, &PageFlip::id);
+    auto it = std::ranges::find(callbacks_, id, &PageFlip::id);
     if (it == callbacks_.end()) {
       LOG(WARNING) << "Could not find callback for page flip id=" << id;
       return;
@@ -137,7 +136,7 @@ class DrmDevice::PageFlipManager {
   std::vector<PageFlip> callbacks_;
 };
 
-class DrmDevice::IOWatcher : public base::MessagePumpLibevent::FdWatcher {
+class DrmDevice::IOWatcher : public base::MessagePumpEpoll::FdWatcher {
  public:
   IOWatcher(int fd, DrmDevice::PageFlipManager* page_flip_manager)
       : page_flip_manager_(page_flip_manager), controller_(FROM_HERE), fd_(fd) {
@@ -161,7 +160,7 @@ class DrmDevice::IOWatcher : public base::MessagePumpLibevent::FdWatcher {
     controller_.StopWatchingFileDescriptor();
   }
 
-  // base::MessagePumpLibevent::FdWatcher overrides:
+  // base::MessagePumpEpoll::FdWatcher overrides:
   void OnFileCanReadWithoutBlocking(int fd) override {
     DCHECK(base::CurrentIOThread::IsSet());
     TRACE_EVENT1("drm", "OnDrmEvent", "socket", fd);
@@ -174,9 +173,9 @@ class DrmDevice::IOWatcher : public base::MessagePumpLibevent::FdWatcher {
 
   void OnFileCanWriteWithoutBlocking(int fd) override { NOTREACHED(); }
 
-  raw_ptr<DrmDevice::PageFlipManager, ExperimentalAsh> page_flip_manager_;
+  raw_ptr<DrmDevice::PageFlipManager> page_flip_manager_;
 
-  base::MessagePumpLibevent::FdWatchController controller_;
+  base::MessagePumpEpoll::FdWatchController controller_;
 
   int fd_;
 };

@@ -4,22 +4,28 @@
 
 #include "chrome/browser/ui/views/autofill/payments/save_iban_bubble_view.h"
 
-#include "chrome/browser/ui/views/accessibility/theme_tracking_non_accessible_image_view.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/ui/autofill/payments/save_iban_ui.h"
 #include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/chrome_typography.h"
-#include "chrome/grit/generated_resources.h"
-#include "chrome/grit/theme_resources.h"
-#include "components/autofill/core/browser/data_model/iban.h"
+#include "chrome/grit/browser_resources.h"
+#include "components/autofill/core/browser/data_model/payments/iban.h"
+#include "components/autofill/core/common/autofill_payments_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/gfx/color_palette.h"
-#include "ui/gfx/vector_icon_utils.h"
-#include "ui/views/controls/button/label_button.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/controls/throbber.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/flex_layout_types.h"
+#include "ui/views/layout/table_layout.h"
+#include "ui/views/style/typography.h"
+#include "ui/views/style/typography_provider.h"
 #include "ui/views/view_class_properties.h"
 
 namespace autofill {
@@ -30,18 +36,16 @@ const int kMaxNicknameChars = 25;
 
 }  // namespace
 
-SaveIbanBubbleView::SaveIbanBubbleView(views::View* anchor_view,
+SaveIbanBubbleView::SaveIbanBubbleView(views::BubbleAnchor anchor_view,
                                        content::WebContents* web_contents,
                                        IbanBubbleController* controller)
-    : LocationBarBubbleDelegateView(anchor_view, web_contents),
+    : AutofillLocationBarBubble(anchor_view, web_contents),
       controller_(controller) {
   DCHECK(controller);
-  SetButtonLabel(ui::DIALOG_BUTTON_OK, controller->GetAcceptButtonText());
-  SetButtonLabel(ui::DIALOG_BUTTON_CANCEL, controller->GetDeclineButtonText());
-  SetCancelCallback(base::BindOnce(&SaveIbanBubbleView::OnDialogCancelled,
-                                   base::Unretained(this)));
-  SetAcceptCallback(base::BindOnce(&SaveIbanBubbleView::OnDialogAccepted,
-                                   base::Unretained(this)));
+  SetButtonLabel(ui::mojom::DialogButton::kOk,
+                 controller->GetAcceptButtonText());
+  SetButtonLabel(ui::mojom::DialogButton::kCancel,
+                 controller->GetDeclineButtonText());
 
   SetShowCloseButton(true);
   set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
@@ -62,20 +66,50 @@ void SaveIbanBubbleView::Hide() {
   // posted in CloseBubble() completes, but we need to fix references sooner.
   if (controller_) {
     controller_->OnBubbleClosed(
-        GetPaymentsBubbleClosedReasonFromWidget(GetWidget()));
+        GetPaymentsUiClosedReasonFromWidget(GetWidget()));
   }
   controller_ = nullptr;
 }
 
 void SaveIbanBubbleView::AddedToWidget() {
   ui::ResourceBundle& bundle = ui::ResourceBundle::GetSharedInstance();
+  auto image_view =
+      std::make_unique<views::ImageView>(bundle.GetThemedLottieImageNamed(
+          base::FeatureList::IsEnabled(
+              features::kAutofillEnableWalletBrandingV2)
+              ? IDR_AUTOFILL_SAVE_IBAN_TO_WALLET_LOTTIE
+              : IDR_AUTOFILL_SAVE_IBAN_LOTTIE));
+  image_view->GetViewAccessibility().SetIsInvisible(true);
 
-  GetBubbleFrameView()->SetHeaderView(
-      std::make_unique<ThemeTrackingNonAccessibleImageView>(
-          *bundle.GetImageSkiaNamed(IDR_SAVE_CARD),
-          *bundle.GetImageSkiaNamed(IDR_SAVE_CARD_DARK),
-          base::BindRepeating(&views::BubbleDialogDelegate::GetBackgroundColor,
-                              base::Unretained(this))));
+  GetBubbleFrameView()->SetHeaderView(std::move(image_view));
+
+  if (controller_->IsUploadSave()) {
+    if (base::FeatureList::IsEnabled(
+            features::kAutofillEnableWalletBrandingV2)) {
+      auto title_view = std::make_unique<views::Label>(
+          GetWindowTitle(), views::style::CONTEXT_DIALOG_TITLE);
+      title_view->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
+      title_view->SetMultiLine(true);
+      GetBubbleFrameView()->SetTitleView(std::move(title_view));
+    } else {
+      GetBubbleFrameView()->SetTitleView(
+          std::make_unique<TitleWithIconAfterLabelView>(
+              GetWindowTitle(),
+              base::FeatureList::IsEnabled(
+                  features::kAutofillEnableWalletBranding)
+                  ? TitleWithIconAfterLabelView::Icon::GOOGLE_WALLET
+                  : TitleWithIconAfterLabelView::Icon::GOOGLE_PAY));
+    }
+  } else if (base::FeatureList::IsEnabled(
+                 features::kAutofillEnableWalletBranding)) {
+    // Failed server saves should not show a Google Wallet logo, as the card did
+    // not successfully save there.
+    auto title_view = std::make_unique<views::Label>(
+        GetWindowTitle(), views::style::CONTEXT_DIALOG_TITLE);
+    title_view->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
+    title_view->SetMultiLine(true);
+    GetBubbleFrameView()->SetTitleView(std::move(title_view));
+  }
 }
 
 std::u16string SaveIbanBubbleView::GetWindowTitle() const {
@@ -85,7 +119,7 @@ std::u16string SaveIbanBubbleView::GetWindowTitle() const {
 void SaveIbanBubbleView::WindowClosing() {
   if (controller_) {
     controller_->OnBubbleClosed(
-        GetPaymentsBubbleClosedReasonFromWidget(GetWidget()));
+        GetPaymentsUiClosedReasonFromWidget(GetWidget()));
     controller_ = nullptr;
   }
 }
@@ -105,14 +139,33 @@ SaveIbanBubbleView::~SaveIbanBubbleView() = default;
 void SaveIbanBubbleView::CreateMainContentView() {
   const ChromeLayoutProvider* provider = ChromeLayoutProvider::Get();
 
-  SetID(DialogViewId::MAIN_CONTENT_VIEW_LOCAL);
-  SetProperty(views::kMarginsKey, gfx::Insets());
-  const int row_height = views::style::GetLineHeight(
-      views::style::CONTEXT_DIALOG_BODY_TEXT, views::style::STYLE_PRIMARY);
-  views::TableLayout* layout =
-      SetLayoutManager(std::make_unique<views::TableLayout>());
+  SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical, gfx::Insets(),
+      provider->GetDistanceMetric(views::DISTANCE_UNRELATED_CONTROL_VERTICAL)));
 
-  layout
+  SetID(controller_->IsUploadSave() ? DialogViewId::MAIN_CONTENT_VIEW_UPLOAD
+                                    : DialogViewId::MAIN_CONTENT_VIEW_LOCAL);
+  SetProperty(views::kMarginsKey, gfx::Insets());
+
+  // If applicable, add the upload explanation label. Appears above the IBAN
+  // info.
+  std::u16string explanation = controller_->GetExplanatoryMessage();
+  if (!explanation.empty()) {
+    auto* explanation_label = AddChildView(std::make_unique<views::Label>(
+        explanation, views::style::CONTEXT_DIALOG_BODY_TEXT,
+        views::style::STYLE_SECONDARY));
+    explanation_label->SetMultiLine(true);
+    explanation_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  }
+
+  const int row_height = views::TypographyProvider::Get().GetLineHeight(
+      views::style::CONTEXT_DIALOG_BODY_TEXT, views::style::STYLE_PRIMARY);
+
+  auto* iban_content = AddChildView(std::make_unique<views::View>());
+  auto* iban_layout =
+      iban_content->SetLayoutManager(std::make_unique<views::TableLayout>());
+
+  iban_layout
       ->AddColumn(views::LayoutAlignment::kStart,
                   views::LayoutAlignment::kCenter,
                   views::TableLayout::kFixedSize,
@@ -135,26 +188,30 @@ void SaveIbanBubbleView::CreateMainContentView() {
       // Add a row for nickname label and the input text field.
       .AddRows(1, views::TableLayout::kFixedSize);
 
-  AddChildView(std::make_unique<views::Label>(
+  iban_content->AddChildView(std::make_unique<views::Label>(
       l10n_util::GetStringUTF16(IDS_AUTOFILL_SAVE_IBAN_LABEL),
       views::style::CONTEXT_DIALOG_BODY_TEXT, views::style::STYLE_PRIMARY));
 
-  iban_value_and_toggle_ =
-      AddChildView(std::make_unique<ObscurableLabelWithToggleButton>(
-          controller_->GetIBAN().GetIdentifierStringForAutofillDisplay(
-              /*is_value_masked=*/true),
-          controller_->GetIBAN().GetIdentifierStringForAutofillDisplay(
+  views::Label* iban_value =
+      iban_content->AddChildView(std::make_unique<views::Label>(
+          controller_->GetIban().GetIdentifierStringForAutofillDisplay(
               /*is_value_masked=*/false),
-          l10n_util::GetStringUTF16(IDS_MANAGE_IBAN_VALUE_SHOW_VALUE),
-          l10n_util::GetStringUTF16(IDS_MANAGE_IBAN_VALUE_HIDE_VALUE)));
+          views::style::CONTEXT_LABEL, views::style::STYLE_SECONDARY));
 
-  AddChildView(std::make_unique<views::Label>(
+  iban_value->SetProperty(
+      views::kFlexBehaviorKey,
+      views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,
+                               views::MaximumFlexSizeRule::kScaleToMaximum));
+  iban_value->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  iban_value->SetMultiLine(true);
+
+  iban_content->AddChildView(std::make_unique<views::Label>(
       l10n_util::GetStringUTF16(IDS_AUTOFILL_SAVE_IBAN_PROMPT_NICKNAME),
       views::style::CONTEXT_DIALOG_BODY_TEXT, views::style::STYLE_PRIMARY));
 
   // Adds view that combines nickname textfield and nickname length count label.
   auto* nickname_input_textfield_view =
-      AddChildView(std::make_unique<views::BoxLayoutView>());
+      iban_content->AddChildView(std::make_unique<views::BoxLayoutView>());
   nickname_input_textfield_view->SetBorder(
       views::CreateSolidBorder(1, SK_ColorLTGRAY));
   nickname_input_textfield_view->SetInsideBorderInsets(
@@ -169,17 +226,15 @@ void SaveIbanBubbleView::CreateMainContentView() {
   // Adds nickname textfield.
   nickname_textfield_ = nickname_input_textfield_view->AddChildView(
       std::make_unique<views::Textfield>());
-  nickname_textfield_->SetAccessibleName(
+  nickname_textfield_->GetViewAccessibility().SetName(
       l10n_util::GetStringUTF16(IDS_AUTOFILL_SAVE_IBAN_PROMPT_NICKNAME));
   nickname_textfield_->SetTextInputType(
       ui::TextInputType::TEXT_INPUT_TYPE_TEXT);
   nickname_textfield_->set_controller(this);
   nickname_textfield_->SetPlaceholderText(
       l10n_util::GetStringUTF16(IDS_AUTOFILL_SAVE_IBAN_PLACEHOLDER));
-  nickname_textfield_->SetProperty(
-      views::kFlexBehaviorKey,
-      views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,
-                               views::MaximumFlexSizeRule::kScaleToMaximum));
+  nickname_textfield_->SetProperty(views::kBoxLayoutFlexKey,
+                                   views::BoxLayoutFlexSpecification());
   nickname_textfield_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   nickname_textfield_->SetBorder(views::NullBorder());
 
@@ -191,6 +246,12 @@ void SaveIbanBubbleView::CreateMainContentView() {
   nickname_length_label_->SetHorizontalAlignment(
       gfx::HorizontalAlignment::ALIGN_RIGHT);
   UpdateNicknameLengthLabel();
+
+  if (std::unique_ptr<views::View> legal_message_view =
+          CreateLegalMessageView()) {
+    legal_message_view->SetID(DialogViewId::LEGAL_MESSAGE_VIEW);
+    AddChildView(std::move(legal_message_view));
+  }
 }
 
 void SaveIbanBubbleView::AssignIdsToDialogButtonsForTesting() {
@@ -203,31 +264,122 @@ void SaveIbanBubbleView::AssignIdsToDialogButtonsForTesting() {
     cancel_button->SetID(DialogViewId::CANCEL_BUTTON);
   }
 
-  DCHECK(iban_value_and_toggle_);
-  iban_value_and_toggle_->value()->SetID(DialogViewId::IBAN_VALUE_LABEL);
-  iban_value_and_toggle_->toggle_obscured()->SetID(
-      DialogViewId::TOGGLE_IBAN_VALUE_MASKING_BUTTON);
-
   if (nickname_textfield_) {
     nickname_textfield_->SetID(DialogViewId::NICKNAME_TEXTFIELD);
   }
 }
 
-void SaveIbanBubbleView::OnDialogAccepted() {
+void SaveIbanBubbleView::LinkClicked(const GURL& url) {
   if (controller_) {
-    DCHECK(nickname_textfield_);
-    controller_->OnAcceptButton(nickname_textfield_->GetText());
-  }
-}
-
-void SaveIbanBubbleView::OnDialogCancelled() {
-  if (controller_) {
-    controller_->OnCancelButton();
+    controller()->OnLegalMessageLinkClicked(url);
   }
 }
 
 void SaveIbanBubbleView::Init() {
+  // For server IBAN save, there is an explanation between the title and the
+  // controls; use DialogContentType::kText. For local IBAN save, since there is
+  // no explanation, use DialogContentType::kControl instead.
+  // For server IBANs, there are legal messages before the buttons, so use
+  // DialogContentType::kText. For local IBANs, since there is no legal message,
+  // use DialogContentType::kControl instead.
+  set_margins(ChromeLayoutProvider::Get()->GetDialogInsetsForContentType(
+      views::DialogContentType::kText,
+      !controller_->GetLegalMessageLines().empty()
+          ? views::DialogContentType::kText
+          : views::DialogContentType::kControl));
+
   CreateMainContentView();
+
+  if (controller_ &&
+      (controller_->GetIbanBubbleType() == IbanBubbleType::kUploadSave ||
+       controller_->GetIbanBubbleType() == IbanBubbleType::kUploadInProgress)) {
+    loading_row_ = AddChildView(CreateLoadingRow());
+    if (controller_->GetIbanBubbleType() == IbanBubbleType::kUploadInProgress) {
+      ShowThrobber();
+    }
+  }
+}
+
+bool SaveIbanBubbleView::Accept() {
+  bool show_throbber = controller_ && controller_->GetIbanBubbleType() ==
+                                          IbanBubbleType::kUploadSave;
+
+  if (show_throbber) {
+    ShowThrobber();
+  }
+
+  if (controller_) {
+    DCHECK(nickname_textfield_);
+    controller_->OnAcceptButton(nickname_textfield_->GetText());
+  }
+
+  // If a throbber is shown, don't automatically close the bubble view upon
+  // acceptance.
+  return !show_throbber;
+}
+
+std::unique_ptr<views::View> SaveIbanBubbleView::CreateLegalMessageView() {
+  const LegalMessageLines message_lines = controller()->GetLegalMessageLines();
+  if (message_lines.empty()) {
+    return nullptr;
+  }
+
+  auto legal_message_view = std::make_unique<views::BoxLayoutView>();
+  legal_message_view->SetOrientation(views::BoxLayout::Orientation::kVertical);
+  legal_message_view->SetBetweenChildSpacing(
+      ChromeLayoutProvider::Get()->GetDistanceMetric(
+          DISTANCE_RELATED_CONTROL_VERTICAL_SMALL));
+
+  bool v2_branding_enabled =
+      base::FeatureList::IsEnabled(features::kAutofillEnableWalletBrandingV2);
+  legal_message_view->AddChildView(::autofill::CreateLegalMessageView(
+      message_lines,
+      v2_branding_enabled
+          ? /*user_email=*/std::u16string()
+          : base::UTF8ToUTF16(controller()->GetAccountInfo().email),
+      v2_branding_enabled ? /*user_avatar=*/ui::ImageModel()
+                          : GetProfileAvatar(controller()->GetAccountInfo()),
+      base::BindRepeating(&SaveIbanBubbleView::LinkClicked,
+                          base::Unretained(this))));
+
+  legal_message_view->SetID(DialogViewId::LEGAL_MESSAGE_VIEW);
+  return legal_message_view;
+}
+
+std::unique_ptr<views::View> SaveIbanBubbleView::CreateLoadingRow() {
+  auto loading_row = std::make_unique<views::BoxLayoutView>();
+
+  // Initialize `loading_row` as hidden because it should only be visible after
+  // the user accepts uploading the card.
+  loading_row->SetVisible(false);
+
+  loading_row->SetMainAxisAlignment(views::BoxLayout::MainAxisAlignment::kEnd);
+  loading_row->SetInsideBorderInsets(gfx::Insets::TLBR(10, 0, 0, 40));
+
+  loading_throbber_ =
+      loading_row->AddChildView(std::make_unique<views::Throbber>());
+  loading_throbber_->SetID(DialogViewId::LOADING_THROBBER);
+
+  return loading_row;
+}
+
+void SaveIbanBubbleView::ShowThrobber() {
+  if (loading_row_ == nullptr) {
+    return;
+  }
+
+  SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+  SetExtraView({nullptr});
+
+  CHECK(loading_throbber_);
+
+  loading_throbber_->Start();
+  loading_row_->SetVisible(true);
+  loading_throbber_->GetViewAccessibility().AnnounceText(
+      l10n_util::GetStringUTF16(
+          IDS_AUTOFILL_SAVE_IBAN_PROMPT_LOADING_THROBBER_ACCESSIBLE_NAME));
+
+  DialogModelChanged();
 }
 
 void SaveIbanBubbleView::UpdateNicknameLengthLabel() {
@@ -236,5 +388,8 @@ void SaveIbanBubbleView::UpdateNicknameLengthLabel() {
       base::NumberToString16(nickname_textfield_->GetText().length()),
       base::NumberToString16(kMaxNicknameChars)));
 }
+
+BEGIN_METADATA(SaveIbanBubbleView)
+END_METADATA
 
 }  // namespace autofill

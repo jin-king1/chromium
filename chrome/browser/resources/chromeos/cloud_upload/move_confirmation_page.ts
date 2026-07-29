@@ -2,12 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import 'chrome://resources/cr_elements/cr_button/cr_button.js';
-import 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
-import 'chrome://resources/cr_elements/cr_lottie/cr_lottie.js';
+import 'chrome://resources/ash/common/cr_elements/cr_button/cr_button.js';
+import 'chrome://resources/ash/common/cr_elements/cr_checkbox/cr_checkbox.js';
+import 'chrome://resources/cros_components/lottie_renderer/lottie-renderer.js';
 
-import type {CrCheckboxElement} from 'chrome://resources/cr_elements/cr_checkbox/cr_checkbox.js';
-import {OperationType, UserAction} from './cloud_upload.mojom-webui.js';
+import type {CrCheckboxElement} from 'chrome://resources/ash/common/cr_elements/cr_checkbox/cr_checkbox.js';
+import type {LottieRenderer} from 'chrome://resources/cros_components/lottie_renderer/lottie-renderer.js';
+import {assert} from 'chrome://resources/js/assert.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
+
+import {MetricsRecordedSetupPage, OperationType, UserAction} from './cloud_upload.mojom-webui.js';
 import {CloudUploadBrowserProxy} from './cloud_upload_browser_proxy.js';
 import {getTemplate} from './move_confirmation_page.html.js';
 
@@ -25,6 +29,12 @@ export class MoveConfirmationPageElement extends HTMLElement {
   private proxy: CloudUploadBrowserProxy =
       CloudUploadBrowserProxy.getInstance();
   private cloudProvider: CloudProvider|undefined;
+  private animationPlayer: LottieRenderer|undefined;
+  private playPauseButton: HTMLElement|undefined;
+
+  // Save reference to listener so it can be removed from the document in
+  // disconnectedCallback().
+  private boundKeyDownListener_: (e: KeyboardEvent) => void;
 
   constructor() {
     super();
@@ -32,15 +42,30 @@ export class MoveConfirmationPageElement extends HTMLElement {
     const shadowRoot = this.attachShadow({mode: 'open'});
 
     shadowRoot.innerHTML = getTemplate();
-    const actionButton = this.$('.action-button')!;
-    const cancelButton = this.$('.cancel-button')!;
+    const actionButton = this.$('.action-button');
+    const cancelButton = this.$('.cancel-button');
+    this.playPauseButton = this.$('#playPauseIcon');
 
     actionButton.addEventListener('click', () => this.onActionButtonClick());
     cancelButton.addEventListener('click', () => this.onCancelButtonClick());
+    this.playPauseButton.addEventListener(
+        'click', () => this.onPlayPauseButtonClick());
+    this.boundKeyDownListener_ = this.onKeyDown.bind(this);
   }
 
-  $<T extends HTMLElement>(query: string): T {
-    return this.shadowRoot!.querySelector(query)!;
+  connectedCallback(): void {
+    document.addEventListener('keydown', this.boundKeyDownListener_);
+  }
+
+  disconnectedCallback(): void {
+    document.removeEventListener('keydown', this.boundKeyDownListener_);
+  }
+
+  $<T extends HTMLElement = HTMLElement>(query: string): T {
+    const el = this.shadowRoot!.querySelector<T>(query);
+    assert(el);
+    assert(el instanceof HTMLElement);
+    return el;
   }
 
   async setDialogAttributes(
@@ -60,86 +85,98 @@ export class MoveConfirmationPageElement extends HTMLElement {
 
     this.cloudProvider = cloudProvider;
 
-    const operationTypeText =
-        operationType === OperationType.kCopy ? 'Copy' : 'Move';
-    const filesText = numFiles > 1 ? 'files' : 'file';
-    const {name, shortName} = this.getProviderText(this.cloudProvider);
+    const isCopyOperation = operationType === OperationType.kCopy;
+    const isPlural = numFiles > 1;
+    const providerName = this.getProviderName(this.cloudProvider);
 
     // Animation.
-    this.updateAnimation(
-        window.matchMedia('(prefers-color-scheme: dark)').matches);
-    window.matchMedia('(prefers-color-scheme: dark)')
-        .addEventListener('change', event => {
-          this.updateAnimation(event.matches);
-        });
+    this.updateAnimation();
 
     // Title.
-    const titleElement = this.$<HTMLElement>('#title')!;
-    titleElement.innerText = `${operationTypeText} ${numFiles.toString()} ${
-        filesText} to ${name} to open?`;
+    const titleElement = this.$('#title');
+    if (isCopyOperation) {
+      titleElement.innerText = loadTimeData.getStringF(
+          isPlural ? 'moveConfirmationCopyTitlePlural' :
+                     'moveConfirmationCopyTitle',
+          providerName,
+          numFiles.toString(),
+      );
+    } else {
+      titleElement.innerText = loadTimeData.getStringF(
+          isPlural ? 'moveConfirmationMoveTitlePlural' :
+                     'moveConfirmationMoveTitle',
+          providerName, numFiles.toString());
+    }
 
-    // Body.
+    // Checkbox and Body.
     const bodyText = this.$('#body-text');
     const checkbox = this.$<CrCheckboxElement>('#always-copy-or-move-checkbox');
+    checkbox.innerText = loadTimeData.getString('moveConfirmationAlwaysMove');
     if (this.cloudProvider === CloudProvider.ONE_DRIVE) {
       bodyText.innerText =
-          'Microsoft 365 requires files to be stored in OneDrive. ' +
-          'You can move files to OneDrive at any time.';
+          loadTimeData.getString('moveConfirmationOneDriveBodyText');
 
       // Only show checkbox if the confirmation has been shown before for
       // OneDrive.
       if (officeMoveConfirmationShownForOneDrive) {
-        checkbox.innerText =
-            `${operationTypeText} to ${shortName} without asking each time`;
         checkbox.checked = alwaysMoveToOneDrive;
       } else {
-        checkbox!.remove();
+        checkbox.remove();
       }
     } else {
       bodyText.innerText =
-          'Google Docs, Sheets, and Slides require files to be stored in ' +
-          'Google Drive. You can move files to Google Drive at any time.';
+          loadTimeData.getStringF('moveConfirmationGoogleDriveBodyText');
 
       // Only show checkbox if the confirmation has been shown before for
       // Drive.
       if (officeMoveConfirmationShownForDrive) {
-        checkbox.innerText =
-            `${operationTypeText} to ${name} without asking each time`;
         checkbox.checked = alwaysMoveToDrive;
       } else {
-        checkbox!.remove();
+        checkbox.remove();
       }
     }
 
     // Action button.
-    const actionButton = this.$<HTMLElement>('.action-button')!;
-    actionButton.innerText = `${operationTypeText} and open`;
+    const actionButton = this.$('.action-button');
+    actionButton.innerText =
+        loadTimeData.getString(isCopyOperation ? 'copyAndOpen' : 'moveAndOpen');
   }
 
-  private getProviderText(cloudProvider: CloudProvider) {
+  private getProviderName(cloudProvider: CloudProvider) {
     if (cloudProvider === CloudProvider.ONE_DRIVE) {
-      return {
-        name: 'Microsoft OneDrive',
-        shortName: 'OneDrive',
-      };
+      return loadTimeData.getString('oneDrive');
     }
-    // TODO(b/260141250): Display Slides or Sheets when appropriate instead or
-    // remove shortName?
-    return {name: 'Google Drive', shortName: 'Drive'};
+    return loadTimeData.getString('googleDrive');
   }
 
-  private updateAnimation(isDarkMode: boolean) {
+  private createAnimation(animationUrl: string) {
+    this.animationPlayer = document.createElement('cros-lottie-renderer');
+    this.animationPlayer.id = 'animation';
+    this.animationPlayer.setAttribute('asset-url', animationUrl);
+    this.animationPlayer.setAttribute('dynamic', 'true');
+    this.animationPlayer.setAttribute('aria-hidden', 'true');
+    this.animationPlayer.autoplay = true;
+    const animationWrapper = this.$('.animation-wrapper');
+    const playPauseIcon = this.$('#playPauseIcon');
+    animationWrapper.insertBefore(this.animationPlayer, playPauseIcon);
+  }
+
+  private updateAnimation() {
     const provider =
         this.cloudProvider === CloudProvider.ONE_DRIVE ? 'onedrive' : 'drive';
-    const colorScheme = isDarkMode ? 'dark' : 'light';
-    const animationUrl =
-        `animations/move_confirmation_${provider}_${colorScheme}.json`;
-    this.shadowRoot!.querySelector('cr-lottie')!.setAttribute(
-        'animation-url', animationUrl);
+    const animationUrl = `animations/move_confirmation_${provider}.json`;
+    if (!this.animationPlayer) {
+      this.createAnimation(animationUrl);
+    } else {
+      this.animationPlayer.setAttribute('asset-url', animationUrl);
+    }
   }
 
   private onActionButtonClick(): void {
-    const checkbox = this.$<CrCheckboxElement>('#always-copy-or-move-checkbox');
+    // Note: Not using $() here, since the checkbox could have been removed from
+    // the DOM in setDialogAttributes.
+    const checkbox = this.shadowRoot!.querySelector<CrCheckboxElement>(
+        '#always-copy-or-move-checkbox');
     const setAlwaysMove = !!(checkbox && checkbox.checked);
     if (this.cloudProvider === CloudProvider.ONE_DRIVE) {
       this.proxy.handler.setAlwaysMoveOfficeFilesToOneDrive(setAlwaysMove);
@@ -153,7 +190,46 @@ export class MoveConfirmationPageElement extends HTMLElement {
   }
 
   private onCancelButtonClick(): void {
-    this.proxy.handler.respondWithUserActionAndClose(UserAction.kCancel);
+    if (this.cloudProvider === CloudProvider.ONE_DRIVE) {
+      this.proxy.handler.recordCancel(
+          MetricsRecordedSetupPage.kMoveConfirmationOneDrive);
+      this.proxy.handler.respondWithUserActionAndClose(
+          UserAction.kCancelOneDrive);
+    } else {
+      this.proxy.handler.recordCancel(
+          MetricsRecordedSetupPage.kMoveConfirmationGoogleDrive);
+      this.proxy.handler.respondWithUserActionAndClose(
+          UserAction.kCancelGoogleDrive);
+    }
+  }
+
+  private onPlayPauseButtonClick(): void {
+    assert(this.playPauseButton);
+    const animation = this.$<LottieRenderer>('#animation');
+    const shouldPlay = this.playPauseButton.className === 'play';
+    if (shouldPlay) {
+      animation.play();
+      // Update button to Pause.
+      this.playPauseButton.className = 'pause';
+      this.playPauseButton.ariaLabel =
+          loadTimeData.getString('animationPauseText');
+    } else {
+      animation.pause();
+      // Update button to Play.
+      this.playPauseButton.className = 'play';
+      this.playPauseButton.ariaLabel =
+          loadTimeData.getString('animationPlayText');
+    }
+  }
+
+  private onKeyDown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      // Handle Escape as a "cancel".
+      e.stopImmediatePropagation();
+      e.preventDefault();
+      this.onCancelButtonClick();
+      return;
+    }
   }
 }
 

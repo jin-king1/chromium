@@ -26,9 +26,9 @@ Attached to target: {
         browserContextId : <string>
         canAccessOpener : false
         targetId : <string>
-        title : 
+        title :
         type : tab
-        url : 
+        url :
     }
     waitingForDebugger : true
 }
@@ -39,19 +39,19 @@ Page attached via tab target: {
         browserContextId : <string>
         canAccessOpener : false
         targetId : <string>
-        title : 
+        title :
         type : page
         url : http://127.0.0.1:8000/inspector-protocol/resources/test-page.html
     }
     waitingForDebugger : false
 }
 Resuming target
+Requesting http://127.0.0.1:8000/inspector-protocol/resources/test-page.html
 Response to runIfWaitingForDebugger: {
     id : <number>
     result : {
     }
     sessionId : <string>
 }
-Requesting http://127.0.0.1:8000/inspector-protocol/resources/test-page.html
 load event fired
 

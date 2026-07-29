@@ -6,16 +6,17 @@
 
 #import <UIKit/UIKit.h>
 
+#include "base/apple/foundation_util.h"
 #include "base/check.h"
 #include "base/command_line.h"
 #include "base/debug/debugger.h"
-#include "base/mac/scoped_nsobject.h"
 #include "base/message_loop/message_pump.h"
-#include "base/message_loop/message_pump_mac.h"
+#include "base/message_loop/message_pump_apple.h"
 #import "base/test/ios/google_test_runner_delegate.h"
 #include "base/test/test_suite.h"
 #include "base/test/test_switches.h"
 #include "build/blink_buildflags.h"
+#include "build/ios_buildflags.h"
 #include "testing/coverage_util_ios.h"
 
 // Springboard will kill any iOS app that fails to check in after launch within
@@ -38,54 +39,60 @@ static char** g_argv;
 
 namespace {
 void PopulateUIWindow(UIWindow* window) {
-  [window setBackgroundColor:[UIColor whiteColor]];
+  window.backgroundColor = UIColor.whiteColor;
   [window makeKeyAndVisible];
-  CGRect bounds = [[UIScreen mainScreen] bounds];
+  CGRect bounds = window.windowScene.screen.bounds;
   // Add a label with the app name.
-  UILabel* label = [[[UILabel alloc] initWithFrame:bounds] autorelease];
-  label.text = [[NSProcessInfo processInfo] processName];
+  UILabel* label = [[UILabel alloc] initWithFrame:bounds];
+  label.text = NSProcessInfo.processInfo.processName;
   label.textAlignment = NSTextAlignmentCenter;
+  label.textColor = UIColor.blackColor;
   [window addSubview:label];
 
   // An NSInternalInconsistencyException is thrown if the app doesn't have a
   // root view controller. Set an empty one here.
-  [window setRootViewController:[[[UIViewController alloc] init] autorelease]];
+  window.rootViewController = [[UIViewController alloc] init];
 }
-
-bool IsSceneStartupEnabled() {
-  return [[NSBundle mainBundle].infoDictionary
-      objectForKey:@"UIApplicationSceneManifest"];
-}
-}
+}  // namespace
 
 @interface UIApplication (Testing)
 - (void)_terminateWithStatus:(int)status;
 @end
 
-#if TARGET_IPHONE_SIMULATOR
+#if TARGET_OS_SIMULATOR
 // Xcode 6 introduced behavior in the iOS Simulator where the software
 // keyboard does not appear if a hardware keyboard is connected. The following
-// declaration allows this behavior to be overriden when the app starts up.
+// declaration allows this behavior to be overridden when the app starts up.
 @interface UIKeyboardImpl
 + (instancetype)sharedInstance;
 - (void)setAutomaticMinimizationEnabled:(BOOL)enabled;
 - (void)setSoftwareKeyboardShownByTouch:(BOOL)enabled;
 @end
-#endif  // TARGET_IPHONE_SIMULATOR
+#endif  // TARGET_OS_SIMULATOR
+
+// Can be used to easily check if the current application is being used for
+// running tests.
+@interface ChromeUnitTestApplication : UIApplication
+- (BOOL)isRunningTests;
+@end
+
+@implementation ChromeUnitTestApplication
+- (BOOL)isRunningTests {
+  return YES;
+}
+@end
 
 // No-op scene delegate for unit tests. Note that this is created along with
 // the application delegate, so they need to be separate objects (the same
 // object can't be both the app and scene delegate, since new scene delegates
 // are created for each scene).
 @interface ChromeUnitTestSceneDelegate : NSObject <UIWindowSceneDelegate> {
-  base::scoped_nsobject<UIWindow> _window;
+  UIWindow* __strong _window;
 }
 
 @end
 
-@interface ChromeUnitTestDelegate : NSObject <GoogleTestRunnerDelegate> {
-  base::scoped_nsobject<UIWindow> _window;
-}
+@interface ChromeUnitTestDelegate : NSObject <GoogleTestRunnerDelegate>
 - (void)runTests;
 @end
 
@@ -95,45 +102,32 @@ bool IsSceneStartupEnabled() {
     willConnectToSession:(UISceneSession*)session
                  options:(UISceneConnectionOptions*)connectionOptions
     API_AVAILABLE(ios(13)) {
-  // Yes, this is leaked, it's just to make what's running visible.
-  _window.reset([[UIWindow alloc]
-      initWithWindowScene:static_cast<UIWindowScene*>(scene)]);
+  _window =
+      [[UIWindow alloc] initWithWindowScene:static_cast<UIWindowScene*>(scene)];
   PopulateUIWindow(_window);
 }
 
 - (void)sceneDidDisconnect:(UIScene*)scene API_AVAILABLE(ios(13)) {
-  _window.reset();
+  _window = nil;
 }
 
 @end
 
 @implementation ChromeUnitTestDelegate
 
-- (BOOL)application:(UIApplication *)application
-    didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-
-#if TARGET_IPHONE_SIMULATOR
+- (BOOL)application:(UIApplication*)application
+    didFinishLaunchingWithOptions:(NSDictionary*)launchOptions {
+#if TARGET_OS_SIMULATOR
   // Xcode 6 introduced behavior in the iOS Simulator where the software
   // keyboard does not appear if a hardware keyboard is connected. The following
   // calls override this behavior by ensuring that the software keyboard is
   // always shown.
   [[UIKeyboardImpl sharedInstance] setAutomaticMinimizationEnabled:NO];
-  if (@available(iOS 15, *)) {
-  } else {
-    [[UIKeyboardImpl sharedInstance] setSoftwareKeyboardShownByTouch:YES];
-  }
-#endif  // TARGET_IPHONE_SIMULATOR
+#endif  // TARGET_OS_SIMULATOR
 
-  if (!IsSceneStartupEnabled()) {
-    CGRect bounds = [[UIScreen mainScreen] bounds];
-
-    // Yes, this is leaked, it's just to make what's running visible.
-    _window.reset([[UIWindow alloc] initWithFrame:bounds]);
-    PopulateUIWindow(_window);
-  }
-
-  if ([self shouldRedirectOutputToFile])
+  if ([self shouldRedirectOutputToFile]) {
     [self redirectOutput];
+  }
 
   // Queue up the test run.
   if (!base::ShouldRunIOSUnittestsWithXCTest()) {
@@ -150,24 +144,22 @@ bool IsSceneStartupEnabled() {
 // output to stdout, but results must be written to NSLog in order to show up in
 // the device log that is retrieved from the device by the host.
 - (BOOL)shouldRedirectOutputToFile {
-#if !TARGET_IPHONE_SIMULATOR
+#if !TARGET_OS_SIMULATOR
   // Tests in XCTest mode don't need to redirect output to a file because the
   // test result parser analyzes console output.
   return !base::ShouldRunIOSUnittestsWithXCTest() &&
          !base::debug::BeingDebugged();
 #else
   return NO;
-#endif  // TARGET_IPHONE_SIMULATOR
+#endif  // TARGET_OS_SIMULATOR
 }
 
 // Returns the path to the directory to store gtest output files.
 - (NSString*)outputPath {
-  NSArray* searchPath =
-      NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
-                                          NSUserDomainMask,
-                                          YES);
-  CHECK([searchPath count] > 0) << "Failed to get the Documents folder";
-  return [searchPath objectAtIndex:0];
+  NSArray* searchPath = NSSearchPathForDirectoriesInDomains(
+      NSDocumentDirectory, NSUserDomainMask, YES);
+  CHECK(searchPath.count > 0) << "Failed to get the Documents folder";
+  return searchPath[0];
 }
 
 // Returns the path to file that stdout is redirected to.
@@ -193,12 +185,13 @@ bool IsSceneStartupEnabled() {
   // NSLog doesn't end up in these files.
   fclose(stdout);
   fclose(stderr);
-  for (NSString* path in @[ [self stdoutPath], [self stderrPath]]) {
+  for (NSString* path in @[ [self stdoutPath], [self stderrPath] ]) {
     NSString* content = [NSString stringWithContentsOfFile:path
                                                   encoding:NSUTF8StringEncoding
-                                                     error:NULL];
-    NSArray* lines = [content componentsSeparatedByCharactersInSet:
-        [NSCharacterSet newlineCharacterSet]];
+                                                     error:nil];
+    NSArray* lines =
+        [content componentsSeparatedByCharactersInSet:NSCharacterSet
+                                                          .newlineCharacterSet];
 
     NSLog(@"Writing contents of %@ to NSLog", path);
     for (NSString* line in lines) {
@@ -216,8 +209,9 @@ bool IsSceneStartupEnabled() {
 
   int exitStatus = std::move(g_test_suite_callback).Run();
 
-  if ([self shouldRedirectOutputToFile])
+  if ([self shouldRedirectOutputToFile]) {
     [self writeOutputToNSLog];
+  }
 
   return exitStatus;
 }
@@ -227,19 +221,20 @@ bool IsSceneStartupEnabled() {
 
   int exitStatus = [self runGoogleTests];
 
-  // The blink code path uses a spawning test launcher and this wait isn't
+  // The Blink code path uses a spawning test launcher and this wait isn't
   // really necessary for that code path.
 #if !BUILDFLAG(USE_BLINK)
   // If a test app is too fast, it will exit before Instruments has has a
   // a chance to initialize and no test results will be seen.
   [NSThread sleepUntilDate:[NSDate dateWithTimeIntervalSinceNow:2.0]];
 #endif
-  _window.reset();
 
+#if !BUILDFLAG(IS_IOS_APP_EXTENSION)
   // Use the hidden selector to try and cleanly take down the app (otherwise
   // things can think the app crashed even on a zero exit status).
   UIApplication* application = [UIApplication sharedApplication];
   [application _terminateWithStatus:exitStatus];
+#endif
 
   exit(exitStatus);
 }
@@ -250,7 +245,7 @@ namespace {
 
 std::unique_ptr<base::MessagePump> CreateMessagePumpForUIForTests() {
   // A basic MessagePump will do quite nicely in tests.
-  return std::unique_ptr<base::MessagePump>(new base::MessagePumpCFRunLoop());
+  return std::make_unique<base::MessagePumpCFRunLoop>();
 }
 
 }  // namespace
@@ -276,7 +271,8 @@ int RunTestsFromIOSApp() {
   // TestSuite::Run will have be passed via InitIOSRunHook which will execute
   // the TestSuite once the UIApplication is ready.
   @autoreleasepool {
-    return UIApplicationMain(g_argc, g_argv, nil, @"ChromeUnitTestDelegate");
+    return UIApplicationMain(g_argc, g_argv, @"ChromeUnitTestApplication",
+                             @"ChromeUnitTestDelegate");
   }
 }
 

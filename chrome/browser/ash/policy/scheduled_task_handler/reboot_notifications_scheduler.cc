@@ -5,10 +5,12 @@
 #include "chrome/browser/ash/policy/scheduled_task_handler/reboot_notifications_scheduler.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "ash/constants/ash_pref_names.h"
 #include "base/check_is_test.h"
 #include "base/containers/small_map.h"
+#include "base/functional/callback_helpers.h"
 #include "base/time/default_clock.h"
 #include "base/time/default_tick_clock.h"
 #include "chrome/browser/ash/app_restore/full_restore_service_factory.h"
@@ -17,7 +19,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_prefs/user_prefs.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace policy {
 namespace {
@@ -65,9 +66,9 @@ class RebootNotificationsScheduler::RequestQueue {
   RequestQueue& operator=(const RequestQueue&) = delete;
 
   // Returns the requester with the earliest reboot time.
-  absl::optional<RequsterAndRebootTime> current_request() const {
+  std::optional<RequsterAndRebootTime> current_request() const {
     if (requests_.empty()) {
-      return absl::nullopt;
+      return std::nullopt;
     }
     const auto it = std::min_element(requests_.begin(), requests_.end(),
                                      [](const auto& first, const auto& second) {
@@ -93,10 +94,20 @@ class RebootNotificationsScheduler::RequestQueue {
 
   // The very last method to call after which the queue is invalid.
   [[nodiscard]] RebootButtonCallback TakeCallback() {
-    DCHECK(current_request());
-    const Requester current_requester = current_request()->requester;
-    DCHECK(requests_[current_requester].reboot_button_callback);
-    return std::move(requests_[current_requester].reboot_button_callback);
+    const std::optional<RequsterAndRebootTime> current = current_request();
+
+    if (!current.has_value()) {
+      return base::DoNothing();
+    }
+
+    auto reboot_callback =
+        std::move(requests_[current->requester].reboot_button_callback);
+
+    if (!reboot_callback) {
+      return base::DoNothing();
+    }
+
+    return reboot_callback;
   }
 
   // Returns true if the new request takes place. Returns false if the current
@@ -113,7 +124,7 @@ class RebootNotificationsScheduler::RequestQueue {
   // Returns true if the current request is being reset. Returns false if the
   // current request does not change.
   [[nodiscard]] bool Reset(Requester requester) {
-    const absl::optional<RequsterAndRebootTime> current = current_request();
+    const std::optional<RequsterAndRebootTime> current = current_request();
 
     requests_.erase(requester);
 
@@ -162,14 +173,6 @@ RebootNotificationsScheduler* RebootNotificationsScheduler::Get() {
 void RebootNotificationsScheduler::RegisterProfilePrefs(
     PrefRegistrySimple* registry) {
   registry->RegisterBooleanPref(ash::prefs::kShowPostRebootNotification, false);
-}
-
-// static
-bool RebootNotificationsScheduler::ShouldShowPostRebootNotification(
-    Profile* profile) {
-  DCHECK(profile);
-  PrefService* prefs = user_prefs::UserPrefs::Get(profile);
-  return IsPostRebootPrefSet(prefs);
 }
 
 void RebootNotificationsScheduler::SchedulePendingRebootNotifications(
@@ -257,12 +260,12 @@ void RebootNotificationsScheduler::MaybeShowPostRebootNotification(
   observation_.Reset();
 }
 
-absl::optional<RebootNotificationsScheduler::Requester>
+std::optional<RebootNotificationsScheduler::Requester>
 RebootNotificationsScheduler::GetCurrentRequesterForTesting() const {
   CHECK_IS_TEST();
   return requester_queue_->current_request()
              ? requester_queue_->current_request()->requester
-             : absl::optional<Requester>(absl::nullopt);
+             : std::optional<Requester>(std::nullopt);
 }
 
 std::vector<RebootNotificationsScheduler::Requester>

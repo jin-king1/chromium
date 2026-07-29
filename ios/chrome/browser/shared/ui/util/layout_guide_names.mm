@@ -4,23 +4,46 @@
 
 #import "ios/chrome/browser/shared/ui/util/layout_guide_names.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
+GuideName* const kAppContentGuide = @"AppContentGuide";
 GuideName* const kContentAreaGuide = @"ContentAreaGuide";
 GuideName* const kPrimaryToolbarGuide = @"kPrimaryToolbarGuide";
 GuideName* const kSecondaryToolbarGuide = @"kSecondaryToolbarGuide";
-GuideName* const kOmniboxGuide = @"kOmniboxGuide";
+GuideName* const kTopOmniboxGuide = @"kTopOmniboxGuide";
 GuideName* const kOmniboxLeadingImageGuide = @"kOmniboxLeadingImageGuide";
 GuideName* const kOmniboxTextFieldGuide = @"kOmniboxTextFieldGuide";
 GuideName* const kBackButtonGuide = @"kBackButtonGuide";
 GuideName* const kForwardButtonGuide = @"kForwardButtonGuide";
-GuideName* const kNewTabButtonGuide = @"kNewTabButtonGuide";
 GuideName* const kTabSwitcherGuide = @"kTabSwitcherGuide";
 GuideName* const kToolsMenuGuide = @"kToolsMenuGuide";
 GuideName* const kVoiceSearchButtonGuide = @"kVoiceSearchButtonGuide";
-GuideName* const kDiscoverFeedHeaderMenuGuide = @"kDiscoverFeedHeaderMenuGuide";
+GuideName* const kFeedIPHNamedGuide = @"kFeedIPHNamedGuide";
+GuideName* const kShareButtonGuide = @"kShareButtonGuide";
 GuideName* const kTabGridBottomToolbarGuide = @"kTabGridBottomToolbarGuide";
+GuideName* const kTabGridPageControlGuide = @"kTabGridPageControlGuide";
+GuideName* const kTabGridPageControlIncognitoGuide =
+    @"kTabGridPageControlIncognitoGuide";
+GuideName* const kTabGridPageControlTabGroupsGuide =
+    @"kTabGridPageControlTabGroupsGuide";
 GuideName* const kAutofillFirstSuggestionGuide =
     @"kAutofillFirstSuggestionGuide";
+GuideName* const kLensKeyboardButtonGuide = @"kLensKeyboardButtonGuide";
+GuideName* const kMagicStackGuide = @"kMagicStackGuide";
+GuideName* const kContextualPanelLargeEntrypointGuide =
+    @"kContextualPanelLargeEntrypointGuide";
+GuideName* const kNTPAIMButtonGuide = @"kNTPAIMButtonGuide";
+GuideName* const kFakeboxLensIconGuide = @"kFakeboxLensIconGuide";
+GuideName* const kLensOverlayEntrypointGuide = @"kLensOverlayEntrypointGuide";
+GuideName* const kPageActionMenuEntrypointGuide =
+    @"kPageActionMenuEntrypointGuide";
+GuideName* const kReaderModeOptionsEntrypointGuide =
+    @"kReaderModeOptionsEntrypointGuide";
+GuideName* const kNTPIdentityDiscButtonGuide = @"kNTPIdentityDiscButtonGuide";
+GuideName* const kNTPFirstMostVisitedTileGuide =
+    @"kNTPFirstMostVisitedTileGuide";
+GuideName* const kSelectedRegularCellGuide = @"kSelectedRegularCellGuide";
+GuideName* const kLocationBarBadgeLargeEntrypointGuide =
+    @"kLocationBarBadgeLargeEntrypointGuide";
+GuideName* const kInputAccessoryViewLayoutGuide =
+    @"kInputAccessoryViewLayoutGuide";
+GuideName* const kAppBarGuide = @"kAppBarGuide";
+GuideName* const kAppBarAssistantButtonGuide = @"kAppBarAssistantButtonGuide";

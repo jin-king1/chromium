@@ -22,41 +22,37 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 
-#include "base/mac/bridging.h"
+#include "base/apple/bridging.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
-namespace WTF {
+namespace blink {
 
 String::String(NSString* str) {
   if (!str) {
     return;
   }
 
-  CFStringRef cf_str = base::mac::NSToCFPtrCast(str);
+  CFStringRef cf_str = base::apple::NSToCFPtrCast(str);
 
   CFIndex size = CFStringGetLength(cf_str);
   if (size == 0) {
     impl_ = StringImpl::empty_;
   } else {
-    Vector<LChar, 1024> lchar_buffer(size);
+    Vector<LChar, 1024> lchar_buffer(base::checked_cast<wtf_size_t>(size));
     CFIndex used_buf_len;
     CFIndex converted_size = CFStringGetBytes(
         cf_str, CFRangeMake(0, size), kCFStringEncodingISOLatin1,
         /*lossByte=*/0, /*isExternalRepresentation=*/false, lchar_buffer.data(),
         size, &used_buf_len);
     if ((converted_size == size) && (used_buf_len == size)) {
-      impl_ = StringImpl::Create(lchar_buffer.data(), size);
+      impl_ = StringImpl::Create(lchar_buffer);
       return;
     }
 
-    Vector<UChar, 1024> uchar_buffer(size);
+    Vector<UChar, 1024> uchar_buffer(base::checked_cast<wtf_size_t>(size));
     CFStringGetCharacters(cf_str, CFRangeMake(0, size),
                           reinterpret_cast<UniChar*>(uchar_buffer.data()));
-    impl_ = StringImpl::Create(uchar_buffer.data(), size);
+    impl_ = StringImpl::Create(uchar_buffer);
   }
 }
 
-}  // namespace WTF
+}  // namespace blink

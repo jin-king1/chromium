@@ -7,13 +7,25 @@ See http://dev.chromium.org/developers/how-tos/depottools/presubmit-scripts
 for more details on the presubmit API built into depot_tools.
 """
 
-USE_PYTHON3 = True
-
 
 def _CommonChecks(input_api, output_api):
   results = []
+  disabled_warnings = [
+      'anomalous-backslash-in-string',
+      'bad-indentation',
+      'consider-using-with',
+      'missing-module-docstring',
+      'possibly-used-before-assignment',
+      'superfluous-parens',
+      'unspecified-encoding',
+      'unused-import',
+      'use-dict-literal',
+  ]
   results.extend(
-      input_api.canned_checks.RunPylint(input_api, output_api, version='2.6'))
+      input_api.canned_checks.RunPylint(input_api,
+                                        output_api,
+                                        disabled_warnings=disabled_warnings,
+                                        version='3.2'))
 
   commands = []
   commands.extend(
@@ -22,10 +34,7 @@ def _CommonChecks(input_api, output_api):
           output_api,
           input_api.os_path.join(input_api.PresubmitLocalPath()),
           files_to_check=[r'.+_test\.py$'],
-          files_to_skip=['integration_test.py'],
-          run_on_python2=False,
-          run_on_python3=True,
-          skip_shebang_check=True))
+          files_to_skip=['integration_test.py']))
 
   # integration_test.py uses subcommands, so we can't use the standard unit test
   # presubmit API to run it.
@@ -35,7 +44,6 @@ def _CommonChecks(input_api, output_api):
           cmd=['integration_test.py', 'run'],
           kwargs={},
           message=output_api.PresubmitError,
-          python3=True,
       ))
 
   results.extend(input_api.RunTests(commands))

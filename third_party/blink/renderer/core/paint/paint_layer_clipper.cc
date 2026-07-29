@@ -47,8 +47,9 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_view.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
+#include "third_party/blink/renderer/core/html/html_element.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/layout_view.h"
-#include "third_party/blink/renderer/core/paint/clip_rects.h"
 #include "third_party/blink/renderer/core/paint/compositing/compositing_reason_finder.h"
 #include "third_party/blink/renderer/core/paint/object_paint_properties.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
@@ -56,6 +57,23 @@
 #include "third_party/blink/renderer/platform/graphics/paint/geometry_mapper.h"
 
 namespace blink {
+
+static HTMLElement* FindActiveUnboundedAncestor(const PaintLayer& layer) {
+  if (!RuntimeEnabledFeatures::UnboundedElementEnabled()) {
+    return nullptr;
+  }
+  if (!layer.GetLayoutObject().IsInclusiveDescendantOfUnboundedElement()) {
+    return nullptr;
+  }
+  for (const PaintLayer* curr = &layer; curr; curr = curr->Parent()) {
+    auto* element = DynamicTo<Element>(curr->GetLayoutObject().GetNode());
+    if (auto* html_element = DynamicTo<HTMLElement>(element);
+        html_element && html_element->IsUnboundedElementActive()) {
+      return html_element;
+    }
+  }
+  NOTREACHED();
+}
 
 static bool HasNonVisibleOverflow(const PaintLayer& layer) {
   if (const auto* box = layer.GetLayoutBox())
@@ -99,11 +117,10 @@ void PaintLayerClipper::CalculateRects(const ClipRectsContext& context,
   foreground_rect.Reset();
 
   if (ShouldClipOverflowAlongEitherAxis(context)) {
-    LayoutBoxModelObject& layout_object = layer_->GetLayoutObject();
+    auto& layout_object = To<LayoutBox>(layer_->GetLayoutObject());
     foreground_rect =
-        To<LayoutBox>(layout_object)
-            .OverflowClipRect(layer_offset,
-                              context.overlay_scrollbar_clip_behavior);
+        layout_object.OverflowClipRect(context.overlay_scrollbar_clip_behavior);
+    foreground_rect.Move(layer_offset);
     if (layout_object.StyleRef().HasBorderRadius())
       foreground_rect.SetHasRadius(true);
     foreground_rect.Intersect(background_rect);
@@ -132,6 +149,17 @@ void PaintLayerClipper::CalculateBackgroundClipRectInternal(
   } else {
     destination_property_tree_state.SetClip(
         context.root_fragment->ContentsClip());
+  }
+
+  if (auto* unbounded_ancestor = FindActiveUnboundedAncestor(*layer_)) {
+    // For unbounded elements, we calculate the background clip rect relative to
+    // the active unbounded ancestor's state, so these elements escape ancestor
+    // clips.
+    DCHECK(RuntimeEnabledFeatures::UnboundedElementEnabled());
+    const auto& unbounded_fragment =
+        unbounded_ancestor->GetLayoutObject()->FirstFragment();
+    destination_property_tree_state.SetClip(
+        unbounded_fragment.LocalBorderBoxProperties().Clip());
   }
 
   // The background rect applies all clips *above* m_layer, but not the overflow
@@ -187,9 +215,8 @@ PhysicalRect PaintLayerClipper::LocalVisualRect(
   // clipping rect may be larger than its box rect (crbug.com/492871).
   bool affected_by_url_bar = layout_object.IsGlobalRootScroller();
   PhysicalRect layer_bounds_with_visual_overflow =
-      affected_by_url_bar
-          ? layout_object.View()->ViewRect()
-          : To<LayoutBox>(layout_object).PhysicalVisualOverflowRect();
+      affected_by_url_bar ? layout_object.View()->ViewRect()
+                          : To<LayoutBox>(layout_object).VisualOverflowRect();
   return layer_bounds_with_visual_overflow;
 }
 

@@ -4,68 +4,167 @@
 
 #include "services/network/shared_dictionary/shared_dictionary_storage_in_memory.h"
 
+#include <list>
+#include <map>
+
+#include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/strings/pattern.h"
 #include "base/strings/string_util.h"
+#include "components/url_pattern/simple_url_pattern_matcher.h"
 #include "net/base/io_buffer.h"
 #include "services/network/shared_dictionary/shared_dictionary_in_memory.h"
+#include "services/network/shared_dictionary/shared_dictionary_manager_in_memory.h"
 #include "services/network/shared_dictionary/shared_dictionary_writer_in_memory.h"
 #include "url/scheme_host_port.h"
 
 namespace network {
 
 SharedDictionaryStorageInMemory::SharedDictionaryStorageInMemory(
+    base::WeakPtr<SharedDictionaryManagerInMemory> manager,
+    const net::SharedDictionaryIsolationKey& isolation_key,
     base::ScopedClosureRunner on_deleted_closure_runner)
-    : on_deleted_closure_runner_(std::move(on_deleted_closure_runner)) {}
+    : manager_(manager),
+      isolation_key_(isolation_key),
+      on_deleted_closure_runner_(std::move(on_deleted_closure_runner)) {}
 
 SharedDictionaryStorageInMemory::~SharedDictionaryStorageInMemory() = default;
 
-std::unique_ptr<SharedDictionary>
-SharedDictionaryStorageInMemory::GetDictionary(const GURL& url) {
-  auto it = dictionary_info_map_.find(url::SchemeHostPort(url));
-  if (it == dictionary_info_map_.end()) {
-    return nullptr;
-  }
-  const DictionaryInfo* info = nullptr;
-  size_t mached_path_size = 0;
-  // TODO(crbug.com/1413922): If there are multiple matching dictionaries, this
-  // method currently returns the dictionary with the longest path pattern. But
-  // we should have a detailed description about `best-matching` in the spec.
-  for (const auto& item : it->second) {
-    // TODO(crbug.com/1413922): base::MatchPattern() is treating '?' in the
-    // pattern as an wildcard. We need to introduce a new flag in
-    // base::MatchPattern() to treat '?' as a normal character.
-    // TODO(crbug.com/1413922): Need to check the expiration of the dictionary.
-    // TODO(crbug.com/1413922): Need support path expansion for relative paths.
-    if ((item.first.size() > mached_path_size) &&
-        base::MatchPattern(url.path(), item.first)) {
-      mached_path_size = item.first.size();
-      info = &item.second;
-    }
+const net::SharedDictionaryIsolationKey&
+SharedDictionaryStorageInMemory::isolation_key() const {
+  return isolation_key_;
+}
+
+scoped_refptr<net::SharedDictionary>
+SharedDictionaryStorageInMemory::GetDictionarySync(
+    const GURL& url,
+    mojom::RequestDestination destination) {
+  std::list<DictionaryInfo*> expired_entries;
+  DictionaryInfo* info = GetMatchingDictionaryFromDictionaryInfoMap(
+      dictionary_info_map_, url, destination, expired_entries);
+
+  for (DictionaryInfo* expired_entry : expired_entries) {
+    DeleteDictionary(url::SchemeHostPort(expired_entry->url()),
+                     expired_entry->match(), expired_entry->match_dest());
   }
 
   if (!info) {
     return nullptr;
   }
-  return std::make_unique<SharedDictionaryInMemory>(info->data(), info->size(),
-                                                    info->hash());
+
+  info->set_last_used_time(base::Time::Now());
+  return info->dictionary();
 }
 
-scoped_refptr<SharedDictionaryWriter>
-SharedDictionaryStorageInMemory::CreateWriter(const GURL& url,
-                                              base::Time response_time,
-                                              base::TimeDelta expiration,
-                                              const std::string& match) {
+void SharedDictionaryStorageInMemory::GetDictionary(
+    const GURL& url,
+    mojom::RequestDestination destination,
+    base::OnceCallback<void(scoped_refptr<net::SharedDictionary>)> callback) {
+  std::move(callback).Run(GetDictionarySync(url, destination));
+}
+
+void SharedDictionaryStorageInMemory::DeleteDictionary(
+    const url::SchemeHostPort& host,
+    const std::string& match,
+    const std::set<mojom::RequestDestination>& match_dest) {
+  auto it = dictionary_info_map_.find(host);
+  if (it != dictionary_info_map_.end()) {
+    it->second.erase(std::make_tuple(match, match_dest));
+    if (it->second.empty()) {
+      dictionary_info_map_.erase(it);
+    }
+  }
+}
+
+void SharedDictionaryStorageInMemory::ClearData(
+    base::Time start_time,
+    base::Time end_time,
+    base::RepeatingCallback<bool(const GURL&)> url_matcher) {
+  for (auto& it : dictionary_info_map_) {
+    std::erase_if(it.second, [start_time, end_time, url_matcher](auto& it2) {
+      const DictionaryInfo& dict = it2.second;
+      return (dict.response_time() >= start_time) &&
+             (dict.response_time() < end_time) &&
+             (!url_matcher || url_matcher.Run(dict.url().GetWithEmptyPath()));
+    });
+  }
+  std::erase_if(dictionary_info_map_,
+                [](auto& it) { return it.second.empty(); });
+}
+
+void SharedDictionaryStorageInMemory::ClearAllDictionaries() {
+  dictionary_info_map_.clear();
+}
+
+bool SharedDictionaryStorageInMemory::HasDictionaryBetween(
+    base::Time start_time,
+    base::Time end_time) {
+  for (const auto& [scheme_host_port, info_map] : dictionary_info_map_) {
+    std::ignore = scheme_host_port;
+    for (const auto& [match, dict] : info_map) {
+      std::ignore = match;
+      if ((dict.response_time() >= start_time) &&
+          (dict.response_time() < end_time)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+base::expected<scoped_refptr<SharedDictionaryWriter>,
+               mojom::SharedDictionaryError>
+SharedDictionaryStorageInMemory::CreateWriter(
+    const GURL& url,
+    base::Time last_fetch_time,
+    base::Time response_time,
+    base::TimeDelta expiration,
+    const std::string& match,
+    const std::set<mojom::RequestDestination>& match_dest,
+    const std::string& id,
+    std::unique_ptr<url_pattern::SimpleUrlPatternMatcher> matcher) {
+  CHECK(matcher);
   return base::MakeRefCounted<SharedDictionaryWriterInMemory>(base::BindOnce(
       &SharedDictionaryStorageInMemory::OnDictionaryWritten,
-      weak_factory_.GetWeakPtr(), url, response_time, expiration, match));
+      weak_factory_.GetWeakPtr(), url, last_fetch_time, response_time,
+      expiration, match, std::move(matcher), match_dest, id));
 }
 
-void SharedDictionaryStorageInMemory::OnDictionaryWritten(
+bool SharedDictionaryStorageInMemory::UpdateLastFetchTimeIfAlreadyRegistered(
     const GURL& url,
     base::Time response_time,
     base::TimeDelta expiration,
     const std::string& match,
+    const std::set<mojom::RequestDestination>& match_dest,
+    const std::string& id,
+    const std::optional<base::TimeDelta>& ttl,
+    base::Time last_fetch_time) {
+  DictionaryInfo* matched_info = FindRegisteredInDictionaryInfoMap(
+      dictionary_info_map_, url, response_time, expiration, match, match_dest,
+      id, ttl);
+  if (matched_info) {
+    if (ttl) {
+      // If there is an explicit ttl, it is relative to the last time the
+      // resource was fetched so we reset the base time of the response to
+      // be the last fetch.
+      matched_info->set_response_time(last_fetch_time);
+    }
+    matched_info->set_last_fetch_time(last_fetch_time);
+    return true;
+  }
+  return false;
+}
+
+void SharedDictionaryStorageInMemory::OnDictionaryWritten(
+    const GURL& url,
+    base::Time last_fetch_time,
+    base::Time response_time,
+    base::TimeDelta expiration,
+    const std::string& match,
+    std::unique_ptr<url_pattern::SimpleUrlPatternMatcher> matcher,
+    const std::set<mojom::RequestDestination>& match_dest,
+    const std::string& id,
     SharedDictionaryWriterInMemory::Result result,
     scoped_refptr<net::IOBuffer> data,
     size_t size,
@@ -73,26 +172,43 @@ void SharedDictionaryStorageInMemory::OnDictionaryWritten(
   if (result != SharedDictionaryWriterInMemory::Result::kSuccess) {
     return;
   }
-  dictionary_info_map_[url::SchemeHostPort(url)].insert(std::make_pair(
-      match,
-      DictionaryInfo(url, response_time, expiration, match, data, size, hash)));
+  dictionary_info_map_[url::SchemeHostPort(url)].insert_or_assign(
+      std::make_tuple(match, match_dest),
+      DictionaryInfo(url, last_fetch_time, response_time, expiration, match,
+                     match_dest, id,
+                     /*last_used_time=*/base::Time::Now(), data, size, hash,
+                     std::move(matcher)));
+  if (manager_) {
+    manager_->MaybeRunCacheEvictionPerSite(isolation_key_.top_frame_site());
+    manager_->MaybeRunCacheEviction();
+  }
 }
 
 SharedDictionaryStorageInMemory::DictionaryInfo::DictionaryInfo(
     const GURL& url,
+    base::Time last_fetch_time,
     base::Time response_time,
     base::TimeDelta expiration,
     const std::string& match,
+    std::set<mojom::RequestDestination> match_dest,
+    const std::string& id,
+    base::Time last_used_time,
     scoped_refptr<net::IOBuffer> data,
     size_t size,
-    const net::SHA256HashValue& hash)
+    const net::SHA256HashValue& hash,
+    std::unique_ptr<url_pattern::SimpleUrlPatternMatcher> matcher)
     : url_(url),
+      last_fetch_time_(last_fetch_time),
       response_time_(response_time),
       expiration_(expiration),
       match_(match),
-      data_(std::move(data)),
-      size_(size),
-      hash_(hash) {}
+      match_dest_(std::move(match_dest)),
+      last_used_time_(last_used_time),
+      matcher_(std::move(matcher)),
+      dictionary_(base::MakeRefCounted<SharedDictionaryInMemory>(data,
+                                                                 size,
+                                                                 hash,
+                                                                 id)) {}
 
 SharedDictionaryStorageInMemory::DictionaryInfo::DictionaryInfo(
     DictionaryInfo&& other) = default;

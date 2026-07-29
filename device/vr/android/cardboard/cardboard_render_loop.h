@@ -6,19 +6,19 @@
 #define DEVICE_VR_ANDROID_CARDBOARD_CARDBOARD_RENDER_LOOP_H_
 
 #include <memory>
+
 #include "base/android/java_handler_thread.h"
 #include "base/memory/scoped_refptr.h"
+#include "device/vr/android/cardboard/scoped_cardboard_objects.h"
 #include "device/vr/android/mailbox_to_surface_bridge.h"
 #include "device/vr/android/web_xr_presentation_state.h"
 #include "device/vr/public/mojom/isolated_xr_service.mojom.h"
 #include "device/vr/public/mojom/vr_service.mojom.h"
 #include "gpu/ipc/common/surface_handle.h"
-#include "mojo/public/cpp/bindings/associated_receiver.h"
-#include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "ui/display/display.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace gl {
 class GLSurface;
@@ -30,11 +30,13 @@ namespace device {
 class CardboardImageTransport;
 class CardboardImageTransportFactory;
 class CardboardSdk;
-class XrJavaCoordinator;
 
 using CardboardRequestSessionCallback =
     base::OnceCallback<void(mojom::XRRuntimeSessionResultPtr)>;
 
+// CardboardRenderLoop implements the Android Cardboard WebXR render loop.
+// It runs on a dedicated GL/render thread (JavaHandlerThread) to safely
+// perform EGL and Cardboard SDK operations.
 class CardboardRenderLoop : public base::android::JavaHandlerThread,
                             public device::mojom::XRFrameDataProvider,
                             public device::mojom::XRSessionController,
@@ -50,7 +52,6 @@ class CardboardRenderLoop : public base::android::JavaHandlerThread,
 
   void CreateSession(CardboardRequestSessionCallback session_request_callback,
                      base::OnceClosure session_shutdown_callback,
-                     XrJavaCoordinator* java_coordinator,
                      CardboardSdk* cardboard_sdk,
                      gfx::AcceleratedWidget drawing_widget,
                      const gfx::Size& frame_size,
@@ -60,9 +61,6 @@ class CardboardRenderLoop : public base::android::JavaHandlerThread,
   // mojom::XRFrameDataProvider
   void GetFrameData(mojom::XRFrameDataRequestOptionsPtr options,
                     GetFrameDataCallback callback) override;
-  void SetInputSourceButtonListener(
-      mojo::PendingAssociatedRemote<device::mojom::XRInputSourceButtonListener>
-          input_listener_remote) override;
 
   void GetEnvironmentIntegrationProvider(
       mojo::PendingAssociatedReceiver<
@@ -74,16 +72,22 @@ class CardboardRenderLoop : public base::android::JavaHandlerThread,
                          const gfx::RectF& left_bounds,
                          const gfx::RectF& right_bounds,
                          const gfx::Size& source_size) override;
-  void SubmitFrameMissing(int16_t frame_index, const gpu::SyncToken&) override;
+  void SubmitFrameMissing(
+      int16_t frame_index,
+      gpu::SharedImageExportResult camera_image_multi_result) override;
   void SubmitFrame(int16_t frame_index,
-                   const gpu::MailboxHolder& mailbox,
                    base::TimeDelta time_waited) override;
-  void SubmitFrameDrawnIntoTexture(int16_t frame_index,
-                                   const gpu::SyncToken&,
-                                   base::TimeDelta time_waited) override;
+  void SubmitFrameDrawnIntoTexture(
+      int16_t frame_index,
+      std::vector<device::mojom::XRLayerUpdatePtr> layer_updates,
+      gpu::SharedImageExportResult camera_export_multi_result,
+      base::TimeDelta time_waited) override;
 
   // mojom::XRSessionController
   void SetFrameDataRestricted(bool restricted) override;
+
+  void OnTriggerEvent(bool pressed);
+  device::mojom::XRInputSourceStatePtr GetInputSourceState();
 
   base::WeakPtr<CardboardRenderLoop> GetWeakPtr() {
     return weak_ptr_factory_.GetWeakPtr();
@@ -103,9 +107,8 @@ class CardboardRenderLoop : public base::android::JavaHandlerThread,
 
   bool IsSubmitFrameExpected(int16_t frame_index);
 
-  void ProcessFrameFromMailbox(int16_t frame_index,
-                               const gpu::MailboxHolder& mailbox);
-  void ProcessFrameDrawnIntoTexture(const gpu::SyncToken& sync_token);
+  void ProcessFrameDrawnIntoTexture(
+      gpu::SharedImageExportResult shared_image_export_result);
   void OnWebXrTokenSignaled(std::unique_ptr<gfx::GpuFence> gpu_fence);
 
   void TransitionProcessingFrameToRendering();
@@ -134,6 +137,10 @@ class CardboardRenderLoop : public base::android::JavaHandlerThread,
   gfx::RectF left_bounds_;
   gfx::RectF right_bounds_;
 
+  // Input Parameters
+  bool trigger_pressed_ = false;
+  bool trigger_clicked_ = false;
+
   // Owned by our parent (cardboard_device)
   raw_ptr<CardboardSdk> cardboard_sdk_;
 
@@ -153,6 +160,8 @@ class CardboardRenderLoop : public base::android::JavaHandlerThread,
   bool pending_shutdown_ = false;
   bool restrict_frame_data_ = false;
   bool is_paused_ = false;
+
+  internal::ScopedCardboardObject<CardboardHeadTracker*> head_tracker_;
 
   // This closure saves arguments for the next GetFrameData call, including a
   // mojo callback. Must remain owned by CardboardRenderLoop, don't pass it off

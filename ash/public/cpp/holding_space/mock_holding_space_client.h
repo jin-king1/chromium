@@ -37,7 +37,6 @@ class MockHoldingSpaceClient : public HoldingSpaceClient {
               (const, override));
   MOCK_METHOD(bool, IsDriveDisabled, (), (const, override));
   MOCK_METHOD(void, OpenDownloads, (SuccessCallback callback), (override));
-  MOCK_METHOD(void, OpenMyFiles, (SuccessCallback callback), (override));
   MOCK_METHOD(void,
               OpenItems,
               (const std::vector<const HoldingSpaceItem*>& items,
@@ -47,8 +46,9 @@ class MockHoldingSpaceClient : public HoldingSpaceClient {
               PinFiles,
               (const std::vector<base::FilePath>& file_paths),
               (override));
+  MOCK_METHOD(void, RefreshSuggestions, (), (override));
   MOCK_METHOD(void,
-              RemoveFileSuggestions,
+              RemoveSuggestions,
               (const std::vector<base::FilePath>& absolute_file_paths),
               (override));
   MOCK_METHOD(void,
@@ -57,7 +57,8 @@ class MockHoldingSpaceClient : public HoldingSpaceClient {
               (override));
   MOCK_METHOD(void,
               ShowItemInFolder,
-              (const HoldingSpaceItem& item, SuccessCallback callback),
+              (const HoldingSpaceItem& item,
+               SuccessCallback callback),
               (override));
   MOCK_METHOD(void,
               UnpinItems,

@@ -31,9 +31,9 @@ class NearbyInternalsPrefsHandler : public content::WebUIMessageHandler {
  private:
   // Message handler callback that clears Nearby prefs in order to put the user
   // back into a state of before they have touched the feature.
-  void HandleClearNearbyPrefs(const base::Value::List& args);
+  void HandleClearNearbyPrefs(const base::ListValue& args);
 
-  raw_ptr<PrefService, ExperimentalAsh> pref_service_ = nullptr;
+  raw_ptr<PrefService> pref_service_ = nullptr;
 
   base::WeakPtrFactory<NearbyInternalsPrefsHandler> weak_ptr_factory_{this};
 };

@@ -14,8 +14,9 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/task/sequenced_task_runner.h"
-#include "components/safe_browsing/core/browser/db/v4_database.h"
+#include "components/safe_browsing/core/browser/db/sb_database.h"
 #include "components/safe_browsing/core/browser/db/v4_get_hash_protocol_manager.h"
+#include "components/safe_browsing/core/browser/db/v4_store.h"
 
 namespace safe_browsing {
 
@@ -29,7 +30,10 @@ std::ostream& operator<<(std::ostream& os, const ThreatMetadata& meta);
 class TestV4Store : public V4Store {
  public:
   TestV4Store(const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-              const base::FilePath& store_path);
+              const base::FilePath& store_path,
+              PrefixSize v5_prefix_size,
+              bool is_eligible_for_migration,
+              bool is_extensions_blocklist);
   ~TestV4Store() override;
 
   bool HasValidData() override;
@@ -38,6 +42,8 @@ class TestV4Store : public V4Store {
 
   // |prefixes| does not need to be sorted.
   void SetPrefixes(std::vector<HashPrefixStr> prefixes, PrefixSize size);
+
+  HashPrefixStr GetMatchingHashPrefix(const FullHashStr& full_hash) override;
 
  private:
   // Holds mock prefixes from calls to MarkPrefixAsBad / SetPrefixes. Stored as
@@ -50,39 +56,44 @@ class TestV4StoreFactory : public V4StoreFactory {
   TestV4StoreFactory();
   ~TestV4StoreFactory() override;
 
-  std::unique_ptr<V4Store> CreateV4Store(
+  V4StorePtr CreateV4Store(
       const scoped_refptr<base::SequencedTaskRunner>& task_runner,
-      const base::FilePath& store_path) override;
+      const base::FilePath& store_path,
+      PrefixSize v5_prefix_size,
+      bool is_eligible_for_migration,
+      bool is_extensions_blocklist) override;
 };
 
-class TestV4Database : public V4Database {
+class TestSBDatabase : public SBDatabase {
  public:
-  TestV4Database(const scoped_refptr<base::SequencedTaskRunner>& db_task_runner,
+  TestSBDatabase(const scoped_refptr<base::SequencedTaskRunner>& db_task_runner,
                  std::unique_ptr<StoreMap> store_map);
 
   void MarkPrefixAsBad(ListIdentifier list_id, HashPrefixStr prefix);
 
-  // V4Database implementation
+  // SBDatabase implementation
   int64_t GetStoreSizeInBytes(const ListIdentifier& store) const override;
 };
 
-class TestV4DatabaseFactory : public V4DatabaseFactory {
+class TestSBDatabaseFactory : public SBDatabaseFactory {
  public:
-  TestV4DatabaseFactory();
-  ~TestV4DatabaseFactory() override;
+  TestSBDatabaseFactory();
+  ~TestSBDatabaseFactory() override;
 
-  std::unique_ptr<V4Database, base::OnTaskRunnerDeleter> Create(
+  std::unique_ptr<SBDatabase, base::OnTaskRunnerDeleter> Create(
       const scoped_refptr<base::SequencedTaskRunner>& db_task_runner,
       std::unique_ptr<StoreMap> store_map) override;
 
   void MarkPrefixAsBad(ListIdentifier list_id, HashPrefixStr prefix);
 
+  bool IsReady();
+
  private:
-  // Owned by V4LocalDatabaseManager. The following usage is expected: each
+  // Owned by SBLocalDatabaseManager. The following usage is expected: each
   // test in the test fixture instantiates a new SafebrowsingService instance,
-  // which instantiates a new V4LocalDatabaseManager, which instantiates a new
-  // V4Database using this method so use-after-free isn't possible.
-  raw_ptr<TestV4Database, DanglingUntriaged> v4_db_ = nullptr;
+  // which instantiates a new SBLocalDatabaseManager, which instantiates a new
+  // SBDatabase using this method so use-after-free isn't possible.
+  raw_ptr<TestSBDatabase, AcrossTasksDanglingUntriaged> sb_db_ = nullptr;
 };
 
 class TestV4GetHashProtocolManager : public V4GetHashProtocolManager {
@@ -110,7 +121,8 @@ class TestV4GetHashProtocolManagerFactory
 
  private:
   // Owned by the SafeBrowsingService.
-  raw_ptr<TestV4GetHashProtocolManager, DanglingUntriaged> pm_ = nullptr;
+  raw_ptr<TestV4GetHashProtocolManager, AcrossTasksDanglingUntriaged> pm_ =
+      nullptr;
 };
 
 struct TestV4HashResponseInfo {

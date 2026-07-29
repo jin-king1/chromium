@@ -17,7 +17,6 @@ import sys
 import base64
 import mimetypes
 
-from grit import lazy_re
 from grit import util
 from grit.format import minifier
 
@@ -32,30 +31,34 @@ mimetypes.add_type('image/svg+xml', '.svg')
 # webm video type is not always available if mimetype package is outdated.
 mimetypes.add_type('video/webm', '.webm')
 
+# webp image type is not always available if mimetype package is outdated.
+# Requires python 3.11 or higher ( https://bugs.python.org/issue38902 )
+mimetypes.add_type('image/webp', '.webp')
+
 DIST_DEFAULT = 'chromium'
 DIST_ENV_VAR = 'CHROMIUM_BUILD'
 DIST_SUBSTR = '%DISTRIBUTION%'
 
 # Matches beginning of an "if" block.
-_BEGIN_IF_BLOCK = lazy_re.compile(
+_BEGIN_IF_BLOCK = re.compile(
     r'<if [^>]*?expr=("(?P<expr1>[^">]*)"|\'(?P<expr2>[^\'>]*)\')[^>]*?>')
 
 # Matches ending of an "if" block.
-_END_IF_BLOCK = lazy_re.compile(r'</if>')
+_END_IF_BLOCK = re.compile(r'</if>')
 
 # Used by DoInline to replace various links with inline content.
-_STYLESHEET_RE = lazy_re.compile(
+_STYLESHEET_RE = re.compile(
     r'<link rel="stylesheet"[^>]+?href="(?P<filename>[^"]*)".*?>(\s*</link>)?',
     re.DOTALL)
-_INCLUDE_RE = lazy_re.compile(
+_INCLUDE_RE = re.compile(
     r'(?P<comment>\/\/ )?<include[^>]+?'
     r'src=("(?P<file1>[^">]*)"|\'(?P<file2>[^\'>]*)\').*?>(\s*</include>)?',
     re.DOTALL)
-_SRC_RE = lazy_re.compile(
+_SRC_RE = re.compile(
     r'<(?!script)(?:[^>]+?\s)src="(?!\[\[|{{)(?P<filename>[^"\']*)"',
     re.MULTILINE)
 # This re matches '<img srcset="..."' or '<source srcset="..."'
-_SRCSET_RE = lazy_re.compile(
+_SRCSET_RE = re.compile(
     r'<(img|source)\b(?:[^>]*?\s)srcset="(?!\[\[|{{|\$i18n{)'
     r'(?P<srcset>[^"\']*)"',
     re.MULTILINE)
@@ -68,12 +71,12 @@ _SRCSET_RE = lazy_re.compile(
 #   letter 'w'". As a reasonable compromise, we match a list of characters
 #   that form both of them.
 # Matches for example "img2.png 2x" or "img9.png 11E-2w".
-_SRCSET_ENTRY_RE = lazy_re.compile(
+_SRCSET_ENTRY_RE = re.compile(
     r'\s*(?P<url>[^,\s]\S+[^,\s])'
     r'(?:\s+(?P<descriptor>[\deE.-]+[wx]))?\s*'
     r'(?P<separator>,|$)',
     re.MULTILINE)
-_ICON_RE = lazy_re.compile(
+_ICON_RE = re.compile(
     r'<link rel="icon"\s(?:[^>]+?\s)?'
     r'href=(?P<quote>")(?P<filename>[^"\']*)\1',
     re.MULTILINE)
@@ -397,6 +400,13 @@ def DoInline(
       return None
 
     filename = filename.replace('%DISTRIBUTION%', distribution)
+
+    if filename.startswith("%ROOT_GEN_DIR%"):
+      # Expand %ROOT_GEN_DIR%  placeholder to allow inlining generated files.
+      filename = filename.replace(
+          '%ROOT_GEN_DIR%', os.path.relpath(os.environ['root_gen_dir'],
+                                            base_path))
+
     if filename_expansion_function:
       filename = filename_expansion_function(filename)
     return os.path.normpath(os.path.join(base_path, filename))
@@ -516,6 +526,15 @@ def DoInline(
                   lambda m: InlineCSSFile(m, '%s', filepath),
                   text)
 
+  if names_only:
+    relpath = os.path.relpath(input_filename, os.getcwd())
+    if relpath.startswith(os.path.join(os.environ['root_gen_dir'], '')):
+      # Don't attempt to read the file when `names_only` is true and the current
+      # file is a generated file, since the file is not guaranteed to exist yet,
+      # for example when invoked from grit_info.py. Inlined generated files are
+      # not supposed to rely on Grit's flattenhtml attribute anyway, therefore
+      # no more dependencies would be discovered anyway, so just return early.
+      return InlinedData(None, inlined_files)
 
   flat_text = util.ReadFile(input_filename, 'utf-8')
 

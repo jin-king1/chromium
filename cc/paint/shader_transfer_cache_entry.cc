@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/notreached.h"
 
 namespace cc {
@@ -28,7 +29,6 @@ bool ServiceShaderTransferCacheEntry::Deserialize(
     base::span<const uint8_t> data) {
   // These entries must be created directly via CreateLocalEntry.
   NOTREACHED();
-  return false;
 }
 
 }  // namespace cc

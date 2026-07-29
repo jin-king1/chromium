@@ -5,35 +5,48 @@
 #include <memory>
 #include <string>
 
+#include "base/strings/strcat.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "build/build_config.h"
+#include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl.h"
+#include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl_test_api.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/views/autofill/payments/dialog_view_ids.h"
 #include "chrome/browser/ui/views/autofill/payments/virtual_card_enroll_bubble_views.h"
-#include "chrome/browser/ui/views/autofill/payments/virtual_card_enroll_icon_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+#include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
+#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "components/autofill/core/browser/autofill_test_utils.h"
 #include "components/autofill/core/browser/metrics/payments/virtual_card_enrollment_metrics.h"
 #include "components/autofill/core/browser/payments/legal_message_line.h"
 #include "components/autofill/core/browser/payments/payments_service_url.h"
 #include "components/autofill/core/browser/payments/test_legal_message_line.h"
 #include "components/autofill/core/browser/payments/virtual_card_enrollment_manager.h"
+#include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
+#include "components/autofill/core/common/autofill_features.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/test/browser_test.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/gfx/image/image_unittest_util.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/throbber.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view_observer.h"
 
 namespace autofill {
-
 namespace {
 
 constexpr int kCardImageWidthInPx = 32;
 constexpr int kCardImageLengthInPx = 20;
+
 }  // namespace
+// The anonymous namespace needs to end here because of `friend`ships between
+// the tests and the production code.
 
 class VirtualCardEnrollBubbleViewsInteractiveUiTest
     : public InProcessBrowserTest {
@@ -56,7 +69,7 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
   }
 
   void CreateVirtualCardEnrollmentFields() {
-    CreditCard credit_card = test::GetFullServerCard();
+    CreditCard credit_card = test::GetCreditCard();
     LegalMessageLines google_legal_message = {
         TestLegalMessageLine("google_test_legal_message")};
     LegalMessageLines issuer_legal_message = {
@@ -90,10 +103,10 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
     base::RunLoop run_loop;
     base::RepeatingClosure bubble_shown_closure_for_testing_ =
         run_loop.QuitClosure();
-    GetController()->SetBubbleShownClosureForTesting(
-        bubble_shown_closure_for_testing_);
+    test_api(*GetController())
+        .SetBubbleShownClosure(bubble_shown_closure_for_testing_);
 
-    GetController()->ShowBubble(
+    GetController()->SetupAndShowBubble(
         virtual_card_enrollment_fields,
         /*accept_virtual_card_callback*/ base::DoNothing(),
         /*decline_virtual_card_callback*/ base::DoNothing());
@@ -102,6 +115,12 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
   void ReshowBubble() { GetController()->ReshowBubble(); }
 
   bool IsIconVisible() { return GetIconView() && GetIconView()->GetVisible(); }
+
+  bool IsLoadingProgressRowVisible() {
+    return GetBubbleViews() &&
+           GetBubbleViews()->GetLoadingProgressRowForTesting() &&
+           GetBubbleViews()->GetLoadingProgressRowForTesting()->GetVisible();
+  }
 
   VirtualCardEnrollBubbleControllerImpl* GetController() {
     if (!browser() || !browser()->tab_strip_model() ||
@@ -115,33 +134,35 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
 
   VirtualCardEnrollBubbleViews* GetBubbleViews() {
     VirtualCardEnrollBubbleControllerImpl* controller = GetController();
-    if (!controller)
+    if (!controller) {
       return nullptr;
+    }
 
     return static_cast<VirtualCardEnrollBubbleViews*>(
-        controller->GetVirtualCardEnrollBubbleView());
+        controller->GetVirtualCardBubbleView());
   }
 
   void ClickLearnMoreLink() { GetBubbleViews()->LearnMoreLinkClicked(); }
 
   void ClickGoogleLegalMessageLink() {
     GetBubbleViews()->GoogleLegalMessageClicked(
-        autofill::payments::GetVirtualCardEnrollmentSupportUrl());
+        payments::GetVirtualCardEnrollmentSupportUrl());
   }
 
   void ClickIssuerLegalMessageLink() {
     GetBubbleViews()->IssuerLegalMessageClicked(
-        autofill::payments::GetVirtualCardEnrollmentSupportUrl());
+        payments::GetVirtualCardEnrollmentSupportUrl());
   }
 
-  VirtualCardEnrollIconView* GetIconView() {
+  IconLabelBubbleView* GetIconView() {
     BrowserView* browser_view =
         BrowserView::GetBrowserViewForBrowser(browser());
-    PageActionIconView* icon =
-        browser_view->toolbar_button_provider()->GetPageActionIconView(
-            PageActionIconType::kVirtualCardEnroll);
+    auto* provider = browser_view->toolbar_button_provider();
+    IconLabelBubbleView* icon = page_actions::GetIconLabelBubbleViewForTesting(
+        provider->GetPageActionViewInterface(kActionVirtualCardEnroll),
+        kActionVirtualCardEnroll);
     DCHECK(icon);
-    return static_cast<VirtualCardEnrollIconView*>(icon);
+    return icon;
   }
 
   const VirtualCardEnrollmentFields&
@@ -205,7 +226,7 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
         break;
       case VirtualCardEnrollmentBubbleResult::
           VIRTUAL_CARD_ENROLLMENT_BUBBLE_RESULT_UNKNOWN:
-        NOTREACHED_NORETURN();
+        NOTREACHED();
     }
 
     views::test::WidgetDestroyedWaiter destroyed_waiter(
@@ -220,8 +241,9 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
 
     destroyed_waiter.Wait();
     histogram_tester.ExpectBucketCount(
-        "Autofill.VirtualCardEnrollBubble.Result." +
-            VirtualCardEnrollmentSourceToMetricSuffix(source) + ".FirstShow",
+        base::StrCat({"Autofill.VirtualCardEnrollBubble.Result.",
+                      VirtualCardEnrollmentSourceToMetricSuffix(source),
+                      ".FirstShow"}),
         expected_result, 1);
   }
 
@@ -244,32 +266,127 @@ class VirtualCardEnrollBubbleViewsInteractiveUiTest
           .AsImageSkia();
 };
 
+struct VirtualCardEnrollBubbleViewsInteractiveUiTestParams {
+  VirtualCardEnrollmentSource enrollment_source;
+  bool show_bubbles_based_on_priorities;
+  bool is_wallet_branding_enabled;
+};
+
 class VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized
     : public VirtualCardEnrollBubbleViewsInteractiveUiTest,
-      public testing::WithParamInterface<VirtualCardEnrollmentSource> {
+      public testing::WithParamInterface<
+          VirtualCardEnrollBubbleViewsInteractiveUiTestParams> {
  public:
-  VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized() = default;
+  VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized() {
+    std::vector<base::test::FeatureRefAndParams> enabled_features = {};
+    std::vector<base::test::FeatureRef> disabled_features = {};
+
+    if (GetParam().show_bubbles_based_on_priorities) {
+      enabled_features.push_back(
+          {features::kAutofillShowBubblesBasedOnPriorities, {}});
+    } else {
+      disabled_features.emplace_back(
+          features::kAutofillShowBubblesBasedOnPriorities);
+    }
+
+    enabled_features.push_back({::features::kPageActionsMigration, {}});
+
+    if (GetParam().is_wallet_branding_enabled) {
+      enabled_features.push_back({features::kAutofillEnableWalletBranding, {}});
+    } else {
+      disabled_features.emplace_back(features::kAutofillEnableWalletBranding);
+    }
+
+    feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                disabled_features);
+  }
+
   ~VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized() override =
       default;
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
 };
 
 INSTANTIATE_TEST_SUITE_P(
-    ,
+    All,
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
-    testing::Values(VirtualCardEnrollmentSource::kUpstream,
-                    VirtualCardEnrollmentSource::kDownstream,
-                    VirtualCardEnrollmentSource::kSettingsPage));
+    ::testing::ConvertGenerator(
+        ::testing::Combine(
+            testing::Values(VirtualCardEnrollmentSource::kUpstream,
+                            VirtualCardEnrollmentSource::kDownstream,
+                            VirtualCardEnrollmentSource::kSettingsPage),
+            testing::Bool(),
+            testing::Bool()),
+        [](std::tuple<VirtualCardEnrollmentSource, bool, bool> t) {
+          return VirtualCardEnrollBubbleViewsInteractiveUiTestParams{
+              .enrollment_source = std::get<0>(t),
+              .show_bubbles_based_on_priorities = std::get<1>(t),
+              .is_wallet_branding_enabled = std::get<2>(t),
+          };
+        }),
+    [](const ::testing::TestParamInfo<
+        VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized::ParamType>&
+           info) {
+      std::vector<std::string> test_name;
+
+      switch (info.param.enrollment_source) {
+        case VirtualCardEnrollmentSource::kUpstream:
+          test_name.emplace_back("UpstreamSource");
+          break;
+        case VirtualCardEnrollmentSource::kDownstream:
+          test_name.emplace_back("DownstreamSource");
+          break;
+        case VirtualCardEnrollmentSource::kSettingsPage:
+          test_name.emplace_back("SettingsPage");
+          break;
+        default:
+          NOTREACHED();
+      }
+
+      test_name.emplace_back(info.param.show_bubbles_based_on_priorities
+                                 ? "_BubblePriorityEnabled"
+                                 : "_BubblePriorityDisabled");
+
+      test_name.emplace_back(info.param.is_wallet_branding_enabled
+                                 ? "_WalletBrandingEnabled"
+                                 : "_WalletBrandingDisabled");
+
+      return base::StrCat(test_name);
+    });
 
 IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     ShowBubble) {
-  VirtualCardEnrollmentSource virtual_card_enrollment_source = GetParam();
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
   ShowBubbleAndWaitUntilShown(
       GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
       base::DoNothing());
 
   EXPECT_TRUE(GetBubbleViews());
   EXPECT_TRUE(IsIconVisible());
+}
+
+IN_PROC_BROWSER_TEST_P(
+    VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
+    ShowingLogoIsDependentOnBranding) {
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
+  ShowBubbleAndWaitUntilShown(
+      GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
+      base::DoNothing());
+
+  EXPECT_TRUE(GetBubbleViews());
+  if (GetParam().is_wallet_branding_enabled) {
+    EXPECT_EQ(GetBubbleViews()->GetBubbleFrameView()->title()->GetViewByID(
+                  DialogViewId::BUBBLE_TITLE_ICON),
+              nullptr);
+  } else {
+    EXPECT_NE(GetBubbleViews()->GetBubbleFrameView()->title()->GetViewByID(
+                  DialogViewId::BUBBLE_TITLE_ICON),
+              nullptr);
+  }
 }
 
 IN_PROC_BROWSER_TEST_P(
@@ -278,16 +395,7 @@ IN_PROC_BROWSER_TEST_P(
   TestCloseBubbleForExpectedResultFromSource(
       VirtualCardEnrollmentBubbleResult::
           VIRTUAL_CARD_ENROLLMENT_BUBBLE_LOST_FOCUS,
-      GetParam());
-}
-
-IN_PROC_BROWSER_TEST_P(
-    VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
-    Metrics_BubbleAccepted) {
-  TestCloseBubbleForExpectedResultFromSource(
-      VirtualCardEnrollmentBubbleResult::
-          VIRTUAL_CARD_ENROLLMENT_BUBBLE_ACCEPTED,
-      GetParam());
+      GetParam().enrollment_source);
 }
 
 IN_PROC_BROWSER_TEST_P(
@@ -296,7 +404,7 @@ IN_PROC_BROWSER_TEST_P(
   TestCloseBubbleForExpectedResultFromSource(
       VirtualCardEnrollmentBubbleResult::
           VIRTUAL_CARD_ENROLLMENT_BUBBLE_CANCELLED,
-      GetParam());
+      GetParam().enrollment_source);
 }
 
 IN_PROC_BROWSER_TEST_P(
@@ -304,7 +412,7 @@ IN_PROC_BROWSER_TEST_P(
     Metrics_BubbleClosed) {
   TestCloseBubbleForExpectedResultFromSource(
       VirtualCardEnrollmentBubbleResult::VIRTUAL_CARD_ENROLLMENT_BUBBLE_CLOSED,
-      GetParam());
+      GetParam().enrollment_source);
 }
 
 IN_PROC_BROWSER_TEST_P(
@@ -313,14 +421,15 @@ IN_PROC_BROWSER_TEST_P(
   TestCloseBubbleForExpectedResultFromSource(
       VirtualCardEnrollmentBubbleResult::
           VIRTUAL_CARD_ENROLLMENT_BUBBLE_NOT_INTERACTED,
-      GetParam());
+      GetParam().enrollment_source);
 }
 
 IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     ShownAndLostFocusTest_AllSources) {
   base::HistogramTester histogram_tester;
-  VirtualCardEnrollmentSource virtual_card_enrollment_source = GetParam();
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
   ShowBubbleAndWaitUntilShown(
       GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
       base::DoNothing());
@@ -329,9 +438,9 @@ IN_PROC_BROWSER_TEST_P(
   EXPECT_TRUE(IsIconVisible());
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnrollBubble.Shown." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source),
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Shown.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source)}),
       false, 1);
 
   // Simulates deactivation due to clicking the close button.
@@ -340,10 +449,10 @@ IN_PROC_BROWSER_TEST_P(
 
   // Confirms .FirstShow metrics.
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnrollBubble.Result." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source) +
-          ".FirstShow",
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Result.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".FirstShow"}),
       VirtualCardEnrollmentBubbleResult::VIRTUAL_CARD_ENROLLMENT_BUBBLE_CLOSED,
       1);
 
@@ -351,9 +460,9 @@ IN_PROC_BROWSER_TEST_P(
   ReshowBubble();
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnrollBubble.Shown." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source),
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Shown.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source)}),
       true, 1);
 
   // Simulates deactivation due to clicking the close button.
@@ -362,29 +471,30 @@ IN_PROC_BROWSER_TEST_P(
 
   // Confirms .Reshows metrics.
   histogram_tester.ExpectUniqueSample(
-      "Autofill.VirtualCardEnrollBubble.Result." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source) +
-          ".Reshows",
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Result.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".Reshows"}),
       VirtualCardEnrollmentBubbleResult::VIRTUAL_CARD_ENROLLMENT_BUBBLE_CLOSED,
       1);
 
   // Bubble is reshown by the user. Closing a reshown bubble makes the
   // browser inactive for some reason, so we must reactivate it first.
-  browser()->window()->Activate();
+  browser()->GetWindow()->Activate();
   ReshowBubble();
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnrollBubble.Shown." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source),
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Shown.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source)}),
       true, 2);
 }
 
 IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     LearnMoreTest_AllSources) {
-  VirtualCardEnrollmentSource virtual_card_enrollment_source = GetParam();
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
   base::HistogramTester histogram_tester;
   ShowBubbleAndWaitUntilShown(
       GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
@@ -394,17 +504,18 @@ IN_PROC_BROWSER_TEST_P(
   ClickLearnMoreLink();
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnroll.LinkClicked." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source) +
-          ".LearnMoreLink",
+      base::StrCat({"Autofill.VirtualCardEnroll.LinkClicked.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".LearnMoreLink"}),
       true, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     GoogleLegalMessageTest_AllSources) {
-  VirtualCardEnrollmentSource virtual_card_enrollment_source = GetParam();
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
   base::HistogramTester histogram_tester;
   ShowBubbleAndWaitUntilShown(
       GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
@@ -414,17 +525,18 @@ IN_PROC_BROWSER_TEST_P(
   ClickGoogleLegalMessageLink();
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnroll.LinkClicked." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source) +
-          ".GoogleLegalMessageLink",
+      base::StrCat({"Autofill.VirtualCardEnroll.LinkClicked.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".GoogleLegalMessageLink"}),
       true, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     IssuerLegalMessageTest_AllSources) {
-  VirtualCardEnrollmentSource virtual_card_enrollment_source = GetParam();
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
   base::HistogramTester histogram_tester;
   ShowBubbleAndWaitUntilShown(
       GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
@@ -434,16 +546,18 @@ IN_PROC_BROWSER_TEST_P(
   ClickIssuerLegalMessageLink();
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnroll.LinkClicked." +
-          VirtualCardEnrollmentSourceToMetricSuffix(GetParam()) +
-          ".IssuerLegalMessageLink",
+      base::StrCat({"Autofill.VirtualCardEnroll.LinkClicked.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".IssuerLegalMessageLink"}),
       true, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     CardArtAvailableTest_AllSources) {
-  VirtualCardEnrollmentSource virtual_card_enrollment_source = GetParam();
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
   base::HistogramTester histogram_tester;
   ShowBubbleAndWaitUntilShown(
       GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
@@ -452,16 +566,17 @@ IN_PROC_BROWSER_TEST_P(
   ASSERT_TRUE(GetBubbleViews());
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnroll.CardArtImageAvailable." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source),
+      base::StrCat({"Autofill.VirtualCardEnroll.CardArtImageAvailable.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source)}),
       true, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     CardArtNotAvailableTest_AllSources) {
-  VirtualCardEnrollmentSource virtual_card_enrollment_source = GetParam();
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
   base::HistogramTester histogram_tester;
   VirtualCardEnrollmentFields fields =
       GetFieldsForSource(virtual_card_enrollment_source);
@@ -471,16 +586,17 @@ IN_PROC_BROWSER_TEST_P(
   ASSERT_TRUE(GetBubbleViews());
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnroll.CardArtImageAvailable." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source),
+      base::StrCat({"Autofill.VirtualCardEnroll.CardArtImageAvailable.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source)}),
       false, 1);
 }
 
 IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     PreviouslyDeclinedTest_AllSources) {
-  VirtualCardEnrollmentSource virtual_card_enrollment_source = GetParam();
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
   base::HistogramTester histogram_tester;
   VirtualCardEnrollmentFields fields =
       GetFieldsForSource(virtual_card_enrollment_source);
@@ -496,10 +612,10 @@ IN_PROC_BROWSER_TEST_P(
       views::Widget::ClosedReason::kCancelButtonClicked);
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnrollBubble.Result." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source) +
-          ".FirstShow.WithNoPreviousStrike",
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Result.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".FirstShow.WithNoPreviousStrike"}),
       VirtualCardEnrollmentBubbleResult::
           VIRTUAL_CARD_ENROLLMENT_BUBBLE_CANCELLED,
       1);
@@ -515,10 +631,10 @@ IN_PROC_BROWSER_TEST_P(
       views::Widget::ClosedReason::kCancelButtonClicked);
 
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnrollBubble.Result." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source) +
-          ".FirstShow.WithPreviousStrikes",
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Result.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".FirstShow.WithPreviousStrikes"}),
       VirtualCardEnrollmentBubbleResult::
           VIRTUAL_CARD_ENROLLMENT_BUBBLE_CANCELLED,
       1);
@@ -528,7 +644,8 @@ IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     NoLoggingOnLinkClickReshowBubbleTest) {
   base::HistogramTester histogram_tester;
-  VirtualCardEnrollmentSource virtual_card_enrollment_source = GetParam();
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
   ShowBubbleAndWaitUntilShown(
       GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
       base::DoNothing());
@@ -538,19 +655,19 @@ IN_PROC_BROWSER_TEST_P(
 
   // Verify shown metrics: first show
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnrollBubble.Shown." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source),
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Shown.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source)}),
       false, 1);
 
   ClickLearnMoreLink();
 
   // Verify link click metrics: clicked
   histogram_tester.ExpectBucketCount(
-      "Autofill.VirtualCardEnroll.LinkClicked." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source) +
-          ".LearnMoreLink",
+      base::StrCat({"Autofill.VirtualCardEnroll.LinkClicked.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".LearnMoreLink"}),
       true, 1);
 
   // Switch back to the tab containing the bubble
@@ -558,29 +675,70 @@ IN_PROC_BROWSER_TEST_P(
 
   // Verify close metrics: never closed
   histogram_tester.ExpectTotalCount(
-      "Autofill.VirtualCardEnrollBubble.Result." +
-          VirtualCardEnrollmentSourceToMetricSuffix(
-              virtual_card_enrollment_source) +
-          ".FirstShow",
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Result.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".FirstShow"}),
       0);
 
   // Verify show and reshow metrics
-  EXPECT_THAT(
-      histogram_tester.GetAllSamples("Autofill.VirtualCardEnrollBubble.Shown." +
-                                     VirtualCardEnrollmentSourceToMetricSuffix(
-                                         virtual_card_enrollment_source)),
-      BucketsAre(base::Bucket(false, 1), base::Bucket(true, 0)));
+  EXPECT_THAT(histogram_tester.GetAllSamples(
+                  base::StrCat({"Autofill.VirtualCardEnrollBubble.Shown.",
+                                VirtualCardEnrollmentSourceToMetricSuffix(
+                                    virtual_card_enrollment_source)})),
+              BucketsAre(base::Bucket(false, 1), base::Bucket(true, 0)));
 }
 
 IN_PROC_BROWSER_TEST_P(
     VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
     IconViewAccessibleName) {
-  EXPECT_EQ(GetIconView()->GetAccessibleName(),
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
+  ShowBubbleAndWaitUntilShown(
+      GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
+      base::DoNothing());
+
+  EXPECT_EQ(GetIconView()->GetViewAccessibility().GetCachedName(),
             l10n_util::GetStringUTF16(
                 IDS_AUTOFILL_VIRTUAL_CARD_ENROLLMENT_FALLBACK_ICON_TOOLTIP));
-  EXPECT_EQ(GetIconView()->GetTextForTooltipAndAccessibleName(),
-            l10n_util::GetStringUTF16(
-                IDS_AUTOFILL_VIRTUAL_CARD_ENROLLMENT_FALLBACK_ICON_TOOLTIP));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    VirtualCardEnrollBubbleViewsInteractiveUiTestParameterized,
+    ShowLoadingViewOnAccept) {
+  base::HistogramTester histogram_tester;
+  VirtualCardEnrollmentSource virtual_card_enrollment_source =
+      GetParam().enrollment_source;
+  ShowBubbleAndWaitUntilShown(
+      GetFieldsForSource(virtual_card_enrollment_source), base::DoNothing(),
+      base::DoNothing());
+  ASSERT_TRUE(GetBubbleViews());
+  EXPECT_FALSE(IsLoadingProgressRowVisible());
+  EXPECT_EQ(GetBubbleViews()->buttons(),
+            static_cast<int>(ui::mojom::DialogButton::kOk) |
+                static_cast<int>(ui::mojom::DialogButton::kCancel));
+
+  GetBubbleViews()->AcceptDialog();
+
+  ASSERT_TRUE(GetBubbleViews());
+  EXPECT_TRUE(IsLoadingProgressRowVisible());
+  views::View* loading_throbber =
+      GetBubbleViews()->GetViewByID(DialogViewId::LOADING_THROBBER);
+  EXPECT_TRUE(loading_throbber->IsDrawn());
+  EXPECT_EQ(GetBubbleViews()->buttons(),
+            static_cast<int>(ui::mojom::DialogButton::kNone));
+
+  CloseBubbleForReasonAndWaitTillDestroyed(
+      views::Widget::ClosedReason::kAcceptButtonClicked);
+
+  histogram_tester.ExpectBucketCount(
+      base::StrCat({"Autofill.VirtualCardEnrollBubble.Result.",
+                    VirtualCardEnrollmentSourceToMetricSuffix(
+                        virtual_card_enrollment_source),
+                    ".FirstShow"}),
+      VirtualCardEnrollmentBubbleResult::
+          VIRTUAL_CARD_ENROLLMENT_BUBBLE_ACCEPTED,
+      1);
 }
 
 }  // namespace autofill

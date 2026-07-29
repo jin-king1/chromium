@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ash/file_system_provider/operations/get_metadata.h"
 
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -17,6 +18,7 @@
 #include "base/values.h"
 #include "chrome/browser/ash/file_system_provider/icon_set.h"
 #include "chrome/browser/ash/file_system_provider/operations/test_util.h"
+#include "chrome/browser/ash/file_system_provider/provided_file_system_interface.h"
 #include "chrome/common/extensions/api/file_system_provider.h"
 #include "chrome/common/extensions/api/file_system_provider_capabilities/file_system_provider_capabilities_handler.h"
 #include "chrome/common/extensions/api/file_system_provider_internal.h"
@@ -24,9 +26,7 @@
 #include "storage/browser/file_system/async_file_util.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
-namespace ash {
-namespace file_system_provider {
-namespace operations {
+namespace ash::file_system_provider::operations {
 namespace {
 
 const char kExtensionId[] = "mbflcebpggnecokmikipoihdbecnjfoj";
@@ -44,11 +44,12 @@ void CreateRequestValueFromJSON(const std::string& json, RequestValue* result) {
   using extensions::api::file_system_provider_internal::
       GetMetadataRequestedSuccess::Params;
 
-  auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(json);
+  auto parsed_json = base::JSONReader::ReadAndReturnValueWithError(
+      json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(parsed_json.has_value()) << parsed_json.error().message;
 
   ASSERT_TRUE(parsed_json->is_list());
-  absl::optional<Params> params = Params::Create(parsed_json->GetList());
+  std::optional<Params> params = Params::Create(parsed_json->GetList());
   ASSERT_TRUE(params.has_value());
   *result = RequestValue::CreateForGetMetadataSuccess(std::move(*params));
   ASSERT_TRUE(result->is_valid());
@@ -65,7 +66,7 @@ class CallbackLogger {
     Event(const Event&) = delete;
     Event& operator=(const Event&) = delete;
 
-    virtual ~Event() {}
+    virtual ~Event() = default;
 
     const EntryMetadata* metadata() const { return metadata_.get(); }
     base::File::Error result() const { return result_; }
@@ -75,12 +76,12 @@ class CallbackLogger {
     base::File::Error result_;
   };
 
-  CallbackLogger() {}
+  CallbackLogger() = default;
 
   CallbackLogger(const CallbackLogger&) = delete;
   CallbackLogger& operator=(const CallbackLogger&) = delete;
 
-  virtual ~CallbackLogger() {}
+  virtual ~CallbackLogger() = default;
 
   void OnGetMetadata(std::unique_ptr<EntryMetadata> metadata,
                      base::File::Error result) {
@@ -100,13 +101,13 @@ using ModificationTime =
 
 class FileSystemProviderOperationsGetMetadataTest : public testing::Test {
  protected:
-  FileSystemProviderOperationsGetMetadataTest() {}
-  ~FileSystemProviderOperationsGetMetadataTest() override {}
+  FileSystemProviderOperationsGetMetadataTest() = default;
+  ~FileSystemProviderOperationsGetMetadataTest() override = default;
 
   void SetUp() override {
     file_system_info_ = ProvidedFileSystemInfo(
-        kExtensionId, MountOptions(kFileSystemId, "" /* display_name */),
-        base::FilePath(), false /* configurable */, true /* watchable */,
+        kExtensionId, MountOptions(kFileSystemId, /*display_name=*/""),
+        base::FilePath(), /*configurable=*/false, /*watchable=*/true,
         extensions::SOURCE_FILE, IconSet());
   }
 
@@ -115,13 +116,13 @@ class FileSystemProviderOperationsGetMetadataTest : public testing::Test {
 
 TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateName) {
   EXPECT_TRUE(ValidateName("hello-world!@#$%^&*()-_=+\"':,.<>?[]{}|\\",
-                           false /* root_entry */));
+                           /*root_entry=*/false));
   EXPECT_FALSE(ValidateName("hello-world!@#$%^&*()-_=+\"':,.<>?[]{}|\\",
-                            true /* root_entry */));
-  EXPECT_FALSE(ValidateName("", false /* root_path */));
-  EXPECT_TRUE(ValidateName("", true /* root_path */));
-  EXPECT_FALSE(ValidateName("hello/world", false /* root_path */));
-  EXPECT_FALSE(ValidateName("hello/world", true /* root_path */));
+                            /*root_entry=*/true));
+  EXPECT_FALSE(ValidateName("", /*root_entry=*/false));
+  EXPECT_TRUE(ValidateName("", /*root_entry=*/true));
+  EXPECT_FALSE(ValidateName("hello/world", /*root_entry=*/false));
+  EXPECT_FALSE(ValidateName("hello/world", /*root_entry=*/true));
 }
 
 TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateIDLEntryMetadata) {
@@ -142,7 +143,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateIDLEntryMetadata) {
         ProvidedFileSystemInterface::METADATA_FIELD_NAME |
             ProvidedFileSystemInterface::METADATA_FIELD_MODIFICATION_TIME |
             ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL,
-        false /* root_path */));
+        /*root_entry=*/false));
   }
 
   // Correct metadata for non-root (without thumbnail).
@@ -157,7 +158,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateIDLEntryMetadata) {
         ProvidedFileSystemInterface::METADATA_FIELD_NAME |
             ProvidedFileSystemInterface::METADATA_FIELD_MODIFICATION_TIME |
             ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL,
-        false /* root_path */));
+        /*root_entry=*/false));
   }
 
   // Correct metadata for root.
@@ -172,7 +173,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateIDLEntryMetadata) {
         ProvidedFileSystemInterface::METADATA_FIELD_NAME |
             ProvidedFileSystemInterface::METADATA_FIELD_MODIFICATION_TIME |
             ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL,
-        true /* root_path */));
+        /*root_entry=*/true));
   }
 
   // Invalid characters in the name.
@@ -181,7 +182,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateIDLEntryMetadata) {
     metadata.name = "hello/world";
     EXPECT_FALSE(ValidateIDLEntryMetadata(
         metadata, ProvidedFileSystemInterface::METADATA_FIELD_NAME,
-        false /* root_path */));
+        /*root_entry=*/false));
   }
 
   // Empty name for non-root.
@@ -190,7 +191,43 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateIDLEntryMetadata) {
     metadata.name.emplace();
     EXPECT_FALSE(ValidateIDLEntryMetadata(
         metadata, ProvidedFileSystemInterface::METADATA_FIELD_NAME,
-        false /* root_path */));
+        /*root_entry=*/false));
+  }
+
+  // Missing `is_directory`.
+  {
+    EntryMetadata metadata;
+    EXPECT_FALSE(ValidateIDLEntryMetadata(
+        metadata, ProvidedFileSystemInterface::METADATA_FIELD_IS_DIRECTORY,
+        /*root_entry=*/false));
+  }
+
+  // Missing `size`.
+  {
+    EntryMetadata metadata;
+    EXPECT_FALSE(ValidateIDLEntryMetadata(
+        metadata, ProvidedFileSystemInterface::METADATA_FIELD_SIZE,
+        /*root_entry=*/false));
+  }
+
+  // `size` max - due to double precision, we need subtract quite a lot from
+  // int64_t's max to get a value that converts back to below int64_t's max.
+  {
+    EntryMetadata metadata;
+    metadata.size.emplace(double(std::numeric_limits<int64_t>::max()) - 513);
+    EXPECT_TRUE(ValidateIDLEntryMetadata(
+        metadata, ProvidedFileSystemInterface::METADATA_FIELD_SIZE,
+        /*root_entry=*/false));
+  }
+
+  // `size` too large - due to double precision, even `max()` converts to a
+  // value that is out of range.
+  {
+    EntryMetadata metadata;
+    metadata.size.emplace(double(std::numeric_limits<int64_t>::max()));
+    EXPECT_FALSE(ValidateIDLEntryMetadata(
+        metadata, ProvidedFileSystemInterface::METADATA_FIELD_SIZE,
+        /*root_entry=*/false));
   }
 
   // Missing last modification time.
@@ -198,7 +235,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateIDLEntryMetadata) {
     EntryMetadata metadata;
     EXPECT_FALSE(ValidateIDLEntryMetadata(
         metadata, ProvidedFileSystemInterface::METADATA_FIELD_MODIFICATION_TIME,
-        false /* root_path */));
+        /*root_entry=*/false));
   }
 
   // Invalid thumbnail.
@@ -207,7 +244,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateIDLEntryMetadata) {
     metadata.thumbnail = "http://invalid-scheme";
     EXPECT_FALSE(ValidateIDLEntryMetadata(
         metadata, ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL,
-        false /* root_path */));
+        /*root_entry=*/false));
   }
 
   // Empty string for thumbnail.
@@ -216,14 +253,44 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, ValidateIDLEntryMetadata) {
     metadata.thumbnail.emplace();
     EXPECT_FALSE(ValidateIDLEntryMetadata(
         metadata, ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL,
-        false /* root_path */));
+        /*root_entry=*/false));
+  }
+
+  // Missing cloud identifier
+  {
+    EntryMetadata metadata;
+    EXPECT_FALSE(ValidateIDLEntryMetadata(
+        metadata, ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_IDENTIFIER,
+        /*root_entry=*/false));
+  }
+
+  // Empty string for cloud identifier's ID.
+  {
+    EntryMetadata metadata;
+    metadata.cloud_identifier.emplace();
+    metadata.cloud_identifier->provider_name = "provider-name";
+    metadata.cloud_identifier->id = "";
+    EXPECT_FALSE(ValidateIDLEntryMetadata(
+        metadata, ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_IDENTIFIER,
+        /*root_entry=*/false));
+  }
+
+  // Empty string for cloud identifier's provider name.
+  {
+    EntryMetadata metadata;
+    metadata.cloud_identifier.emplace();
+    metadata.cloud_identifier->provider_name = "";
+    metadata.cloud_identifier->id = "id";
+    EXPECT_FALSE(ValidateIDLEntryMetadata(
+        metadata, ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_IDENTIFIER,
+        /*root_entry=*/false));
   }
 }
 
 TEST_F(FileSystemProviderOperationsGetMetadataTest, Execute) {
   using extensions::api::file_system_provider::GetMetadataRequestedOptions;
 
-  util::LoggingDispatchEventImpl dispatcher(true /* dispatch_reply */);
+  util::LoggingDispatchEventImpl dispatcher(/*dispatch_reply=*/true);
   CallbackLogger callback_logger;
 
   GetMetadata get_metadata(
@@ -239,23 +306,23 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, Execute) {
   EXPECT_EQ(
       extensions::api::file_system_provider::OnGetMetadataRequested::kEventName,
       event->event_name);
-  const base::Value::List& event_args = event->event_args;
+  const base::ListValue& event_args = event->event_args;
   ASSERT_EQ(1u, event_args.size());
 
   const base::Value* options_as_value = &event_args[0];
   ASSERT_TRUE(options_as_value->is_dict());
 
-  GetMetadataRequestedOptions options;
-  ASSERT_TRUE(GetMetadataRequestedOptions::Populate(options_as_value->GetDict(),
-                                                    options));
-  EXPECT_EQ(kFileSystemId, options.file_system_id);
-  EXPECT_EQ(kRequestId, options.request_id);
-  EXPECT_EQ(kDirectoryPath, options.entry_path);
-  EXPECT_TRUE(options.thumbnail);
+  auto options =
+      GetMetadataRequestedOptions::FromValue(options_as_value->GetDict());
+  ASSERT_TRUE(options);
+  EXPECT_EQ(kFileSystemId, options->file_system_id);
+  EXPECT_EQ(kRequestId, options->request_id);
+  EXPECT_EQ(kDirectoryPath, options->entry_path);
+  EXPECT_TRUE(options->thumbnail);
 }
 
 TEST_F(FileSystemProviderOperationsGetMetadataTest, Execute_NoListener) {
-  util::LoggingDispatchEventImpl dispatcher(false /* dispatch_reply */);
+  util::LoggingDispatchEventImpl dispatcher(/*dispatch_reply=*/false);
   CallbackLogger callback_logger;
 
   GetMetadata get_metadata(
@@ -268,7 +335,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, Execute_NoListener) {
 }
 
 TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess) {
-  util::LoggingDispatchEventImpl dispatcher(true /* dispatch_reply */);
+  util::LoggingDispatchEventImpl dispatcher(/*dispatch_reply=*/true);
   CallbackLogger callback_logger;
 
   GetMetadata get_metadata(
@@ -278,7 +345,9 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess) {
           ProvidedFileSystemInterface::METADATA_FIELD_SIZE |
           ProvidedFileSystemInterface::METADATA_FIELD_MODIFICATION_TIME |
           ProvidedFileSystemInterface::METADATA_FIELD_MIME_TYPE |
-          ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL,
+          ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL |
+          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_IDENTIFIER |
+          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_FILE_INFO,
       base::BindOnce(&CallbackLogger::OnGetMetadata,
                      base::Unretained(&callback_logger)));
 
@@ -298,8 +367,15 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess) {
       "    \"modificationTime\": {\n"
       "      \"value\": \"Thu Apr 24 00:46:52 UTC 2014\"\n"
       "    },\n"
-      "    \"mimeType\": \"text/plain\",\n"              // kMimeType
-      "    \"thumbnail\": \"DaTa:ImAgE/pNg;base64,\"\n"  // kThumbnail
+      "    \"mimeType\": \"text/plain\",\n"               // kMimeType
+      "    \"thumbnail\": \"DaTa:ImAgE/pNg;base64,\",\n"  // kThumbnail
+      "    \"cloudIdentifier\": {\n"
+      "      \"providerName\": \"provider-name\",\n"
+      "      \"id\": \"abc123\"\n"
+      "    },\n"
+      "    \"cloudFileInfo\": {\n"
+      "      \"versionTag\": \"aYzpFNjgwQ0QxNTg5QjI0NTAyITI0NC4yNTg\""
+      "    }\n"
       "  },\n"
       "  0\n"  // execution_time
       "]\n";
@@ -322,10 +398,14 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess) {
   EXPECT_EQ(expected_time, *metadata->modification_time);
   EXPECT_EQ(kMimeType, *metadata->mime_type);
   EXPECT_EQ(kThumbnail, *metadata->thumbnail);
+  EXPECT_EQ(CloudIdentifier("provider-name", "abc123"),
+            *metadata->cloud_identifier);
+  EXPECT_EQ(CloudFileInfo("aYzpFNjgwQ0QxNTg5QjI0NTAyITI0NC4yNTg"),
+            *metadata->cloud_file_info);
 }
 
 TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess_InvalidMetadata) {
-  util::LoggingDispatchEventImpl dispatcher(true /* dispatch_reply */);
+  util::LoggingDispatchEventImpl dispatcher(/*dispatch_reply=*/true);
   CallbackLogger callback_logger;
 
   GetMetadata get_metadata(
@@ -335,7 +415,9 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess_InvalidMetadata) {
           ProvidedFileSystemInterface::METADATA_FIELD_SIZE |
           ProvidedFileSystemInterface::METADATA_FIELD_MODIFICATION_TIME |
           ProvidedFileSystemInterface::METADATA_FIELD_MIME_TYPE |
-          ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL,
+          ProvidedFileSystemInterface::METADATA_FIELD_THUMBNAIL |
+          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_IDENTIFIER |
+          ProvidedFileSystemInterface::METADATA_FIELD_CLOUD_FILE_INFO,
       base::BindOnce(&CallbackLogger::OnGetMetadata,
                      base::Unretained(&callback_logger)));
 
@@ -355,8 +437,15 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess_InvalidMetadata) {
       "    \"modificationTime\": {\n"
       "      \"value\": \"Thu Apr 24 00:46:52 UTC 2014\"\n"
       "    },\n"
-      "    \"mimeType\": \"text/plain\",\n"                  // kMimeType
-      "    \"thumbnail\": \"http://www.foobar.com/evil\"\n"  // kThumbnail
+      "    \"mimeType\": \"text/plain\",\n"                   // kMimeType
+      "    \"thumbnail\": \"http://www.foobar.com/evil\",\n"  // kThumbnail
+      "    \"cloudIdentifier\": {\n"
+      "      \"providerName\": \"provider-name\",\n"
+      "      \"id\": \"abc123\"\n"
+      "    },\n"
+      "    \"cloudFileInfo\": {\n"
+      "      \"versionTag\": \"aYzpFNjgwQ0QxNTg5QjI0NTAyITI0NC4yNTg\""
+      "    }\n"
       "  },\n"
       "  0\n"  // execution_time
       "]\n";
@@ -376,7 +465,7 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnSuccess_InvalidMetadata) {
 }
 
 TEST_F(FileSystemProviderOperationsGetMetadataTest, OnError) {
-  util::LoggingDispatchEventImpl dispatcher(true /* dispatch_reply */);
+  util::LoggingDispatchEventImpl dispatcher(/*dispatch_reply=*/true);
   CallbackLogger callback_logger;
 
   GetMetadata get_metadata(
@@ -395,6 +484,4 @@ TEST_F(FileSystemProviderOperationsGetMetadataTest, OnError) {
   EXPECT_EQ(base::File::FILE_ERROR_TOO_MANY_OPENED, event->result());
 }
 
-}  // namespace operations
-}  // namespace file_system_provider
-}  // namespace ash
+}  // namespace ash::file_system_provider::operations

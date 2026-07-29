@@ -4,7 +4,7 @@
 
 import 'chrome://settings/lazy_load.js';
 
-import {SettingsSimpleConfirmationDialogElement} from 'chrome://settings/lazy_load.js';
+import type {SettingsSimpleConfirmationDialogElement} from 'chrome://settings/lazy_load.js';
 import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {eventToPromise} from 'chrome://webui-test/test_util.js';
 
@@ -28,9 +28,9 @@ suite('settings-simple-confirmation-dialog', function() {
 
     const body = dialog.shadowRoot!.querySelector('[slot=body]');
     assertTrue(!!body);
-    assertEquals(dialog.bodyText, body.textContent!.trim());
+    assertEquals(dialog.bodyText, body.textContent.trim());
 
-    assertEquals(dialog.confirmText, dialog.$.confirm.textContent!.trim());
+    assertEquals(dialog.confirmText, dialog.$.confirm.textContent.trim());
   });
 
   test('noPrimaryButton', function() {

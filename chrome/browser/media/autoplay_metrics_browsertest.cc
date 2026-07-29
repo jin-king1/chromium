@@ -14,8 +14,6 @@
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source.h"
 
-namespace chrome {
-
 namespace {
 
 class AutoplayMetricsBrowserTest : public InProcessBrowserTest {
@@ -63,7 +61,7 @@ class AutoplayMetricsBrowserTest : public InProcessBrowserTest {
   }
 };
 
-// Flaky on various platforms. https://crbug.com/1101841
+// Flaky on various platforms. https://crbug.com/40703784
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_RecordAutoplayAttemptUkm DISABLED_RecordAutoplayAttemptUkm
 #else
@@ -163,5 +161,3 @@ IN_PROC_BROWSER_TEST_F(AutoplayMetricsBrowserTest,
 }
 
 }  // namespace
-
-}  // namespace chrome

@@ -15,7 +15,10 @@
 #include "extensions/browser/api_unittest.h"
 #include "extensions/browser/test_extensions_browser_client.h"
 #include "extensions/browser/test_runtime_api_delegate.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_builder.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -74,21 +77,11 @@ class DelayedRestartExtensionsBrowserClient
 
   ~DelayedRestartExtensionsBrowserClient() override = default;
 
-  // TestExtensionsBrowserClient:
-  PrefService* GetPrefServiceForContext(
-      content::BrowserContext* context) override {
-    return &testing_pref_service_;
-  }
-
   std::unique_ptr<RuntimeAPIDelegate> CreateRuntimeAPIDelegate(
       content::BrowserContext* context) const override {
     const_cast<DelayedRestartExtensionsBrowserClient*>(this)->api_delegate_ =
         new DelayedRestartTestApiDelegate();
     return base::WrapUnique(api_delegate_.get());
-  }
-
-  sync_preferences::TestingPrefServiceSyncable* testing_pref_service() {
-    return &testing_pref_service_;
   }
 
   DelayedRestartTestApiDelegate* api_delegate() const {
@@ -97,9 +90,8 @@ class DelayedRestartExtensionsBrowserClient
   }
 
  private:
-  raw_ptr<DelayedRestartTestApiDelegate> api_delegate_ = nullptr;  // Not owned.
-
-  sync_preferences::TestingPrefServiceSyncable testing_pref_service_;
+  raw_ptr<DelayedRestartTestApiDelegate, DanglingUntriaged> api_delegate_ =
+      nullptr;  // Not owned.
 };
 
 }  // namespace
@@ -132,11 +124,7 @@ class RestartAfterDelayApiTest : public ApiUnitTest {
         base::Seconds(2));
     runtime_api->AllowNonKioskAppsInRestartAfterDelayForTesting();
 
-    RuntimeAPI::RegisterPrefs(
-        static_cast<DelayedRestartExtensionsBrowserClient*>(
-            extensions_browser_client())
-            ->testing_pref_service()
-            ->registry());
+    RuntimeAPI::RegisterPrefs(pref_service()->registry());
   }
 
   base::TimeTicks WaitForSuccessfulRestart() {

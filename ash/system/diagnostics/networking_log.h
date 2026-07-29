@@ -11,6 +11,7 @@
 #include "ash/ash_export.h"
 #include "ash/system/diagnostics/async_log.h"
 #include "ash/webui/diagnostics_ui/mojom/network_health_provider.mojom.h"
+#include "base/gtest_prod_util.h"
 
 namespace ash {
 namespace diagnostics {
@@ -29,6 +30,9 @@ class ASH_EXPORT NetworkingLog {
 
   // Returns the networking events section as a string.
   std::string GetNetworkEvents() const;
+
+  // Returns the absolute path to the network events log file.
+  base::FilePath GetLogFilePath() const;
 
   // Updates the list of valid networks and which is active.
   void UpdateNetworkList(const std::vector<std::string>& observer_guids,
@@ -75,6 +79,7 @@ class ASH_EXPORT NetworkingLog {
   void LogWiFiRoamedAccessPoint(const mojom::NetworkPtr& network,
                                 const std::string& old_bssid);
 
+  base::FilePath event_log_path_;
   AsyncLog event_log_;
   std::string active_guid_;
   base::flat_map<std::string, mojom::NetworkPtr> latest_network_states_;
@@ -84,4 +89,4 @@ class ASH_EXPORT NetworkingLog {
 }  // namespace diagnostics
 }  // namespace ash
 
-#endif  // ASH_WEBUI_DIAGNOSTICS_UI_BACKEND_NETWORKING_LOG_H_
+#endif  // ASH_SYSTEM_DIAGNOSTICS_NETWORKING_LOG_H_

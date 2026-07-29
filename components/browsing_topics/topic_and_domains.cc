@@ -31,18 +31,18 @@ TopicAndDomains::~TopicAndDomains() = default;
 
 // static
 TopicAndDomains TopicAndDomains::FromDictValue(
-    const base::Value::Dict& dict_value) {
+    const base::DictValue& dict_value) {
   Topic topic(0);
-  absl::optional<int> topic_value = dict_value.FindInt(kTopicNameKey);
+  std::optional<int> topic_value = dict_value.FindInt(kTopicNameKey);
   if (topic_value)
     topic = Topic(*topic_value);
 
   std::set<HashedDomain> hashed_domains;
-  const base::Value::List* hashed_domains_value =
+  const base::ListValue* hashed_domains_value =
       dict_value.FindList(kHashedDomainsNameKey);
   if (hashed_domains_value) {
     for (const base::Value& hashed_domain_value : *hashed_domains_value) {
-      absl::optional<int64_t> hashed_domain_int64_value =
+      std::optional<int64_t> hashed_domain_int64_value =
           base::ValueToInt64(hashed_domain_value);
       if (!hashed_domain_int64_value)
         return TopicAndDomains();
@@ -54,13 +54,13 @@ TopicAndDomains TopicAndDomains::FromDictValue(
   return TopicAndDomains(topic, std::move(hashed_domains));
 }
 
-base::Value::Dict TopicAndDomains::ToDictValue() const {
-  base::Value::List hashed_domains_list;
+base::DictValue TopicAndDomains::ToDictValue() const {
+  base::ListValue hashed_domains_list;
   for (const HashedDomain& hashed_domain : hashed_domains_) {
     hashed_domains_list.Append(base::Int64ToValue(hashed_domain.value()));
   }
 
-  base::Value::Dict result_dict;
+  base::DictValue result_dict;
   result_dict.Set(kTopicNameKey, topic_.value());
   result_dict.Set(kHashedDomainsNameKey, std::move(hashed_domains_list));
   return result_dict;

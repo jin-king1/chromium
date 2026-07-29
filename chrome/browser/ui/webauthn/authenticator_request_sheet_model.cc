@@ -5,29 +5,34 @@
 #include "chrome/browser/ui/webauthn/authenticator_request_sheet_model.h"
 
 #include <string>
+#include <vector>
 
-bool AuthenticatorRequestSheetModel::ShouldFocusBackArrow() const {
-  return false;
-}
-
-bool AuthenticatorRequestSheetModel::IsCloseButtonVisible() const {
-  return false;
-}
-
-std::u16string AuthenticatorRequestSheetModel::GetAdditionalDescription()
-    const {
-  return std::u16string();
+std::vector<std::u16string>
+AuthenticatorRequestSheetModel::GetAdditionalDescriptions() const {
+  return {};
 }
 
 std::u16string AuthenticatorRequestSheetModel::GetError() const {
   return std::u16string();
 }
 
-bool AuthenticatorRequestSheetModel::IsManageDevicesButtonVisible() const {
+std::u16string AuthenticatorRequestSheetModel::GetHint() const {
+  return std::u16string();
+}
+
+bool AuthenticatorRequestSheetModel::IsGpmSettingsButtonVisible() const {
   return false;
 }
 
 bool AuthenticatorRequestSheetModel::IsOtherMechanismButtonVisible() const {
+  return false;
+}
+
+bool AuthenticatorRequestSheetModel::IsForgotGPMPinButtonVisible() const {
+  return false;
+}
+
+bool AuthenticatorRequestSheetModel::IsGPMPinOptionsButtonVisible() const {
   return false;
 }
 
@@ -36,4 +41,9 @@ std::u16string AuthenticatorRequestSheetModel::GetOtherMechanismButtonLabel()
   return std::u16string();
 }
 
-void AuthenticatorRequestSheetModel::OnManageDevices() {}
+void AuthenticatorRequestSheetModel::OnOpenGpmSettingsButtonPressed() {}
+
+void AuthenticatorRequestSheetModel::OnForgotGPMPin() const {}
+
+void AuthenticatorRequestSheetModel::OnGPMPinOptionChosen(
+    bool is_arbitrary) const {}

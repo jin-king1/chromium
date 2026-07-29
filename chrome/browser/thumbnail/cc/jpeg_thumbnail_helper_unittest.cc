@@ -6,9 +6,12 @@
 
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/bind.h"
@@ -19,27 +22,25 @@
 #include "chrome/browser/thumbnail/cc/thumbnail.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkCanvas.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "third_party/skia/include/core/SkPaint.h"
 #include "third_party/skia/include/core/SkScalar.h"
-#include "third_party/skia/include/effects/SkGradientShader.h"
+#include "third_party/skia/include/effects/SkGradient.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 
 namespace thumbnail {
 namespace {
 
-constexpr double kJpegImageRatio = 0.85;
 constexpr int kDimension = 16;
 constexpr int kKiB = 1024;
 
 SkPaint SetupPaint() {
-  SkColor colors[] = {SK_ColorRED, SK_ColorGREEN, SK_ColorBLUE};
+  SkColor4f colors[] = {SkColors::kRed, SkColors::kGreen, SkColors::kBlue};
   SkScalar pos[] = {0, SK_Scalar1 / 2, SK_Scalar1};
   SkPaint paint;
-  paint.setShader(SkGradientShader::MakeSweep(256, 256, colors, pos, 3));
+  paint.setShader(SkShaders::SweepGradient({256, 256}, {{colors, pos, SkTileMode::kClamp}, {}}));
   return paint;
 }
 
@@ -85,14 +86,13 @@ TEST_F(JpegThumbnailHelperTest, CompressThumbnail) {
   base::OnceCallback<void(std::vector<uint8_t>)> once =
       base::BindOnce([](std::vector<uint8_t> jpeg_data) {
         EXPECT_FALSE(jpeg_data.empty());
-        auto bitmap =
-            gfx::JPEGCodec::Decode(jpeg_data.data(), jpeg_data.size());
-        EXPECT_TRUE(bitmap);
-        EXPECT_GT(bitmap->width(), 0);
-        EXPECT_GT(bitmap->height(), 0);
+        SkBitmap bitmap = gfx::JPEGCodec::Decode(jpeg_data);
+        EXPECT_FALSE(bitmap.isNull());
+        EXPECT_GT(bitmap.width(), 0);
+        EXPECT_GT(bitmap.height(), 0);
       }).Then(loop1.QuitClosure());
 
-  GetInterface().Compress(kJpegImageRatio, image, std::move(once));
+  GetInterface().Compress(image, std::move(once));
   task_environment_.RunUntilIdle();
   loop1.Run();
 }
@@ -100,7 +100,7 @@ TEST_F(JpegThumbnailHelperTest, CompressThumbnail) {
 TEST_F(JpegThumbnailHelperTest, WriteThumbnail) {
   int tab_id = 0;
 
-  // Create a bitmap
+  // Create a bitmap.
   SkBitmap image;
   ASSERT_TRUE(image.tryAllocN32Pixels(kDimension * kKiB, kDimension));
   SkCanvas canvas(image);
@@ -108,23 +108,28 @@ TEST_F(JpegThumbnailHelperTest, WriteThumbnail) {
   image.setImmutable();
 
   constexpr int kCompressionQuality = 97;
-  std::vector<uint8_t> data;
-  gfx::JPEGCodec::Encode(image, kCompressionQuality, &data);
+  std::optional<std::vector<uint8_t>> data =
+      gfx::JPEGCodec::Encode(image, kCompressionQuality);
 
-  // Write the image
+  // Write the image.
   base::RunLoop loop1;
-  GetInterface().Write(tab_id, data, loop1.QuitClosure());
+  GetInterface().Write(tab_id, data.value(),
+                       base::BindOnce(
+                           [](base::OnceClosure quit, bool success) {
+                             EXPECT_TRUE(success);
+                             std::move(quit).Run();
+                           },
+                           loop1.QuitClosure()));
   task_environment_.RunUntilIdle();
   loop1.Run();
 
   base::FilePath file_path = GetFile(tab_id);
   EXPECT_TRUE(base::PathExists(file_path));
 
-  // Compare original data with written data
-  absl::optional<std::vector<uint8_t>> read_data =
+  // Compare original data with written data.
+  std::optional<std::vector<uint8_t>> read_data =
       base::ReadFileToBytes(file_path);
-  ASSERT_EQ(data.size(), read_data->size());
-  EXPECT_EQ(0, memcmp(data.data(), read_data->data(), data.size()));
+  EXPECT_EQ(data, read_data);
 }
 
 TEST_F(JpegThumbnailHelperTest, ReadThumbnail) {
@@ -138,26 +143,25 @@ TEST_F(JpegThumbnailHelperTest, ReadThumbnail) {
   image.setImmutable();
 
   constexpr int kCompressionQuality = 97;
-  std::vector<uint8_t> data;
-  gfx::JPEGCodec::Encode(image, kCompressionQuality, &data);
+  std::optional<std::vector<uint8_t>> data =
+      gfx::JPEGCodec::Encode(image, kCompressionQuality);
 
   // Write the image
   base::FilePath file_path = GetFile(tab_id);
   base::File file(file_path,
                   base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
-  file.Write(0, reinterpret_cast<const char*>(data.data()), data.size());
+  ASSERT_TRUE(file.WriteAndCheck(0, base::as_byte_span(data.value())));
 
   // Read the image
   base::RunLoop loop1;
-  base::OnceCallback<void(absl::optional<std::vector<uint8_t>>)> once =
-      base::BindOnce([](absl::optional<std::vector<uint8_t>> compressed_data) {
-        EXPECT_TRUE(compressed_data.has_value());
+  base::OnceCallback<void(std::optional<std::vector<uint8_t>>)> once =
+      base::BindOnce([](std::optional<std::vector<uint8_t>> compressed_data) {
+        ASSERT_TRUE(compressed_data.has_value());
         EXPECT_FALSE(compressed_data->empty());
-        auto bitmap = gfx::JPEGCodec::Decode(compressed_data->data(),
-                                             compressed_data->size());
-        EXPECT_TRUE(bitmap);
-        EXPECT_GT(bitmap->width(), 0);
-        EXPECT_GT(bitmap->height(), 0);
+        SkBitmap bitmap = gfx::JPEGCodec::Decode(compressed_data.value());
+        EXPECT_FALSE(bitmap.isNull());
+        EXPECT_GT(bitmap.width(), 0);
+        EXPECT_GT(bitmap.height(), 0);
       }).Then(loop1.QuitClosure());
 
   GetInterface().Read(tab_id, std::move(once));
@@ -176,14 +180,14 @@ TEST_F(JpegThumbnailHelperTest, DeleteThumbnail) {
   image.setImmutable();
 
   constexpr int kCompressionQuality = 97;
-  std::vector<uint8_t> data;
-  gfx::JPEGCodec::Encode(image, kCompressionQuality, &data);
+  std::optional<std::vector<uint8_t>> data =
+      gfx::JPEGCodec::Encode(image, kCompressionQuality);
 
   // Write the image
   base::FilePath file_path = GetFile(tab_id);
   base::File file(file_path,
                   base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
-  file.Write(0, reinterpret_cast<const char*>(data.data()), data.size());
+  ASSERT_TRUE(file.WriteAndCheck(0, base::as_byte_span(data.value())));
 
   // Delete the image
   GetInterface().Delete(tab_id);
@@ -192,6 +196,30 @@ TEST_F(JpegThumbnailHelperTest, DeleteThumbnail) {
   // Check deletion occurred
   base::FilePath post_delete_file_path = GetFile(tab_id);
   EXPECT_FALSE(base::PathExists(post_delete_file_path));
+}
+
+TEST_F(JpegThumbnailHelperTest, DeleteAllExceptForIds) {
+  std::vector<int> tab_ids = {1, 2, 3, 4, 5};
+  for (int tab_id : tab_ids) {
+    base::WriteFile(GetFile(tab_id), "thumbnail_data");
+    EXPECT_TRUE(base::PathExists(GetFile(tab_id)));
+  }
+
+  // Create a etc1 thumbnail file to make sure it is not deleted.
+  base::FilePath etc_file = GetFile(1).RemoveExtension();
+  base::WriteFile(etc_file, "thumbnail_data");
+  EXPECT_TRUE(base::PathExists(etc_file));
+
+  GetInterface().DeleteAllExceptForIds({2, 4});
+  task_environment_.RunUntilIdle();
+
+  EXPECT_FALSE(base::PathExists(GetFile(1)));
+  EXPECT_TRUE(base::PathExists(GetFile(2)));
+  EXPECT_FALSE(base::PathExists(GetFile(3)));
+  EXPECT_TRUE(base::PathExists(GetFile(4)));
+  EXPECT_FALSE(base::PathExists(GetFile(5)));
+
+  EXPECT_TRUE(base::PathExists(etc_file));
 }
 
 }  // namespace thumbnail

@@ -16,7 +16,6 @@
 #include "media/base/audio_renderer_sink.h"
 #include "media/mojo/mojom/cast_application_media_info_manager.mojom.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/remote.h"
 
 namespace chromecast {
 namespace media {
@@ -29,8 +28,7 @@ class CastAudioOutputDevice : public ::media::AudioRendererSink {
  public:
   CastAudioOutputDevice(
       mojo::PendingRemote<mojom::AudioSocketBroker> audio_socket_broker,
-      mojo::PendingRemote<::media::mojom::CastApplicationMediaInfoManager>
-          application_media_info_manager);
+      const std::string& session_id);
 
   CastAudioOutputDevice(const CastAudioOutputDevice&) = delete;
   CastAudioOutputDevice& operator=(const CastAudioOutputDevice&) = delete;
@@ -39,8 +37,7 @@ class CastAudioOutputDevice : public ::media::AudioRendererSink {
   // Only for testing.
   CastAudioOutputDevice(
       mojo::PendingRemote<mojom::AudioSocketBroker> audio_socket_broker,
-      mojo::PendingRemote<::media::mojom::CastApplicationMediaInfoManager>
-          application_media_info_manager,
+      const std::string& session_id,
       scoped_refptr<base::SequencedTaskRunner> task_runner);
   ~CastAudioOutputDevice() override;
 
@@ -65,8 +62,7 @@ class CastAudioOutputDevice : public ::media::AudioRendererSink {
   Internal* internal_ptr_ = nullptr;
 
   mojo::PendingRemote<mojom::AudioSocketBroker> pending_socket_broker_;
-  mojo::PendingRemote<::media::mojom::CastApplicationMediaInfoManager>
-      pending_app_media_info_manager_;
+  const std::string session_id_;
 };
 
 }  // namespace media

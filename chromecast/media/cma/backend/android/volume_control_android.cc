@@ -11,9 +11,8 @@
 #include <utility>
 #include <vector>
 
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #include "base/android/jni_android.h"
-#include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -23,6 +22,7 @@
 #include "base/no_destructor.h"
 #include "chromecast/base/init_command_line_shlib.h"
 #include "chromecast/chromecast_buildflags.h"
+// Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chromecast/media/cma/backend/android/audio_track_jni_headers/VolumeControl_jni.h"
 #include "chromecast/media/cma/backend/android/audio_track_jni_headers/VolumeMap_jni.h"
 
@@ -72,9 +72,7 @@ void VolumeControlAndroid::AddVolumeObserver(VolumeObserver* observer) {
 
 void VolumeControlAndroid::RemoveVolumeObserver(VolumeObserver* observer) {
   base::AutoLock lock(observer_lock_);
-  volume_observers_.erase(
-      std::remove(volume_observers_.begin(), volume_observers_.end(), observer),
-      volume_observers_.end());
+  std::erase(volume_observers_, observer);
 }
 
 float VolumeControlAndroid::GetVolume(AudioContentType type) {
@@ -89,7 +87,6 @@ void VolumeControlAndroid::SetVolume(VolumeChangeSource source,
                                      float level) {
   if (type == AudioContentType::kOther) {
     NOTREACHED() << "Can't set volume for content type kOther";
-    return;
   }
 
   level = std::clamp(level, 0.0f, 1.0f);
@@ -112,7 +109,6 @@ void VolumeControlAndroid::SetMuted(VolumeChangeSource source,
                                     bool muted) {
   if (type == AudioContentType::kOther) {
     NOTREACHED() << "Can't set mute state for content type kOther";
-    return;
   }
 
   thread_.task_runner()->PostTask(
@@ -124,7 +120,6 @@ void VolumeControlAndroid::SetMuted(VolumeChangeSource source,
 void VolumeControlAndroid::SetOutputLimit(AudioContentType type, float limit) {
   if (type == AudioContentType::kOther) {
     NOTREACHED() << "Can't set output limit for content type kOther";
-    return;
   }
 
   // The input limit is in the kMedia (MUSIC) volume table domain.
@@ -133,11 +128,9 @@ void VolumeControlAndroid::SetOutputLimit(AudioContentType type, float limit) {
   AudioSinkManager::Get()->SetOutputLimitDb(type, limit_db);
 }
 
-void VolumeControlAndroid::OnVolumeChange(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj,
-    jint type,
-    jfloat level) {
+void VolumeControlAndroid::OnVolumeChange(JNIEnv* env,
+                                          int32_t type,
+                                          float level) {
   thread_.task_runner()->PostTask(
       FROM_HERE,
       base::BindOnce(&VolumeControlAndroid::ReportVolumeChangeOnThread,
@@ -145,11 +138,7 @@ void VolumeControlAndroid::OnVolumeChange(
                      static_cast<AudioContentType>(type), level));
 }
 
-void VolumeControlAndroid::OnMuteChange(
-    JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj,
-    jint type,
-    jboolean muted) {
+void VolumeControlAndroid::OnMuteChange(JNIEnv* env, int32_t type, bool muted) {
   thread_.task_runner()->PostTask(
       FROM_HERE, base::BindOnce(&VolumeControlAndroid::ReportMuteChangeOnThread,
                                 base::Unretained(this),
@@ -157,8 +146,8 @@ void VolumeControlAndroid::OnMuteChange(
 }
 
 int VolumeControlAndroid::GetMaxVolumeIndex(AudioContentType type) {
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <
-      base::android::SDK_VERSION_NOUGAT) {
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_NOUGAT) {
     return 1;
   }
   return Java_VolumeMap_getMaxVolumeIndex(base::android::AttachCurrentThread(),
@@ -166,8 +155,8 @@ int VolumeControlAndroid::GetMaxVolumeIndex(AudioContentType type) {
 }
 
 float VolumeControlAndroid::VolumeToDbFS(AudioContentType type, float volume) {
-  if (base::android::BuildInfo::GetInstance()->sdk_int() <
-      base::android::SDK_VERSION_NOUGAT) {
+  if (base::android::android_info::sdk_int() <
+      base::android::android_info::SDK_VERSION_NOUGAT) {
     return 1.0f;
   }
   return Java_VolumeMap_volumeToDbFs(base::android::AttachCurrentThread(),
@@ -371,3 +360,6 @@ float VolumeControl::DbFSToVolume(float db) {
 
 }  // namespace media
 }  // namespace chromecast
+
+DEFINE_JNI(VolumeControl)
+DEFINE_JNI(VolumeMap)

@@ -2,11 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {TenorGifResponse} from 'chrome://emoji-picker/emoji_picker.mojom-webui.js';
-import {EmojiPickerApiProxyImpl} from 'chrome://emoji-picker/emoji_picker_api_proxy.js';
-import {GifSubcategoryData, VisualContent} from 'chrome://emoji-picker/types.js';
+import type {GifSubcategoryData, PaginatedGifResponses, VisualContent} from 'chrome://emoji-picker/emoji_picker.js';
+import {EmojiPickerApiProxy} from 'chrome://emoji-picker/emoji_picker.js';
 
-export class TestEmojiPickerApiProxyImpl extends EmojiPickerApiProxyImpl {
+export class TestEmojiPickerApiProxy extends EmojiPickerApiProxy {
   // This variable is used to mock the status return value in the actual api
   // proxy.
   // TODO(b/268138636): Change hardcoded value to Status type once tests are
@@ -20,7 +19,7 @@ export class TestEmojiPickerApiProxyImpl extends EmojiPickerApiProxyImpl {
       'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAACCAQAAAAziH6sAAAADklEQVR42mNk+M/I8B8ABQoCAV5AcKEAAAAASUVORK5CYII=';
 
 
-  readonly initialSet = {
+  readonly initialSet: PaginatedGifResponses = {
     next: '1',
     results:
         [
@@ -28,102 +27,108 @@ export class TestEmojiPickerApiProxyImpl extends EmojiPickerApiProxyImpl {
             id: '1',
             contentDescription: 'Left 1',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
+            },
+            fullSize: {
+              width: 2,
+              height: 4,
             },
           },
           {
             id: '2',
             contentDescription: 'Right 1',
             url: {
-              full: {
-                url: this.oneByOneGif,
-              },
-              preview: {
-                url: this.oneByOneGif,
-              },
+              full: this.oneByOneGif,
+              preview: this.oneByOneGif,
+              previewImage: this.oneByOneGif,
             },
             previewSize: {
               width: 1,
               height: 1,
+            },
+            fullSize: {
+              width: 2,
+              height: 2,
             },
           },
           {
             id: '3',
             contentDescription: 'Right 2',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
+            },
+            fullSize: {
+              width: 2,
+              height: 4,
             },
           },
           {
             id: '4',
             contentDescription: 'Left 2',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
+            },
+            fullSize: {
+              width: 2,
+              height: 4,
             },
           },
           {
             id: '5',
             contentDescription: 'Right 3',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
+            },
+            fullSize: {
+              width: 2,
+              height: 4,
             },
           },
           {
             id: '6',
             contentDescription: 'Left 3',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
             },
+            fullSize: {
+              width: 2,
+              height: 4,
+            },
           },
         ],
   };
 
-  readonly followingSet = {
+  readonly followingSet: PaginatedGifResponses = {
     next: '2',
     results:
         [
@@ -131,125 +136,124 @@ export class TestEmojiPickerApiProxyImpl extends EmojiPickerApiProxyImpl {
             id: '7',
             contentDescription: 'Right 4',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
+            },
+            fullSize: {
+              width: 2,
+              height: 4,
             },
           },
           {
             id: '8',
             contentDescription: 'Left 4',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
+            },
+            fullSize: {
+              width: 2,
+              height: 4,
             },
           },
           {
             id: '9',
             contentDescription: 'Right 5',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
+            },
+            fullSize: {
+              width: 2,
+              height: 4,
             },
           },
           {
             id: '10',
             contentDescription: 'Left 5',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
+            },
+            fullSize: {
+              width: 2,
+              height: 4,
             },
           },
           {
             id: '11',
             contentDescription: 'Right 6',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
+            },
+            fullSize: {
+              width: 2,
+              height: 4,
             },
           },
           {
             id: '12',
             contentDescription: 'Left 6',
             url: {
-              full: {
-                url: this.oneByTwoGif,
-              },
-              preview: {
-                url: this.oneByTwoGif,
-              },
+              full: this.oneByTwoGif,
+              preview: this.oneByTwoGif,
+              previewImage: this.oneByTwoGif,
             },
             previewSize: {
               width: 1,
               height: 2,
             },
+            fullSize: {
+              width: 2,
+              height: 4,
+            },
           },
         ],
   };
 
-  readonly gifs: {[query: string]: TenorGifResponse} = {
+  readonly gifs: {[query: string]: PaginatedGifResponses} = {
     trending: this.formatTenorGifResults(this.initialSet, 'Trending'),
     trending1: this.formatTenorGifResults(this.followingSet, 'Trending'),
   };
 
-  readonly searchResults: {[query: string]: TenorGifResponse} = {
+  readonly searchResults: {[query: string]: PaginatedGifResponses} = {
     'face': this.initialSet,
     'face1': this.followingSet,
   };
 
-  formatTenorGifResults(gifResults: TenorGifResponse, query: string) {
+  formatTenorGifResults(gifResults: PaginatedGifResponses, query: string) {
     return {
       next: gifResults.next,
       results: gifResults.results.map(
-          ({
-            id,
-            url,
-            previewSize,
-            contentDescription,
-          }) => ({
-            id,
-            url,
-            previewSize,
-            contentDescription: query + ' ' + contentDescription,
+          (result) => ({
+            ...result,
+            contentDescription: query + ' ' + result.contentDescription,
           })),
     };
   }
@@ -274,22 +278,22 @@ export class TestEmojiPickerApiProxyImpl extends EmojiPickerApiProxyImpl {
   }
 
   override getFeaturedGifs(pos?: string):
-      Promise<{status: number, featuredGifs: TenorGifResponse}> {
+      Promise<{status: number, featuredGifs: PaginatedGifResponses}> {
     const query = pos ? 'trending' + pos : 'trending';
     return new Promise((resolve) => {
       resolve({
         status: this.httpOk,
-        featuredGifs: this.gifs[query]!,
+        featuredGifs: this.gifs[query] ?? this.gifs['trending']!,
       });
     });
   }
 
   override searchGifs(query: string, pos?: string):
-      Promise<{status: number, searchGifs: TenorGifResponse}> {
+      Promise<{status: number, searchGifs: PaginatedGifResponses}> {
     query = (pos ? query + pos : query).replace('#', '');
     return Promise.resolve({
       status: this.httpOk,
-      searchGifs: this.searchResults[query]!,
+      searchGifs: this.searchResults[query] ?? this.searchResults['face']!,
     });
   }
 
@@ -301,8 +305,9 @@ export class TestEmojiPickerApiProxyImpl extends EmojiPickerApiProxyImpl {
         {
           id: '1',
           url: {
-            full: {url: this.oneByOneGif},
-            preview: {url: this.oneByOneGif},
+            full: this.oneByOneGif,
+            preview: this.oneByOneGif,
+            previewImage: this.oneByOneGif,
           },
           previewSize: {
             width: 1,
@@ -313,8 +318,9 @@ export class TestEmojiPickerApiProxyImpl extends EmojiPickerApiProxyImpl {
         {
           id: '2',
           url: {
-            full: {url: this.oneByTwoGif},
-            preview: {url: this.oneByTwoGif},
+            full: this.oneByTwoGif,
+            preview: this.oneByTwoGif,
+            previewImage: this.oneByTwoGif,
           },
           previewSize: {
             width: 1,
@@ -325,8 +331,9 @@ export class TestEmojiPickerApiProxyImpl extends EmojiPickerApiProxyImpl {
         {
           id: '4',
           url: {
-            full: {url: this.oneByTwoGif},
-            preview: {url: this.oneByTwoGif},
+            full: this.oneByTwoGif,
+            preview: this.oneByTwoGif,
+            previewImage: this.oneByTwoGif,
           },
           previewSize: {
             width: 1,
@@ -340,5 +347,14 @@ export class TestEmojiPickerApiProxyImpl extends EmojiPickerApiProxyImpl {
 
   override insertGif() {
     // Fake the backend operation of copying gif to clipboard by doing nothing
+  }
+
+  override updateHistoryInPrefs() {
+    // Fake the backend operation of updating prefs by doing nothing
+  }
+
+  override getHistoryFromPrefs() {
+    // Fake backend of returning an empty history from prefs.
+    return Promise.resolve({history: []});
   }
 }

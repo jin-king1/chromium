@@ -5,7 +5,9 @@
 
 import unittest
 
-import pretty_print
+import setup_modules  # pylint: disable=unused-import
+
+import chromium_src.tools.metrics.histograms.pretty_print as pretty_print
 
 
 ORIGINAL_XML = """
@@ -21,15 +23,10 @@ ORIGINAL_XML = """
 
         It has multiple paragraphs.
    </summary>
-   <obsolete>
-       Removed 1/2019.
-   </obsolete>
  </histogram>
 
  <histogram name="Foo.Bar" units="xxxxxxxxxxxxxxxxxxyyyyyyyyyyyyyyyyyyyyyyzzzz">
   <summary>Foo</summary>
-  <obsolete>Obsolete 1</obsolete>
-  <obsolete>Obsolete 2</obsolete>
   <enums>This shouldn't be here</enums>
  </histogram>
 
@@ -66,16 +63,10 @@ PRETTY_XML = """
 <histograms>
 
 <histogram name="Foo.Bar" units="xxxxxxxxxxxxxxxxxxyyyyyyyyyyyyyyyyyyyyyyzzzz">
-  <obsolete>
-    Obsolete 1
-  </obsolete>
   <summary>Foo</summary>
 </histogram>
 
 <histogram name="Test.Histogram" units="microseconds">
-  <obsolete>
-    Removed 1/2019.
-  </obsolete>
   <owner>person@chromium.org</owner>
   <summary>
     A long line that should be formatted in a way that does not result in extra

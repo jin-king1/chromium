@@ -5,7 +5,11 @@
 #include "components/permissions/object_permission_context_base.h"
 
 #include "base/strings/strcat.h"
+#include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/values_test_util.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/permissions/features.h"
 #include "components/permissions/test/object_permission_context_base_mock_permission_observer.h"
 #include "components/permissions/test/test_permissions_client.h"
 #include "content/public/test/browser_task_environment.h"
@@ -21,27 +25,34 @@ namespace {
 const char* kRequiredKey1 = "key-1";
 const char* kRequiredKey2 = "key-2";
 
+using base::test::IsJson;
+using testing::ElementsAre;
+using testing::Field;
+using testing::Pointee;
+
 class TestObjectPermissionContext : public ObjectPermissionContextBase {
  public:
-  // This class uses the USB content settings type for testing purposes only.
-  explicit TestObjectPermissionContext(content::BrowserContext* browser_context)
+  // This class uses the File System Access content settings type for testing
+  // purposes only.
+  explicit TestObjectPermissionContext(ContentSettingsType guard_type,
+                                       ContentSettingsType data_type,
+                                       content::BrowserContext* browser_context)
       : ObjectPermissionContextBase(
-            ContentSettingsType::USB_GUARD,
-            ContentSettingsType::USB_CHOOSER_DATA,
+            guard_type,
+            data_type,
             PermissionsClient::Get()->GetSettingsMap(browser_context)) {}
   ~TestObjectPermissionContext() override = default;
 
-  bool IsValidObject(const base::Value::Dict& dict) override {
+  bool IsValidObject(const base::DictValue& dict) override {
     return dict.size() == 2 && dict.Find(kRequiredKey1) &&
            dict.Find(kRequiredKey2);
   }
 
-  std::u16string GetObjectDisplayName(
-      const base::Value::Dict& object) override {
+  std::u16string GetObjectDisplayName(const base::DictValue& object) override {
     return {};
   }
 
-  std::string GetKeyForObject(const base::Value::Dict& object) override {
+  std::string GetKeyForObject(const base::DictValue& object) override {
     return *object.FindString(kRequiredKey1);
   }
 };
@@ -55,7 +66,13 @@ class ObjectPermissionContextBaseTest : public testing::Test {
         url2_("https://chromium.org"),
         origin1_(url::Origin::Create(url1_)),
         origin2_(url::Origin::Create(url2_)),
-        context_(browser_context()) {
+        context_(ContentSettingsType::USB_GUARD,
+                 ContentSettingsType::USB_CHOOSER_DATA,
+                 browser_context()),
+        file_system_access_context_(
+            ContentSettingsType::FILE_SYSTEM_WRITE_GUARD,
+            ContentSettingsType::FILE_SYSTEM_ACCESS_CHOOSER_DATA,
+            browser_context()) {
     object1_.Set(kRequiredKey1, "value1");
     object1_.Set(kRequiredKey2, "value2");
     object2_.Set(kRequiredKey1, "value3");
@@ -76,9 +93,10 @@ class ObjectPermissionContextBaseTest : public testing::Test {
   const GURL url2_;
   const url::Origin origin1_;
   const url::Origin origin2_;
-  base::Value::Dict object1_;
-  base::Value::Dict object2_;
+  base::DictValue object1_;
+  base::DictValue object2_;
   TestObjectPermissionContext context_;
+  TestObjectPermissionContext file_system_access_context_;
 };
 
 TEST_F(ObjectPermissionContextBaseTest, GrantAndRevokeObjectPermissions) {
@@ -102,6 +120,23 @@ TEST_F(ObjectPermissionContextBaseTest, GrantAndRevokeObjectPermissions) {
   EXPECT_CALL(mock_observer, OnPermissionRevoked(origin1_)).Times(2);
   context_.RevokeObjectPermission(origin1_, object1_);
   context_.RevokeObjectPermission(origin1_, object2_);
+  objects = context_.GetGrantedObjects(origin1_);
+  EXPECT_EQ(0u, objects.size());
+}
+
+TEST_F(ObjectPermissionContextBaseTest, GrantAndRevokeAllObjectPermissions) {
+  MockPermissionObserver mock_observer;
+  context_.AddObserver(&mock_observer);
+
+  EXPECT_CALL(mock_observer, OnObjectPermissionChanged(_, _)).Times(3);
+  context_.GrantObjectPermission(origin1_, object1_.Clone());
+  context_.GrantObjectPermission(origin1_, object2_.Clone());
+  auto objects = context_.GetGrantedObjects(origin1_);
+
+  EXPECT_CALL(mock_observer, OnPermissionRevoked(origin1_)).Times(1);
+  context_.RevokeObjectPermissions(origin1_);
+
+  // All permissions have been revoked for the given origin.
   objects = context_.GetGrantedObjects(origin1_);
   EXPECT_EQ(0u, objects.size());
 }
@@ -185,8 +220,8 @@ TEST_F(ObjectPermissionContextBaseTest, GetOriginsWithGrants) {
 
   auto origins_with_grants = context_.GetOriginsWithGrants();
   EXPECT_EQ(2u, origins_with_grants.size());
-  EXPECT_EQ(origin2_, origins_with_grants[0]);
-  EXPECT_EQ(origin1_, origins_with_grants[1]);
+  EXPECT_TRUE(origins_with_grants.contains(origin2_));
+  EXPECT_TRUE(origins_with_grants.contains(origin1_));
 }
 
 TEST_F(ObjectPermissionContextBaseTest, GetAllGrantedObjects) {

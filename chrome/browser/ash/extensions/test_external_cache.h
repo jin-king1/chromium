@@ -34,9 +34,9 @@ class TestExternalCache : public ExternalCache {
   ~TestExternalCache() override;
 
   // ExternalCache:
-  const base::Value::Dict& GetCachedExtensions() override;
+  const base::DictValue& GetCachedExtensions() override;
   void Shutdown(base::OnceClosure callback) override;
-  void UpdateExtensionsList(base::Value::Dict prefs) override;
+  void UpdateExtensionsList(base::DictValue prefs) override;
   void OnDamagedFileDetected(const base::FilePath& path) override;
   void RemoveExtensions(const std::vector<std::string>& ids) override;
   bool GetExtension(const std::string& id,
@@ -48,7 +48,7 @@ class TestExternalCache : public ExternalCache {
                             const std::string& version,
                             PutExternalExtensionCallback callback) override;
   void SetBackoffPolicy(
-      absl::optional<net::BackoffEntry::Policy> new_backoff_policy) override;
+      std::optional<net::BackoffEntry::Policy> new_backoff_policy) override;
 
   // Simulates extension CRX download succeeding - it adds the extension
   // information to |cache_|.
@@ -82,7 +82,7 @@ class TestExternalCache : public ExternalCache {
     return pending_downloads_;
   }
 
-  const absl::optional<net::BackoffEntry::Policy>& backoff_policy() const {
+  const std::optional<net::BackoffEntry::Policy>& backoff_policy() const {
     return backoff_policy_;
   }
 
@@ -106,13 +106,13 @@ class TestExternalCache : public ExternalCache {
                           const std::string& crx_path,
                           const std::string& version);
 
-  const raw_ptr<ExternalCacheDelegate, ExperimentalAsh> delegate_;
+  const raw_ptr<ExternalCacheDelegate> delegate_;
   const bool always_check_for_updates_;
 
-  absl::optional<net::BackoffEntry::Policy> backoff_policy_;
+  std::optional<net::BackoffEntry::Policy> backoff_policy_;
 
-  base::Value::Dict configured_extensions_;
-  base::Value::Dict cached_extensions_;
+  base::DictValue configured_extensions_;
+  base::DictValue cached_extensions_;
 
   std::set<std::string> pending_downloads_;
   std::map<std::string, CrxCacheEntry> crx_cache_;

@@ -7,9 +7,8 @@
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 
-#include "base/android/build_info.h"
-#include "base/functional/callback_helpers.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/android/android_info.h"
+#include "base/logging.h"
 #include "base/native_library.h"
 #include "base/threading/thread_restrictions.h"
 #include "ui/gl/gl_context.h"
@@ -83,15 +82,7 @@ bool ClearGLErrors(bool warn, const char* msg) {
 namespace internal {
 
 ScopedAppGLStateRestoreImplAngle::ScopedAppGLStateRestoreImplAngle(
-    ScopedAppGLStateRestore::CallMode mode,
-    bool save_restore) {
-  base::ScopedClosureRunner uma_runner(base::BindOnce(
-      [](base::TimeTicks start_time) {
-        UMA_HISTOGRAM_TIMES("Android.WebView.Gfx.SaveHWUIStateDuration",
-                            base::TimeTicks::Now() - start_time);
-      },
-      base::TimeTicks::Now()));
-
+    ScopedAppGLStateRestore::CallMode mode) {
   os::InitializeGLBindings();
 
   os::ClearGLErrors(true, "Incoming GLError");
@@ -102,8 +93,8 @@ ScopedAppGLStateRestoreImplAngle::ScopedAppGLStateRestoreImplAngle(
 #endif
 
   if (mode == ScopedAppGLStateRestore::MODE_DRAW &&
-      base::android::BuildInfo::GetInstance()->sdk_int() ==
-          base::android::SDK_VERSION_S) {
+      base::android::android_info::sdk_int() ==
+          base::android::android_info::SDK_VERSION_S) {
     GLint red_bits = 0;
     GLint green_bits = 0;
     GLint blue_bits = 0;
@@ -149,16 +140,10 @@ ScopedAppGLStateRestoreImplAngle::ScopedAppGLStateRestoreImplAngle(
   // always 0.
   framebuffer_binding_ext_ = 0;
 
-  // There should be no gl::GLContext current.
-  DCHECK(!gl::GLContext::GetCurrent());
-
   os::ClearGLErrors(false, nullptr);
 }
 
 ScopedAppGLStateRestoreImplAngle::~ScopedAppGLStateRestoreImplAngle() {
-  // There should be no gl::GLContext current.
-  DCHECK(!gl::GLContext::GetCurrent());
-
 #if DCHECK_IS_ON()
   DCHECK_EQ(egl_context_, os::eglGetCurrentContextFn())
       << " the native context is changed.";

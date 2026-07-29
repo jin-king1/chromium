@@ -8,6 +8,7 @@
 #include "ash/shell.h"
 #include "ash/wm/window_state.h"
 #include "base/feature_list.h"
+#include "base/memory/weak_ptr.h"
 #include "base/test/power_monitor_test.h"
 #include "base/test/scoped_feature_list.h"
 #include "chromeos/ash/components/login/auth/auth_events_recorder.h"
@@ -24,12 +25,15 @@
 #include "components/exo/surface.h"
 #include "components/exo/test/exo_test_base.h"
 #include "components/exo/test/exo_test_helper.h"
+#include "components/exo/test/mock_security_delegate.h"
 #include "components/exo/test/shell_surface_builder.h"
+#include "components/exo/test/test_security_delegate.h"
 #include "components/exo/wm_helper.h"
 #include "components/fullscreen_control/fullscreen_control_popup.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/class_property.h"
+#include "ui/display/types/display_constants.h"
 #include "ui/gfx/animation/animation_test_api.h"
 #include "ui/wm/core/window_util.h"
 
@@ -47,6 +51,11 @@ aura::Window* GetTopLevelWindow(
   assert(top_level_widget);
   return top_level_widget->GetNativeWindow();
 }
+
+class PermissiveSecurityDelegate : public test::TestSecurityDelegate {
+ public:
+  bool CanSelfActivate(aura::Window* window) const override { return true; }
+};
 
 ash::WindowState* GetTopLevelWindowState(
     const std::unique_ptr<ShellSurface>& shell_surface) {
@@ -69,8 +78,15 @@ class MockPointerDelegate : public PointerDelegate {
   MOCK_METHOD3(OnPointerButton, void(base::TimeTicks, int, bool));
   MOCK_METHOD3(OnPointerScroll,
                void(base::TimeTicks, const gfx::Vector2dF&, bool));
-  MOCK_METHOD1(OnPointerScrollStop, void(base::TimeTicks));
+  MOCK_METHOD1(OnFingerScrollStop, void(base::TimeTicks));
   MOCK_METHOD0(OnPointerFrame, void());
+
+  base::WeakPtr<PointerDelegate> GetWeakPtr() override {
+    return weak_factory_.GetWeakPtr();
+  }
+
+ private:
+  base::WeakPtrFactory<MockPointerDelegate> weak_factory_{this};
 };
 
 class MockPointerConstraintDelegate : public PointerConstraintDelegate {
@@ -152,6 +168,7 @@ class UILockControllerTest : public test::ExoTestBase {
   }
 
   void TearDown() override {
+    auth_events_recorder_.reset();
     seat_.reset();
     test::ExoTestBase::TearDown();
   }
@@ -159,6 +176,7 @@ class UILockControllerTest : public test::ExoTestBase {
   std::unique_ptr<ShellSurface> BuildSurface(gfx::Point origin, int w, int h) {
     test::ShellSurfaceBuilder builder({w, h});
     builder.SetOrigin(origin);
+    builder.SetSecurityDelegate(&permissive_delegate_);
     return builder.BuildShellSurface();
   }
 
@@ -193,12 +211,13 @@ class UILockControllerTest : public test::ExoTestBase {
   std::unique_ptr<Seat> seat_;
   base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<ash::AuthEventsRecorder> auth_events_recorder_;
+  PermissiveSecurityDelegate permissive_delegate_;
 };
 
 TEST_F(UILockControllerTest, HoldingEscapeExitsFullscreen) {
-  std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
+  std::unique_ptr<ShellSurface> test_surface = BuildSurface(600, 400);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   auto* window_state = GetTopLevelWindowState(test_surface);
   EXPECT_TRUE(window_state->IsFullscreen());
@@ -215,7 +234,7 @@ TEST_F(UILockControllerTest, HoldingEscapeExitsFullscreen) {
 TEST_F(UILockControllerTest, HoldingCtrlEscapeDoesNotExitFullscreen) {
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   auto* window_state = GetTopLevelWindowState(test_surface);
   EXPECT_TRUE(window_state->IsFullscreen());
@@ -231,7 +250,7 @@ TEST_F(UILockControllerTest,
   // Do not set chromeos::kEscHoldToExitFullscreen on TopLevelWindow.
   test_surface->SetApplicationId(kNoEscHoldAppId);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   auto* window_state = GetTopLevelWindowState(test_surface);
   EXPECT_TRUE(window_state->IsFullscreen());
@@ -244,12 +263,12 @@ TEST_F(UILockControllerTest,
 TEST_F(UILockControllerTest, HoldingEscapeOnlyExitsFocusedFullscreen) {
   std::unique_ptr<ShellSurface> test_surface1 = BuildSurface(1024, 768);
   test_surface1->SetUseImmersiveForFullscreen(false);
-  test_surface1->SetFullscreen(true);
+  test_surface1->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface1->surface_for_testing()->Commit();
 
   std::unique_ptr<ShellSurface> test_surface2 = BuildSurface(1024, 768);
   test_surface2->SetUseImmersiveForFullscreen(false);
-  test_surface2->SetFullscreen(true);
+  test_surface2->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface2->surface_for_testing()->Commit();
 
   GetEventGenerator()->PressKey(ui::VKEY_ESCAPE, ui::EF_NONE);
@@ -262,7 +281,7 @@ TEST_F(UILockControllerTest, HoldingEscapeOnlyExitsFocusedFullscreen) {
 TEST_F(UILockControllerTest, DestroyingWindowCancels) {
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   auto* window_state = GetTopLevelWindowState(test_surface);
   EXPECT_TRUE(window_state->IsFullscreen());
@@ -284,7 +303,7 @@ TEST_F(UILockControllerTest, FocusChangeCancels) {
 
   std::unique_ptr<ShellSurface> fullscreen_surface = BuildSurface(1024, 768);
   fullscreen_surface->SetUseImmersiveForFullscreen(false);
-  fullscreen_surface->SetFullscreen(true);
+  fullscreen_surface->SetFullscreen(true, display::kInvalidDisplayId);
   fullscreen_surface->surface_for_testing()->Commit();
 
   EXPECT_EQ(fullscreen_surface->surface_for_testing(),
@@ -309,7 +328,7 @@ TEST_F(UILockControllerTest, FocusChangeCancels) {
 TEST_F(UILockControllerTest, ShortHoldEscapeDoesNotExitFullscreen) {
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   auto* window_state = GetTopLevelWindowState(test_surface);
 
@@ -324,7 +343,7 @@ TEST_F(UILockControllerTest, ShortHoldEscapeDoesNotExitFullscreen) {
 TEST_F(UILockControllerTest, FullScreenShowsEscNotification) {
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
 
   EXPECT_TRUE(GetTopLevelWindowState(test_surface)->IsFullscreen());
@@ -334,7 +353,7 @@ TEST_F(UILockControllerTest, FullScreenShowsEscNotification) {
 TEST_F(UILockControllerTest, EscNotificationClosesAfterDuration) {
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
 
   EXPECT_TRUE(GetEscNotification(test_surface));
@@ -345,7 +364,7 @@ TEST_F(UILockControllerTest, EscNotificationClosesAfterDuration) {
 TEST_F(UILockControllerTest, HoldingEscapeHidesNotification) {
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
 
   EXPECT_TRUE(GetTopLevelWindowState(test_surface)->IsFullscreen());
@@ -361,7 +380,7 @@ TEST_F(UILockControllerTest, HoldingEscapeHidesNotification) {
 TEST_F(UILockControllerTest, LosingFullscreenHidesNotification) {
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
 
   EXPECT_TRUE(GetTopLevelWindowState(test_surface)->IsFullscreen());
@@ -369,7 +388,7 @@ TEST_F(UILockControllerTest, LosingFullscreenHidesNotification) {
 
   // Have surface loose fullscreen, notification should now be hidden.
   test_surface->Minimize();
-  test_surface->SetFullscreen(false);
+  test_surface->SetFullscreen(false, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
 
   EXPECT_FALSE(GetTopLevelWindowState(test_surface)->IsFullscreen());
@@ -381,20 +400,20 @@ TEST_F(UILockControllerTest, LosingFullscreenHidesNotification) {
 TEST_F(UILockControllerTest, EscNotificationIsReshownIfInterrupted) {
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
 
   EXPECT_TRUE(GetEscNotification(test_surface));
 
   // Stop fullscreen.
-  test_surface->SetFullscreen(false);
+  test_surface->SetFullscreen(false, display::kInvalidDisplayId);
   EXPECT_FALSE(
       seat_->GetUILockControllerForTesting()->GetEscNotificationForTesting(
           GetTopLevelWindow(test_surface)));
 
   // Fullscreen should show notification since it did not stay visible for
   // duration.
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   EXPECT_TRUE(GetEscNotification(test_surface));
 
   // After duration, notification should be removed.
@@ -402,8 +421,8 @@ TEST_F(UILockControllerTest, EscNotificationIsReshownIfInterrupted) {
   EXPECT_FALSE(GetEscNotification(test_surface));
 
   // Notification is shown after fullscreen toggle.
-  test_surface->SetFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(false, display::kInvalidDisplayId);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   EXPECT_TRUE(GetEscNotification(test_surface));
 }
 
@@ -411,7 +430,7 @@ TEST_F(UILockControllerTest, EscNotificationIsReshownAfterUnlock) {
   // Arrange: Go fullscreen and time out the notification.
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   task_environment()->FastForwardBy(base::Seconds(10));
   // Ensure the notification did time out; if not, we can't trust the test
@@ -430,7 +449,7 @@ TEST_F(UILockControllerTest, EscNotificationReshownWhenScreenTurnedOn) {
   // Arrange: Set up a pointer capture notification, then let it expire.
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   task_environment()->FastForwardBy(base::Seconds(10));
   // Ensure the notification did time out; if not, we can't trust the test
@@ -454,7 +473,7 @@ TEST_F(UILockControllerTest, EscNotificationReshownWhenLidReopened) {
   // Arrange: Set up a pointer capture notification, then let it expire.
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   task_environment()->FastForwardBy(base::Seconds(10));
   // Ensure the notification did time out; if not, we can't trust the test
@@ -477,7 +496,7 @@ TEST_F(UILockControllerTest, EscNotificationShowsOnSecondaryDisplay) {
   std::unique_ptr<ShellSurface> test_surface =
       BuildSurface(gfx::Point(900, 100), 200, 200);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
 
   // Esc notification should be in secondary display.
@@ -702,7 +721,7 @@ TEST_F(UILockControllerTest, FullscreenNotificationHasPriority) {
 
   // Act: Go fullscreen.
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
 
   // Assert: Fullscreen notification overrides pointer notification.
@@ -710,7 +729,7 @@ TEST_F(UILockControllerTest, FullscreenNotificationHasPriority) {
   EXPECT_TRUE(GetEscNotification(test_surface));
 
   // Act: Exit fullscreen.
-  test_surface->SetFullscreen(false);
+  test_surface->SetFullscreen(false, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
 
   // Assert: Pointer notification returns, since it was interrupted.
@@ -721,7 +740,7 @@ TEST_F(UILockControllerTest, FullscreenNotificationHasPriority) {
 TEST_F(UILockControllerTest, ExitPopup) {
   std::unique_ptr<ShellSurface> test_surface = BuildSurface(1024, 768);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   auto* window_state = GetTopLevelWindowState(test_surface);
   EXPECT_TRUE(window_state->IsFullscreen());
@@ -777,7 +796,7 @@ TEST_F(UILockControllerTest, ExitPopupNotShownForOverviewCase) {
   // Set chromeos::kUseOverviewToExitFullscreen on TopLevelWindow.
   test_surface->SetApplicationId(kOverviewToExitAppId);
   test_surface->SetUseImmersiveForFullscreen(false);
-  test_surface->SetFullscreen(true);
+  test_surface->SetFullscreen(true, display::kInvalidDisplayId);
   test_surface->surface_for_testing()->Commit();
   EXPECT_FALSE(IsExitPopupVisible(GetTopLevelWindow(test_surface)));
 
@@ -795,7 +814,7 @@ TEST_F(UILockControllerTest, OnlyShowWhenActive) {
 
   // Surface2 is active when we make Surface1 fullscreen.
   // Esc notification, and exit popup should not be shown.
-  test_surface1->SetFullscreen(true);
+  test_surface1->SetFullscreen(true, display::kInvalidDisplayId);
   EXPECT_FALSE(GetEscNotification(test_surface1));
   GetEventGenerator()->MoveMouseTo(0, 2);
   EXPECT_FALSE(IsExitPopupVisible(GetTopLevelWindow(test_surface1)));

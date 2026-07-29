@@ -4,18 +4,23 @@
 
 #include "chrome/browser/extensions/extension_view_host_factory.h"
 
-#include "base/test/scoped_feature_list.h"
+#include <memory>
+
+#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/tab_list/tab_list_interface.h"
 #include "content/public/test/browser_test.h"
-#include "extensions/common/extension_features.h"
+#include "extensions/buildflags/buildflags.h"
+#include "extensions/common/extension.h"
 #include "extensions/common/mojom/view_type.mojom.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
-typedef ExtensionBrowserTest ExtensionViewHostFactoryTest;
+using ExtensionViewHostFactoryTest = ExtensionBrowserTest;
 
 // Tests that ExtensionHosts are created with the correct type and profiles.
 IN_PROC_BROWSER_TEST_F(ExtensionViewHostFactoryTest, CreateExtensionHosts) {
@@ -26,41 +31,23 @@ IN_PROC_BROWSER_TEST_F(ExtensionViewHostFactoryTest, CreateExtensionHosts) {
                         .AppendASCII("none"));
   ASSERT_TRUE(extension.get());
 
-  content::BrowserContext* browser_context = browser()->profile();
-  {
-    // Popup hosts are created with the correct type and profile.
-    std::unique_ptr<ExtensionViewHost> host =
-        ExtensionViewHostFactory::CreatePopupHost(extension->url(), browser());
-    EXPECT_EQ(extension.get(), host->extension());
-    EXPECT_EQ(browser_context, host->browser_context());
-    EXPECT_EQ(mojom::ViewType::kExtensionPopup, host->extension_host_type());
-  }
+  content::BrowserContext* browser_context = profile();
 
-  {
-    // Dialog hosts are created with the correct type and profile.
-    std::unique_ptr<ExtensionViewHost> host =
-        ExtensionViewHostFactory::CreateDialogHost(extension->url(),
-                                                   browser()->profile());
-    EXPECT_EQ(extension.get(), host->extension());
-    EXPECT_EQ(browser_context, host->browser_context());
-    EXPECT_EQ(mojom::ViewType::kExtensionDialog, host->extension_host_type());
-  }
+  // Popup hosts are created with the correct type and profile.
+  std::unique_ptr<ExtensionViewHost> host =
+      ExtensionViewHostFactory::CreatePopupHost(*extension, extension->url(),
+                                                GetBrowserWindowInterface());
+  EXPECT_EQ(extension.get(), host->extension());
+  EXPECT_EQ(browser_context, host->browser_context());
+  EXPECT_EQ(mojom::ViewType::kExtensionPopup, host->extension_host_type());
 }
 
-class ExtensionSidePanelViewHostFactoryTest : public ExtensionBrowserTest {
- public:
-  ExtensionSidePanelViewHostFactoryTest() {
-    feature_list_.InitAndEnableFeature(
-        extensions_features::kExtensionSidePanelIntegration);
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
+// TODO(crbug.com/458688998): Desktop Android doesn't support side panel yet.
+#if BUILDFLAG(ENABLE_EXTENSIONS)
 
 // Tests that side panel hosts are created with the correct profile and
 // browsers.
-IN_PROC_BROWSER_TEST_F(ExtensionSidePanelViewHostFactoryTest,
+IN_PROC_BROWSER_TEST_F(ExtensionViewHostFactoryTest,
                        CreateExtensionSidePanelHost) {
   // Load a very simple extension with just a background page.
   scoped_refptr<const Extension> extension =
@@ -69,33 +56,35 @@ IN_PROC_BROWSER_TEST_F(ExtensionSidePanelViewHostFactoryTest,
                         .AppendASCII("simple_default"));
   ASSERT_TRUE(extension.get());
 
-  content::BrowserContext* browser_context = browser()->profile();
+  content::BrowserContext* browser_context = profile();
 
   {
     // Create a side panel host with a browser passed in.
     std::unique_ptr<ExtensionViewHost> host =
-        ExtensionViewHostFactory::CreateSidePanelHost(extension->url(),
-                                                      browser(),
-                                                      /*web_contents=*/nullptr);
+        ExtensionViewHostFactory::CreateSidePanelHost(
+            *extension, extension->url(), browser(),
+            /*tab_interface=*/nullptr);
     EXPECT_EQ(extension.get(), host->extension());
     EXPECT_EQ(browser_context, host->browser_context());
-    EXPECT_EQ(browser(), host->GetBrowser());
     EXPECT_EQ(mojom::ViewType::kExtensionSidePanel,
               host->extension_host_type());
   }
 
   {
     // Create a side panel host with a tab based WebContents passed in.
+    auto* browser = GetBrowserWindowInterface();
+    auto* tab_list = TabListInterface::From(browser);
+    auto* active_tab = tab_list->GetActiveTab();
     std::unique_ptr<ExtensionViewHost> host =
         ExtensionViewHostFactory::CreateSidePanelHost(
-            extension->url(), /*browser=*/nullptr,
-            browser()->tab_strip_model()->GetActiveWebContents());
+            *extension, extension->url(), /*browser=*/nullptr, active_tab);
     EXPECT_EQ(extension.get(), host->extension());
     EXPECT_EQ(browser_context, host->browser_context());
-    EXPECT_EQ(browser(), host->GetBrowser());
     EXPECT_EQ(mojom::ViewType::kExtensionSidePanel,
               host->extension_host_type());
   }
 }
+
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
 }  // namespace extensions

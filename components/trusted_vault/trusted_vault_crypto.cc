@@ -4,8 +4,12 @@
 
 #include "components/trusted_vault/trusted_vault_crypto.h"
 
+#include <array>
+
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "components/trusted_vault/securebox.h"
+#include "crypto/hash.h"
 #include "crypto/hmac.h"
 
 namespace trusted_vault {
@@ -18,7 +22,7 @@ const uint8_t kWrappedKeyHeader[] = {'V', '1', ' ', 's', 'h', 'a', 'r',
 
 }  // namespace
 
-absl::optional<std::vector<uint8_t>> DecryptTrustedVaultWrappedKey(
+std::optional<std::vector<uint8_t>> DecryptTrustedVaultWrappedKey(
     const SecureBoxPrivateKey& private_key,
     base::span<const uint8_t> wrapped_key) {
   return private_key.Decrypt(
@@ -34,32 +38,34 @@ std::vector<uint8_t> ComputeTrustedVaultWrappedKey(
       /*payload=*/trusted_vault_key);
 }
 
-std::vector<uint8_t> ComputeMemberProof(
+std::array<uint8_t, crypto::hash::kSha256Size> ComputeMemberProof(
     const SecureBoxPublicKey& key,
-    const std::vector<uint8_t>& trusted_vault_key) {
-  crypto::HMAC hmac(crypto::HMAC::SHA256);
-  CHECK(hmac.Init(trusted_vault_key));
-
-  std::vector<uint8_t> member_proof(kHMACDigestLength);
-  CHECK(hmac.Sign(key.ExportToBytes(), member_proof));
-  return member_proof;
+    base::span<const uint8_t> trusted_vault_key) {
+  return crypto::hmac::SignSha256(trusted_vault_key, key.ExportToBytes());
 }
 
 bool VerifyMemberProof(const SecureBoxPublicKey& key,
-                       const std::vector<uint8_t>& trusted_vault_key,
-                       const std::vector<uint8_t>& member_proof) {
-  crypto::HMAC hmac(crypto::HMAC::SHA256);
-  CHECK(hmac.Init(trusted_vault_key));
-  return hmac.Verify(key.ExportToBytes(), member_proof);
+                       base::span<const uint8_t> trusted_vault_key,
+                       base::span<const uint8_t> member_proof) {
+  auto proof = member_proof.to_fixed_extent<kHMACDigestLength>();
+  if (!proof) {
+    return false;
+  }
+  return crypto::hmac::VerifySha256(trusted_vault_key, key.ExportToBytes(),
+                                    *proof);
 }
 
-std::vector<uint8_t> ComputeRotationProofForTesting(  // IN-TEST
+std::vector<uint8_t> ComputeRotationProof(
     const std::vector<uint8_t>& trusted_vault_key,
     const std::vector<uint8_t>& prev_trusted_vault_key) {
+  // This constant payload is added because of crbug.com/192545331, and to stay
+  // consistent with rotation proof computation on other platforms.
+  // The payload is irrelevant for validating the rotation proof.
+  const uint8_t kPayload[] = {0x00};
   return SecureBoxSymmetricEncrypt(
       /*shared_secret=*/prev_trusted_vault_key,
       /*header=*/trusted_vault_key,
-      /*payload=*/base::span<uint8_t>());
+      /*payload=*/kPayload);
 }
 
 bool VerifyRotationProof(const std::vector<uint8_t>& trusted_vault_key,

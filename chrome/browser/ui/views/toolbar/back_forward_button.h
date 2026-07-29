@@ -13,9 +13,9 @@
 class Browser;
 
 class BackForwardButton : public ToolbarButton {
- public:
-  METADATA_HEADER(BackForwardButton);
+  METADATA_HEADER(BackForwardButton, ToolbarButton)
 
+ public:
   enum class Direction { kBack, kForward };
 
   BackForwardButton(Direction direction,
@@ -30,6 +30,7 @@ class BackForwardButton : public ToolbarButton {
   void NotifyClick(const ui::Event& event) override;
   void StateChanged(ButtonState old_state) override;
   void OnMouseEntered(const ui::MouseEvent& event) override;
+  bool OnMousePressed(const ui::MouseEvent& event) override;
   bool ShouldShowInkdropAfterIphInteraction() override;
 
   const std::u16string GetAccessiblePageLoadingMessage();

@@ -36,12 +36,12 @@ namespace blink {
 HTMLLegendElement::HTMLLegendElement(Document& document)
     : HTMLElement(html_names::kLegendTag, document) {}
 
-HTMLFormElement* HTMLLegendElement::form() const {
+HTMLElement* HTMLLegendElement::formForBinding() const {
   // According to the specification, If the legend has a fieldset element as
   // its parent, then the form attribute must return the same value as the
   // form attribute on that fieldset element. Otherwise, it must return null.
   if (auto* fieldset = DynamicTo<HTMLFieldSetElement>(parentNode()))
-    return fieldset->formOwner();
+    return fieldset->formForBinding();
   return nullptr;
 }
 
@@ -59,7 +59,7 @@ LayoutObject* HTMLLegendElement::CreateLayoutObject(
   // CollectStyleForPresentationAttribute()|.
   bool should_count;
   const AtomicString& align_value =
-      FastGetAttribute(html_names::kAlignAttr).LowerASCII();
+      FastGetAttribute(html_names::kAlignAttr).ToAsciiLower();
   switch (style.GetTextAlign()) {
     case ETextAlign::kLeft:
       should_count = align_value != "left";

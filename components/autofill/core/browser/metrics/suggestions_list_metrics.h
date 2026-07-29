@@ -5,32 +5,34 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_SUGGESTIONS_LIST_METRICS_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_SUGGESTIONS_LIST_METRICS_H_
 
+#include <stddef.h>
+
+#include "base/containers/span.h"
+#include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/suggestions/suggestion_type.h"
+
 namespace autofill {
-enum class PopupType;
+class AutofillField;
+enum class FillingProduct;
 
 namespace autofill_metrics {
 
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-// Keep enum up to date with AutofillSuggestionManageType in
-// tools/metrics/histograms/enums.xml.
-// Used by LogAutofillSelectedManageEntry().
-enum class ManageSuggestionType {
-  kOther = 0,
-  kPersonalInformation = 1,
-  kAddresses = 2,
-  kPaymentMethodsCreditCards = 3,
-  kPaymentMethodsIbans = 4,
-  kMaxValue = kPaymentMethodsIbans,
-};
+// Log the number of Autofill suggestions for the given
+// `filling_product`presented to the user when displaying the autofill popup.
+void LogSuggestionsCount(size_t num_suggestions,
+                         FillingProduct filling_product);
 
 // Log the index of the selected Autofill suggestion in the popup.
-void LogAutofillSuggestionAcceptedIndex(int index,
-                                        autofill::PopupType popup_type,
-                                        bool off_the_record);
+void LogSuggestionAcceptedIndex(
+    int index,
+    FillingProduct filling_product,
+    bool off_the_record,
+    base::span<const SuggestionType> shown_suggestion_types);
 
-// Logs that the user selected 'Manage...' settings entry in the popup.
-void LogAutofillSelectedManageEntry(autofill::PopupType popup_type);
+// Logs metrics related to an autofill on typing suggestion being accepted.
+void LogAddressAutofillOnTypingSuggestionAccepted(
+    FieldType field_type_used,
+    const AutofillField* autofill_trigger_field);
 
 }  // namespace autofill_metrics
 }  // namespace autofill

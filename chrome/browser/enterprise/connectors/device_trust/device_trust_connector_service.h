@@ -12,7 +12,8 @@
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "base/values.h"
-#include "chrome/browser/enterprise/connectors/device_trust/common/common_types.h"
+#include "components/device_signals/core/browser/user_delegate.h"
+#include "components/enterprise/device_trust/core/common_types.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
 
@@ -27,7 +28,9 @@ namespace enterprise_connectors {
 
 // Keyed-Service in charge of monitoring the status of the Device Trust
 // connector (e.g. enabled or not).
-class DeviceTrustConnectorService : public KeyedService {
+class DeviceTrustConnectorService
+    : public KeyedService,
+      public device_signals::UserDelegate::SignalsDependencyDelegate {
  public:
   // Classes extending this class can be added as observers to Device Trust
   // connector status changes.
@@ -38,7 +41,7 @@ class DeviceTrustConnectorService : public KeyedService {
     virtual void OnInlinePolicyDisabled(DTCPolicyLevel level) {}
 
    protected:
-    virtual ~PolicyObserver() {}
+    virtual ~PolicyObserver() = default;
   };
 
   explicit DeviceTrustConnectorService(PrefService* profile_prefs);
@@ -59,8 +62,8 @@ class DeviceTrustConnectorService : public KeyedService {
   // Adds `observer` to the list of owned policy observers.
   void AddObserver(std::unique_ptr<PolicyObserver> observer);
 
-  // Returns the policy levels the service is enabled for.
-  const std::set<DTCPolicyLevel> GetEnabledInlinePolicyLevels() const;
+  // UserDelegate::SignalsDependencyDelegate::
+  const std::set<DTCPolicyLevel> GetSignalsPolicyScope() const override;
 
  private:
   // Contains details relating to a policy.
@@ -87,16 +90,12 @@ class DeviceTrustConnectorService : public KeyedService {
   // updated.
   void OnPolicyUpdated(const DTCPolicyLevel& level, const std::string& pref);
 
-  // Called when the DTC policies values change in Prefs for the
-  // ContextAwareAccessSignalsAllowlist policy.
-  void OnOriginalPolicyUpdated();
-
   // Functions used to propagate an update to all observers.
   void OnInlinePolicyEnabled(DTCPolicyLevel level);
   void OnInlinePolicyDisabled(DTCPolicyLevel level);
 
   // Gets a list of URLs from the specified `pref`.
-  const base::Value::List* GetPolicyUrlPatterns(const std::string& pref) const;
+  const base::ListValue* GetPolicyUrlPatterns(const std::string& pref) const;
 
   PrefChangeRegistrar pref_observer_;
 

@@ -9,11 +9,14 @@
 
 #include <string>
 
-#include "base/memory/ref_counted.h"
-#include "build/chromeos_buildflags.h"
+#include "base/memory/scoped_refptr.h"
 #include "chrome/common/extensions/api/page_capture.h"
+#include "extensions/browser/extension_api_frame_id_map.h"
 #include "extensions/browser/extension_function.h"
+#include "extensions/buildflags/buildflags.h"
 #include "storage/browser/blob/shareable_file_reference.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace base {
 class FilePath;
@@ -39,17 +42,16 @@ class PageCaptureSaveAsMHTMLFunction : public ExtensionFunction {
   };
   static void SetTestDelegate(TestDelegate* delegate);
 
-  // ExtensionFunction:
-  void OnServiceWorkerAck() override;
-
  private:
+  // ExtensionFunction:
   ~PageCaptureSaveAsMHTMLFunction() override;
   ResponseAction Run() override;
-  bool OnMessageReceived(const IPC::Message& message) override;
+  void OnResponseAck() override;
 
   // Returns whether or not the extension has permission to capture the current
   // page. Sets |*error| to an error value on failure.
-  bool CanCaptureCurrentPage(std::string* error);
+  bool CanCaptureCurrentPage(content::WebContents& web_contents,
+                             std::string* error);
 
   // Called on the file thread.
   void CreateTemporaryFile();
@@ -67,7 +69,11 @@ class PageCaptureSaveAsMHTMLFunction : public ExtensionFunction {
   // Returns the WebContents we are associated with, NULL if it's been closed.
   content::WebContents* GetWebContents();
 
-  absl::optional<extensions::api::page_capture::SaveAsMHTML::Params> params_;
+  // The document ID for the page being captured. Used to check that the page
+  // hasn't navigated before the capture completes.
+  ExtensionApiFrameIdMap::DocumentId document_id_;
+
+  std::optional<extensions::api::page_capture::SaveAsMHTML::Params> params_;
 
   // The path to the temporary file containing the MHTML data.
   base::FilePath mhtml_path_;

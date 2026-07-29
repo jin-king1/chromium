@@ -13,12 +13,12 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
+#include "chromeos/ash/components/dbus/session_manager/policy_descriptor.h"
+#include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "components/ownership/owner_key_util.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/proto/chrome_device_policy.pb.h"
 #include "components/policy/proto/device_management_backend.pb.h"
-#include "crypto/rsa_private_key.h"
-#include "crypto/signature_creator.h"
 
 using ownership::OwnerKeyUtil;
 using ownership::PublicKey;
@@ -27,13 +27,19 @@ namespace em = enterprise_management;
 
 namespace ash {
 
+namespace {
+
+constexpr char kEmptyAccountId[] = "";
+
+}  // namespace
+
 using RetrievePolicyResponseType =
     SessionManagerClient::RetrievePolicyResponseType;
 
 SessionManagerOperation::SessionManagerOperation(Callback callback)
     : callback_(std::move(callback)) {}
 
-SessionManagerOperation::~SessionManagerOperation() {}
+SessionManagerOperation::~SessionManagerOperation() = default;
 
 void SessionManagerOperation::Start(
     SessionManagerClient* session_manager_client,
@@ -123,7 +129,17 @@ void SessionManagerOperation::StorePublicKey(base::OnceClosure callback,
   public_key_ = new_key;
 
   if (!public_key_ || public_key_->is_empty()) {
-    ReportResult(DeviceSettingsService::STORE_KEY_UNAVAILABLE);
+    if (!InstallAttributes::IsInitialized()) {
+      // Too early in boot process. Unexpected.
+      ReportResult(DeviceSettingsService::STORE_KEY_UNAVAILABLE_NOT_INITIALIZED);
+    } else if (!InstallAttributes::Get()->IsDeviceLocked()) {
+      // Device ownership not taken yet.
+      ReportResult(DeviceSettingsService::STORE_KEY_UNAVAILABLE_NOT_LOCKED);
+    } else if (InstallAttributes::Get()->IsEnterpriseManaged()) {
+      ReportResult(DeviceSettingsService::STORE_KEY_UNAVAILABLE_MANAGED);
+    } else {
+      ReportResult(DeviceSettingsService::STORE_KEY_UNAVAILABLE);
+    }
     return;
   }
 
@@ -131,15 +147,23 @@ void SessionManagerOperation::StorePublicKey(base::OnceClosure callback,
 }
 
 void SessionManagerOperation::RetrieveDeviceSettings() {
-  session_manager_client()->RetrieveDevicePolicy(
+  login_manager::PolicyDescriptor descriptor = ash::MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_DEVICE, login_manager::POLICY_DOMAIN_CHROME,
+      kEmptyAccountId);
+  session_manager_client()->RetrievePolicy(
+      descriptor,
       base::BindOnce(&SessionManagerOperation::ValidateDeviceSettings,
                      weak_factory_.GetWeakPtr()));
 }
 
 void SessionManagerOperation::BlockingRetrieveDeviceSettings() {
   std::string policy_blob;
+  login_manager::PolicyDescriptor descriptor = ash::MakePolicyDescriptor(
+      login_manager::ACCOUNT_TYPE_DEVICE, login_manager::POLICY_DOMAIN_CHROME,
+      kEmptyAccountId);
   RetrievePolicyResponseType response =
-      session_manager_client()->BlockingRetrieveDevicePolicy(&policy_blob);
+      session_manager_client()->BlockingRetrievePolicy(descriptor,
+                                                       &policy_blob);
   ValidateDeviceSettings(response, policy_blob);
 }
 
@@ -192,7 +216,7 @@ void SessionManagerOperation::ValidateDeviceSettings(
     validator->RunValidation();
     ReportValidatorStatus(validator.get());
   } else {
-    policy::DeviceCloudPolicyValidator::StartValidation(
+    policy::CloudPolicyValidatorBase::StartValidation(
         std::move(validator),
         base::BindOnce(&SessionManagerOperation::ReportValidatorStatus,
                        weak_factory_.GetWeakPtr()));
@@ -200,11 +224,13 @@ void SessionManagerOperation::ValidateDeviceSettings(
 }
 
 void SessionManagerOperation::ReportValidatorStatus(
-    policy::DeviceCloudPolicyValidator* validator) {
+    policy::CloudPolicyValidatorBase* validator) {
   if (validator->success()) {
     policy_fetch_response_ = std::move(validator->policy());
     policy_data_ = std::move(validator->policy_data());
-    device_settings_ = std::move(validator->payload());
+    auto* typed_validator =
+        static_cast<policy::DeviceCloudPolicyValidator*>(validator);
+    device_settings_ = std::move(typed_validator->payload());
     ReportResult(DeviceSettingsService::STORE_SUCCESS);
   } else {
     LOG(ERROR) << "Policy validation failed: " << validator->status() << " ("
@@ -223,7 +249,7 @@ LoadSettingsOperation::LoadSettingsOperation(bool force_key_load,
   force_immediate_load_ = force_immediate_load;
 }
 
-LoadSettingsOperation::~LoadSettingsOperation() {}
+LoadSettingsOperation::~LoadSettingsOperation() = default;
 
 void LoadSettingsOperation::Run() {
   if (force_immediate_load_)
@@ -241,7 +267,7 @@ StoreSettingsOperation::StoreSettingsOperation(
     force_key_load_ = true;
 }
 
-StoreSettingsOperation::~StoreSettingsOperation() {}
+StoreSettingsOperation::~StoreSettingsOperation() = default;
 
 void StoreSettingsOperation::Run() {
   session_manager_client()->StoreDevicePolicy(

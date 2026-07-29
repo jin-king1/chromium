@@ -8,7 +8,7 @@ For more details on the API see:
 https://chromium.googlesource.com/catapult.git/+/HEAD/dashboard/dashboard/api/README.md
 """
 
-import six.moves.urllib.parse  # pylint: disable=import-error
+import urllib.parse
 
 from core.services import request
 
@@ -69,7 +69,7 @@ def Timeseries2(**kwargs):
 def Timeseries(test_path, days=30):
   """Get timeseries for the given test path.
 
-  TODO(crbug.com/907121): Remove when no longer needed.
+  TODO(crbug.com/40603244): Remove when no longer needed.
 
   Args:
     test_path: test path to get timeseries for.
@@ -82,8 +82,7 @@ def Timeseries(test_path, days=30):
     KeyError if the test_path is not found.
   """
   try:
-    return Request('/api/timeseries/%s' %
-                   six.moves.urllib.parse.quote(test_path),
+    return Request('/api/timeseries/%s' % urllib.parse.quote(test_path),
                    params={'num_days': days})
   except request.ClientError as exc:
     if 'Invalid test_path' in exc.json['error']:
@@ -94,7 +93,7 @@ def Timeseries(test_path, days=30):
 def ListTestPaths(test_suite, sheriff):
   """Lists test paths for the given test_suite.
 
-  TODO(crbug.com/907121): Remove when no longer needed.
+  TODO(crbug.com/40603244): Remove when no longer needed.
 
   Args:
     test_suite: String with test suite to get paths for.

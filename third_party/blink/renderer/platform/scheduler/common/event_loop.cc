@@ -6,36 +6,61 @@
 
 #include <utility>
 
+#include "base/check.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/weak_ptr.h"
 #include "base/trace_event/trace_event.h"
+#include "third_party/blink/renderer/platform/bindings/cpp_heap_external_tag.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
-#include "third_party/blink/renderer/platform/scheduler/common/features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_or_worker_scheduler.h"
+#include "third_party/blink/renderer/platform/scheduler/public/task_attribution_tracker.h"
+#include "v8/include/v8-cpp-heap-external.h"
 #include "v8/include/v8.h"
 
 namespace blink {
 namespace scheduler {
 
-EventLoop::EventLoop(EventLoop::Delegate* delegate,
+class EventLoopMicrotaskWrapper final
+    : public GarbageCollected<EventLoopMicrotaskWrapper> {
+ public:
+  explicit EventLoopMicrotaskWrapper(base::WeakPtr<EventLoop> loop)
+      : loop_(std::move(loop)) {}
+
+  void Trace(Visitor* visitor) const {}
+
+  base::WeakPtr<EventLoop> GetEventLoop() const { return loop_; }
+
+ private:
+  base::WeakPtr<EventLoop> loop_;
+};
+
+EventLoop::PauseMicrotasksHandle::~PauseMicrotasksHandle() {
+  CHECK_GT(loop_->microtasks_pause_count_, 0);
+  --loop_->microtasks_pause_count_;
+}
+
+EventLoop::EventLoop(Delegate* delegate,
                      v8::Isolate* isolate,
-                     std::unique_ptr<v8::MicrotaskQueue> microtask_queue)
+#ifdef V8_CPPGC_MICROTASK_QUEUE
+                     v8::MicrotaskQueue* microtask_queue
+#else
+                     std::unique_ptr<v8::MicrotaskQueue> microtask_queue
+#endif
+                     )
     : delegate_(delegate),
       isolate_(isolate),
-      // TODO(keishi): Create MicrotaskQueue to enable per-EventLoop microtask
-      // queue.
-      microtask_queue_(std::move(microtask_queue)),
-      reject_promises_on_completion_(
-          microtask_queue_ &&
-          base::FeatureList::IsEnabled(
-              kMicrotaskQueueRejectPromisesOnEachCompletion)) {
+#ifdef V8_CPPGC_MICROTASK_QUEUE
+      microtask_queue_(microtask_queue)
+#else
+      microtask_queue_(std::move(microtask_queue))
+#endif
+{
   DCHECK(isolate_);
   DCHECK(delegate);
+  DCHECK(microtask_queue_);
 
-  if (reject_promises_on_completion_) {
-    // We need to always have a completion callback.
-    AddCompletedCallbackIfNecessary();
-  }
+  microtask_queue_->AddMicrotasksCompletedCallback(
+      &EventLoop::RunEndOfCheckpointTasks, this);
 }
 
 EventLoop::~EventLoop() {
@@ -44,56 +69,29 @@ EventLoop::~EventLoop() {
 
 void EventLoop::EnqueueMicrotask(base::OnceClosure task) {
   pending_microtasks_.push_back(std::move(task));
-  if (microtask_queue_) {
-    // Since the microtask queue won't outlive this object we do not need
-    // to increment a ref count.
-    microtask_queue_->EnqueueMicrotask(isolate_,
-                                       &EventLoop::RunPendingMicrotask, this);
-  } else {
-    // Since we are handing out a ptr to this object to an object that can
-    // outlive this object increment the ref count. It will be decremented after
-    // the task runs. See `RunPendingMicrotask` for the decrement.
-    AddRef();
-    isolate_->EnqueueMicrotask(&EventLoop::RunPendingMicrotask, this);
+  v8::HandleScope handle_scope(isolate_);
+
+  if (microtask_data_.IsEmpty()) {
+    // Create the wrapper lazily on the first use.
+    EventLoopMicrotaskWrapper* wrapper =
+        MakeGarbageCollected<EventLoopMicrotaskWrapper>(
+            weak_ptr_factory_.GetWeakPtr());
+    v8::Local<v8::CppHeapExternal> data = v8::CppHeapExternal::New(
+        isolate_, wrapper,
+        static_cast<v8::CppHeapPointerTag>(
+            CppHeapExternalTag::kEventLoopMicrotaskWrapperTag));
+    microtask_data_.Reset(isolate_, data);
   }
-  AddCompletedCallbackIfNecessary();
+
+  microtask_queue_->EnqueueMicrotask(isolate_, &EventLoop::RunPendingMicrotask,
+                                     microtask_data_.Get(isolate_));
 }
 
 void EventLoop::EnqueueEndOfMicrotaskCheckpointTask(base::OnceClosure task) {
   end_of_checkpoint_tasks_.push_back(std::move(task));
-  AddCompletedCallbackIfNecessary();
-}
-
-void EventLoop::AddCompletedCallbackIfNecessary() {
-  if (register_complete_callback_)
-    return;
-  register_complete_callback_ = true;
-  if (microtask_queue_) {
-    microtask_queue_->AddMicrotasksCompletedCallback(
-        &EventLoop::RunEndOfCheckpointTasks, this);
-  } else {
-    // Since we are handing out a ptr to this object to an object that can
-    // outlive this object increment the ref count. It will be decremented
-    // after the task runs. See `RunEndOfCheckpointTasks` for the decrement.
-    AddRef();
-    isolate_->AddMicrotasksCompletedCallback(
-        &EventLoop::RunEndOfCheckpointTasks, this);
-  }
 }
 
 void EventLoop::RunEndOfMicrotaskCheckpointTasks() {
-  // When `reject_promises_on_completeion_` is true we do not deregister
-  // the callback.
-  if (!reject_promises_on_completion_) {
-    register_complete_callback_ = false;
-    if (microtask_queue_) {
-      microtask_queue_->RemoveMicrotasksCompletedCallback(
-          &EventLoop::RunEndOfCheckpointTasks, this);
-    } else {
-      isolate_->RemoveMicrotasksCompletedCallback(
-          &EventLoop::RunEndOfCheckpointTasks, this);
-    }
-  }
   if (!pending_microtasks_.empty()) {
     // We are discarding microtasks here. This implies that the microtask
     // execution was interrupted by the debugger. V8 expects that any pending
@@ -101,7 +99,7 @@ void EventLoop::RunEndOfMicrotaskCheckpointTasks() {
     pending_microtasks_.clear();
   }
 
-  if (reject_promises_on_completion_ && delegate_) {
+  if (delegate_) {
     // 4. For each environment settings object whose responsible event loop is
     // this event loop, notify about rejected promises on that environment
     // settings object.
@@ -117,44 +115,16 @@ void EventLoop::RunEndOfMicrotaskCheckpointTasks() {
 }
 
 void EventLoop::PerformMicrotaskCheckpoint() {
-  if (ScriptForbiddenScope::IsScriptForbidden())
+  if (AreMicrotasksPaused() || ScriptForbiddenScope::IsScriptForbidden()) {
     return;
-  if (RuntimeEnabledFeatures::BlinkLifecycleScriptForbiddenEnabled()) {
-    CHECK(!ScriptForbiddenScope::WillBeScriptForbidden());
-  } else {
-    DCHECK(!ScriptForbiddenScope::WillBeScriptForbidden());
   }
 
-  if (microtask_queue_) {
-    microtask_queue_->PerformCheckpoint(isolate_);
-  } else {
-    v8::MicrotasksScope::PerformCheckpoint(isolate_);
-  }
+  microtask_queue_->PerformCheckpoint(isolate_);
 }
 
 // static
 void EventLoop::PerformIsolateGlobalMicrotasksCheckpoint(v8::Isolate* isolate) {
   v8::MicrotasksScope::PerformCheckpoint(isolate);
-}
-
-void EventLoop::Disable() {
-  loop_enabled_ = false;
-
-  for (auto* scheduler : schedulers_) {
-    scheduler->SetPreemptedForCooperativeScheduling(
-        FrameOrWorkerScheduler::Preempted(true));
-  }
-  // TODO(keishi): Disable microtaskqueue too.
-}
-
-void EventLoop::Enable() {
-  loop_enabled_ = true;
-
-  for (auto* scheduler : schedulers_) {
-    scheduler->SetPreemptedForCooperativeScheduling(
-        FrameOrWorkerScheduler::Preempted(false));
-  }
-  // TODO(keishi): Enable microtaskqueue too.
 }
 
 void EventLoop::AttachScheduler(FrameOrWorkerScheduler* scheduler) {
@@ -173,30 +143,39 @@ bool EventLoop::IsSchedulerAttachedForTest(FrameOrWorkerScheduler* scheduler) {
   return schedulers_.Contains(scheduler);
 }
 
+std::unique_ptr<EventLoop::PauseMicrotasksHandle> EventLoop::PauseMicrotasks() {
+  return base::WrapUnique(new PauseMicrotasksHandle(this));
+}
+
 // static
-void EventLoop::RunPendingMicrotask(void* data) {
+void EventLoop::RunPendingMicrotask(v8::Local<v8::Data> data) {
   TRACE_EVENT0("renderer.scheduler", "RunPendingMicrotask");
-  auto* self = static_cast<EventLoop*>(data);
+
+  EventLoopMicrotaskWrapper* wrapper =
+      data.As<v8::CppHeapExternal>()->Value<EventLoopMicrotaskWrapper>(
+          v8::Isolate::GetCurrent(),
+          static_cast<v8::CppHeapPointerTag>(
+              CppHeapExternalTag::kEventLoopMicrotaskWrapperTag));
+
+  base::WeakPtr<EventLoop> loop = wrapper->GetEventLoop();
+  // Must be alive, short of in-sandbox corruption to substitute an old wrapper
+  // that points to an already-destroyed event loop.
+  CHECK(loop);
+  EventLoop* self = loop.get();
+  // We must be called exactly once per a pending queue item, unless in-sandbox
+  // corruption substituted a wrapper to a wrong loop.
+  CHECK(!self->pending_microtasks_.empty());
+
   base::OnceClosure task = std::move(self->pending_microtasks_.front());
   self->pending_microtasks_.pop_front();
+  TaskAttributionTracker::MicrotaskTraceScope scope(self->isolate_);
   std::move(task).Run();
-
-  // If we had incremented the ref count decrement it. See `EnqueueMicrotask`.
-  if (!self->microtask_queue_) {
-    self->Release();
-  }
 }
 
 // static
 void EventLoop::RunEndOfCheckpointTasks(v8::Isolate* isolate, void* data) {
   auto* self = static_cast<EventLoop*>(data);
   self->RunEndOfMicrotaskCheckpointTasks();
-
-  // If we had incremented the ref count decrement it. See
-  // `EnqueueEndOfMicrotaskCheckpointTask`.
-  if (!self->microtask_queue_) {
-    self->Release();
-  }
 }
 
 }  // namespace scheduler

@@ -8,8 +8,9 @@ set(LLVM_LINK_COMPONENTS
 
 add_llvm_executable(rewrite_templated_container_fields
   RewriteTemplatedPtrFields.cpp
-  ../plugins/Util.cpp
-  ../plugins/RawPtrHelpers.cpp
+  ../raw_ptr_plugin/Util.cpp
+  ../raw_ptr_plugin/RawPtrHelpers.cpp
+  ../raw_ptr_plugin/RawPtrManualPathsToIgnore.cpp
   )
 
 target_link_libraries(rewrite_templated_container_fields
@@ -28,4 +29,4 @@ target_link_libraries(rewrite_templated_container_fields
   )
 
 cr_install(TARGETS rewrite_templated_container_fields RUNTIME DESTINATION bin)
-target_include_directories(rewrite_templated_container_fields PUBLIC "../plugins")
+target_include_directories(rewrite_templated_container_fields PUBLIC "../raw_ptr_plugin")

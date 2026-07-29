@@ -16,7 +16,6 @@
 #include "third_party/blink/renderer/platform/bindings/scoped_persistent.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
-#include "third_party/blink/renderer/platform/bindings/v8_binding_macros.h"
 #include "third_party/blink/renderer/platform/scheduler/public/event_loop.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -31,17 +30,18 @@ class ReadableStreamBytesConsumer::BytesConsumerReadRequest final
       : consumer_(consumer) {}
 
   void ChunkSteps(ScriptState* script_state,
-                  v8::Local<v8::Value> chunk) const override {
+                  v8::Local<v8::Value> chunk,
+                  ExceptionState& exception_state) const override {
     if (!chunk->IsUint8Array()) {
       consumer_->OnRejected();
       return;
     }
     ScriptState::Scope scope(script_state);
-    NonThrowableExceptionState exception_state;
     consumer_->OnRead(
         NativeValueTraits<MaybeShared<DOMUint8Array>>::NativeValue(
             script_state->GetIsolate(), chunk, exception_state)
             .Get());
+    DCHECK(!exception_state.HadException());
   }
 
   void CloseSteps(ScriptState* script_state) const override {
@@ -69,18 +69,15 @@ ReadableStreamBytesConsumer::ReadableStreamBytesConsumer(
   DCHECK(!ReadableStream::IsLocked(stream));
 
   // Since the stream is not locked, AcquireDefaultReader cannot fail.
-  NonThrowableExceptionState exception_state(__FILE__, __LINE__);
   reader_ = ReadableStream::AcquireDefaultReader(script_state, stream,
-                                                 exception_state);
+                                                 ASSERT_NO_EXCEPTION);
 }
 
 ReadableStreamBytesConsumer::~ReadableStreamBytesConsumer() {}
 
 BytesConsumer::Result ReadableStreamBytesConsumer::BeginRead(
-    const char** buffer,
-    size_t* available) {
-  *buffer = nullptr;
-  *available = 0;
+    base::span<const char>& buffer) {
+  buffer = {};
   if (state_ == PublicState::kErrored)
     return Result::kError;
   if (state_ == PublicState::kClosed)
@@ -96,9 +93,8 @@ BytesConsumer::Result ReadableStreamBytesConsumer::BeginRead(
     }
 
     DCHECK_LE(pending_offset_, pending_buffer_->length());
-    *buffer = reinterpret_cast<const char*>(pending_buffer_->Data()) +
-              pending_offset_;
-    *available = pending_buffer_->length() - pending_offset_;
+    buffer =
+        base::as_chars(pending_buffer_->ByteSpan().subspan(pending_offset_));
     return Result::kOk;
   }
   if (!is_reading_) {
@@ -107,8 +103,10 @@ BytesConsumer::Result ReadableStreamBytesConsumer::BeginRead(
     ScriptState::Scope scope(script_state_);
     DCHECK(reader_);
 
+    ExceptionState exception_state(script_state_->GetIsolate());
     auto* read_request = MakeGarbageCollected<BytesConsumerReadRequest>(this);
-    ReadableStreamDefaultReader::Read(script_state_, reader_, read_request);
+    ReadableStreamDefaultReader::Read(script_state_, reader_, read_request,
+                                      exception_state);
     is_inside_read_ = false;
   }
   return Result::kShouldWait;
@@ -152,8 +150,7 @@ void ReadableStreamBytesConsumer::Cancel() {
   // ReadableStreamDefaultReader::cancel in such a case.
   if (!ScriptForbiddenScope::IsScriptForbidden()) {
     ScriptState::Scope scope(script_state_);
-    ExceptionState exception_state(script_state_->GetIsolate(),
-                                   ExceptionState::kUnknownContext, "", "");
+    ExceptionState exception_state(script_state_->GetIsolate());
     reader_->cancel(script_state_, exception_state);
     // We ignore exceptions as we can do nothing here.
   }
@@ -186,9 +183,9 @@ void ReadableStreamBytesConsumer::OnRead(DOMUint8Array* buffer) {
   if (is_inside_read_) {
     scoped_refptr<scheduler::EventLoop> event_loop =
         ExecutionContext::From(script_state_)->GetAgent()->event_loop();
-    event_loop->EnqueueMicrotask(
-        WTF::BindOnce(&ReadableStreamBytesConsumer::OnRead,
-                      WrapPersistent(this), WrapPersistent(buffer)));
+    event_loop->EnqueueMicrotask(BindOnce(&ReadableStreamBytesConsumer::OnRead,
+                                          WrapPersistent(this),
+                                          WrapPersistent(buffer)));
     return;
   }
   is_reading_ = false;
@@ -206,7 +203,7 @@ void ReadableStreamBytesConsumer::OnReadDone() {
   if (is_inside_read_) {
     scoped_refptr<scheduler::EventLoop> event_loop =
         ExecutionContext::From(script_state_)->GetAgent()->event_loop();
-    event_loop->EnqueueMicrotask(WTF::BindOnce(
+    event_loop->EnqueueMicrotask(BindOnce(
         &ReadableStreamBytesConsumer::OnReadDone, WrapPersistent(this)));
     return;
   }
@@ -228,7 +225,7 @@ void ReadableStreamBytesConsumer::OnRejected() {
   if (is_inside_read_) {
     scoped_refptr<scheduler::EventLoop> event_loop =
         ExecutionContext::From(script_state_)->GetAgent()->event_loop();
-    event_loop->EnqueueMicrotask(WTF::BindOnce(
+    event_loop->EnqueueMicrotask(BindOnce(
         &ReadableStreamBytesConsumer::OnRejected, WrapPersistent(this)));
     return;
   }

@@ -40,8 +40,8 @@ symbol_level = 2
 #### GDB setup
 
 The Chrome build requires some GDB configuration for it to be able to find
-source files. See [gdbinit](gdbinit.md) to configure GDB. There is a similar
-process for [LLDB](lldbinit.md).
+source files. See [gdbinit](../gdbinit.md) to configure GDB. There is a similar
+process for [LLDB](../lldbinit.md).
 
 ### Basic browser process debugging
 
@@ -169,8 +169,8 @@ gdb -p <pid>
 #### Debugging run_web_tests.py renderers
 
 The `debug_renderer` script can also be used to debug the renderer running
-a web test. To do so, simply call `run_web_tests.py` from `debug_renderer.py`
-with all of the standard arguments for `run_web_tests.py`. For example:
+a web test. To do so, simply call `run_{web,wpt}_tests.py` from `debug_renderer`
+with all of the standard arguments for `run_{web,wpt}_tests.py`. For example:
 
 ```sh
 ./third_party/blink/tools/debug_renderer ./third_party/blink/tools/run_web_tests.py [run_web_test args]
@@ -282,7 +282,7 @@ three) but you'll still need to use `--plugin-launcher` or another approach.
 ### Printing Chromium types
 
 gdb 7 lets us use Python to write pretty-printers for Chromium types. See
-[gdbinit](https://chromium.googlesource.com/chromium/src/+/main/docs/gdbinit.md)
+[gdbinit](../gdbinit.md)
 to enable pretty-printing of Chromium types.  This will import Blink
 pretty-printers as well.
 
@@ -331,6 +331,10 @@ installation instructions.
 You can use [rr](https://rr-project.org) for time travel debugging, so you
 can also step or execute backwards. This works by first recording a trace
 and then debugging based on that.
+
+For Googlers, if you have a remote cloud machine, please follow this
+[instruction](https://engdoc.corp.google.com/eng/doc/devguide/debugging/rr.md#setting-up-rr)
+to set up the machine in order to use the rr tool.
 
 You need an up-to-date version of rr, since rr is frequently updated to support
 new parts of the Linux system call API surface that Chromium uses. If you have
@@ -537,21 +541,6 @@ Default log level hides `LOG(INFO)`. Run with `--log-level=0` and
 
 Newer versions of Chromium with VLOG may need --v=1 too. For more VLOG tips, see
 [the chromium-dev thread](https://groups.google.com/a/chromium.org/group/chromium-dev/browse_thread/thread/dcd0cd7752b35de6?pli=1).
-
-### Seeing IPC debug messages
-
-Run with `CHROME_IPC_LOGGING=1` eg.
-
-    CHROME_IPC_LOGGING=1 out/Debug/chrome
-
-or within gdb:
-
-    set environment CHROME_IPC_LOGGING 1
-
-If some messages show as unknown, check if the list of IPC message headers in
-[chrome/common/logging_chrome.cc](/chrome/common/logging_chrome.cc) is
-up to date. In case this file reference goes out of date, try looking for usage
-of macros like `IPC_MESSAGE_LOG_ENABLED` or `IPC_MESSAGE_MACROS_LOG_ENABLED`.
 
 ## Profiling
 

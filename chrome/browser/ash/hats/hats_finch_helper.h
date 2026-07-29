@@ -11,7 +11,6 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/time/time.h"
-#include "chrome/common/chrome_features.h"
 
 class Profile;
 
@@ -110,9 +109,9 @@ class HatsFinchHelper {
   // current survey cycle. This is set by |CheckForDeviceSelection()|.
   bool device_is_selected_for_cycle_ = false;
 
-  const raw_ptr<Profile, ExperimentalAsh> profile_;
+  const raw_ptr<Profile> profile_;
 
-  const raw_ref<const HatsConfig, ExperimentalAsh> hats_config_;
+  const raw_ref<const HatsConfig> hats_config_;
 };
 
 }  // namespace ash

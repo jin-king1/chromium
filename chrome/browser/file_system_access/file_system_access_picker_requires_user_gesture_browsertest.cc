@@ -103,7 +103,7 @@ class FileSystemAccessPickerRequiresUserGestureTest
 
   void SetupFakePermissionContext() {
     // Required to bypass permission prompt for directory picker.
-    content::SetFileSystemAccessPermissionContext(browser()->profile(),
+    content::SetFileSystemAccessPermissionContext(browser()->GetProfile(),
                                                   &permission_context_);
   }
 
@@ -115,7 +115,8 @@ class FileSystemAccessPickerRequiresUserGestureTest
 
     // File/Directory will automatically be selected by picker.
     ui::SelectFileDialog::SetFactory(
-        new content::FakeSelectFileDialogFactory({file_path_}));
+        std::make_unique<content::FakeSelectFileDialogFactory>(
+            std::vector<base::FilePath>{file_path_}));
   }
 
   base::FilePath CreateTestFile() {
@@ -153,7 +154,7 @@ class FileSystemAccessPickerRequiresUserGestureTest
 
   void SetPolicy(const std::string& allowlisted_origin) {
     policy::PolicyMap policy_map;
-    base::Value::List allowed_origins;
+    base::ListValue allowed_origins;
     allowed_origins.Append(base::Value(allowlisted_origin));
     policy_map.Set(
         policy::key::kFileOrDirectoryPickerWithoutGestureAllowedForOrigins,
@@ -191,8 +192,9 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessPickerRequiresUserGestureTest,
 
   auto result = EvalJs(GetWebContents(), GetScript(),
                        content::EvalJsOptions::EXECUTE_SCRIPT_NO_USER_GESTURE);
-  EXPECT_TRUE(result.error.find(kUserGestureErrorMessage) != std::string::npos)
-      << result.error;
+  EXPECT_THAT(result, content::EvalJsResult::ErrorIs(
+                          testing::HasSubstr(kUserGestureErrorMessage)))
+      << result;
 }
 
 IN_PROC_BROWSER_TEST_P(FileSystemAccessPickerRequiresUserGestureTest,
@@ -221,8 +223,9 @@ IN_PROC_BROWSER_TEST_P(FileSystemAccessPickerRequiresUserGestureTest,
 
   auto result = EvalJs(GetWebContents(), GetScript(),
                        content::EvalJsOptions::EXECUTE_SCRIPT_NO_USER_GESTURE);
-  EXPECT_TRUE(result.error.find(kUserGestureErrorMessage) != std::string::npos)
-      << result.error;
+  EXPECT_THAT(result, content::EvalJsResult::ErrorIs(
+                          testing::HasSubstr(kUserGestureErrorMessage)))
+      << result;
 }
 
 INSTANTIATE_TEST_SUITE_P(All,

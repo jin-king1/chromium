@@ -16,18 +16,29 @@ import UIKit
 ///     center.
 /// -   Referenced views don't have to be laid out by AutoLayout.
 /// -   Referenced views and layout guides don't have to be in the same window.
+@MainActor
 @objc
 public class LayoutGuideCenter: NSObject {
   /// MARK: Public
 
+  /// Potential parent layout guide center. Referenced views lookups fallback
+  /// to looking up in the parent if the view is not reference by this layout
+  /// guide center.
+  @objc public weak var parent: LayoutGuideCenter?
+
   /// References a view under a specific `name`.
-  @objc(referenceView:underName:)
-  public func reference(view referenceView: UIView?, under name: String) {
+  /// If forcesSynchronousLayoutUpdates is true, when the window coordinates change, the layout guides will be
+  /// updated synchronously. Otherwise, the layout guides will be updated in the next runloop.
+  @objc(referenceView:underName:forcesSynchronousLayoutUpdates:)
+  public func reference(
+    view referenceView: UIView?, under name: String, forcesSynchronousLayoutUpdates: Bool
+  ) {
     let oldReferenceView = referencedView(under: name)
     // Early return if `referenceView` is already set.
     if referenceView == oldReferenceView {
       return
     }
+    oldReferenceView?.cr_forcesSynchronousLayoutUpdates = false
     oldReferenceView?.cr_onWindowCoordinatesChanged = nil
     if let referenceView = referenceView {
       referenceViews.setObject(referenceView, forKey: name as NSString)
@@ -35,6 +46,7 @@ public class LayoutGuideCenter: NSObject {
       referenceViews.removeObject(forKey: name as NSString)
     }
     updateGuides(named: name)
+    referenceView?.cr_forcesSynchronousLayoutUpdates = forcesSynchronousLayoutUpdates
     // Schedule updates to the matching layout guides when the reference view
     // moves in its window.
     referenceView?.cr_onWindowCoordinatesChanged = { [weak self] _ in
@@ -42,10 +54,19 @@ public class LayoutGuideCenter: NSObject {
     }
   }
 
+  /// References a view under a specific `name`.
+  @objc(referenceView:underName:)
+  public func reference(view referenceView: UIView?, under name: String) {
+    self.reference(view: referenceView, under: name, forcesSynchronousLayoutUpdates: false)
+  }
+
   /// Returns the referenced view under `name`.
   @objc(referencedViewUnderName:)
   public func referencedView(under name: String) -> UIView? {
-    return referenceViews.object(forKey: name as NSString)
+    if let view = referenceViews.object(forKey: name as NSString) {
+      return view
+    }
+    return parent?.referencedView(under: name)
   }
 
   /// Creates a new layout guide tracking the view referenced under a specific `name`.

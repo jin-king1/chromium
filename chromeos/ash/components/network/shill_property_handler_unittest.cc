@@ -52,7 +52,7 @@ class TestListener : public internal::ShillPropertyHandler::Listener {
   TestListener() : technology_list_updates_(0), errors_(0) {}
 
   void UpdateManagedList(ManagedState::ManagedType type,
-                         const base::Value::List& entries) override {
+                         const base::ListValue& entries) override {
     VLOG(1) << "UpdateManagedList[" << ManagedState::TypeToString(type)
             << "]: " << entries.size();
     UpdateEntries(GetTypeString(type), entries);
@@ -61,12 +61,12 @@ class TestListener : public internal::ShillPropertyHandler::Listener {
   void UpdateManagedStateProperties(
       ManagedState::ManagedType type,
       const std::string& path,
-      const base::Value::Dict& properties) override {
+      const base::DictValue& properties) override {
     VLOG(2) << "UpdateManagedStateProperties: " << GetTypeString(type);
     initial_property_updates(GetTypeString(type))[path] += 1;
   }
 
-  void ProfileListChanged(const base::Value::List& profile_list) override {
+  void ProfileListChanged(const base::ListValue& profile_list) override {
     profile_list_size_ = profile_list.size();
   }
 
@@ -85,7 +85,7 @@ class TestListener : public internal::ShillPropertyHandler::Listener {
   void UpdateIPConfigProperties(ManagedState::ManagedType type,
                                 const std::string& path,
                                 const std::string& ip_config_path,
-                                base::Value::Dict properties) override {
+                                base::DictValue properties) override {
     AddPropertyUpdate(shill::kIPConfigsProperty, ip_config_path);
   }
 
@@ -137,11 +137,9 @@ class TestListener : public internal::ShillPropertyHandler::Listener {
         return shill::kDevicesProperty;
     }
     NOTREACHED();
-    return std::string();
   }
 
-  void UpdateEntries(const std::string& type,
-                     const base::Value::List& entries) {
+  void UpdateEntries(const std::string& type, const base::ListValue& entries) {
     if (type.empty()) {
       return;
     }
@@ -285,13 +283,13 @@ class ShillPropertyHandlerTest : public testing::Test {
   std::unique_ptr<TestListener> listener_;
   std::unique_ptr<internal::ShillPropertyHandler> shill_property_handler_;
   std::unique_ptr<base::HistogramTester> histogram_tester_;
-  raw_ptr<ShillManagerClient::TestInterface, ExperimentalAsh> manager_test_ =
+  raw_ptr<ShillManagerClient::TestInterface, DanglingUntriaged> manager_test_ =
       nullptr;
-  raw_ptr<ShillDeviceClient::TestInterface, ExperimentalAsh> device_test_ =
+  raw_ptr<ShillDeviceClient::TestInterface, DanglingUntriaged> device_test_ =
       nullptr;
-  raw_ptr<ShillServiceClient::TestInterface, ExperimentalAsh> service_test_ =
+  raw_ptr<ShillServiceClient::TestInterface, DanglingUntriaged> service_test_ =
       nullptr;
-  raw_ptr<ShillProfileClient::TestInterface, ExperimentalAsh> profile_test_ =
+  raw_ptr<ShillProfileClient::TestInterface, DanglingUntriaged> profile_test_ =
       nullptr;
 };
 
@@ -314,7 +312,7 @@ TEST_F(ShillPropertyHandlerTest, ShillPropertyHandlerProfileListChanged) {
   const char kMountedUserDirectory[] = "/profile/chronos/shill";
   // Simulate a user logging in. When a user logs in the mounted user directory
   // path is added to the list of profile paths.
-  profile_test_->AddProfile(kMountedUserDirectory, /*user_hash=*/"");
+  profile_test_->AddProfile(kMountedUserDirectory, /*userhash=*/"");
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(2, listener_->profile_list_size());
 }
@@ -489,9 +487,8 @@ TEST_F(ShillPropertyHandlerTest, ShillPropertyHandlerIPConfigPropertyChanged) {
   ShillIPConfigClient::Get()->SetProperty(dbus::ObjectPath(kTestIPConfigPath),
                                           shill::kAddressProperty, ip_address,
                                           base::DoNothing());
-  base::Value::List dns_servers;
-  dns_servers.Append("192.168.1.100");
-  dns_servers.Append("192.168.1.101");
+  auto dns_servers =
+      base::ListValue().Append("192.168.1.100").Append("192.168.1.101");
   ShillIPConfigClient::Get()->SetProperty(
       dbus::ObjectPath(kTestIPConfigPath), shill::kNameServersProperty,
       base::Value(std::move(dns_servers)), base::DoNothing());
@@ -599,28 +596,28 @@ TEST_F(ShillPropertyHandlerTest, ProhibitedTechnologies) {
 
 TEST_F(ShillPropertyHandlerTest, RequestTrafficCounters) {
   // Set up the traffic counters.
-  base::Value::List traffic_counters;
+  auto chrome_dict = base::DictValue()
+                         .Set("source", shill::kTrafficCounterSourceChrome)
+                         .Set("rx_bytes", 12)
+                         .Set("tx_bytes", 32);
 
-  base::Value::Dict chrome_dict;
-  chrome_dict.Set("source", shill::kTrafficCounterSourceChrome);
-  chrome_dict.Set("rx_bytes", 12);
-  chrome_dict.Set("tx_bytes", 32);
-  traffic_counters.Append(std::move(chrome_dict));
+  auto user_dict = base::DictValue()
+                       .Set("source", shill::kTrafficCounterSourceUser)
+                       .Set("rx_bytes", 90)
+                       .Set("tx_bytes", 87);
 
-  base::Value::Dict user_dict;
-  user_dict.Set("source", shill::kTrafficCounterSourceUser);
-  user_dict.Set("rx_bytes", 90);
-  user_dict.Set("tx_bytes", 87);
-  traffic_counters.Append(std::move(user_dict));
+  auto traffic_counters = base::ListValue()
+                              .Append(std::move(chrome_dict))
+                              .Append(std::move(user_dict));
 
   service_test_->SetFakeTrafficCounters(traffic_counters.Clone());
 
   base::RunLoop run_loop;
   shill_property_handler_->RequestTrafficCounters(
       kStubWiFi1, base::BindOnce(
-                      [](base::Value::List* expected_traffic_counters,
+                      [](base::ListValue* expected_traffic_counters,
                          base::OnceClosure quit_closure,
-                         absl::optional<base::Value> actual_traffic_counters) {
+                         std::optional<base::Value> actual_traffic_counters) {
                         ASSERT_TRUE(actual_traffic_counters);
                         EXPECT_EQ(*expected_traffic_counters,
                                   *actual_traffic_counters);

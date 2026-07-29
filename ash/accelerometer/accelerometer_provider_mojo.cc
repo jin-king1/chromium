@@ -4,6 +4,7 @@
 
 #include "ash/accelerometer/accelerometer_provider_mojo.h"
 
+#include <algorithm>
 #include <iterator>
 #include <utility>
 
@@ -11,7 +12,6 @@
 #include "ash/shell.h"
 #include "ash/wm/tablet_mode/tablet_mode_controller.h"
 #include "base/functional/bind.h"
-#include "base/ranges/algorithm.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/time/time.h"
@@ -79,7 +79,7 @@ void AccelerometerProviderMojo::OnNewDeviceAdded(
         continue;
       }
 
-      if (base::Contains(accelerometers_, iio_device_id))
+      if (accelerometers_.contains(iio_device_id))
         continue;
 
       RegisterAccelerometerWithId(iio_device_id);
@@ -252,7 +252,6 @@ void AccelerometerProviderMojo::UpdateStateWithECLidAngleDriverSupported() {
     default:
       LOG(FATAL) << "Unexpected state: "
                  << static_cast<int32_t>(initialization_state_);
-      break;
   }
 
   if (initialization_state_ == MojoState::ANGL_LID)
@@ -287,7 +286,6 @@ void AccelerometerProviderMojo::UpdateStateWithLidAccelerometer() {
     default:
       LOG(FATAL) << "Unexpected state: "
                  << static_cast<int32_t>(initialization_state_);
-      break;
   }
 }
 
@@ -318,7 +316,6 @@ void AccelerometerProviderMojo::UpdateStateWithBaseAccelerometer() {
     default:
       LOG(FATAL) << "Unexpected state: "
                  << static_cast<int32_t>(initialization_state_);
-      break;
   }
 }
 
@@ -405,7 +402,10 @@ void AccelerometerProviderMojo::RegisterAccelerometerWithId(int32_t id) {
     return;
   }
 
-  DCHECK(!accelerometer.remote.is_bound());
+  if (accelerometer.remote.is_bound()) {
+    // Has already been registered.
+    return;
+  }
   DCHECK(!accelerometer.samples_observer.get());
 
   if (!sensor_service_remote_.is_bound()) {
@@ -478,7 +478,7 @@ void AccelerometerProviderMojo::OnAccelerometerRemoteDisconnect(
 
 void AccelerometerProviderMojo::GetAttributesCallback(
     int32_t id,
-    const std::vector<absl::optional<std::string>>& values) {
+    const std::vector<std::optional<std::string>>& values) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   auto& accelerometer = accelerometers_[id];
@@ -498,7 +498,7 @@ void AccelerometerProviderMojo::GetAttributesCallback(
       return;
     }
 
-    auto* it = base::ranges::find(kLocationStrings, values[index]);
+    auto* it = std::ranges::find(kLocationStrings, values[index]);
     if (it == std::end(kLocationStrings)) {
       LOG(WARNING) << "Unrecognized location: " << values[index].value()
                    << " for device with id: ";
@@ -510,7 +510,7 @@ void AccelerometerProviderMojo::GetAttributesCallback(
         std::distance(std::begin(kLocationStrings), it));
     accelerometer.location = source;
 
-    if (base::Contains(location_to_accelerometer_id_, source)) {
+    if (location_to_accelerometer_id_.contains(source)) {
       LOG(WARNING) << "Duplicated location source " << source
                    << " of accel id: " << id << ", and accel id: "
                    << location_to_accelerometer_id_[source];
@@ -585,7 +585,7 @@ void AccelerometerProviderMojo::CreateAccelerometerSamplesObserver(int32_t id) {
     return;
   }
 
-  accelerometer.samples_observer = std::make_unique<AccelGryoSamplesObserver>(
+  accelerometer.samples_observer = std::make_unique<AccelGyroSamplesObserver>(
       id, std::move(accelerometer.remote), accelerometer.scale.value(),
       base::BindRepeating(&AccelerometerProviderMojo::OnSampleUpdatedCallback,
                           this));

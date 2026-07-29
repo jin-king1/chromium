@@ -14,11 +14,13 @@
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
+#include "build/build_config.h"
 #include "chrome/browser/ash/crostini/crostini_manager.h"
 #include "chrome/browser/ash/crostini/crostini_test_helper.h"
 #include "chrome/browser/ash/crostini/crostini_util.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
 #include "chrome/browser/ash/file_manager/volume_manager_factory.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/components/dbus/chunneld/chunneld_client.h"
 #include "chromeos/ash/components/dbus/cicerone/cicerone_client.h"
@@ -52,6 +54,7 @@ const char* kCrostiniMetricUnmountTimeTaken =
 std::unique_ptr<KeyedService> BuildVolumeManager(
     content::BrowserContext* context) {
   return std::make_unique<file_manager::VolumeManager>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       Profile::FromBrowserContext(context),
       nullptr /* drive_integration_service */,
       nullptr /* power_manager_client */, DiskMountManager::GetInstance(),
@@ -81,10 +84,8 @@ class CrostiniSshfsHelperTest : public testing::Test {
 
     DiskMountManager::InitializeForTesting(disk_manager_);
 
-    std::string known_hosts;
-    base::Base64Encode("[hostname]:2222 pubkey", &known_hosts);
-    std::string identity;
-    base::Base64Encode("privkey", &identity);
+    std::string known_hosts = base::Base64Encode("[hostname]:2222 pubkey");
+    std::string identity = base::Base64Encode("privkey");
   }
 
   CrostiniSshfsHelperTest(const CrostiniSshfsHelperTest&) = delete;
@@ -93,12 +94,12 @@ class CrostiniSshfsHelperTest : public testing::Test {
   ~CrostiniSshfsHelperTest() override {
     storage::ExternalMountPoints::GetSystemInstance()->RevokeFileSystem(
         kMountName);
-    file_manager::VolumeManagerFactory::GetInstance()->SetTestingFactory(
-        profile_.get(), BrowserContextKeyedServiceFactory::TestingFactory{});
-    DiskMountManager::Shutdown();
     crostini_sshfs_.reset();
     crostini_test_helper_.reset();
     profile_.reset();
+    file_manager::VolumeManagerFactory::GetInstance()->SetTestingFactory(
+        profile_.get(), BrowserContextKeyedServiceFactory::TestingFactory{});
+    DiskMountManager::Shutdown();
     ash::SeneschalClient::Shutdown();
     ash::ConciergeClient::Shutdown();
     ash::CiceroneClient::Shutdown();
@@ -150,14 +151,14 @@ class CrostiniSshfsHelperTest : public testing::Test {
   }
 
   content::BrowserTaskEnvironment task_environment_;
-  raw_ptr<ash::disks::MockDiskMountManager, ExperimentalAsh> disk_manager_;
+  raw_ptr<ash::disks::MockDiskMountManager, DanglingUntriaged> disk_manager_;
   std::unique_ptr<TestingProfile> profile_;
   std::unique_ptr<CrostiniTestHelper> crostini_test_helper_;
   const std::string kMountName = "crostini_test_termina_penguin";
   std::vector<std::string> default_mount_options_;
   std::unique_ptr<file_manager::VolumeManager> volume_manager_;
   std::unique_ptr<CrostiniSshfs> crostini_sshfs_;
-  raw_ptr<CrostiniManager, ExperimentalAsh> crostini_manager_;
+  raw_ptr<CrostiniManager> crostini_manager_;
   base::HistogramTester histogram_tester{};
 };
 
@@ -266,12 +267,11 @@ TEST_F(CrostiniSshfsHelperTest, CanRemountAfterUnmount) {
   SetContainerRunning(DefaultContainerId());
   ExpectMountCalls(2);
   EXPECT_CALL(*disk_manager_, UnmountPath)
-      .WillOnce(testing::Invoke(
-          [this](const std::string& mount_path,
-                 DiskMountManager::UnmountPathCallback callback) {
-            EXPECT_EQ(mount_path, "/media/fuse/" + kMountName);
-            std::move(callback).Run(ash::MountError::kSuccess);
-          }));
+      .WillOnce([this](const std::string& mount_path,
+                       DiskMountManager::UnmountPathCallback callback) {
+        EXPECT_EQ(mount_path, "/media/fuse/" + kMountName);
+        std::move(callback).Run(ash::MountError::kSuccess);
+      });
 
   crostini_sshfs_->MountCrostiniFiles(
       DefaultContainerId(),

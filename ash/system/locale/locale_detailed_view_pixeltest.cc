@@ -5,39 +5,40 @@
 #include <utility>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/locale_update_controller.h"
 #include "ash/shell.h"
 #include "ash/system/model/system_tray_model.h"
+#include "ash/system/tray/tray_detailed_view.h"
 #include "ash/system/unified/quick_settings_view.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/system/unified/unified_system_tray_bubble.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/test/pixel/ash_pixel_differ.h"
+#include "ash/test/pixel/ash_pixel_test_helper.h"
 #include "ash/test/pixel/ash_pixel_test_init_params.h"
-#include "base/test/scoped_feature_list.h"
-#include "chromeos/constants/chromeos_features.h"
 
 namespace ash {
 namespace {
 
-class LocaleDetailedViewPixelTest : public AshTestBase {
+class LocaleDetailedViewPixelTest
+    : public AshTestBase,
+      public testing::WithParamInterface</*enable_system_blur=*/bool> {
  public:
-  LocaleDetailedViewPixelTest() {
-    feature_list_.InitWithFeatures(
-        {features::kQsRevamp, chromeos::features::kJelly}, {});
-  }
-
   // AshTestBase:
-  absl::optional<pixel_test::InitParams> CreatePixelTestInitParams()
+  std::optional<pixel_test::InitParams> CreatePixelTestInitParams()
       const override {
-    return pixel_test::InitParams();
+    pixel_test::InitParams init_params;
+    init_params.system_blur_enabled = GetParam();
+    return init_params;
   }
-
-  base::test::ScopedFeatureList feature_list_;
 };
 
-TEST_F(LocaleDetailedViewPixelTest, Basics) {
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    LocaleDetailedViewPixelTest,
+    testing::Bool());
+
+TEST_P(LocaleDetailedViewPixelTest, Basics) {
   // Setup two locales in the locale list.
   std::vector<LocaleInfo> locale_list;
   locale_list.emplace_back("en-US", u"English (United States)");
@@ -54,12 +55,15 @@ TEST_F(LocaleDetailedViewPixelTest, Basics) {
       ->ShowLocaleDetailedView();
 
   // Compare pixels.
-  auto* detailed_view =
-      system_tray->bubble()->quick_settings_view()->detailed_view();
+  TrayDetailedView* detailed_view =
+      system_tray->bubble()
+          ->quick_settings_view()
+          ->GetDetailedViewForTest<TrayDetailedView>();
   ASSERT_TRUE(detailed_view);
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "check_view",
-      /*revision_number=*/1, detailed_view));
+      GenerateScreenshotName("check_view"),
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 12 : 0,
+      detailed_view));
 }
 
 }  // namespace

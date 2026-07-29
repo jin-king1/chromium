@@ -6,6 +6,8 @@
 #define SERVICES_NETWORK_PUBLIC_CPP_NOT_IMPLEMENTED_URL_LOADER_FACTORY_H_
 
 #include "base/component_export.h"
+#include "base/location.h"
+#include "base/memory/self_deleting.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver_set.h"
@@ -24,16 +26,25 @@ class COMPONENT_EXPORT(NETWORK_CPP) NotImplementedURLLoaderFactory final
   // itself once there are no more receivers (including the receiver associated
   // with the returned mojo::PendingRemote and the receivers bound by the Clone
   // method).
-  static mojo::PendingRemote<network::mojom::URLLoaderFactory> Create();
+  static mojo::PendingRemote<network::mojom::URLLoaderFactory> Create(
+      base::Location creator_location = base::Location::Current());
+
+  // Constructs a NotImplementedURLLoaderFactory object that will self-delete
+  // once all receivers disconnect (including |factory_receiver| below as well
+  // as receivers that connect via the Clone method).
+  NotImplementedURLLoaderFactory(
+      base::Location creator_location,
+      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver,
+      base::SelfDeletingPassKey key);
 
   NotImplementedURLLoaderFactory(const NotImplementedURLLoaderFactory&) =
       delete;
   NotImplementedURLLoaderFactory& operator=(
       const NotImplementedURLLoaderFactory&) = delete;
 
+ private:
   ~NotImplementedURLLoaderFactory() override;
 
- private:
   // network::mojom::URLLoaderFactory implementation.
   void CreateLoaderAndStart(
       mojo::PendingReceiver<network::mojom::URLLoader> receiver,
@@ -44,11 +55,8 @@ class COMPONENT_EXPORT(NETWORK_CPP) NotImplementedURLLoaderFactory final
       const net::MutableNetworkTrafficAnnotationTag& traffic_annotation)
       override;
 
-  // Constructs a NotImplementedURLLoaderFactory object that will self-delete
-  // once all receivers disconnect (including |factory_receiver| below as well
-  // as receivers that connect via the Clone method).
-  explicit NotImplementedURLLoaderFactory(
-      mojo::PendingReceiver<network::mojom::URLLoaderFactory> factory_receiver);
+
+  base::Location creator_location_;
 };
 
 }  // namespace network

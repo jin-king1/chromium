@@ -32,8 +32,7 @@ import java.util.concurrent.Callable;
 @RunWith(ContentJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 public class InsertionMarkerTest {
-    @Rule
-    public ImeActivityTestRule mRule = new ImeActivityTestRule();
+    @Rule public ImeActivityTestRule mRule = new ImeActivityTestRule();
 
     @Before
     public void setUp() throws Exception {
@@ -67,20 +66,24 @@ public class InsertionMarkerTest {
 
     private void requestCursorUpdates(int cursorUpdateMode) throws Exception {
         InputConnection connection = mRule.getConnection();
-        mRule.runBlockingOnImeThread((Callable<Void>) () -> {
-            connection.requestCursorUpdates(cursorUpdateMode);
-            return null;
-        });
+        mRule.runBlockingOnImeThread(
+                (Callable<Void>)
+                        () -> {
+                            connection.requestCursorUpdates(cursorUpdateMode);
+                            return null;
+                        });
     }
 
     private void waitForCursorAnchorInfoToHaveInsertionBounds() {
-        CriteriaHelper.pollUiThread(() -> {
-            CursorAnchorInfo info = mRule.getInputMethodManagerWrapper().getLastCursorAnchorInfo();
-            Criteria.checkThat(info, Matchers.notNullValue());
+        CriteriaHelper.pollUiThread(
+                () -> {
+                    CursorAnchorInfo info =
+                            mRule.getInputMethodManagerWrapper().getLastCursorAnchorInfo();
+                    Criteria.checkThat(info, Matchers.notNullValue());
 
-            Assert.assertFalse(Float.isNaN(info.getInsertionMarkerTop()));
-            Assert.assertFalse(Float.isNaN(info.getInsertionMarkerBottom()));
-            Assert.assertFalse(Float.isNaN(info.getInsertionMarkerHorizontal()));
-        });
+                    Assert.assertFalse(Float.isNaN(info.getInsertionMarkerTop()));
+                    Assert.assertFalse(Float.isNaN(info.getInsertionMarkerBottom()));
+                    Assert.assertFalse(Float.isNaN(info.getInsertionMarkerHorizontal()));
+                });
     }
 }

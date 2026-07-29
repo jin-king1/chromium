@@ -26,6 +26,7 @@ namespace {
 const int kLargeMessageSizeBytes = 256 * 1024;
 
 using testing::_;
+using testing::AnyNumber;
 using testing::Return;
 }  // namespace
 
@@ -78,7 +79,7 @@ class SecurityKeyIpcClientTest : public testing::Test,
   // after each stage of the tests has been completed.
   std::unique_ptr<base::RunLoop> run_loop_;
 
-  raw_ptr<MockChromotingHostServicesProvider> api_provider_;
+  raw_ptr<MockChromotingHostServicesProvider, DanglingUntriaged> api_provider_;
 
   // The object under test.
   std::unique_ptr<SecurityKeyIpcClient> security_key_ipc_client_;
@@ -148,6 +149,7 @@ void SecurityKeyIpcClientTest::ClientMessageReceived(
 }
 
 void SecurityKeyIpcClientTest::EstablishConnection(bool expect_error) {
+  EXPECT_CALL(*api_provider_, set_disconnect_handler(_)).Times(AnyNumber());
   EXPECT_CALL(*api_provider_, GetSessionServices())
       .WillRepeatedly(Return(&mock_api_));
 
@@ -283,6 +285,7 @@ TEST_F(SecurityKeyIpcClientTest, SendRequestBeforeEstablishingConnection) {
 }
 
 TEST_F(SecurityKeyIpcClientTest, NonExistentIpcServerChannel) {
+  EXPECT_CALL(*api_provider_, set_disconnect_handler(_)).Times(AnyNumber());
   EXPECT_CALL(*api_provider_, GetSessionServices())
       .WillRepeatedly(Return(nullptr));
 

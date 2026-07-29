@@ -29,7 +29,8 @@ namespace {
 class PropertyTreeBuilderTest : public LayerTreeImplTestBase,
                                 public testing::Test {
  public:
-  PropertyTreeBuilderTest() : LayerTreeImplTestBase(LayerTreeSettings()) {}
+  PropertyTreeBuilderTest()
+      : LayerTreeImplTestBase(CommitToPendingTreeLayerTreeSettings()) {}
 
   void UpdateMainDrawProperties(float device_scale_factor = 1.0f) {
     SetDeviceScaleAndUpdateViewportRect(host(), device_scale_factor);
@@ -52,8 +53,8 @@ class PropertyTreeBuilderTest : public LayerTreeImplTestBase,
     UpdateMainDrawProperties(device_scale_factor);
     if (!host_impl()->pending_tree())
       host_impl()->CreatePendingTree();
-    host()->CommitAndCreatePendingTree();
-    // TODO(https://crbug.com/939968) This call should be handled by
+    host()->CommitToPendingTree();
+    // TODO(crbug.com/40617417) This call should be handled by
     // FakeLayerTreeHost instead of manually pushing the properties from the
     // layer tree host to the pending tree.
     host_impl()->pending_tree()->PullLayerTreePropertiesFrom(
@@ -248,7 +249,7 @@ TEST_F(PropertyTreeBuilderTest,
   host_impl()->active_tree()->SetOpacityMutated(root->element_id(), 0.f);
   host_impl()->active_tree()->SetOpacityMutated(render_surface1->element_id(),
                                                 1.f);
-  ImplOf(render_surface1)->set_visible_layer_rect(gfx::Rect());
+  ImplOf(render_surface1)->SetVisibleLayerRectForTesting(gfx::Rect());
   UpdateActiveTreeDrawProperties();
 
   EXPECT_FALSE(GetEffectNode(ImplOf(render_surface1))->is_drawn);
@@ -371,9 +372,9 @@ TEST_F(PropertyTreeBuilderTest, VisibleRectWithClippingAndFilters) {
 
   CommitAndActivate();
 
-  EXPECT_EQ(gfx::Rect(50, 40, 10, 20),
+  EXPECT_EQ(gfx::Rect(49, 39, 12, 21),
             ImplOf(filter_child)->visible_layer_rect());
-  EXPECT_EQ(gfx::Rect(0, -10, 10, 20),
+  EXPECT_EQ(gfx::Rect(-1, -11, 12, 21),
             GetRenderSurfaceImpl(filter)->content_rect());
 }
 
@@ -432,16 +433,16 @@ TEST_F(PropertyTreeBuilderTest, VisibleRectWithScalingClippingAndFilters) {
 
   CommitAndActivate();
 
-  EXPECT_EQ(gfx::Rect(50, 40, 10, 20),
+  EXPECT_EQ(gfx::Rect(49, 39, 12, 21),
             ImplOf(filter_child)->visible_layer_rect());
-  EXPECT_EQ(gfx::Rect(0, -30, 30, 60),
+  EXPECT_EQ(gfx::Rect(-1, -31, 32, 61),
             GetRenderSurfaceImpl(filter)->content_rect());
 }
 
 TEST_F(PropertyTreeBuilderTest, TextureLayerSnapping) {
   auto root = Layer::Create();
   host()->SetRootLayer(root);
-  auto child = TextureLayer::CreateForMailbox(nullptr);
+  auto child = TextureLayer::Create(nullptr);
   root->AddChild(child);
 
   root->SetBounds(gfx::Size(100, 100));
@@ -564,7 +565,7 @@ TEST_F(PropertyTreeBuilderTest, DelayedFilterAnimationCreatesRenderSurface) {
       std::move(curve), 0, 1,
       KeyframeModel::TargetPropertyId(TargetProperty::FILTER));
   keyframe_model->set_fill_mode(KeyframeModel::FillMode::NONE);
-  keyframe_model->set_time_offset(base::Milliseconds(-1000));
+  keyframe_model->set_start_delay(base::Milliseconds(1000));
 
   AddKeyframeModelToElementWithAnimation(child->element_id(), timeline(),
                                          std::move(keyframe_model));
@@ -1242,10 +1243,7 @@ TEST_F(PropertyTreeBuilderTest, RoundedCornerBounds) {
   bounds_in_target_space = kRoundedCornerLayer4Bound;
   bounds_in_target_space.Scale(kDeviceScale * kRoundedCorner3Scale);
   bounds_in_target_space += layer3_bounds_in_target_space.OffsetFromOrigin();
-  // Due to rounding error, compare rects by strings, which rounds by first
-  // decimal.
-  EXPECT_EQ(actual_rrect_4.rect().ToString(),
-            bounds_in_target_space.ToString());
+  EXPECT_RECTF_EQ(actual_rrect_4.rect(), bounds_in_target_space);
   EXPECT_FLOAT_EQ(actual_rrect_4.GetSimpleRadius(),
                   kRoundedCorner4Radius * kDeviceScale * kRoundedCorner3Scale);
 }
@@ -1582,7 +1580,7 @@ TEST_F(PropertyTreeBuilderTest, RoundedCornerBoundsSiblingRenderTarget) {
           .mask_filter_info.rounded_corner_bounds();
   bounds_in_target_space = kRoundedCornerLayer4Bound;
   bounds_in_target_space.Scale(kDeviceScale);
-  EXPECT_EQ(actual_rrect_4.rect(), bounds_in_target_space);
+  EXPECT_RECTF_EQ(actual_rrect_4.rect(), bounds_in_target_space);
   EXPECT_FLOAT_EQ(actual_rrect_4.GetSimpleRadius(),
                   kRoundedCorner4Radius * kDeviceScale);
 }
@@ -2047,7 +2045,7 @@ TEST_F(PropertyTreeBuilderTest,
           .mask_filter_info.rounded_corner_bounds();
   bounds_in_target_space = kRoundedCornerLayer6Bound;
   bounds_in_target_space.Scale(kDeviceScale);
-  EXPECT_EQ(actual_self_rrect_6.rect(), bounds_in_target_space);
+  EXPECT_RECTF_EQ(actual_self_rrect_6.rect(), bounds_in_target_space);
   EXPECT_FLOAT_EQ(actual_self_rrect_6.GetSimpleRadius(),
                   kRoundedCorner6Radius * kDeviceScale);
 }
@@ -2347,7 +2345,7 @@ TEST_F(PropertyTreeBuilderTest,
 }
 
 TEST_F(PropertyTreeBuilderTest, SubtreeSize) {
-  constexpr viz::SubtreeCaptureId kCaptureId{42};
+  constexpr viz::SubtreeCaptureId kCaptureId(base::Token(0u, 42u));
 
   auto parent = Layer::Create();
   host()->SetRootLayer(parent);

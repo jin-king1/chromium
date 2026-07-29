@@ -10,8 +10,9 @@
 namespace ash {
 MockXhrSender::MockXhrSender(
     OnSendCallback quit_closure,
+    signin::IdentityManager* identity_manager,
     network::mojom::URLLoaderFactory* url_loader_factory)
-    : ProjectorXhrSender(url_loader_factory),
+    : ProjectorXhrSender(identity_manager, url_loader_factory),
       quit_closure_(std::move(quit_closure)) {}
 
 MockXhrSender::~MockXhrSender() = default;
@@ -19,12 +20,12 @@ MockXhrSender::~MockXhrSender() = default;
 void MockXhrSender::Send(
     const GURL& url,
     projector::mojom::RequestType method,
-    const absl::optional<std::string>& request_body,
+    const std::optional<std::string>& request_body,
     bool use_credentials,
     bool use_api_key,
     SendRequestCallback callback,
-    const absl::optional<base::flat_map<std::string, std::string>>& headers,
-    const absl::optional<std::string>& account_email) {
+    const std::optional<base::flat_map<std::string, std::string>>& headers,
+    const std::optional<std::string>& account_email) {
   std::move(quit_closure_).Run(url, method, request_body);
 }
 }  // namespace ash

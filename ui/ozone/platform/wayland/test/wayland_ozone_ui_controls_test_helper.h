@@ -26,13 +26,6 @@ class WaylandOzoneUIControlsTestHelper : public ui::OzoneUIControlsTestHelper {
       const WaylandOzoneUIControlsTestHelper&) = delete;
   ~WaylandOzoneUIControlsTestHelper() override;
 
-  // Initializes the connection to the server using the ui_controls protocol
-  // extension. Initialization must be done before calling any Send*() methods.
-  //
-  // This fails if the protocol extension is not available on the server side.
-  // Returns false if the initialization failed, else true.
-  bool Initialize();
-
   // OzoneUIControlsTestHelper:
   void Reset() override;
   bool SupportsScreenCoordinates() const override;
@@ -53,15 +46,9 @@ class WaylandOzoneUIControlsTestHelper : public ui::OzoneUIControlsTestHelper {
                       const gfx::Point& mouse_loc,
                       const gfx::Point& mouse_loc_in_screen,
                       base::OnceClosure closure) override;
-#if BUILDFLAG(IS_CHROMEOS_LACROS)
-  void SendTouchEvent(gfx::AcceleratedWidget widget,
-                      int action,
-                      int id,
-                      const gfx::Point& touch_loc,
-                      base::OnceClosure closure) override;
-#endif
   void RunClosureAfterAllPendingUIEvents(base::OnceClosure closure) override;
   bool MustUseUiControlsForMoveCursorTo() override;
+  void ForceUseScreenCoordinatesOnce() override;
 
  private:
   void RequestProcessed(uint32_t request_id);

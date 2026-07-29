@@ -28,9 +28,9 @@
 
 #import <AppKit/AppKit.h>
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
+#include <array>
+
+#include "base/no_destructor.h"
 
 namespace blink {
 
@@ -59,13 +59,14 @@ NSColor* NsColor(const Color& color) {
                                                         alpha:1];
     return white_color;
   } else {
-    const int kCacheSize = 32;
-    static unsigned cached_rgba_values[kCacheSize];
-    static NSColor* cached_colors[kCacheSize];
+    constexpr int kCacheSize = 32;
+    static std::array<unsigned, kCacheSize> cached_rgba_values;
+    static base::NoDestructor<std::array<NSColor*, kCacheSize>> cached_colors;
 
     for (int i = 0; i != kCacheSize; ++i) {
-      if (cached_rgba_values[i] == c)
-        return cached_colors[i];
+      if (cached_rgba_values[i] == c) {
+        return (*cached_colors)[i];
+      }
     }
 
     NSColor* result = [NSColor
@@ -76,7 +77,7 @@ NSColor* NsColor(const Color& color) {
 
     static int cursor;
     cached_rgba_values[cursor] = c;
-    cached_colors[cursor] = result;
+    (*cached_colors)[cursor] = result;
     if (++cursor == kCacheSize) {
       cursor = 0;
     }

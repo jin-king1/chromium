@@ -10,17 +10,12 @@
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/process/process_handle.h"
-#include "chrome/browser/chrome_notification_types.h"
-#include "content/public/browser/notification_details.h"
-#include "content/public/browser/notification_service.h"
-#include "content/public/browser/notification_source.h"
-#include "content/public/browser/notification_types.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
+#include "content/public/common/child_process_id.h"
 #include "extensions/browser/extension_registry.h"
-#include "extensions/browser/notification_types.h"
 #include "extensions/browser/process_map.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/permissions/api_permission.h"
@@ -37,11 +32,12 @@ RendererFreezer::RendererFreezer(
 }
 
 RendererFreezer::~RendererFreezer() {
-  for (int rph_id : gcm_extension_processes_) {
+  for (content::ChildProcessId rph_id : gcm_extension_processes_) {
     content::RenderProcessHost* host =
         content::RenderProcessHost::FromID(rph_id);
-    if (host)
+    if (host) {
       host->RemoveObserver(this);
+    }
   }
 }
 
@@ -58,15 +54,14 @@ void RendererFreezer::SuspendDone() {
       &RendererFreezer::OnThawRenderersComplete, weak_factory_.GetWeakPtr()));
 }
 
-void RendererFreezer::OnRenderProcessHostCreated(
-    content::RenderProcessHost* rph) {
+void RendererFreezer::OnRenderProcessLaunched(content::RenderProcessHost* rph) {
   if (!can_freeze_renderers_) {
     return;
   }
 
-  const int rph_id = rph->GetID();
+  const content::ChildProcessId rph_id = rph->GetID();
 
-  if (gcm_extension_processes_.find(rph_id) != gcm_extension_processes_.end()) {
+  if (gcm_extension_processes_.contains(rph_id)) {
     LOG(ERROR) << "Received duplicate notifications about the creation of a "
                << "RenderProcessHost with id " << rph_id;
     return;
@@ -84,26 +79,21 @@ void RendererFreezer::OnRenderProcessHostCreated(
   // iterate over all the extensions in the newly created process and take the
   // appropriate action based on whether we find an extension using GCM.
   content::BrowserContext* context = rph->GetBrowserContext();
-  extensions::ExtensionRegistry* registry =
-      extensions::ExtensionRegistry::Get(context);
-  for (const std::string& extension_id :
-       extensions::ProcessMap::Get(context)->GetExtensionsInProcess(rph_id)) {
-    const extensions::Extension* extension = registry->GetExtensionById(
-        extension_id, extensions::ExtensionRegistry::ENABLED);
-    if (!extension || !extension->permissions_data()->HasAPIPermission(
-                          extensions::mojom::APIPermissionID::kGcm)) {
-      continue;
+  if (const extensions::Extension* extension =
+          extensions::ProcessMap::Get(context)->GetEnabledExtensionByProcessID(
+              rph_id)) {
+    if (extension->permissions_data()->HasAPIPermission(
+            extensions::mojom::APIPermissionID::kGcm)) {
+      // This renderer has an extension that is using GCM.  Make sure it is not
+      // frozen during suspend.
+      delegate_->SetShouldFreezeRenderer(rph->GetProcess().Handle(), false);
+      gcm_extension_processes_.insert(rph_id);
+
+      // Watch to see if the renderer process or the RenderProcessHost is
+      // destroyed.
+      rph->AddObserver(this);
+      return;
     }
-
-    // This renderer has an extension that is using GCM.  Make sure it is not
-    // frozen during suspend.
-    delegate_->SetShouldFreezeRenderer(rph->GetProcess().Handle(), false);
-    gcm_extension_processes_.insert(rph_id);
-
-    // Watch to see if the renderer process or the RenderProcessHost is
-    // destroyed.
-    rph->AddObserver(this);
-    return;
   }
 
   // We didn't find an extension in this RenderProcessHost that is using GCM so
@@ -114,12 +104,10 @@ void RendererFreezer::OnRenderProcessHostCreated(
 void RendererFreezer::RenderProcessExited(
     content::RenderProcessHost* host,
     const content::ChildProcessTerminationInfo& info) {
-  auto it = gcm_extension_processes_.find(host->GetID());
-  if (it == gcm_extension_processes_.end()) {
+  if (gcm_extension_processes_.erase(host->GetID()) == 0) {
     LOG(ERROR) << "Received unrequested RenderProcessExited message";
     return;
   }
-  gcm_extension_processes_.erase(it);
 
   // When this function is called, the renderer process has died but the
   // RenderProcessHost will not be destroyed.  If a new renderer process is
@@ -131,13 +119,9 @@ void RendererFreezer::RenderProcessExited(
 
 void RendererFreezer::RenderProcessHostDestroyed(
     content::RenderProcessHost* host) {
-  auto it = gcm_extension_processes_.find(host->GetID());
-  if (it == gcm_extension_processes_.end()) {
+  if (gcm_extension_processes_.erase(host->GetID()) == 0) {
     LOG(ERROR) << "Received unrequested RenderProcessHostDestroyed message";
-    return;
   }
-
-  gcm_extension_processes_.erase(it);
 }
 
 void RendererFreezer::OnCheckCanFreezeRenderersComplete(bool can_freeze) {

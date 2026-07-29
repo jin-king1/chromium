@@ -6,6 +6,10 @@
 #define IOS_WEB_CONTENT_NAVIGATION_CONTENT_NAVIGATION_ITEM_H_
 
 #import <Foundation/Foundation.h>
+
+#import <optional>
+
+#import "base/memory/raw_ptr.h"
 #import "ios/web/common/user_agent.h"
 #import "ios/web/public/favicon/favicon_status.h"
 #import "ios/web/public/navigation/https_upgrade_type.h"
@@ -13,10 +17,6 @@
 #import "ios/web/public/navigation/referrer.h"
 #import "ios/web/public/security/ssl_status.h"
 #import "url/gurl.h"
-
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
 
 namespace content {
 class NavigationEntry;
@@ -52,6 +52,12 @@ class ContentNavigationItem : public NavigationItem {
 
   const std::u16string& GetTitleForDisplay() const override;
 
+  void SetInternalScrollToTextFragment(
+      const std::optional<std::string>& internal_scroll_to_text_fragment)
+      override;
+  const std::optional<std::string>& GetInternalScrollToTextFragment()
+      const override;
+
   void SetTransitionType(ui::PageTransition transition_type) override;
   ui::PageTransition GetTransitionType() const override;
 
@@ -67,6 +73,9 @@ class ContentNavigationItem : public NavigationItem {
   void SetUserAgentType(UserAgentType type) override;
   UserAgentType GetUserAgentType() const override;
 
+  void SetSecurityScopedFileResource(NSData* data) override;
+  NSData* GetSecurityScopedFileResource() override;
+
   bool HasPostData() const override;
 
   HttpRequestHeaders* GetHttpRequestHeaders() const override;
@@ -80,7 +89,7 @@ class ContentNavigationItem : public NavigationItem {
   friend class NavigationItemHolder;
 
   explicit ContentNavigationItem(content::NavigationEntry* entry);
-  content::NavigationEntry* entry_ = nullptr;
+  raw_ptr<content::NavigationEntry> entry_ = nullptr;
 
   // We lazily update these in the corresponding getter. Since the value on
   // NavigationEntry isn't changed, the functions are still semantically
@@ -89,6 +98,7 @@ class ContentNavigationItem : public NavigationItem {
   mutable HttpRequestHeaders* headers_ = nil;
   mutable FaviconStatus favicon_status_;
   mutable SSLStatus ssl_status_;
+  NSData* security_scoped_file_resource_ = nil;
 
   UserAgentType user_agent_type_ = UserAgentType::MOBILE;
 };

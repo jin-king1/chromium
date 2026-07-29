@@ -4,8 +4,10 @@
 
 #include "chrome/updater/win/ui/ui_util.h"
 
+#include "base/check.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
+#include "base/win/registry.h"
 #include "chrome/updater/util/win_util.h"
 #include "chrome/updater/win/ui/l10n_util.h"
 #include "chrome/updater/win/ui/resources/updater_installer_strings.h"
@@ -107,12 +109,14 @@ HRESULT SetWindowIcon(HWND hwnd, WORD icon_id, HICON* hicon) {
   return S_OK;
 }
 
-std::wstring GetInstallerDisplayName(const std::u16string& bundle_name) {
+std::wstring GetInstallerDisplayName(const std::u16string& bundle_name,
+                                     const std::wstring& lang) {
   std::wstring display_name = base::AsWString(bundle_name);
   if (display_name.empty()) {
-    display_name = GetLocalizedString(IDS_FRIENDLY_COMPANY_NAME_BASE);
+    display_name = GetLocalizedString(IDS_FRIENDLY_COMPANY_NAME_BASE, lang);
   }
-  return GetLocalizedStringF(IDS_INSTALLER_DISPLAY_NAME_BASE, display_name);
+  return GetLocalizedStringF(IDS_INSTALLER_DISPLAY_NAME_BASE, display_name,
+                             lang);
 }
 
 bool GetDlgItemText(HWND dlg, int item_id, std::wstring* text) {
@@ -140,6 +144,17 @@ bool IsHighContrastOn() {
     return false;
   }
   return hc.dwFlags & HCF_HIGHCONTRASTON;
+}
+
+bool IsDarkModeOn() {
+  base::win::RegKey key(
+      HKEY_CURRENT_USER,
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+      KEY_READ);
+  DWORD is_light_theme = 1;
+  return key.ReadValueDW(L"AppsUseLightTheme", &is_light_theme) ==
+             ERROR_SUCCESS &&
+         !is_light_theme;
 }
 
 }  // namespace updater::ui

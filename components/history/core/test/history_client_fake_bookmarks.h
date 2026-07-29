@@ -7,7 +7,7 @@
 
 #include <string>
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "components/history/core/browser/history_client.h"
 
 class GURL;
@@ -42,7 +42,7 @@ class HistoryClientFakeBookmarks : public HistoryClient {
   void NotifyProfileError(sql::InitStatus init_status,
                           const std::string& diagnostics) override;
   std::unique_ptr<HistoryBackendClient> CreateBackendClient() override;
-  void UpdateBookmarkLastUsedTime(const base::Uuid& bookmark_node_guid,
+  void UpdateBookmarkLastUsedTime(int64_t bookmark_node_id,
                                   base::Time time) override;
 
  private:

@@ -4,16 +4,18 @@
 
 import os
 from chrome_ent_test.infra.core import before_all
+from chrome_ent_test.infra.core import category
 from chrome_ent_test.infra.core import environment
 from chrome_ent_test.infra.core import test
 from infra import ChromeEnterpriseTestCase
 
 
+@category("chrome_only")
 @environment(file="../policy_test.asset.textpb")
 class PasswordManagerEnabledTest(ChromeEnterpriseTestCase):
   """Test the PasswordManagerEnabled policy.
 
-  See https://cloud.google.com/docs/chrome-enterprise/policies/?policy=PasswordManagerEnabled"""
+  See https://chromeenterprise.google/policies/?policy=PasswordManagerEnabled"""
 
   @before_all
   def setup(self):

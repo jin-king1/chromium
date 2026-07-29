@@ -23,7 +23,8 @@ DownloadCoreService* DownloadCoreServiceFactory::GetForBrowserContext(
 
 // static
 DownloadCoreServiceFactory* DownloadCoreServiceFactory::GetInstance() {
-  return base::Singleton<DownloadCoreServiceFactory>::get();
+  static base::NoDestructor<DownloadCoreServiceFactory> instance;
+  return instance.get();
 }
 
 DownloadCoreServiceFactory::DownloadCoreServiceFactory()
@@ -31,11 +32,14 @@ DownloadCoreServiceFactory::DownloadCoreServiceFactory()
           "DownloadCoreService",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOwnInstance)
-              // TODO(crbug.com/1418376): Check if this service is needed in
+              // TODO(crbug.com/40257657): Check if this service is needed in
               // Guest mode.
               .WithGuest(ProfileSelection::kOwnInstance)
+              // TODO(crbug.com/41488885): Check if this service is needed for
+              // Ash Internals.
+              .WithAshInternals(ProfileSelection::kOwnInstance)
               .Build()) {
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
   DependsOn(DownloadBubbleUpdateServiceFactory::GetInstance());
 #endif  // !BUILDFLAG(IS_ANDROID)
   DependsOn(HistoryServiceFactory::GetInstance());
@@ -43,15 +47,13 @@ DownloadCoreServiceFactory::DownloadCoreServiceFactory()
   DependsOn(OfflineContentAggregatorFactory::GetInstance());
 }
 
-DownloadCoreServiceFactory::~DownloadCoreServiceFactory() {}
+DownloadCoreServiceFactory::~DownloadCoreServiceFactory() = default;
 
-KeyedService* DownloadCoreServiceFactory::BuildServiceInstanceFor(
+std::unique_ptr<KeyedService>
+DownloadCoreServiceFactory::BuildServiceInstanceForBrowserContext(
     content::BrowserContext* profile) const {
-  DownloadCoreService* service =
-      new DownloadCoreServiceImpl(static_cast<Profile*>(profile));
-
   // No need for initialization; initialization can be done on first
   // use of service.
-
-  return service;
+  return std::make_unique<DownloadCoreServiceImpl>(
+      static_cast<Profile*>(profile));
 }

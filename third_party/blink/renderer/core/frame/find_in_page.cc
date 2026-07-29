@@ -56,8 +56,8 @@ FindInPage::FindInPage(WebLocalFrameImpl& frame,
     return;
   // TODO(crbug.com/800641): Use InterfaceValidator when it works for associated
   // interfaces.
-  interface_registry->AddAssociatedInterface(WTF::BindRepeating(
-      &FindInPage::BindToReceiver, WrapWeakPersistent(this)));
+  interface_registry->AddAssociatedInterface(
+      BindRepeating(&FindInPage::BindToReceiver, WrapWeakPersistent(this)));
 }
 
 void FindInPage::Find(int request_id,
@@ -166,7 +166,7 @@ bool WebLocalFrameImpl::FindForTesting(int identifier,
 }
 
 bool FindInPage::FindInternal(int identifier,
-                              const WebString& search_text,
+                              const String& search_text,
                               const mojom::blink::FindOptions& options,
                               bool wrap_within_frame,
                               bool* active_now) {
@@ -190,7 +190,7 @@ void FindInPage::StopFinding(mojom::StopFindAction action) {
   const bool clear_selection =
       action == mojom::StopFindAction::kStopFindActionClearSelection;
   if (clear_selection)
-    frame_->ExecuteCommand(WebString::FromUTF8("Unselect"));
+    frame_->ExecuteCommand(WebString("Unselect"));
 
   if (GetTextFinder()) {
     if (!clear_selection)
@@ -266,18 +266,18 @@ void FindInPage::FindMatchRects(int current_version,
 
 void FindInPage::ClearActiveFindMatch() {
   // TODO(rakina): Do collapse selection as this currently does nothing.
-  frame_->ExecuteCommand(WebString::FromUTF8("CollapseSelection"));
+  frame_->ExecuteCommand(WebString("CollapseSelection"));
   EnsureTextFinder().ClearActiveFindMatch();
 }
 
 void WebLocalFrameImpl::SetTickmarks(const WebElement& target,
-                                     const WebVector<gfx::Rect>& tickmarks) {
+                                     const std::vector<gfx::Rect>& tickmarks) {
   find_in_page_->SetTickmarks(target, tickmarks);
 }
 
 void FindInPage::SetTickmarks(
     const WebElement& target,
-    const WebVector<gfx::Rect>& tickmarks_in_layout_space) {
+    const std::vector<gfx::Rect>& tickmarks_in_layout_space) {
   LayoutBox* box;
   if (target.IsNull())
     box = frame_->GetFrame()->ContentLayoutObject();
@@ -300,7 +300,7 @@ TextFinder* WebLocalFrameImpl::GetTextFinder() const {
 }
 
 TextFinder* FindInPage::GetTextFinder() const {
-  return text_finder_;
+  return text_finder_.Get();
 }
 
 TextFinder& WebLocalFrameImpl::EnsureTextFinder() {

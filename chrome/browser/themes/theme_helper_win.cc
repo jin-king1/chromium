@@ -6,7 +6,7 @@
 
 #include "chrome/browser/themes/custom_theme_supplier.h"
 #include "chrome/browser/themes/theme_properties.h"
-#include "chrome/browser/win/titlebar_config.h"
+#include "chrome/browser/win/mica_titlebar.h"
 #include "chrome/grit/theme_resources.h"
 
 int ThemeHelperWin::GetDefaultDisplayProperty(int id) const {
@@ -19,6 +19,5 @@ int ThemeHelperWin::GetDefaultDisplayProperty(int id) const {
 
 bool ThemeHelperWin::ShouldUseNativeFrame(
     const CustomThemeSupplier* theme_supplier) const {
-  return !ShouldAlwaysUseSystemTitlebar() ||
-         !HasCustomImage(IDR_THEME_FRAME, theme_supplier);
+  return true;
 }

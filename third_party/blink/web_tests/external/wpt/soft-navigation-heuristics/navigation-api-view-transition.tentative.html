@@ -23,13 +23,11 @@
       await new Promise(r => step_timeout(r, 0));
 
       const navigate_callback = e => {
-        timestamps[counter]["eventStart"] = performance.now();
         e.intercept({
           async handler() {
             const lcp_promise = new Promise(resolve => {
              (new PerformanceObserver(list => resolve())).observe(
-               {type: 'largest-contentful-paint',
-                includeSoftNavigationObservations: true});
+               {type: 'largest-contentful-paint'});
              });
             const transition = document.startViewTransition(async () => {
               const main = document.getElementById('main');
@@ -41,6 +39,7 @@
             await lcp_promise;
           }
         });
+        timestamps[counter]["eventEnd"] = performance.now();
       };
 
       const link = document.getElementById("link");
@@ -51,4 +50,3 @@
   </script>
 </body>
 </html>
-

@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_READING_LIST_CORE_DUAL_READING_LIST_MODEL_H_
 #define COMPONENTS_READING_LIST_CORE_DUAL_READING_LIST_MODEL_H_
 
-#include <map>
 #include <memory>
 
 #include "base/memory/raw_ptr.h"
@@ -16,7 +15,7 @@
 #include "components/reading_list/core/reading_list_model.h"
 #include "components/reading_list/core/reading_list_model_impl.h"
 #include "components/reading_list/core/reading_list_model_observer.h"
-#include "google_apis/gaia/core_account_id.h"
+#include "google_apis/gaia/gaia_id.h"
 #include "url/gurl.h"
 
 namespace reading_list {
@@ -49,9 +48,9 @@ class DualReadingListModel : public ReadingListModel,
 
   // ReadingListModel implementation.
   bool loaded() const override;
-  base::WeakPtr<syncer::ModelTypeControllerDelegate> GetSyncControllerDelegate()
+  base::WeakPtr<syncer::DataTypeControllerDelegate> GetSyncControllerDelegate()
       override;
-  base::WeakPtr<syncer::ModelTypeControllerDelegate>
+  base::WeakPtr<syncer::DataTypeControllerDelegate>
   GetSyncControllerDelegateForTransportMode() override;
   bool IsPerformingBatchUpdates() const override;
   std::unique_ptr<ScopedReadingListBatchUpdate> BeginBatchUpdates() override;
@@ -60,19 +59,21 @@ class DualReadingListModel : public ReadingListModel,
   size_t unread_size() const override;
   size_t unseen_size() const override;
   void MarkAllSeen() override;
-  bool DeleteAllEntries() override;
+  bool DeleteAllEntries(const base::Location& location) override;
   scoped_refptr<const ReadingListEntry> GetEntryByURL(
       const GURL& gurl) const override;
   bool IsUrlSupported(const GURL& url) override;
-  CoreAccountId GetAccountWhereEntryIsSavedTo(const GURL& url) override;
+  GaiaId GetAccountWhereEntryIsSavedTo(const GURL& url) override;
   bool NeedsExplicitUploadToSyncServer(const GURL& url) const override;
   void MarkAllForUploadToSyncServerIfNeeded() override;
   const ReadingListEntry& AddOrReplaceEntry(
       const GURL& url,
       const std::string& title,
       reading_list::EntrySource source,
-      base::TimeDelta estimated_read_time) override;
-  void RemoveEntryByURL(const GURL& url) override;
+      std::optional<base::TimeDelta> estimated_read_time,
+      std::optional<base::Time> creation_time) override;
+  void RemoveEntryByURL(const GURL& url,
+                        const base::Location& location) override;
   void SetReadStatusIfExists(const GURL& url, bool read) override;
   void SetEntryTitleIfExists(const GURL& url,
                              const std::string& title) override;
@@ -89,6 +90,7 @@ class DualReadingListModel : public ReadingListModel,
                                      base::Time distilation_time) override;
   void AddObserver(ReadingListModelObserver* observer) override;
   void RemoveObserver(ReadingListModelObserver* observer) override;
+  void RecordCountMetricsOnUMAUpload() const override;
 
   // ReadingListModelObserver overrides.
   void ReadingListModelBeganBatchUpdates(
@@ -100,10 +102,6 @@ class DualReadingListModel : public ReadingListModel,
                                   const GURL& url) override;
   void ReadingListDidRemoveEntry(const ReadingListModel* model,
                                  const GURL& url) override;
-  void ReadingListWillMoveEntry(const ReadingListModel* model,
-                                const GURL& url) override;
-  void ReadingListDidMoveEntry(const ReadingListModel* model,
-                               const GURL& url) override;
   void ReadingListWillAddEntry(const ReadingListModel* model,
                                const ReadingListEntry& entry) override;
   void ReadingListDidAddEntry(const ReadingListModel* model,
@@ -129,13 +127,31 @@ class DualReadingListModel : public ReadingListModel,
     std::unique_ptr<ScopedReadingListBatchUpdate> account_model_batch_;
   };
 
+  // Returns the list of reading list entries which exists in the local-only
+  // storage and need explicit upload to the sync server.
+  // Note: This should only be called if `account_model_` is the one used for
+  // sync.
+  base::flat_set<GURL> GetKeysThatNeedUploadToSyncServer() const;
+
+  // Uploads entries corresponding to `keys` that required upload to sync
+  // server. The upload itself may take long to complete (depending on network
+  // connectivity and many other factors).
+  void MarkEntriesForUploadToSyncServerIfNeeded(
+      const base::flat_set<GURL>& keys);
+
   StorageStateForTesting GetStorageStateForURLForTesting(const GURL& url);
+
+  // Returns the model responsible for the local/syncable reading list.
+  ReadingListModel* GetLocalOrSyncableModel();
+  // Returns the model responsible for the account-bound reading list. This can
+  // toggle between null and non-null at runtime depending on the sync/signin
+  // state, and ReadingListModelCompletedBatchUpdates() will be called each time
+  // it changes.
+  ReadingListModel* GetAccountModelIfSyncing();
 
  private:
   void NotifyObserversWithWillRemoveEntry(const GURL& url);
   void NotifyObserversWithDidRemoveEntry(const GURL& url);
-  void NotifyObserversWithWillMoveEntry(const GURL& url);
-  void NotifyObserversWithDidMoveEntry(const GURL& url);
   void NotifyObserversWithWillUpdateEntry(const GURL& url);
   void NotifyObserversWithDidUpdateEntry(const GURL& url);
   void NotifyObserversWithDidApplyChanges();
@@ -164,7 +180,12 @@ class DualReadingListModel : public ReadingListModel,
 
   unsigned int current_batch_updates_count_ = 0;
 
-  base::ObserverList<ReadingListModelObserver>::Unchecked observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      ReadingListModelObserver,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked
+      observers_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 };

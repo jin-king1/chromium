@@ -18,6 +18,7 @@ const filesToCache = [
   'infocard.css',
   'main.css',
   'manifest.json',
+  'metadata-tree-ui.js',
   'metrics-tree-ui.js',
   'options.css',
   'shared.js',
@@ -35,6 +36,7 @@ self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(cacheName).then(cache => cache.addAll(filesToCache))
   );
+  self.skipWaiting();
 });
 
 // On activate, remove any old caches

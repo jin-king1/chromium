@@ -7,11 +7,11 @@
 #include <fidl/fuchsia.accessibility.semantics/cpp/fidl.h>
 #include <fidl/fuchsia.ui.views/cpp/hlcpp_conversion.h>
 #include <lib/async/default.h>
-#include <lib/ui/scenic/cpp/view_ref_pair.h>
 
 #include <algorithm>
 #include <memory>
 
+#include "base/containers/adapters.h"
 #include "base/fuchsia/fidl_event_handler.h"
 #include "base/fuchsia/scoped_service_binding.h"
 #include "base/fuchsia/test_component_context_for_process.h"
@@ -114,12 +114,17 @@ class AXFuchsiaSemanticProviderTest
   AXFuchsiaSemanticProviderTest& operator=(
       const AXFuchsiaSemanticProviderTest&) = delete;
   void SetUp() override {
-    auto view_ref_pair = scenic::ViewRefPair::New();
+    fuchsia::ui::views::ViewRefControl view_ref_control;
+    fuchsia::ui::views::ViewRef view_ref;
+    auto status = zx::eventpair::create(
+        /*options*/ 0u, &view_ref_control.reference, &view_ref.reference);
+    CHECK_EQ(ZX_OK, status);
+    view_ref.reference.replace(ZX_RIGHTS_BASIC, &view_ref.reference);
+
     delegate_ = std::make_unique<AXFuchsiaSemanticProviderDelegate>();
 
-    semantic_provider_ = std::make_unique<ui::AXFuchsiaSemanticProviderImpl>(
-        fidl::HLCPPToNatural(std::move(view_ref_pair.view_ref)),
-        delegate_.get());
+    semantic_provider_ = std::make_unique<AXFuchsiaSemanticProviderImpl>(
+        fidl::HLCPPToNatural(std::move(view_ref)), delegate_.get());
 
     // Spin the loop to allow registration with the SemanticsManager to be
     // processed.
@@ -196,11 +201,11 @@ class AXFuchsiaSemanticProviderTest
       semantic_listener_;
   base::FidlErrorEventHandler<fuchsia_accessibility_semantics::SemanticListener>
       semantic_listener_error_handler_;
-  absl::optional<
+  std::optional<
       fidl::ServerBinding<fuchsia_accessibility_semantics::SemanticTree>>
       semantic_tree_binding_;
   std::unique_ptr<AXFuchsiaSemanticProviderDelegate> delegate_;
-  std::unique_ptr<ui::AXFuchsiaSemanticProviderImpl> semantic_provider_;
+  std::unique_ptr<AXFuchsiaSemanticProviderImpl> semantic_provider_;
 
   // Node updates batched per API call to UpdateSemanticNodes().
   std::vector<std::vector<fuchsia_accessibility_semantics::Node>> node_updates_;
@@ -296,8 +301,7 @@ TEST_F(AXFuchsiaSemanticProviderTest, SendsNodesFromRootToLeaves) {
 
 TEST_F(AXFuchsiaSemanticProviderTest, SendsNodesFromLeavesToRoot) {
   auto nodes = TreeNodes();
-  std::reverse(nodes.begin(), nodes.end());
-  for (auto& node : nodes) {
+  for (auto& node : base::Reversed(nodes)) {
     EXPECT_TRUE(semantic_provider_->Update(std::move(node)));
   }
 

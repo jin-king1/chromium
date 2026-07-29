@@ -2,38 +2,42 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "ash/constants/ash_features.h"
+#include "ash/system/tray/tray_detailed_view.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/system/unified/unified_system_tray_bubble.h"
 #include "ash/test/ash_test_base.h"
 #include "ash/test/pixel/ash_pixel_differ.h"
+#include "ash/test/pixel/ash_pixel_test_helper.h"
 #include "ash/test/pixel/ash_pixel_test_init_params.h"
-#include "base/test/scoped_feature_list.h"
-#include "chromeos/constants/chromeos_features.h"
+#include "ui/display/test/display_manager_test_api.h"
 #include "ui/views/view.h"
-#include "ui/views/widget/widget.h"
 
 namespace ash {
 
 // Pixel tests for the quick settings display detailed view.
-class DisplayDetailedViewPixelTest : public AshTestBase {
+class DisplayDetailedViewPixelTest
+    : public AshTestBase,
+      public testing::WithParamInterface</*enable_system_blur=*/bool> {
  public:
-  DisplayDetailedViewPixelTest() {
-    feature_list_.InitWithFeatures(
-        {features::kQsRevamp, chromeos::features::kJelly}, {});
-  }
-
   // AshTestBase:
-  absl::optional<pixel_test::InitParams> CreatePixelTestInitParams()
+  std::optional<pixel_test::InitParams> CreatePixelTestInitParams()
       const override {
-    return pixel_test::InitParams();
+    pixel_test::InitParams init_params;
+    init_params.system_blur_enabled = GetParam();
+    return init_params;
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
-TEST_F(DisplayDetailedViewPixelTest, Basics) {
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    DisplayDetailedViewPixelTest,
+    testing::Bool());
+
+TEST_P(DisplayDetailedViewPixelTest, Basics) {
+  // In the detailed view, the UnifiedBrightnessSliderView is disabled for
+  // non-internal displays.
+  display::test::DisplayManagerTestApi(display_manager())
+      .SetFirstDisplayAsInternalDisplay();
   UnifiedSystemTray* system_tray = GetPrimaryUnifiedSystemTray();
   system_tray->ShowBubble();
   ASSERT_TRUE(system_tray->bubble());
@@ -42,13 +46,16 @@ TEST_F(DisplayDetailedViewPixelTest, Basics) {
       ->unified_system_tray_controller()
       ->ShowDisplayDetailedView();
 
-  auto* detailed_view =
-      system_tray->bubble()->quick_settings_view()->detailed_view();
+  TrayDetailedView* detailed_view =
+      system_tray->bubble()
+          ->quick_settings_view()
+          ->GetDetailedViewForTest<TrayDetailedView>();
   ASSERT_TRUE(detailed_view);
 
   EXPECT_TRUE(GetPixelDiffer()->CompareUiComponentsOnPrimaryScreen(
-      "qs_display_detailed_view",
-      /*revision_number=*/1, detailed_view));
+      GenerateScreenshotName("qs_display_detailed_view"),
+      /*revision_number=*/pixel_test_helper()->IsSystemBlurEnabled() ? 13 : 0,
+      detailed_view));
 }
 
 }  // namespace ash

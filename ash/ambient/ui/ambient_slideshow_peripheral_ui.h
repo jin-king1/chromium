@@ -25,9 +25,9 @@ class JitterCalculator;
 // weather and media string that are shown in the slideshow's photo view.
 class AmbientSlideshowPeripheralUi : public views::View,
                                      public MediaStringView::Delegate {
- public:
-  METADATA_HEADER(AmbientSlideshowPeripheralUi);
+  METADATA_HEADER(AmbientSlideshowPeripheralUi, views::View)
 
+ public:
   explicit AmbientSlideshowPeripheralUi(AmbientViewDelegate* delegate);
   ~AmbientSlideshowPeripheralUi() override;
 
@@ -39,6 +39,8 @@ class AmbientSlideshowPeripheralUi : public views::View,
   // the desired frequency to prevent screen burn.
   void UpdateGlanceableInfoPosition();
 
+  void UpdateLeftPaddingToMatchBottom();
+
   void UpdateImageDetails(const std::u16string& details,
                           const std::u16string& related_details);
 
@@ -47,9 +49,9 @@ class AmbientSlideshowPeripheralUi : public views::View,
 
   std::unique_ptr<JitterCalculator> jitter_calculator_;
 
-  raw_ptr<AmbientInfoView, ExperimentalAsh> ambient_info_view_ = nullptr;
+  raw_ptr<AmbientInfoView> ambient_info_view_ = nullptr;
 
-  raw_ptr<MediaStringView, ExperimentalAsh> media_string_view_ = nullptr;
+  raw_ptr<MediaStringView> media_string_view_ = nullptr;
 };
 
 }  // namespace ash

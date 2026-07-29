@@ -20,9 +20,9 @@ namespace syncer {
 
 namespace {
 
-// Returns true if and only if |client_entity| is a bookmark.
+// Returns true if and only if `client_entity` is a bookmark.
 bool IsBookmark(const sync_pb::SyncEntity& client_entity) {
-  return syncer::GetModelTypeFromSpecifics(client_entity.specifics()) ==
+  return syncer::GetDataTypeFromSpecifics(client_entity.specifics()) ==
          syncer::BOOKMARKS;
 }
 
@@ -34,7 +34,8 @@ PersistentBookmarkEntity::~PersistentBookmarkEntity() = default;
 std::unique_ptr<LoopbackServerEntity> PersistentBookmarkEntity::CreateNew(
     const sync_pb::SyncEntity& client_entity,
     const string& parent_id,
-    const string& originator_cache_guid) {
+    const string& originator_cache_guid,
+    int migration_version) {
   if (!IsBookmark(client_entity)) {
     DLOG(WARNING) << "The given entity must be a bookmark.";
     return nullptr;
@@ -47,8 +48,8 @@ std::unique_ptr<LoopbackServerEntity> PersistentBookmarkEntity::CreateNew(
     return nullptr;
   }
 
-  const string id = LoopbackServerEntity::CreateId(syncer::BOOKMARKS,
-                                                   originator_client_item_id);
+  const string id = LoopbackServerEntity::CreateId(
+      syncer::BOOKMARKS, originator_client_item_id, migration_version);
 
   return std::make_unique<PersistentBookmarkEntity>(
       id, 0, client_entity.name(), originator_cache_guid,
@@ -94,7 +95,7 @@ PersistentBookmarkEntity::CreateUpdatedVersion(
     originator_cache_guid = current_bookmark_entity.originator_cache_guid_;
     originator_client_item_id =
         current_bookmark_entity.originator_client_item_id_;
-    // Note that the client tag provided by the client in |client_entity| is
+    // Note that the client tag provided by the client in `client_entity` is
     // ignored during non-creations updates, since it's meant to be immutable.
     client_tag_hash = current_bookmark_entity.client_tag_hash_;
   }
@@ -149,7 +150,7 @@ PersistentBookmarkEntity::PersistentBookmarkEntity(
       parent_id_(parent_id),
       creation_time_(creation_time),
       last_modified_time_(last_modified_time) {
-  if (!client_tag_hash.empty()) {
+  if (!client_tag_hash.empty() && !originator_client_item_id.empty()) {
     // This relies technically on a well-behaving client, but verifying here to
     // avoid issues with Local Sync, which uses LoopbackServer.
     DCHECK_EQ(
@@ -162,6 +163,19 @@ PersistentBookmarkEntity::PersistentBookmarkEntity(
 
 void PersistentBookmarkEntity::SetParentId(const string& parent_id) {
   parent_id_ = parent_id;
+}
+
+void PersistentBookmarkEntity::MigrateToNewVersionForTesting(int new_version) {
+  LoopbackServerEntity::MigrateToNewVersionForTesting(new_version);  // IN-TEST
+  const std::string old_parent = GetParentId();
+  if (old_parent != "0" && LoopbackServerEntity::GetDataTypeFromId(
+                               old_parent) != syncer::UNSPECIFIED) {
+    const std::string parent_inner =
+        LoopbackServerEntity::GetInnerIdFromId(old_parent);
+    const std::string new_parent = LoopbackServerEntity::CreateId(
+        GetDataType(), parent_inner, new_version);
+    SetParentId(new_parent);
+  }
 }
 
 bool PersistentBookmarkEntity::RequiresParentId() const {

@@ -11,13 +11,17 @@
 #include "chrome/browser/ash/bruschetta/bruschetta_launcher.h"
 #include "chrome/browser/ash/guest_os/public/guest_os_mount_provider.h"
 
+class PrefService;
 class Profile;
 
 namespace bruschetta {
 
 class BruschettaMountProvider : public guest_os::GuestOsMountProvider {
  public:
-  BruschettaMountProvider(Profile* profile, guest_os::GuestId guest_id);
+  // `local_state` must be non-null and must outlive `this`.
+  BruschettaMountProvider(PrefService* local_state,
+                          Profile* profile,
+                          guest_os::GuestId guest_id);
   ~BruschettaMountProvider() override;
 
   // guest_os::GuestOsMountProvider overrides.
@@ -38,7 +42,7 @@ class BruschettaMountProvider : public guest_os::GuestOsMountProvider {
   FRIEND_TEST_ALL_PREFIXES(BruschettaMountProviderTest,
                            TestPrepareLaunchFailure);
   void OnRunning(PrepareCallback callback, BruschettaResult result);
-  raw_ptr<Profile, ExperimentalAsh> profile_;
+  raw_ptr<Profile> profile_;
   guest_os::GuestId guest_id_;
   base::CallbackListSubscription unmount_subscription_;
   base::WeakPtrFactory<BruschettaMountProvider> weak_ptr_factory_{this};

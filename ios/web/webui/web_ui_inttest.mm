@@ -23,10 +23,6 @@
 #import "url/gurl.h"
 #import "url/scheme_host_port.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 using base::test::ios::kWaitForPageLoadTimeout;
 using base::test::ios::WaitUntilConditionOrTimeout;
 using web::test::TapWebViewElementWithId;
@@ -52,8 +48,7 @@ class TestUI : public WebUIIOSController {
   // with test WebUI page.
   TestUI(WebUIIOS* web_ui, const std::string& host, int resource_id)
       : WebUIIOSController(web_ui, host) {
-    web::WebUIIOSDataSource* source =
-        web::WebUIIOSDataSource::Create(kTestWebUIURLHost);
+    web::WebUIIOSDataSource* source = web::WebUIIOSDataSource::Create(host);
 
     source->SetDefaultResource(resource_id);
 
@@ -74,18 +69,22 @@ class TestWebUIControllerFactory : public WebUIIOSControllerFactory {
   std::unique_ptr<WebUIIOSController> CreateWebUIIOSControllerForURL(
       WebUIIOS* web_ui,
       const GURL& url) const override {
-    if (!url.SchemeIs(kTestWebUIScheme))
+    if (!url.SchemeIs(kTestWebUIScheme)) {
       return nullptr;
-    if (url.host() == kTestWebUIURLHost) {
-      return std::make_unique<TestUI>(web_ui, url.host(), IDR_WEBUI_TEST_HTML);
     }
-    DCHECK_EQ(url.host(), kTestWebUIURLHost2);
-    return std::make_unique<TestUI>(web_ui, url.host(), IDR_WEBUI_TEST_HTML_2);
+    if (url.GetHost() == kTestWebUIURLHost) {
+      return std::make_unique<TestUI>(web_ui, url.GetHost(),
+                                      IDR_WEBUI_TEST_HTML);
+    }
+    DCHECK_EQ(url.GetHost(), kTestWebUIURLHost2);
+    return std::make_unique<TestUI>(web_ui, url.GetHost(),
+                                    IDR_WEBUI_TEST_HTML_2);
   }
 
   NSInteger GetErrorCodeForWebUIURL(const GURL& url) const override {
-    if (url.SchemeIs(kTestWebUIScheme))
+    if (url.SchemeIs(kTestWebUIScheme)) {
       return 0;
+    }
     return NSURLErrorUnsupportedURL;
   }
 };
@@ -106,7 +105,7 @@ class WebUITest : public WebTestWithWebState {
     test::LoadUrl(web_state(), url);
 
     // LoadIfNecessary is needed because the view is not created (but needed)
-    // when loading the page. TODO(crbug.com/705819): Remove this call.
+    // when loading the page. TODO(crbug.com/41309809): Remove this call.
     web_state()->GetNavigationManager()->LoadIfNecessary();
 
     ASSERT_TRUE(WaitUntilConditionOrTimeout(kWaitForPageLoadTimeout, ^{

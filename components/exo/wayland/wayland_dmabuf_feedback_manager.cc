@@ -9,8 +9,11 @@
 #include <linux-dmabuf-unstable-v1-server-protocol.h>
 #include <sys/stat.h>
 
+#include <algorithm>
+
 #include "ash/constants/ash_features.h"
-#include "base/containers/contains.h"
+#include "ash/shell.h"
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "components/exo/buffer.h"
@@ -20,8 +23,11 @@
 #include "components/exo/surface.h"
 #include "components/exo/wayland/server_util.h"
 #include "components/viz/common/gpu/context_provider.h"
+#include "components/viz/common/resources/shared_image_format_utils.h"
 #include "ui/aura/env.h"
 #include "ui/compositor/compositor.h"
+#include "ui/display/manager/display_manager.h"
+#include "ui/display/manager/managed_display_info.h"
 #include "ui/display/types/display_constants.h"
 #include "ui/gfx/linux/drm_util_linux.h"
 
@@ -134,12 +140,15 @@ class WaylandDmabufFeedback {
 
     const display::Display surface_display = surface->GetDisplay();
     display::DrmFormatsAndModifiers display_formats_and_modifiers =
-        surface_display.GetDRMFormatsAndModifiers();
+        ash::Shell::Get()
+            ->display_manager()
+            ->GetDisplayInfo(surface_display.id())
+            .GetDRMFormatsAndModifiers();
     IndexedDrmFormatsAndModifiers scanout_formats_and_modifiers;
 
     for (const auto& [format, modifier_entries] :
          default_tranche_->GetFormatsAndModifiers()) {
-      if (base::Contains(display_formats_and_modifiers, format)) {
+      if (display_formats_and_modifiers.contains(format)) {
         base::flat_map<size_t, uint64_t> scanout_modifier_entries;
 
         if (modifier_entries.size() == 1) {
@@ -148,8 +157,8 @@ class WaylandDmabufFeedback {
           scanout_modifier_entries.emplace(it->first, it->second);
         } else {
           for (const auto& [table_index, modifier] : modifier_entries) {
-            if (base::Contains(display_formats_and_modifiers.at(format),
-                               modifier)) {
+            if (std::ranges::contains(display_formats_and_modifiers.at(format),
+                                      modifier)) {
               scanout_modifier_entries.emplace(table_index, modifier);
             }
           }
@@ -243,7 +252,7 @@ class WaylandDmabufSurfaceFeedback : public SurfaceObserver {
   }
   void OnSurfaceFeedbackRefDestroyed(
       WaylandDmabufSurfaceFeedbackResourceWrapper* surface_feedback_ref) {
-    DCHECK(base::Contains(surface_feedback_refs_, surface_feedback_ref));
+    DCHECK(surface_feedback_refs_.contains(surface_feedback_ref));
     surface_feedback_refs_.erase(surface_feedback_ref);
     if (surface_feedback_refs_.empty())
       feedback_manager_->RemoveSurfaceFeedback(surface_);
@@ -251,16 +260,19 @@ class WaylandDmabufSurfaceFeedback : public SurfaceObserver {
 
   Surface* GetSurface() { return surface_; }
   WaylandDmabufFeedback* GetFeedback() { return feedback_.get(); }
-  std::set<WaylandDmabufSurfaceFeedbackResourceWrapper*> GetFeedbackRefs() {
+  std::set<
+      raw_ptr<WaylandDmabufSurfaceFeedbackResourceWrapper, SetExperimental>>
+  GetFeedbackRefs() {
     return surface_feedback_refs_;
   }
 
  private:
-  const raw_ptr<WaylandDmabufFeedbackManager, ExperimentalAsh>
-      feedback_manager_;
-  const raw_ptr<Surface, ExperimentalAsh> surface_;
+  const raw_ptr<WaylandDmabufFeedbackManager> feedback_manager_;
+  const raw_ptr<Surface> surface_;
   std::unique_ptr<WaylandDmabufFeedback> const feedback_;
-  std::set<WaylandDmabufSurfaceFeedbackResourceWrapper*> surface_feedback_refs_;
+  std::set<
+      raw_ptr<WaylandDmabufSurfaceFeedbackResourceWrapper, SetExperimental>>
+      surface_feedback_refs_;
 };
 
 // Simple helper class to use a surface feedback with multiple resource objects
@@ -288,8 +300,9 @@ class WaylandDmabufSurfaceFeedbackResourceWrapper {
   void SetInert() { surface_feedback_ = nullptr; }
 
  private:
-  raw_ptr<WaylandDmabufSurfaceFeedback, ExperimentalAsh> surface_feedback_;
-  raw_ptr<wl_resource, ExperimentalAsh> resource_;
+  // Dangling when starting Borealis and Steam starts updating.
+  raw_ptr<WaylandDmabufSurfaceFeedback, DanglingUntriaged> surface_feedback_;
+  raw_ptr<wl_resource> resource_;
 };
 
 WaylandDmabufSurfaceFeedback::~WaylandDmabufSurfaceFeedback() {
@@ -304,75 +317,57 @@ WaylandDmabufSurfaceFeedback::~WaylandDmabufSurfaceFeedback() {
 
 WaylandDmabufFeedbackManager::WaylandDmabufFeedbackManager(Display* display)
     : display_(display) {
-  scoped_refptr<viz::ContextProvider> context_provider =
+  scoped_refptr<viz::RasterContextProvider> context_provider =
       aura::Env::GetInstance()
           ->context_factory()
-          ->SharedMainThreadContextProvider();
+          ->SharedMainThreadRasterContextProvider();
   gpu::Capabilities caps = context_provider->ContextCapabilities();
+
+  // Intel CCS modifiers leak memory on gbm to gl buffer import. Block these
+  // modifiers for now. See crbug.com/1445252, crbug.com/1458575
+  // Also blocking |DRM_FORMAT_YVU420| for a specific modifier based a test
+  // failing in minigbm. See b/289714323
+  const base::flat_set<std::pair<uint64_t, uint64_t>> modifier_block_list = {
+      {DRM_FORMAT_INVALID, I915_FORMAT_MOD_Y_TILED_CCS},
+      {DRM_FORMAT_INVALID, I915_FORMAT_MOD_Yf_TILED_CCS},
+      {DRM_FORMAT_INVALID, I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS},
+      {DRM_FORMAT_INVALID, I915_FORMAT_MOD_Y_TILED_GEN12_MC_CCS},
+      {DRM_FORMAT_INVALID, I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS_CC},
+      {DRM_FORMAT_INVALID, I915_FORMAT_MOD_4_TILED_DG2_RC_CCS},
+      {DRM_FORMAT_INVALID, I915_FORMAT_MOD_4_TILED_DG2_MC_CCS},
+      {DRM_FORMAT_INVALID, I915_FORMAT_MOD_4_TILED_DG2_RC_CCS_CC},
+      {DRM_FORMAT_YVU420, DRM_FORMAT_MOD_QCOM_COMPRESSED}};
 
   size_t format_table_index = 0;
   for (const auto& [drm_format, modifiers] : caps.drm_formats_and_modifiers) {
-    if (!ui::IsValidBufferFormat(drm_format))
-      continue;
-
-    if (!caps.gpu_memory_buffer_formats.Has(
-            ui::GetBufferFormatFromFourCCFormat(drm_format))) {
-      continue;
-    }
-
     base::flat_map<size_t, uint64_t> modifier_entries;
     modifier_entries.emplace(format_table_index++, DRM_FORMAT_MOD_INVALID);
 
-    if (base::FeatureList::IsEnabled(ash::features::kExoLinuxDmabufModifiers)) {
-      for (uint64_t modifier : modifiers)
+    for (uint64_t modifier : modifiers) {
+      // Check for generic blocking first then format specific blocking.
+      if (!modifier_block_list.contains({DRM_FORMAT_INVALID, modifier}) &&
+          !modifier_block_list.contains({drm_format, modifier})) {
         modifier_entries.emplace(format_table_index++, modifier);
+      }
     }
 
     drm_formats_and_modifiers_.emplace(drm_format, modifier_entries);
   }
-  if (drm_formats_and_modifiers_.empty()) {
-    // Fallback path, to be removed ASAP. We should not advertise the protocol
-    // at all.
-    gpu::GpuMemoryBufferFormatSet format_set = caps.gpu_memory_buffer_formats;
-    for (int i = 0; i <= static_cast<int>(gfx::BufferFormat::LAST); i++) {
-      gfx::BufferFormat buffer_format = static_cast<gfx::BufferFormat>(i);
-      if (format_set.Has(buffer_format)) {
-        int drm_format = ui::GetFourCCFormatFromBufferFormat(buffer_format);
-        if (ui::IsValidBufferFormat(drm_format)) {
-          base::flat_map<size_t, uint64_t> modifier_entries;
-          modifier_entries.emplace(format_table_index++,
-                                   DRM_FORMAT_MOD_INVALID);
-          drm_formats_and_modifiers_.emplace(drm_format, modifier_entries);
-        }
-      }
-    }
-    version_ = ZWP_LINUX_BUFFER_PARAMS_V1_CREATE_IMMED_SINCE_VERSION;
-    return;
-  }
 
-  if (!base::FeatureList::IsEnabled(ash::features::kExoLinuxDmabufV3) &&
-      !base::FeatureList::IsEnabled(ash::features::kExoLinuxDmabufV4)) {
-    version_ = ZWP_LINUX_BUFFER_PARAMS_V1_CREATE_IMMED_SINCE_VERSION;
-    return;
-  }
-
-  struct stat device_stat;
-  if (!base::FeatureList::IsEnabled(ash::features::kExoLinuxDmabufV4) ||
-      caps.drm_render_node.empty() ||
-      stat(caps.drm_render_node.c_str(), &device_stat) != 0) {
+  if (!caps.drm_device_id) {
     version_ = ZWP_LINUX_DMABUF_V1_MODIFIER_SINCE_VERSION;
     return;
   }
 
   auto tranche = std::make_unique<WaylandDmabufFeedbackTranche>(
-      device_stat.st_rdev, TrancheFlags::kNone, drm_formats_and_modifiers_);
+      caps.drm_device_id, TrancheFlags::kNone, drm_formats_and_modifiers_);
   default_feedback_ = std::make_unique<WaylandDmabufFeedback>(
-      device_stat.st_rdev, std::move(tranche));
+      caps.drm_device_id, std::move(tranche));
 
   size_t size = sizeof(WaylandDmabufFeedbackFormat) * format_table_index;
   base::MappedReadOnlyRegion mapped_region =
       base::ReadOnlySharedMemoryRegion::Create(size);
-  DCHECK(mapped_region.IsValid());
+  CHECK(mapped_region.IsValid());
 
   shared_memory_region_ = std::make_unique<base::ReadOnlySharedMemoryRegion>(
       std::move(mapped_region.region));
@@ -382,8 +377,8 @@ WaylandDmabufFeedbackManager::WaylandDmabufFeedbackManager(Display* display)
 
   for (const auto& [format, modifier_entries] : drm_formats_and_modifiers_) {
     for (const auto& [table_index, modifier] : modifier_entries) {
-      format_table[table_index].format = format;
-      format_table[table_index].modifier = modifier;
+      UNSAFE_TODO(format_table[table_index]).format = format;
+      UNSAFE_TODO(format_table[table_index]).modifier = modifier;
     }
   }
 
@@ -393,7 +388,7 @@ WaylandDmabufFeedbackManager::WaylandDmabufFeedbackManager(Display* display)
 WaylandDmabufFeedbackManager::~WaylandDmabufFeedbackManager() = default;
 
 bool WaylandDmabufFeedbackManager::IsFormatSupported(uint32_t format) const {
-  return base::Contains(drm_formats_and_modifiers_, format);
+  return drm_formats_and_modifiers_.contains(format);
 }
 
 void WaylandDmabufFeedbackManager::SendFormatsAndModifiers(
@@ -467,14 +462,14 @@ void WaylandDmabufFeedbackManager::GetSurfaceFeedback(
                     std::move(surface_feedback_ref));
 
   auto* feedback = surface_feedback->GetFeedback();
-  if (base::Contains(scanout_candidates_, surface))
+  if (scanout_candidates_.contains(surface))
     feedback->MaybeAddScanoutTranche(surface);
 
   SendFeedback(feedback, feedback_resource);
 }
 
 void WaylandDmabufFeedbackManager::RemoveSurfaceFeedback(Surface* surface) {
-  DCHECK(base::Contains(surface_feedbacks_, surface));
+  DCHECK(surface_feedbacks_.contains(surface));
   surface_feedbacks_.erase(surface);
 }
 
@@ -490,7 +485,7 @@ void WaylandDmabufFeedbackManager::AddSurfaceToScanoutCandidates(
 
   scanout_candidates_.emplace(surface, reason);
 
-  if (!base::Contains(surface_feedbacks_, surface)) {
+  if (!surface_feedbacks_.contains(surface)) {
     return;
   }
 
@@ -505,7 +500,8 @@ void WaylandDmabufFeedbackManager::AddSurfaceToScanoutCandidates(
     return;
   }
 
-  for (auto* feedback_ref : surface_feedback->GetFeedbackRefs()) {
+  for (WaylandDmabufSurfaceFeedbackResourceWrapper* feedback_ref :
+       surface_feedback->GetFeedbackRefs()) {
     SendFeedback(feedback, feedback_ref->GetFeedbackResource());
   }
 }
@@ -527,7 +523,7 @@ void WaylandDmabufFeedbackManager::RemoveSurfaceFromScanoutCandidates(
     return;
   }
 
-  if (!base::Contains(surface_feedbacks_, surface)) {
+  if (!surface_feedbacks_.contains(surface)) {
     return;
   }
 
@@ -538,14 +534,15 @@ void WaylandDmabufFeedbackManager::RemoveSurfaceFromScanoutCandidates(
   }
 
   feedback->ClearScanoutTranche();
-  for (auto* feedback_ref : surface_feedback->GetFeedbackRefs()) {
+  for (WaylandDmabufSurfaceFeedbackResourceWrapper* feedback_ref :
+       surface_feedback->GetFeedbackRefs()) {
     SendFeedback(feedback, feedback_ref->GetFeedbackResource());
   }
 }
 
 void WaylandDmabufFeedbackManager::MaybeResendFeedback(Surface* surface) {
-  if (!base::Contains(scanout_candidates_, surface) ||
-      !base::Contains(surface_feedbacks_, surface)) {
+  if (!scanout_candidates_.contains(surface) ||
+      !surface_feedbacks_.contains(surface)) {
     return;
   }
 
@@ -553,7 +550,8 @@ void WaylandDmabufFeedbackManager::MaybeResendFeedback(Surface* surface) {
   auto* feedback = surface_feedback->GetFeedback();
   feedback->MaybeAddScanoutTranche(surface);
 
-  for (auto* feedback_ref : surface_feedback->GetFeedbackRefs()) {
+  for (WaylandDmabufSurfaceFeedbackResourceWrapper* feedback_ref :
+       surface_feedback->GetFeedbackRefs()) {
     SendFeedback(feedback, feedback_ref->GetFeedbackResource());
   }
 }

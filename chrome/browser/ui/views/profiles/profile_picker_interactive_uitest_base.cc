@@ -5,12 +5,9 @@
 #include "chrome/browser/ui/views/profiles/profile_picker_interactive_uitest_base.h"
 
 #include "base/notreached.h"
-#include "base/test/bind.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/views/profiles/profile_picker_test_base.h"
 #include "chrome/test/base/interactive_test_utils.h"
-#include "chrome/test/interaction/tracked_element_webcontents.h"
-#include "content/public/browser/web_contents.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -18,7 +15,7 @@
 
 ui::Accelerator WithProfilePickerInteractiveUiTestHelpers::GetAccelerator(
     int command_id) {
-  // TODO(crbug.com/1444053): Rely on `AcceleratorProvider` instead of
+  // TODO(crbug.com/40911656): Rely on `AcceleratorProvider` instead of
   // hardcoding the accelerators here.
 
   switch (command_id) {
@@ -35,7 +32,7 @@ ui::Accelerator WithProfilePickerInteractiveUiTestHelpers::GetAccelerator(
 #if BUILDFLAG(IS_MAC)
       return {ui::VKEY_OEM_4, ui::EF_COMMAND_DOWN};  // Cmd-[
 #else
-      return {ui::VKEY_LEFT, ui::EF_ALT_DOWN};   // Alt-left
+      return {ui::VKEY_LEFT, ui::EF_ALT_DOWN};  // Alt-left
 #endif
 
     case IDC_FULLSCREEN:
@@ -43,7 +40,7 @@ ui::Accelerator WithProfilePickerInteractiveUiTestHelpers::GetAccelerator(
       return {ui::VKEY_F,
               ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN};  // Cmd-Ctrl-F.
 #else
-      return {ui::VKEY_F11, ui::EF_NONE};        // F11.
+      return {ui::VKEY_F11, ui::EF_NONE};  // F11.
 #endif
 
 #if BUILDFLAG(IS_MAC)
@@ -52,17 +49,13 @@ ui::Accelerator WithProfilePickerInteractiveUiTestHelpers::GetAccelerator(
 #endif
 
     default:
-      NOTREACHED_NORETURN() << "Unexpected command_id: " << command_id;
+      NOTREACHED() << "Unexpected command_id: " << command_id;
   }
 }
 
 void WithProfilePickerInteractiveUiTestHelpers::
     SendCloseWindowKeyboardCommand() {
   SendKeyPress(GetAccelerator(IDC_CLOSE_WINDOW));
-}
-
-void WithProfilePickerInteractiveUiTestHelpers::SendBackKeyboardCommand() {
-  SendKeyPress(GetAccelerator(IDC_BACK));
 }
 
 void WithProfilePickerInteractiveUiTestHelpers::

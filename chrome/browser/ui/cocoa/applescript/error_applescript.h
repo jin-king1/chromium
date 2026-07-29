@@ -31,11 +31,13 @@ enum class Error {
   // Error when index of browser window is out of bounds.
   kWrongIndex,
   // Error when JavaScript execution is disabled.
-  kJavaScriptUnsupported
+  kJavaScriptUnsupported,
+  // Error when DevTools usage is disabled.
+  kDevToolsUnsupported,
 };
 
 // This function sets an error message to the currently executing command.
 void SetError(Error error_code);
-}
+}  // namespace AppleScript
 
 #endif  // CHROME_BROWSER_UI_COCOA_APPLESCRIPT_ERROR_APPLESCRIPT_H_

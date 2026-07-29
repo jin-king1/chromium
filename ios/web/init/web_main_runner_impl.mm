@@ -13,10 +13,6 @@
 #import "mojo/core/embedder/embedder.h"
 #import "ui/base/ui_base_paths.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace web {
 
 WebMainRunnerImpl::WebMainRunnerImpl()
@@ -31,7 +27,7 @@ WebMainRunnerImpl::~WebMainRunnerImpl() {
   }
 }
 
-int WebMainRunnerImpl::Initialize(WebMainParams params) {
+void WebMainRunnerImpl::Initialize(WebMainParams params) {
   ////////////////////////////////////////////////////////////////////////
   // ContentMainRunnerImpl::Initialize()
   //
@@ -40,8 +36,7 @@ int WebMainRunnerImpl::Initialize(WebMainParams params) {
 
   ios_global_state::CreateParams create_params;
   create_params.install_at_exit_manager = params.register_exit_manager;
-  create_params.argc = params.argc;
-  create_params.argv = params.argv;
+  create_params.args = std::move(params.args);
   ios_global_state::Create(create_params);
   web::WebThreadImpl::CreateTaskExecutor();
 
@@ -52,7 +47,7 @@ int WebMainRunnerImpl::Initialize(WebMainParams params) {
 
   mojo::core::Init();
 
-  // TODO(crbug.com/965894): Should we instead require that all embedders call
+  // TODO(crbug.com/41460421): Should we instead require that all embedders call
   // SetWebClient()?
   if (!GetWebClient()) {
     SetWebClient(&empty_web_client_);
@@ -70,6 +65,9 @@ int WebMainRunnerImpl::Initialize(WebMainParams params) {
   main_loop_->Init();
   main_loop_->EarlyInitialization();
   main_loop_->CreateMainMessageLoop();
+}
+
+int WebMainRunnerImpl::Startup() {
   main_loop_->CreateStartupTasks();
   int result_code = main_loop_->GetResultCode();
   if (result_code > 0) {

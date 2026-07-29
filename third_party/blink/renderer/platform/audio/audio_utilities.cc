@@ -87,7 +87,7 @@ size_t TimeToSampleFrame(double time,
   //
   // The oversampling factor MUST be a power of two so as not to introduce
   // additional round-off in computing the oversample frame number.
-  const double oversample_factor = 1024;
+  constexpr double oversample_factor = 1024;
   double frame =
       round(time * sample_rate * oversample_factor) / oversample_factor;
 
@@ -113,6 +113,12 @@ size_t TimeToSampleFrame(double time,
   return static_cast<size_t>(frame);
 }
 
+base::TimeDelta FramesToTime(int64_t frames, float sample_rate) {
+  CHECK_GT(sample_rate, 0.f);
+  return base::Microseconds(static_cast<int64_t>(
+      frames * base::Time::kMicrosecondsPerSecond / sample_rate));
+}
+
 bool IsValidAudioBufferSampleRate(float sample_rate) {
   return sample_rate >= MinAudioBufferSampleRate() &&
          sample_rate <= MaxAudioBufferSampleRate();
@@ -129,11 +135,17 @@ float MaxAudioBufferSampleRate() {
   return 768000;
 }
 
-bool IsPowerOfTwo(size_t x) {
-  // From Hacker's Delight.  x & (x - 1) turns off (zeroes) the
-  // rightmost 1-bit in the word x.  If x is a power of two, then the
-  // result is, of course, 0.
-  return x > 0 && ((x & (x - 1)) == 0);
+bool IsValidRenderQuantumSize(uint32_t render_quantum_size, float sample_rate) {
+  return render_quantum_size >= MinRenderQuantumSize() &&
+         render_quantum_size <= MaxRenderQuantumSize(sample_rate);
+}
+
+uint32_t MinRenderQuantumSize() {
+  return 1;
+}
+
+uint32_t MaxRenderQuantumSize(float sample_rate) {
+  return static_cast<uint32_t>(6 * sample_rate);
 }
 
 const std::string GetSinkIdForTracing(
@@ -193,7 +205,7 @@ const std::string GetDeviceEnumerationForTracing(
     const Vector<WebMediaDeviceInfo>& device_infos) {
   std::ostringstream s;
 
-  for (auto device_info : device_infos) {
+  for (const auto& device_info : device_infos) {
     s << "{ label: " << device_info.label
       << ", device_id: " << device_info.device_id
       << ", group_id: " << device_info.group_id << " }";

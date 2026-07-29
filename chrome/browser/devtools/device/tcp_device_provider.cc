@@ -4,9 +4,9 @@
 
 #include "chrome/browser/devtools/device/tcp_device_provider.h"
 
+#include <algorithm>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -19,6 +19,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "net/base/completion_repeating_callback.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/base/network_isolation_key.h"
 #include "net/dns/public/host_resolver_results.h"
 #include "net/dns/public/resolve_error_info.h"
@@ -51,7 +52,7 @@ class ResolveHostAndOpenSocket final : public network::ResolveHostClientBase {
                               pending_receiver) {
                          g_browser_process->system_network_context_manager()
                              ->GetContext()
-                             ->CreateHostResolver(absl::nullopt,
+                             ->CreateHostResolver(std::nullopt,
                                                   std::move(pending_receiver));
                        },
                        resolver.BindNewPipeAndPassReceiver()));
@@ -66,26 +67,28 @@ class ResolveHostAndOpenSocket final : public network::ResolveHostClientBase {
     receiver_.set_disconnect_handler(base::BindOnce(
         &ResolveHostAndOpenSocket::OnComplete, base::Unretained(this),
         net::ERR_NAME_NOT_RESOLVED, net::ResolveErrorInfo(net::ERR_FAILED),
-        /*resolved_addresses=*/absl::nullopt,
-        /*endpoint_results_with_metadata=*/absl::nullopt));
+        net::AddressList(), net::HostResolverEndpointResults()));
   }
 
  private:
   // network::mojom::ResolveHostClient implementation:
-  void OnComplete(int result,
-                  const net::ResolveErrorInfo& resolve_error_info,
-                  const absl::optional<net::AddressList>& resolved_addresses,
-                  const absl::optional<net::HostResolverEndpointResults>&
-                      endpoint_results_with_metadata) override {
+  void OnComplete(
+      int result,
+      const net::ResolveErrorInfo& resolve_error_info,
+      const net::AddressList& resolved_addresses,
+      const net::HostResolverEndpointResults& alternative_endpoints) override {
     if (result != net::OK) {
       RunSocketCallback(std::move(callback_), nullptr,
                         resolve_error_info.error);
       delete this;
       return;
     }
-    std::unique_ptr<net::StreamSocket> socket(
-        new net::TCPClientSocket(resolved_addresses.value(), nullptr, nullptr,
-                                 nullptr, net::NetLogSource()));
+    std::unique_ptr<net::StreamSocket> socket(new net::TCPClientSocket(
+        resolved_addresses, nullptr, nullptr, nullptr, net::NetLogSource(),
+        // There are currently no use cases for targeting a network when
+        // forwarding via devtools. This will need to be reconsidered if a need
+        // arises.
+        net::handles::kInvalidNetworkHandle));
     net::StreamSocket* socket_ptr = socket.get();
     auto split_callback = base::SplitOnceCallback(base::BindOnce(
         &RunSocketCallback, std::move(callback_), std::move(socket)));
@@ -114,11 +117,16 @@ TCPDeviceProvider::TCPDeviceProvider(const HostPortSet& targets)
 }
 
 void TCPDeviceProvider::QueryDevices(SerialsCallback callback) {
-  std::vector<std::string> result;
+  std::vector<
+      std::pair<std::string, AndroidDeviceManager::DeviceInfo::ConnectedState>>
+      result;
   for (const net::HostPortPair& target : targets_) {
-    const std::string& host = target.host();
-    if (base::Contains(result, host))
+    const std::pair<std::string,
+                    AndroidDeviceManager::DeviceInfo::ConnectedState>
+        host = {target.host(), AndroidDeviceManager::DeviceInfo::kUnknown};
+    if (std::ranges::contains(result, host)) {
       continue;
+    }
     result.push_back(host);
   }
   std::move(callback).Run(std::move(result));
@@ -128,7 +136,7 @@ void TCPDeviceProvider::QueryDeviceInfo(const std::string& serial,
                                         DeviceInfoCallback callback) {
   AndroidDeviceManager::DeviceInfo device_info;
   device_info.model = kDeviceModel;
-  device_info.connected = true;
+  device_info.connected_state = AndroidDeviceManager::DeviceInfo::kConnected;
 
   for (const net::HostPortPair& target : targets_) {
     if (serial != target.host())
@@ -166,5 +174,4 @@ void TCPDeviceProvider::set_release_callback_for_test(
   release_callback_ = std::move(callback);
 }
 
-TCPDeviceProvider::~TCPDeviceProvider() {
-}
+TCPDeviceProvider::~TCPDeviceProvider() = default;

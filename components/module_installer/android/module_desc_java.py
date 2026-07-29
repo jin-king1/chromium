@@ -27,13 +27,10 @@ import org.chromium.build.annotations.UsedByReflection;
 
 @UsedByReflection("Module.java")
 public class ModuleDescriptor_{MODULE} implements ModuleDescriptor {{
-    private static final String[] LIBRARIES = {{{LIBRARIES}}};
     private static final String[] PAKS = {{{PAKS}}};
 
-    @Override
-    public String[] getLibraries() {{
-        return LIBRARIES;
-    }}
+    @UsedByReflection("Module.java")
+    public ModuleDescriptor_{MODULE}() {{}}
 
     @Override
     public String[] getPaks() {{

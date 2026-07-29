@@ -31,9 +31,8 @@ FederatedIdentityApiPermissionContextFactory::
           "FederatedIdentityApiPermissionContext",
           ProfileSelections::Builder()
               .WithRegular(ProfileSelection::kOwnInstance)
-              // TODO(crbug.com/1418376): Check if this service is needed in
-              // Guest mode.
               .WithGuest(ProfileSelection::kOwnInstance)
+              .WithAshInternals(ProfileSelection::kOwnInstance)
               .Build()) {
   DependsOn(HostContentSettingsMapFactory::GetInstance());
 }
@@ -41,8 +40,8 @@ FederatedIdentityApiPermissionContextFactory::
 FederatedIdentityApiPermissionContextFactory::
     ~FederatedIdentityApiPermissionContextFactory() = default;
 
-KeyedService*
-FederatedIdentityApiPermissionContextFactory::BuildServiceInstanceFor(
-    content::BrowserContext* profile) const {
-  return new FederatedIdentityApiPermissionContext(profile);
+std::unique_ptr<KeyedService> FederatedIdentityApiPermissionContextFactory::
+    BuildServiceInstanceForBrowserContext(
+        content::BrowserContext* profile) const {
+  return std::make_unique<FederatedIdentityApiPermissionContext>(profile);
 }

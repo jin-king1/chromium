@@ -6,8 +6,14 @@
 
 #include <vector>
 
+#include "base/containers/extend.h"
+#include "base/test/scoped_feature_list.h"
+#include "net/base/features.h"
+#include "net/cert/x509_util.h"
+#include "net/test/cert_builder.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/boringssl/src/include/openssl/ssl.h"
 
 namespace net {
 
@@ -22,8 +28,12 @@ class MockSSLConfigService : public SSLConfigService {
   // SSLConfigService implementation
   SSLContextConfig GetSSLContextConfig() override { return config_; }
 
+  EchMode GetEchMode(std::string_view hostname) const override {
+    return EchMode::kOpportunistic;
+  }
+
   bool CanShareConnectionWithClientCerts(
-      const std::string& hostname) const override {
+      std::string_view hostname) const override {
     return false;
   }
 
@@ -48,6 +58,7 @@ class MockSSLConfigServiceObserver : public SSLConfigService::Observer {
 
   MOCK_METHOD0(OnSSLContextConfigChanged, void());
 };
+
 
 }  // namespace
 
@@ -125,7 +136,195 @@ TEST(SSLConfigServiceTest, ConfigUpdatesNotifyObservers) {
   EXPECT_CALL(observer, OnSSLContextConfigChanged()).Times(1);
   mock_service.SetSSLContextConfig(initial_config);
 
+  // Test that changing the named groups config triggers an update.
+  initial_config.supported_named_groups.pop_back();
+  EXPECT_CALL(observer, OnSSLContextConfigChanged()).Times(1);
+  mock_service.SetSSLContextConfig(initial_config);
+
   mock_service.RemoveObserver(&observer);
+}
+
+TEST(SSLContextConfigTest, GetSupportedGroups) {
+  SSLContextConfig config;
+
+  // Verify the defaults.
+  std::vector<uint16_t> expected_supported_groups = {
+      SSL_GROUP_X25519_MLKEM768, SSL_GROUP_X25519, SSL_GROUP_SECP256R1,
+      SSL_GROUP_SECP384R1};
+  std::vector<uint16_t> expected_key_shares = {SSL_GROUP_X25519_MLKEM768,
+                                               SSL_GROUP_X25519};
+
+  EXPECT_EQ(config.GetSupportedGroups(), expected_supported_groups);
+  EXPECT_EQ(config.GetSupportedGroups(/*key_shares_only=*/true),
+            expected_key_shares);
+
+  // Remove the last group, SSL_GROUP_SECP384R1.
+  config.supported_named_groups.pop_back();
+  // It should be removed from the output of GetSupportedGroups().
+  expected_supported_groups.pop_back();
+  EXPECT_EQ(config.GetSupportedGroups(), expected_supported_groups);
+  // The expected key shares are not changed because the removed group was not
+  // configured to send a key share.
+  EXPECT_EQ(config.GetSupportedGroups(/*key_shares_only=*/true),
+            expected_key_shares);
+}
+
+TEST(SSLContextConfigTest, TrustAnchorIDsDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kTLSTrustAnchorIDs);
+
+  const std::vector<uint8_t> id1 = {0x01, 0x02, 0x03};
+  const std::vector<uint8_t> id2 = {0x02, 0x02};
+
+  SSLContextConfig config;
+
+  EXPECT_FALSE(config.ShouldAdvertiseTrustAnchorIDs());
+
+  config.trust_anchor_ids.insert(id1);
+  config.mtc_trust_anchor_ids.push_back(id2);
+
+  EXPECT_FALSE(config.ShouldAdvertiseTrustAnchorIDs());
+}
+
+TEST(SSLContextConfigTest, RequestServerPadding) {
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(features::kAddTLSServerHandshakePadding);
+    SSLContextConfig config;
+    EXPECT_EQ(std::nullopt, config.RequestServerPadding());
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        features::kAddTLSServerHandshakePadding,
+        {{"AddTLSServerHandshakePaddingBytes", "128"}});
+    SSLContextConfig config;
+    EXPECT_EQ(128, config.RequestServerPadding());
+  }
+
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndEnableFeatureWithParameters(
+        features::kAddTLSServerHandshakePadding,
+        {{"AddTLSServerHandshakePaddingBytes", "0"}});
+    SSLContextConfig config;
+    EXPECT_EQ(0, config.RequestServerPadding());
+  }
+}
+
+TEST(SSLContextConfigTest, SelectTrustAnchorIDsUnconditionalAllEnabled) {
+  base::test::ScopedFeatureList feature_list;
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  feature_list.InitWithFeatures(
+      {features::kTLSTrustAnchorIDs, features::kNonMtcTrustAnchorIDs,
+       features::kVerifyMTCs},
+      {});
+#else
+  feature_list.InitWithFeatures(
+      {features::kTLSTrustAnchorIDs, features::kNonMtcTrustAnchorIDs}, {});
+#endif
+
+  const std::vector<uint8_t> id1 = {0x01, 0x02, 0x03};
+  const std::vector<uint8_t> id2 = {0x02, 0x02};
+  const std::vector<uint8_t> id3 = {0x13};
+  const std::vector<uint8_t> mtc1 = {0x99, 0x02, 0x03};
+
+  SSLContextConfig config;
+  config.trust_anchor_ids.insert(id1);
+  config.trust_anchor_ids.insert(id2);
+  config.trust_anchor_ids.insert(id3);
+  config.mtc_trust_anchor_ids = {mtc1};
+
+  EXPECT_TRUE(config.ShouldAdvertiseTrustAnchorIDs());
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  EXPECT_THAT(
+      x509_util::ParseTlsTrustAnchorIDs(config.SelectAllTrustAnchorIDs()),
+      testing::UnorderedElementsAre(id1, id2, id3, mtc1));
+#else
+  EXPECT_THAT(
+      x509_util::ParseTlsTrustAnchorIDs(config.SelectAllTrustAnchorIDs()),
+      testing::UnorderedElementsAre(id1, id2, id3));
+#endif
+}
+
+TEST(SSLContextConfigTest, SelectTrustAnchorIDsUnconditionalNonMtcOnly) {
+  base::test::ScopedFeatureList feature_list;
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  feature_list.InitWithFeatures(
+      {features::kTLSTrustAnchorIDs, features::kNonMtcTrustAnchorIDs},
+      {features::kVerifyMTCs});
+#else
+  feature_list.InitWithFeatures(
+      {features::kTLSTrustAnchorIDs, features::kNonMtcTrustAnchorIDs}, {});
+#endif
+
+  const std::vector<uint8_t> id1 = {0x01, 0x02, 0x03};
+  const std::vector<uint8_t> id2 = {0x02, 0x02};
+  const std::vector<uint8_t> id3 = {0x13};
+  const std::vector<uint8_t> mtc1 = {0x99, 0x02, 0x03};
+
+  SSLContextConfig config;
+  config.trust_anchor_ids.insert(id1);
+  config.trust_anchor_ids.insert(id2);
+  config.trust_anchor_ids.insert(id3);
+  config.mtc_trust_anchor_ids = {mtc1};
+
+  EXPECT_TRUE(config.ShouldAdvertiseTrustAnchorIDs());
+  EXPECT_THAT(
+      x509_util::ParseTlsTrustAnchorIDs(config.SelectAllTrustAnchorIDs()),
+      testing::UnorderedElementsAre(id1, id2, id3));
+}
+
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+TEST(SSLContextConfigTest, SelectTrustAnchorIDsUnconditionalMtcOnly) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kTLSTrustAnchorIDs, features::kVerifyMTCs},
+      {features::kNonMtcTrustAnchorIDs});
+
+  const std::vector<uint8_t> id1 = {0x01, 0x02, 0x03};
+  const std::vector<uint8_t> id2 = {0x02, 0x02};
+  const std::vector<uint8_t> id3 = {0x13};
+  const std::vector<uint8_t> mtc1 = {0x99, 0x02, 0x03};
+
+  SSLContextConfig config;
+  config.trust_anchor_ids.insert(id1);
+  config.trust_anchor_ids.insert(id2);
+  config.trust_anchor_ids.insert(id3);
+  config.mtc_trust_anchor_ids = {mtc1};
+
+  EXPECT_TRUE(config.ShouldAdvertiseTrustAnchorIDs());
+  EXPECT_THAT(
+      x509_util::ParseTlsTrustAnchorIDs(config.SelectAllTrustAnchorIDs()),
+      testing::UnorderedElementsAre(mtc1));
+}
+#endif
+
+TEST(SSLContextConfigTest, SelectTrustAnchorIDsUnconditionalAllDisabled) {
+  base::test::ScopedFeatureList feature_list;
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+  feature_list.InitWithFeatures(
+      {features::kTLSTrustAnchorIDs},
+      {features::kNonMtcTrustAnchorIDs, features::kVerifyMTCs});
+#else
+  feature_list.InitWithFeatures({features::kTLSTrustAnchorIDs},
+                                {features::kNonMtcTrustAnchorIDs});
+#endif
+
+  const std::vector<uint8_t> id1 = {0x01, 0x02, 0x03};
+  const std::vector<uint8_t> id2 = {0x02, 0x02};
+  const std::vector<uint8_t> id3 = {0x13};
+  const std::vector<uint8_t> mtc1 = {0x99, 0x02, 0x03};
+
+  SSLContextConfig config;
+  config.trust_anchor_ids.insert(id1);
+  config.trust_anchor_ids.insert(id2);
+  config.trust_anchor_ids.insert(id3);
+  config.mtc_trust_anchor_ids = {mtc1};
+
+  EXPECT_FALSE(config.ShouldAdvertiseTrustAnchorIDs());
+  EXPECT_TRUE(config.SelectAllTrustAnchorIDs().empty());
 }
 
 }  // namespace net

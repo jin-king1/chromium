@@ -8,13 +8,13 @@
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/values.h"
 #include "content/public/test/browser_task_environment.h"
 #include "net/base/net_errors.h"
 #include "net/http/http_status_code.h"
-#include "services/data_decoder/public/cpp/test_support/in_process_data_decoder.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
@@ -87,6 +87,9 @@ class DigitalAssetLinksHandlerTest : public ::testing::Test {
   void OnRelationshipCheckComplete(RelationshipCheckResult result) {
     ++num_invocations_;
     result_ = result;
+    if (run_loop_) {
+      run_loop_->Quit();
+    }
   }
 
  protected:
@@ -103,26 +106,25 @@ class DigitalAssetLinksHandlerTest : public ::testing::Test {
 
     auto response_head = network::mojom::URLResponseHead::New();
     std::string status_line =
-        "HTTP/1.1 " + base::NumberToString(response_code) + " " +
-        net::GetHttpReasonPhrase(
-            static_cast<net::HttpStatusCode>(response_code));
+        base::StrCat({"HTTP/1.1 ", base::NumberToString(response_code), " ",
+                      net::GetHttpReasonPhrase(response_code)});
     response_head->headers =
         base::MakeRefCounted<net::HttpResponseHeaders>(status_line);
+    int expected_num_invocations = num_invocations_ + 1;
     test_url_loader_factory_.AddResponse(
         request_url_, std::move(response_head), "",
         network::URLLoaderCompletionStatus(error));
-
-    base::RunLoop().RunUntilIdle();
+    WaitForNumInvocations(expected_num_invocations);
   }
 
   void AddResponse(const std::string& response) {
     request_url_ =
         test_url_loader_factory_.pending_requests()->at(0).request.url;
 
+    int expected_num_invocations = num_invocations_ + 1;
     test_url_loader_factory_.AddResponse(request_url_.spec(), response,
                                          net::HTTP_OK);
-
-    base::RunLoop().RunUntilIdle();
+    WaitForNumInvocations(expected_num_invocations);
   }
 
   url::Origin GetTestingOrigin() const {
@@ -130,14 +132,23 @@ class DigitalAssetLinksHandlerTest : public ::testing::Test {
   }
 
   int num_invocations_;
+  std::unique_ptr<base::RunLoop> run_loop_;
   RelationshipCheckResult result_;
   GURL request_url_;
 
  private:
+  void WaitForNumInvocations(int expected_num_invocations) {
+    while (num_invocations_ != expected_num_invocations) {
+      run_loop_ = std::make_unique<base::RunLoop>();
+      run_loop_->Run();
+      run_loop_.reset();
+    }
+  }
+
   content::BrowserTaskEnvironment task_environment_;
-  data_decoder::test::InProcessDataDecoder in_process_data_decoder_;
   network::TestURLLoaderFactory test_url_loader_factory_;
 };
+
 }  // namespace
 
 TEST_F(DigitalAssetLinksHandlerTest, CorrectAssetLinksUrl) {

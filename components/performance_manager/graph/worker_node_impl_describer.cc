@@ -40,24 +40,27 @@ void WorkerNodeImplDescriber::OnTakenFromGraph(Graph* graph) {
   graph->GetNodeDataDescriberRegistry()->UnregisterDescriber(this);
 }
 
-base::Value::Dict WorkerNodeImplDescriber::DescribeWorkerNodeData(
+base::DictValue WorkerNodeImplDescriber::DescribeWorkerNodeData(
     const WorkerNode* node) const {
   const WorkerNodeImpl* impl = WorkerNodeImpl::FromNode(node);
   if (!impl)
-    return base::Value::Dict();
+    return base::DictValue();
 
-  base::Value::Dict ret;
-  ret.Set("browser_context_id", impl->browser_context_id());
-  ret.Set("worker_token", impl->worker_token().ToString());
-  ret.Set("url", impl->url().spec());
-  ret.Set("worker_type", WorkerTypeToString(impl->worker_type()));
-  ret.Set("priority", PriorityAndReasonToValue(impl->priority_and_reason()));
+  base::DictValue ret;
+  ret.Set("worker_type", WorkerTypeToString(impl->GetWorkerType()));
+  ret.Set("browser_context_id", impl->GetBrowserContextID().ToString());
+  ret.Set("worker_token", impl->GetWorkerToken().ToString());
+  ret.Set("resource_context", impl->GetResourceContext().ToString());
+  ret.Set("url", impl->GetURL().spec());
+  ret.Set("origin", impl->GetOrigin().GetDebugString());
+  ret.Set("priority", PriorityAndReasonToValue(impl->GetPriorityAndReason()));
 
-  base::Value::Dict metrics;
+  base::DictValue metrics;
   metrics.Set("resident_set",
-              base::NumberToString(impl->resident_set_kb_estimate()));
-  metrics.Set("private_footprint",
-              base::NumberToString(impl->private_footprint_kb_estimate()));
+              base::NumberToString(impl->GetResidentSetEstimate().InKiB()));
+  metrics.Set(
+      "private_footprint",
+      base::NumberToString(impl->GetPrivateFootprintEstimate().InKiB()));
   ret.Set("metrics_estimates", std::move(metrics));
 
   return ret;

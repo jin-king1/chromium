@@ -52,7 +52,7 @@ class TouchpadScrollScreen : public BaseScreen {
   bool MaybeSkip(WizardContext& context) override;
   void ShowImpl() override;
   void HideImpl() override;
-  void OnUserAction(const base::Value::List& args) override;
+  void OnUserAction(const base::ListValue& args) override;
   ScreenSummary GetScreenSummary() override;
 
   // Called when the user changes the toggle button.
@@ -61,6 +61,9 @@ class TouchpadScrollScreen : public BaseScreen {
   // Get user synced preferences for touchpad scroll direction.
   bool GetNaturalScrollPrefValue();
 
+  std::string RetrieveChoobeSubtitle();
+
+  bool initial_pref_value_;
   bool ignore_pref_sync_for_testing_ = false;
 
   base::WeakPtr<TouchpadScrollScreenView> view_;
@@ -68,11 +71,5 @@ class TouchpadScrollScreen : public BaseScreen {
 };
 
 }  // namespace ash
-
-// TODO(https://crbug.com/1164001): remove after the //chrome/browser/chromeos
-// source migration is finished.
-namespace chromeos {
-using ::ash ::TouchpadScrollScreen;
-}
 
 #endif  // CHROME_BROWSER_ASH_LOGIN_SCREENS_TOUCHPAD_SCROLL_SCREEN_H_

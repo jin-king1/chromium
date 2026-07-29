@@ -4,13 +4,10 @@
 
 #include "ash/system/media/quick_settings_media_view_container.h"
 
-#include "ash/constants/ash_features.h"
 #include "ash/system/media/media_tray.h"
 #include "ash/system/unified/unified_system_tray.h"
 #include "ash/system/unified/unified_system_tray_bubble.h"
 #include "ash/test/ash_test_base.h"
-#include "base/test/scoped_feature_list.h"
-#include "media/base/media_switches.h"
 
 namespace ash {
 
@@ -24,10 +21,7 @@ class QuickSettingsMediaViewContainerTest : public NoSessionAshTestBase {
   ~QuickSettingsMediaViewContainerTest() override = default;
 
   void SetUp() override {
-    feature_list_.InitWithFeatures(
-        {features::kQsRevamp, media::kGlobalMediaControlsCrOSUpdatedUI}, {});
     NoSessionAshTestBase::SetUp();
-
     MediaTray::SetPinnedToShelf(false);
     GetPrimaryUnifiedSystemTray()->ShowBubble();
   }
@@ -39,9 +33,6 @@ class QuickSettingsMediaViewContainerTest : public NoSessionAshTestBase {
   QuickSettingsMediaViewContainer* media_view_container() {
     return quick_settings_view()->media_view_container_for_testing();
   }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
 };
 
 TEST_F(QuickSettingsMediaViewContainerTest, ChangeMediaViewVisibility) {
@@ -57,15 +48,15 @@ TEST_F(QuickSettingsMediaViewContainerTest, ChangeMediaViewVisibility) {
 TEST_F(QuickSettingsMediaViewContainerTest,
        SwitchBetweenMediaViewAndDetailedView) {
   quick_settings_view()->SetShowMediaView(true);
-  EXPECT_TRUE(media_view_container()->GetVisible());
+  EXPECT_TRUE(media_view_container()->IsDrawn());
 
   // Make the quick settings view navigate to a dummy detailed view.
   quick_settings_view()->SetDetailedView(std::make_unique<views::View>());
-  EXPECT_FALSE(media_view_container()->GetVisible());
+  EXPECT_FALSE(media_view_container()->IsDrawn());
 
   // Make the quick settings view navigate back to the main view.
   quick_settings_view()->ResetDetailedView();
-  EXPECT_TRUE(media_view_container()->GetVisible());
+  EXPECT_TRUE(media_view_container()->IsDrawn());
 }
 
 }  // namespace ash

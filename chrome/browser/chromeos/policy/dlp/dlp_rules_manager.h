@@ -5,42 +5,37 @@
 #ifndef CHROME_BROWSER_CHROMEOS_POLICY_DLP_DLP_RULES_MANAGER_H_
 #define CHROME_BROWSER_CHROMEOS_POLICY_DLP_DLP_RULES_MANAGER_H_
 
+#include <array>
 #include <map>
 #include <set>
 #include <string>
 
-#include "build/chromeos_buildflags.h"
-#include "chrome/browser/enterprise/data_controls/dlp_rules_manager_base.h"
+#include "chrome/browser/enterprise/data_controls/chrome_dlp_rules_manager.h"
+#include "components/enterprise/data_controls/core/browser/component.h"
+#include "components/enterprise/data_controls/core/browser/dlp_rules_manager_base.h"
 #include "url/gurl.h"
+
+class Profile;
+
+namespace data_controls {
+class DlpReportingManager;
+}  // namespace data_controls
 
 namespace policy {
 
-class DlpReportingManager;
 class DlpFilesController;
 
 // DlpRulesManager is the CrOS-specific parser for the rules set by the
 // DataLeakPreventionRulesList policy and serves as an available service which
 // can be queried anytime about the restrictions set by the policy.
-class DlpRulesManager : public policy::DlpRulesManagerBase {
+class DlpRulesManager : public data_controls::ChromeDlpRulesManager {
  public:
-  // A representation of destinations to which sharing confidential data is
-  // restricted by DataLeakPreventionRulesList policy.
-  // When adding new values, make sure to update the `components` below as well.
-  enum class Component {
-    kUnknownComponent,
-    kArc,       // ARC++ as a Guest OS.
-    kCrostini,  // Crostini as a Guest OS.
-    kPluginVm,  // Plugin VM (Parallels/Windows) as a Guest OS.
-    kUsb,       // Removable disk.
-    kDrive,     // Google drive for file storage.
-    kMaxValue = kDrive
-  };
-
   // List of all possible component values, used to simplify iterating over all
   // the options.
-  constexpr static const std::array<Component, 5> components = {
-      Component::kArc, Component::kCrostini, Component::kPluginVm,
-      Component::kUsb, Component::kDrive};
+  constexpr static const std::array<data_controls::Component, 6> components = {
+      data_controls::Component::kArc,      data_controls::Component::kCrostini,
+      data_controls::Component::kPluginVm, data_controls::Component::kUsb,
+      data_controls::Component::kDrive,    data_controls::Component::kOneDrive};
 
   // Represents file metadata.
   struct FileMetadata {
@@ -58,8 +53,10 @@ class DlpRulesManager : public policy::DlpRulesManagerBase {
 
   // Mapping from a level to the set of components for which that level is
   // enforced.
-  using AggregatedComponents = std::map<Level, std::set<Component>>;
+  using AggregatedComponents =
+      std::map<Level, std::set<data_controls::Component>>;
 
+  explicit DlpRulesManager(Profile* profile);
   ~DlpRulesManager() override = default;
 
   // Returns the enforcement level for `restriction` given that data comes
@@ -71,7 +68,7 @@ class DlpRulesManager : public policy::DlpRulesManagerBase {
   // matched rule metadata.
   virtual Level IsRestrictedComponent(
       const GURL& source,
-      const Component& destination,
+      const data_controls::Component& destination,
       Restriction restriction,
       std::string* out_source_pattern,
       RuleMetadata* out_rule_metadata) const = 0;
@@ -91,7 +88,7 @@ class DlpRulesManager : public policy::DlpRulesManagerBase {
   // Returns the reporting manager that is used to report DLPPolicyEvents to the
   // serverside. Should always return a nullptr if reporting is disabled (see
   // IsReportingEnabled).
-  virtual DlpReportingManager* GetReportingManager() const = 0;
+  virtual data_controls::DlpReportingManager* GetReportingManager() const = 0;
 
   // Returns the files controller that is used to perform DLP checks on files.
   // Should always return a nullptr if there are no file restrictions (and thus

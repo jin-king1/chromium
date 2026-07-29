@@ -3,13 +3,14 @@
 // found in the LICENSE file.
 
 import * as animate from './animation.js';
-import {assert, assertInstanceof} from './assert.js';
+import {assertEnumVariant, assertInstanceof} from './assert.js';
 import * as dom from './dom.js';
 import {I18nString} from './i18n_string.js';
+import * as localDev from './local_dev.js';
 import * as loadTimeData from './models/load_time_data.js';
 import * as state from './state.js';
-import * as tooltip from './tooltip.js';
-import {AspectRatioSet, Facing, FpsRange, Resolution} from './type.js';
+import type {FpsRange, Resolution} from './type.js';
+import {AspectRatioSet, Facing, ImageFormat} from './type.js';
 
 /**
  * Creates a canvas element for 2D drawing.
@@ -17,7 +18,6 @@ import {AspectRatioSet, Facing, FpsRange, Resolution} from './type.js';
  * @param params Size of the canvas.
  * @param params.width Width of the canvas.
  * @param params.height Height of the canvas.
- * @return Returns canvas element and the context for 2D drawing.
  */
 export function newDrawingCanvas(
     {width, height}: {width: number, height: number}):
@@ -33,16 +33,24 @@ export function newDrawingCanvas(
 /**
  * Converts canvas content to a JPEG Blob.
  */
-export function canvasToJpegBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+export function canvasToImageBlob(
+    canvas: HTMLCanvasElement, format: ImageFormat): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob !== null) {
         resolve(blob);
       } else {
-        reject(new Error('Failed to convert canvas to jpeg blob.'));
+        reject(new Error(`Failed to convert canvas to ${format} blob.`));
       }
-    }, 'image/jpeg');
+    }, `image/${format}`);
   });
+}
+
+/**
+ * Converts canvas content to a JPEG Blob.
+ */
+export function canvasToJpegBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return canvasToImageBlob(canvas, ImageFormat.JPEG);
 }
 
 /**
@@ -116,7 +124,6 @@ export type KeyboardShortcut =
 /**
  * Returns a shortcut string, such as Ctrl-Alt-A.
  *
- * @param event Keyboard event.
  * @return Shortcut identifier.
  */
 export function getKeyboardShortcut(event: KeyboardEvent): KeyboardShortcut {
@@ -141,6 +148,9 @@ export function getKeyboardShortcut(event: KeyboardEvent): KeyboardShortcut {
 }
 
 function isSupportedKeyboardKey(key: string): key is KeyboardKey {
+  // This is to workaround current TypeScript limitation on Set.has.
+  // See https://github.com/microsoft/TypeScript/issues/26255
+
   return KEYBOARD_KEY_SET.has(key as KeyboardKey);
 }
 
@@ -177,19 +187,10 @@ export function setupI18nElements(rootElement: DocumentFragment|Element): void {
     }
     element.append(getMessage(element, 'i18n-text'));
   }
-  for (const element of getElements('i18n-tooltip-true')) {
-    element.setAttribute(
-        'tooltip-true', getMessage(element, 'i18n-tooltip-true'));
-  }
-  for (const element of getElements('i18n-tooltip-false')) {
-    element.setAttribute(
-        'tooltip-false', getMessage(element, 'i18n-tooltip-false'));
-  }
-  for (const element of getElements('i18n-aria')) {
-    setAriaLabel(element, 'i18n-aria');
-  }
-  for (const element of tooltip.setup(getElements('i18n-label'))) {
-    setAriaLabel(element, 'i18n-label');
+  for (const attribute of ['i18n-aria', 'i18n-label']) {
+    for (const element of getElements(attribute)) {
+      setAriaLabel(element, attribute);
+    }
   }
 }
 
@@ -206,10 +207,31 @@ export function blobToImage(blob: Blob): Promise<HTMLImageElement> {
 }
 
 /**
- * Gets default facing according to device mode.
+ * Gets the facing preference according to device mode and lid state. The lower
+ * the index, the more preferred.
  */
-export function getDefaultFacing(): Facing {
-  return state.get(state.State.TABLET) ? Facing.ENVIRONMENT : Facing.USER;
+export function getFacingPreference(): Facing[] {
+  if (isLidClosed()) {
+    return [Facing.EXTERNAL, Facing.ENVIRONMENT, Facing.USER];
+  }
+  if (state.get(state.State.TABLET)) {
+    return [Facing.ENVIRONMENT, Facing.USER, Facing.EXTERNAL];
+  }
+  return [Facing.USER, Facing.ENVIRONMENT, Facing.EXTERNAL];
+}
+
+/**
+ * Checks if the lid is closed or not.
+ */
+export function isLidClosed(): boolean {
+  return state.get(state.State.LID_CLOSED);
+}
+
+/**
+ * Checks if the sw privacy switch is on.
+ */
+export function isSWPrivacySwitchOn(): boolean {
+  return state.get(state.State.SW_PRIVACY_SWITCH_ON);
 }
 
 /**
@@ -248,7 +270,7 @@ export function setInkdropEffect(el: HTMLElement): void {
   const ripple =
       assertInstanceof(tpl.querySelector('.inkdrop-ripple'), HTMLElement);
   el.appendChild(tpl);
-  el.addEventListener('click', async (e) => {
+  el.addEventListener('click', (e) => {
     const tRect =
         assertInstanceof(e.target, HTMLElement).getBoundingClientRect();
     const elRect = el.getBoundingClientRect();
@@ -260,7 +282,7 @@ export function setInkdropEffect(el: HTMLElement): void {
     el.style.setProperty('--drop-x', `${dropX}px`);
     el.style.setProperty('--drop-y', `${dropY}px`);
     el.style.setProperty('--drop-radius', `${radius}px`);
-    await animate.play(ripple);
+    animate.play(ripple);
   });
 }
 
@@ -345,36 +367,6 @@ export async function share(file: File): Promise<void> {
 }
 
 /**
- * Check if a string value is a variant of an enum.
- *
- * @param enumType The enum type to be checked.
- * @param value Value to be checked.
- * @return The value if it's an enum variant, null otherwise.
- */
-export function checkEnumVariant<T extends string>(
-    enumType: {[key: string]: T}, value: string|null|undefined): T|null {
-  if (value === null || value === undefined ||
-      !Object.values<string>(enumType).includes(value)) {
-    return null;
-  }
-  return value as T;
-}
-
-/**
- * Asserts that a string value is a variant of an enum.
- *
- * @param enumType The enum type to be checked.
- * @param value Value to be checked.
- * @return The value if it's an enum variant, throws assertion error otherwise.
- */
-export function assertEnumVariant<T extends string>(
-    enumType: {[key: string]: T}, value: string|null|undefined): T {
-  const ret = checkEnumVariant(enumType, value);
-  assert(ret !== null, `${value} is not a valid enum variant`);
-  return ret;
-}
-
-/**
  * Crops out maximum possible centered square from the image blob.
  *
  * @return Promise with result cropped square image.
@@ -387,8 +379,6 @@ export async function cropSquare(blob: Blob): Promise<Blob> {
     ctx.drawImage(
         img, Math.floor((img.width - side) / 2),
         Math.floor((img.height - side) / 2), side, side, 0, 0, side, side);
-    // TODO(b/174190121): Patch important exif entries from input blob to
-    // result blob.
     const croppedBlob = await canvasToJpegBlob(canvas);
     return croppedBlob;
   } finally {
@@ -422,7 +412,7 @@ export function extractBackgroundImageValueUrl(element: HTMLElement): string|
   if (imageValue === null || imageValue === undefined) {
     return null;
   }
-  const match = imageValue.toString().match(/url\(['"](.*)['"]\)/);
+  const match = /url\(['"](.*)['"]\)/.exec(imageValue.toString());
   return match?.[1] ?? null;
 }
 
@@ -449,7 +439,7 @@ export async function loadImage(
  * value and value to name, which most of the time isn't what we want.
  */
 export function getNumberEnumMapping<T extends number>(
-    enumType: {[key: string]: T|string}): {[key: string]: T} {
+    enumType: Record<string, T|string>): Record<string, T> {
   return Object.fromEntries(Object.entries(enumType).flatMap(([k, v]) => {
     if (typeof v === 'string') {
       return [];
@@ -477,4 +467,83 @@ export function getFpsRangeFromConstraints(frameRate: ConstrainDouble|
     }
   }
   return {minFps, maxFps};
+}
+
+// Observer to monitor the average FPS of preview within an interval.
+export class FpsObserver {
+  private readonly timestamps: number[] = [];
+
+  private callbackId = 0;
+
+  constructor(private readonly videoElement: HTMLVideoElement) {
+    const FPS_MEASUREMENT_MAX_SAMPLE_COUNT = 100;
+    const updateFps = () => {
+      this.timestamps.push(performance.now());
+      if (this.timestamps.length > FPS_MEASUREMENT_MAX_SAMPLE_COUNT) {
+        this.timestamps.shift();
+      }
+      this.callbackId = this.videoElement.requestVideoFrameCallback(updateFps);
+    };
+    this.callbackId = this.videoElement.requestVideoFrameCallback(updateFps);
+  }
+
+  // Returns the average FPS according to the collected timestamps. If the
+  // amount of data is not enough, returns null instead.
+  getAverageFps(): number|null {
+    if (this.timestamps.length <= 1) {
+      return null;
+    }
+    return (this.timestamps.length - 1) /
+        (this.timestamps[this.timestamps.length - 1] - this.timestamps[0]) *
+        1000;
+  }
+
+  stop(): void {
+    this.videoElement.cancelVideoFrameCallback(this.callbackId);
+  }
+}
+
+/**
+ * Returns whether a FileSystemHandle is FileSystemFileHandle.
+ *
+ * This is needed since the type FileSystemHandle isn't a discriminated union
+ * now.
+ * See https://github.com/microsoft/TypeScript-DOM-lib-generator/issues/1494.
+ */
+export function isFileSystemFileHandle(handle: FileSystemHandle):
+    handle is FileSystemFileHandle {
+  return handle.kind === 'file';
+}
+
+/**
+ * Returns whether a FileSystemHandle is FileSystemDirectoryHandle.
+ *
+ * This is needed since the type FileSystemHandle isn't a discriminated union
+ * now.
+ * See https://github.com/microsoft/TypeScript-DOM-lib-generator/issues/1494.
+ */
+export function isFileSystemDirectoryHandle(handle: FileSystemHandle):
+    handle is FileSystemDirectoryHandle {
+  return handle.kind === 'directory';
+}
+
+/**
+ * Expands a path to full absolute path.
+ *
+ * This is a no-op for CCA on CrOS, but is needed for local dev since it might
+ * be served in a subpath.
+ */
+export const expandPath = localDev.overridableFunction((path: string) => path);
+
+/**
+ * Lazily initialize a singleton.
+ */
+export function lazySingleton<T>(fn: () => T): () => T {
+  let val: T|null = null;
+  return () => {
+    if (val === null) {
+      val = fn();
+    }
+    return val;
+  };
 }

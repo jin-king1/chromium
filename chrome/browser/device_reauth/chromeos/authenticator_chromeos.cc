@@ -4,39 +4,50 @@
 
 #include "chrome/browser/device_reauth/chromeos/authenticator_chromeos.h"
 
-#include "build/chromeos_buildflags.h"
+#include <algorithm>
+#include <optional>
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#include "ash/constants/ash_pref_names.h"
 #include "ash/public/cpp/in_session_auth_dialog_controller.h"
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
-#if BUILDFLAG(IS_CHROMEOS_LACROS)
-#include "chromeos/crosapi/mojom/in_session_auth.mojom.h"
-#include "chromeos/lacros/lacros_service.h"
-#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/ash/auth/legacy_fingerprint_engine.h"
+#include "chrome/browser/profiles/profile_manager.h"
+#include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
+#include "chromeos/ash/components/dbus/cryptohome/UserDataAuth.pb.h"
+#include "chromeos/ash/components/dbus/cryptohome/auth_factor.pb.h"
+#include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
+#include "chromeos/ash/components/osauth/public/common_types.h"
+#include "components/prefs/pref_service.h"
+#include "components/user_manager/user.h"
+#include "components/user_manager/user_manager.h"
 
 namespace {
-
-#if BUILDFLAG(IS_CHROMEOS_ASH)
 void OnAuthComplete(base::OnceCallback<void(bool)> callback,
                     bool success,
-                    const base::UnguessableToken& token,
+                    const ash::AuthProofToken& token,
                     base::TimeDelta timeout) {
   // Here we simply ignore `token` and `timeout`, as password manager manages
   // its own auth timeout
   std::move(callback).Run(success);
 }
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
 
-#if BUILDFLAG(IS_CHROMEOS_LACROS)
-void OnRequestToken(base::OnceCallback<void(bool)> callback,
-                    crosapi::mojom::RequestTokenReplyPtr reply) {
-  // Similarly to `OnAuthComplete`, we ignore the token provided in reply, if
-  // any.
-  std::move(callback).Run(
-      reply != mojo::StructPtr<crosapi::mojom::RequestTokenReply>(nullptr));
+bool HasFingerprintRecord(const PrefService& pref_service) {
+  return pref_service.GetInteger(ash::prefs::kQuickUnlockFingerprintRecord) !=
+         0;
 }
-#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
 
+// Helper to check if the reply contains a PIN factor.
+bool ContainsPinAuthFactor(
+    std::optional<user_data_auth::ListAuthFactorsReply> reply) {
+  return reply.has_value() &&
+         std::ranges::any_of(
+             reply->configured_auth_factors(), [](const auto& factor) {
+               return factor.type() == user_data_auth::AUTH_FACTOR_TYPE_PIN;
+             });
+}
 }  // namespace
 
 AuthenticatorChromeOS::AuthenticatorChromeOS() = default;
@@ -44,24 +55,76 @@ AuthenticatorChromeOS::AuthenticatorChromeOS() = default;
 AuthenticatorChromeOS::~AuthenticatorChromeOS() = default;
 
 void AuthenticatorChromeOS::AuthenticateUser(
+    const std::u16string& message,
+    device_reauth::DeviceAuthSource source,
     base::OnceCallback<void(bool)> result_callback) {
+  ash::InSessionAuthDialogController::Reason reason;
+  switch (source) {
+    case device_reauth::DeviceAuthSource::kAutofill:
+      // TODO(b/493658798): Create a kPaymentsAutofill auth source and make sure
+      // that's set.
+      reason =
+          ash::InSessionAuthDialogController::Reason::kAccessAutofillPayments;
+      break;
+    case device_reauth::DeviceAuthSource::kPasswordManager:
+    case device_reauth::DeviceAuthSource::kIncognito:
+    case device_reauth::DeviceAuthSource::kDeviceLockPage:
+    case device_reauth::DeviceAuthSource::kSettingsBatchUpload:
+    case device_reauth::DeviceAuthSource::kBookmarkBatchUpload:
+    case device_reauth::DeviceAuthSource::kPasswordsCsvDownload:
+      reason =
+          ash::InSessionAuthDialogController::Reason::kAccessPasswordManager;
+      break;
+  }
   // Calls `InSessionAuthDialogController::ShowAuthDialog` to authenticate the
   // currently active user using configured auth factors.
-  // On Lacros, makes a crosapi call to the `mojom::InSessionAuth` interface
-  // implemented by ash in crosapi::InSessionAuthAsh. This in turn calls
-  // `InSessionAuthDialogController::ShowAuthDialog` to authenticate the
-  // currently active user using configured auth factors.
-
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+  // On Lacros, makes a crosapi call to the
+  // `chromeos::auth::mojom::InSessionAuth` interface implemented by ash. This
+  // in turn calls `InSessionAuthDialogController::ShowAuthDialog` to
+  // authenticate the currently active user using configured auth factors.
   ash::InSessionAuthDialogController::Get()->ShowAuthDialog(
-      ash::InSessionAuthDialogController::Reason::kAccessPasswordManager,
+      reason, base::UTF16ToUTF8(message),
       base::BindOnce(&OnAuthComplete, std::move(result_callback)));
-#elif BUILDFLAG(IS_CHROMEOS_LACROS)
-  if (auto* lacros_service = chromeos::LacrosService::Get();
-      lacros_service->IsAvailable<crosapi::mojom::InSessionAuth>()) {
-    lacros_service->GetRemote<crosapi::mojom::InSessionAuth>()->RequestToken(
-        crosapi::mojom::Reason::kAccessPasswordManager,
-        base::BindOnce(&OnRequestToken, std::move(result_callback)));
+}
+
+BiometricsStatusChromeOS AuthenticatorChromeOS::CheckIfBiometricsAvailable() {
+  const PrefService& prefs =
+      *ProfileManager::GetActiveUserProfile()->GetPrefs();
+
+  // No need for an AuthPerformer since we don't intent to perform
+  // authentication here.
+  ash::LegacyFingerprintEngine fp_engine(nullptr);
+  bool is_fingerprint_enabled = fp_engine.IsFingerprintEnabled(
+      prefs, ash::LegacyFingerprintEngine::Purpose::kAny);
+
+  if (!is_fingerprint_enabled) {
+    return BiometricsStatusChromeOS::kUnavailable;
   }
-#endif  // BUILDFLAG(IS_CHROMEOS_LACROS)
+
+  return HasFingerprintRecord(prefs)
+             ? BiometricsStatusChromeOS::kAvailable
+             : BiometricsStatusChromeOS::kNotConfiguredForUser;
+}
+
+void AuthenticatorChromeOS::CheckIfPinIsAvailable(
+    base::OnceCallback<void(bool)> callback) {
+  const user_manager::User* user =
+      user_manager::UserManager::Get()->GetActiveUser();
+
+  if (!user) {
+    // Post the callback to ensure it runs asynchronously, avoiding the risks
+    // of mixing sync and async execution paths.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(callback), false));
+    return;
+  }
+
+  user_data_auth::ListAuthFactorsRequest request;
+
+  *request.mutable_account_id() =
+      cryptohome::CreateAccountIdentifierFromAccountId(user->GetAccountId());
+
+  ash::UserDataAuthClient::Get()->ListAuthFactors(
+      request,
+      base::BindOnce(&ContainsPinAuthFactor).Then(std::move(callback)));
 }

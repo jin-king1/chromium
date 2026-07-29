@@ -8,10 +8,6 @@
 #import "ios/web/public/browser_state.h"
 #import "ios/web/public/js_messaging/script_message.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace {
 
 const char kWebViewMessageHandlerJavaScriptFeatureKeyName[] =
@@ -77,7 +73,12 @@ void WebViewMessageHandlerJavaScriptFeature::UnregisterHandler(
   handlers_.erase(command);
 }
 
-absl::optional<std::string>
+bool WebViewMessageHandlerJavaScriptFeature::IsHandlerRegistered(
+    std::string& command) {
+  return handlers_.find(command) != handlers_.end();
+}
+
+std::optional<std::string>
 WebViewMessageHandlerJavaScriptFeature::GetScriptMessageHandlerName() const {
   return kWebViewMessageHandlerName;
 }
@@ -85,14 +86,16 @@ WebViewMessageHandlerJavaScriptFeature::GetScriptMessageHandlerName() const {
 void WebViewMessageHandlerJavaScriptFeature::ScriptMessageReceived(
     web::WebState* web_state,
     const web::ScriptMessage& script_message) {
-  if (!script_message.body() || !script_message.body()->is_dict()) {
+  if (!script_message.legacy_body() ||
+      !script_message.legacy_body()->is_dict()) {
     return;
   }
-  base::Value::Dict message_body = std::move(script_message.body()->GetDict());
+  base::DictValue message_body =
+      std::move(script_message.legacy_body()->GetDict());
 
   // Pass messages from the non-static instances to the static instance during
   // transition.
-  // TODO(crbug.com/1426917): Remove static instance of feature.
+  // TODO(crbug.com/40899585): Remove static instance of feature.
   WebViewMessageHandlerJavaScriptFeature* static_instance =
       WebViewMessageHandlerJavaScriptFeature::GetInstance();
   if (this != static_instance) {
@@ -103,7 +106,7 @@ void WebViewMessageHandlerJavaScriptFeature::ScriptMessageReceived(
 }
 
 void WebViewMessageHandlerJavaScriptFeature::NotifyHandlers(
-    const base::Value::Dict& message_body) {
+    const base::DictValue& message_body) {
   const std::string* command =
       message_body.FindString(kScriptMessageCommandKey);
   if (!command) {
@@ -114,7 +117,7 @@ void WebViewMessageHandlerJavaScriptFeature::NotifyHandlers(
     return;
   }
 
-  const base::Value::Dict* payload =
+  const base::DictValue* payload =
       message_body.FindDict(kScriptMessagePayloadKey);
   if (!payload) {
     return;

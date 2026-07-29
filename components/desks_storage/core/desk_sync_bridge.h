@@ -8,23 +8,24 @@
 #include <stddef.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "base/containers/flat_map.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "components/account_id/account_id.h"
 #include "components/desks_storage/core/desk_model.h"
-#include "components/sync/base/model_type.h"
-#include "components/sync/model/model_type_store.h"
-#include "components/sync/model/model_type_sync_bridge.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include "components/sync/base/data_type.h"
+#include "components/sync/model/data_type_store.h"
+#include "components/sync/model/data_type_sync_bridge.h"
 
 namespace syncer {
-class ModelTypeChangeProcessor;
+class DataTypeLocalChangeProcessor;
 }  // namespace syncer
 
 namespace ash {
@@ -35,29 +36,33 @@ enum class DeskTemplateType;
 namespace desks_storage {
 
 // A Sync-backed persistence layer for Workspace Desk.
-class DeskSyncBridge : public syncer::ModelTypeSyncBridge, public DeskModel {
+class DeskSyncBridge : public syncer::DataTypeSyncBridge, public DeskModel {
  public:
   DeskSyncBridge(
-      std::unique_ptr<syncer::ModelTypeChangeProcessor> change_processor,
-      syncer::OnceModelTypeStoreFactory create_store_callback,
+      std::unique_ptr<syncer::DataTypeLocalChangeProcessor> change_processor,
+      syncer::OnceDataTypeStoreFactory create_store_callback,
       const AccountId& account_id);
   DeskSyncBridge(const DeskSyncBridge&) = delete;
   DeskSyncBridge& operator=(const DeskSyncBridge&) = delete;
   ~DeskSyncBridge() override;
 
-  // syncer::ModelTypeSyncBridge overrides.
-  std::unique_ptr<syncer::MetadataChangeList> CreateMetadataChangeList()
-      override;
-  absl::optional<syncer::ModelError> MergeFullSyncData(
+  // syncer::DataTypeSyncBridge overrides.
+  std::optional<syncer::ModelError> MergeFullSyncData(
       std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
       syncer::EntityChangeList entity_data) override;
-  absl::optional<syncer::ModelError> ApplyIncrementalSyncChanges(
+  std::optional<syncer::ModelError> ApplyIncrementalSyncChanges(
       std::unique_ptr<syncer::MetadataChangeList> metadata_change_list,
       syncer::EntityChangeList entity_changes) override;
-  void GetData(StorageKeyList storage_keys, DataCallback callback) override;
-  void GetAllDataForDebugging(DataCallback callback) override;
-  std::string GetClientTag(const syncer::EntityData& entity_data) override;
-  std::string GetStorageKey(const syncer::EntityData& entity_data) override;
+  std::unique_ptr<syncer::DataBatch> GetDataForCommit(
+      StorageKeyList storage_keys) override;
+  std::unique_ptr<syncer::DataBatch> GetAllDataForDebugging() override;
+  std::string GetClientTag(
+      const syncer::EntityData& entity_data) const override;
+  std::string GetStorageKey(
+      const syncer::EntityData& entity_data) const override;
+  sync_pb::EntitySpecifics TrimAllSupportedFieldsFromRemoteSpecifics(
+      const sync_pb::EntitySpecifics& entity_specifics) const override;
+  bool IsEntityDataValid(const syncer::EntityData& entity_data) const override;
 
   // DeskModel overrides.
   DeskModel::GetAllEntriesResult GetAllEntries() override;
@@ -72,13 +77,15 @@ class DeskSyncBridge : public syncer::ModelTypeSyncBridge, public DeskModel {
   size_t GetEntryCount() const override;
   size_t GetSaveAndRecallDeskEntryCount() const override;
   size_t GetDeskTemplateEntryCount() const override;
+  size_t GetCoralEntryCount() const override;
   size_t GetMaxSaveAndRecallDeskEntryCount() const override;
   size_t GetMaxDeskTemplateEntryCount() const override;
-  std::vector<base::Uuid> GetAllEntryUuids() const override;
+  size_t GetMaxCoralEntryCount() const override;
+  std::set<base::Uuid> GetAllEntryUuids() const override;
   bool IsReady() const override;
   // Whether this sync bridge is syncing local data to sync. This sync bridge
   // still allows user to save desk templates locally when users disable syncing
-  // for Workspace Desk model type.
+  // for Workspace Desk data type.
   bool IsSyncing() const override;
 
   ash::DeskTemplate* FindOtherEntryWithName(
@@ -86,12 +93,15 @@ class DeskSyncBridge : public syncer::ModelTypeSyncBridge, public DeskModel {
       ash::DeskTemplateType type,
       const base::Uuid& uuid) const override;
 
+  std::string GetCacheGuid() override;
+
+  // `callback` will be run immediately if `MergeFullSyncData` was already
+  // called.
+  void SetOnMergeFullSyncDataCallback(base::OnceClosure callback);
+
   // Other helper methods.
   bool HasUuid(const base::Uuid& uuid) const;
-
   const ash::DeskTemplate* GetUserEntryByUUID(const base::Uuid& uuid) const;
-
-  absl::optional<base::Uuid> GetFloatingWorkspaceUuid();
 
  private:
   friend class DeskModelWrapper;
@@ -104,28 +114,27 @@ class DeskSyncBridge : public syncer::ModelTypeSyncBridge, public DeskModel {
   // Notify all observers that the model is loaded;
   void NotifyDeskModelLoaded();
 
-  // Notify all observers of any `new_entries` when they are added/updated via
-  // sync.
+  // Notify all observers of any `new_entries` when they are added/updated
+  // via sync.
   void NotifyRemoteDeskTemplateAddedOrUpdated(
-      const std::vector<const ash::DeskTemplate*>& new_entries);
+      const std::vector<raw_ptr<const ash::DeskTemplate, VectorExperimental>>&
+          new_entries);
 
   // Notify all observers when the entries with `uuids` have been removed via
   // sync or disabling sync locally.
   void NotifyRemoteDeskTemplateDeleted(const std::vector<base::Uuid>& uuids);
 
   // Methods used as callbacks given to DataTypeStore.
-  void OnStoreCreated(const absl::optional<syncer::ModelError>& error,
-                      std::unique_ptr<syncer::ModelTypeStore> store);
+  void OnStoreCreated(const std::optional<syncer::ModelError>& error,
+                      std::unique_ptr<syncer::DataTypeStore> store);
   void OnReadAllData(std::unique_ptr<DeskEntries> initial_entries,
-                     std::unique_ptr<base::flat_map<std::string, base::Uuid>>
-                         floating_workspace_cache_guid_to_uuid,
-                     const absl::optional<syncer::ModelError>& error);
-  void OnReadAllMetadata(const absl::optional<syncer::ModelError>& error,
+                     const std::optional<syncer::ModelError>& error);
+  void OnReadAllMetadata(const std::optional<syncer::ModelError>& error,
                          std::unique_ptr<syncer::MetadataBatch> metadata_batch);
-  void OnCommit(const absl::optional<syncer::ModelError>& error);
+  void OnCommit(const std::optional<syncer::ModelError>& error);
 
   // Persists changes in sync store.
-  void Commit(std::unique_ptr<syncer::ModelTypeStore::WriteBatch> batch);
+  void Commit(std::unique_ptr<syncer::DataTypeStore::WriteBatch> batch);
 
   // Uploads data that only exists locally to Sync during MergeFullSyncData().
   void UploadLocalOnlyData(syncer::MetadataChangeList* metadata_change_list,
@@ -134,19 +143,23 @@ class DeskSyncBridge : public syncer::ModelTypeSyncBridge, public DeskModel {
   // Returns true if `templates_` contains a desk template with `name`.
   bool HasUserTemplateWithName(const std::u16string& name);
 
+  void OnMergeFullSyncDataFinished();
+
   // `desk_template_entries_` is keyed by UUIDs.
   DeskEntries desk_template_entries_;
-
-  // `floating_workspace_templates_uuid_` is keyed by cache_guids.
-  base::flat_map<std::string, base::Uuid> floating_workspace_templates_uuid_;
 
   // Whether local data and metadata have finished loading and this sync bridge
   // is ready to be accessed.
   bool is_ready_;
 
+  // Whether `MergeFullSyncData()` was executed.
+  bool merge_full_sync_data_finished_ = false;
+
+  base::OnceClosure on_merge_full_sync_data_callback_;
+
   // In charge of actually persisting changes to disk, or loading previous
   // data.
-  std::unique_ptr<syncer::ModelTypeStore> store_;
+  std::unique_ptr<syncer::DataTypeStore> store_;
 
   // Account ID of the user this class will sync data for.
   const AccountId account_id_;

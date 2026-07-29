@@ -10,6 +10,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/unsafe_shared_memory_region.h"
+#include "base/memory_coordinator/test_memory_consumer_registry.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/task_environment.h"
 #include "gpu/command_buffer/common/capabilities.h"
@@ -56,12 +57,14 @@ class GpuChannelTestCommon : public testing::Test {
                            int32_t routing_id,
                            base::UnsafeSharedMemoryRegion shared_state,
                            ContextResult* out_result,
-                           Capabilities* out_capabilities);
+                           Capabilities* out_capabilities,
+                           GLCapabilities* out_gl_capabilities);
 
   base::UnsafeSharedMemoryRegion GetSharedMemoryRegion();
 
  private:
   base::test::TaskEnvironment task_environment_;
+  base::TestMemoryConsumerRegistry test_memory_consumer_registry_;
   std::unique_ptr<base::trace_event::MemoryDumpManager> memory_dump_manager_;
   std::unique_ptr<SyncPointManager> sync_point_manager_;
   std::unique_ptr<SharedImageManager> shared_image_manager_;

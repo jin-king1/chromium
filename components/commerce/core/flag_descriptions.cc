@@ -6,26 +6,31 @@
 
 namespace commerce::flag_descriptions {
 
-const char kCommerceLocalPDPDetectionName[] = "Local Product Page Detection";
-const char kCommerceLocalPDPDetectionDescription[] =
-    "Allow Chrome to attempt to detect product pages on the client, without "
-    "server support.";
-
-const char kCommercePriceTrackingName[] = "Price Tracking";
-const char kCommercePriceTrackingDescription[] =
-    "Allows users to track product prices through Chrome.";
+const char kProductSpecificationsName[] = "Product Specifications";
+const char kProductSpecificationsDescription[] =
+    "Enable the Product Specifications feature.";
 
 const char kShoppingListName[] = "Shopping List";
 const char kShoppingListDescription[] = "Enable shopping list in bookmarks.";
 
-const char kChromeCartDomBasedHeuristicsName[] =
-    "ChromeCart DOM-based heuristics";
-const char kChromeCartDomBasedHeuristicsDescription[] =
-    "Enable DOM-based heuristics for ChromeCart.";
+const char kPriceInsightsName[] = "Price Insights";
+const char kPriceInsightsDescription[] = "Enable price insights experiment.";
 
-const char kPriceTrackingChipExperimentName[] =
-    "Price Tracking Chip Experiment";
-const char kPriceTrackingChipExperimentDescription[] =
-    "Enable price tracking chip experiment.";
+const char kDiscountOnNavigationName[] = "Discounts on navigation";
+const char kDiscountOnNavigationDescription[] =
+    "Enable to show available discounts on the page after navigation.";
+
+const char kPriceTrackingSubscriptionServiceLocaleKeyName[] =
+    "Price Tracking Subscription Service Local Key";
+const char kPriceTrackingSubscriptionServiceLocaleKeyDescription[] =
+    "Enable the locale key for price tracking subscription service";
+
+const char kDiscountAutofillName[] = "Discount Autofill";
+const char kDiscountAutofillDescription[] =
+    "Enable discount autofill experiment.";
+
+const char kShoppingAlternateServerName[] = "Alternate Shopping Server.";
+const char kShoppingAlternateServerDescription[] =
+    "Enable using the alternate shopping server for testing.";
 
 }  // namespace commerce::flag_descriptions

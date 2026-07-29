@@ -4,25 +4,26 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions.base;
 
+import static org.junit.Assert.assertEquals;
+
 import android.app.Activity;
 import android.content.Context;
 import android.view.View;
 import android.view.View.MeasureSpec;
 import android.view.ViewGroup.LayoutParams;
 
-import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 
-/**
- * Tests for {@link SimpleVerticalLayoutView}.
- */
+/** Tests for {@link SimpleVerticalLayoutView}. */
 @RunWith(BaseRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class SimpleVerticalLayoutViewTest {
@@ -31,22 +32,22 @@ public class SimpleVerticalLayoutViewTest {
     private static final int SMALL_VIEW_HEIGHT = 20;
     private static final int LARGE_VIEW_HEIGHT = 30;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private SimpleVerticalLayoutViewForTest mView;
     private Activity mActivity;
 
     private View mSmallView;
     private View mLargeView;
 
-    class SimpleVerticalLayoutViewForTest extends SimpleVerticalLayoutView {
+    static class SimpleVerticalLayoutViewForTest extends SimpleVerticalLayoutView {
         SimpleVerticalLayoutViewForTest(Context context) {
             super(context);
         }
 
-        /**
-         * Test method to force layout update based on specified view dimensions.
-         */
+        /** Test method to force layout update based on specified view dimensions. */
         void performLayoutForTest(int width) {
-            onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+            onMeasure(
+                    MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
                     MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
 
             // Note: height is computed by onMeasure call.
@@ -57,8 +58,6 @@ public class SimpleVerticalLayoutViewTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mView = new SimpleVerticalLayoutViewForTest(mActivity);
 
@@ -71,28 +70,24 @@ public class SimpleVerticalLayoutViewTest {
     }
 
     /**
-     * Perform the measure and layout pass on the SimpleVerticalLayoutView.
-     * This method sets up the basic properties of the Suggestion container, specifies height of the
-     * content view and executes the measure and layout pass.
+     * Perform the measure and layout pass on the SimpleVerticalLayoutView. This method sets up the
+     * basic properties of the Suggestion container, specifies height of the content view and
+     * executes the measure and layout pass.
      */
     private void executeLayoutTest(int containerWidth) {
         mView.performLayoutForTest(containerWidth);
     }
 
-    /**
-     * Confirm that specified view is positioned at specific coordinates.
-     */
+    /** Confirm that specified view is positioned at specific coordinates. */
     private void verifyViewLayout(View v, int left, int top, int right, int bottom) {
-        Assert.assertEquals("left view edge", left, v.getLeft());
-        Assert.assertEquals("top view edge", top, v.getTop());
-        Assert.assertEquals("right view edge", right, v.getRight());
-        Assert.assertEquals("bottom view edge", bottom, v.getBottom());
-        Assert.assertEquals("view height", bottom - top, v.getMeasuredHeight());
+        assertEquals("left view edge", left, v.getLeft());
+        assertEquals("top view edge", top, v.getTop());
+        assertEquals("right view edge", right, v.getRight());
+        assertEquals("bottom view edge", bottom, v.getBottom());
+        assertEquals("view height", bottom - top, v.getMeasuredHeight());
     }
 
-    /**
-     * Verify that padding are respected during layout.
-     */
+    /** Verify that padding are respected during layout. */
     @Test
     public void layout_padding() {
         final int leftPaddingWidth = 17;
@@ -111,9 +106,17 @@ public class SimpleVerticalLayoutViewTest {
 
         executeLayoutTest(overallSuggestionWidth);
 
-        verifyViewLayout(mSmallView, leftPaddingWidth, topPaddingHeight,
-                leftPaddingWidth + LARGE_VIEW_WIDTH, topPaddingHeight + SMALL_VIEW_HEIGHT);
-        verifyViewLayout(mLargeView, leftPaddingWidth, largeSuggestionTop,
-                leftPaddingWidth + LARGE_VIEW_WIDTH, largeSuggestionTop + LARGE_VIEW_HEIGHT);
+        verifyViewLayout(
+                mSmallView,
+                leftPaddingWidth,
+                topPaddingHeight,
+                leftPaddingWidth + LARGE_VIEW_WIDTH,
+                topPaddingHeight + SMALL_VIEW_HEIGHT);
+        verifyViewLayout(
+                mLargeView,
+                leftPaddingWidth,
+                largeSuggestionTop,
+                leftPaddingWidth + LARGE_VIEW_WIDTH,
+                largeSuggestionTop + LARGE_VIEW_HEIGHT);
     }
 }

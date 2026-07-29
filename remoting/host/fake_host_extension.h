@@ -13,7 +13,6 @@
 
 namespace remoting {
 
-class ClientSessionDetails;
 class HostExtensionSession;
 
 namespace protocol {
@@ -34,7 +33,6 @@ class FakeExtension : public HostExtension {
   // HostExtension interface.
   std::string capability() const override;
   std::unique_ptr<HostExtensionSession> CreateExtensionSession(
-      ClientSessionDetails* client_session_details,
       protocol::ClientStub* client_stub) override;
 
   // Accessors for testing.
@@ -55,7 +53,7 @@ class FakeExtension : public HostExtension {
 
   // Unowned pointer to the object of |session_|, so that it can be accessed
   // after the extension session is created.
-  raw_ptr<Session> session_ptr_;
+  raw_ptr<Session, DanglingUntriaged> session_ptr_;
 
   // True if a message of |message_type| has been processed by this extension.
   bool has_handled_message_ = false;

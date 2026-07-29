@@ -5,10 +5,10 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_EXTENSIONS_EXTENSIONS_UI_H_
 #define CHROME_BROWSER_UI_WEBUI_EXTENSIONS_EXTENSIONS_UI_H_
 
-#include "chrome/browser/ui/webui/webui_load_timer.h"
 #include "components/prefs/pref_member.h"
-#include "content/public/browser/web_ui_controller.h"
-#include "ui/base/layout.h"
+#include "content/public/browser/webui_config.h"
+#include "ui/base/resource/resource_scale_factor.h"
+#include "ui/webui/mojo_web_ui_controller.h"
 
 namespace base {
 class RefCountedMemory;
@@ -20,7 +20,18 @@ class PrefRegistrySyncable;
 
 namespace extensions {
 
-class ExtensionsUI : public content::WebUIController {
+class ExtensionsUIConfig : public content::WebUIConfig {
+ public:
+  ExtensionsUIConfig();
+  ~ExtensionsUIConfig() override;
+
+  // content::WebUIConfig:
+  std::unique_ptr<content::WebUIController> CreateWebUIController(
+      content::WebUI* web_ui,
+      const GURL& url) override;
+};
+
+class ExtensionsUI : public ui::MojoWebUIController {
  public:
   explicit ExtensionsUI(content::WebUI* web_ui);
   ExtensionsUI(const ExtensionsUI&) = delete;
@@ -30,16 +41,12 @@ class ExtensionsUI : public content::WebUIController {
   static base::RefCountedMemory* GetFaviconResourceBytes(
       ui::ResourceScaleFactor scale_factor);
 
-  static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
-
  private:
   // Called when developer mode is toggled.
   void OnDevModeChanged();
 
   // Tracks whether developer mode is enabled.
   BooleanPrefMember in_dev_mode_;
-
-  WebuiLoadTimer webui_load_timer_;
 };
 
 }  // namespace extensions

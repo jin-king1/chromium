@@ -4,17 +4,17 @@
 
 #include <fidl/fuchsia.logger/cpp/fidl.h>
 
+#include <algorithm>
 #include <cstring>
+#include <optional>
+#include <string_view>
 
-#include "base/containers/contains.h"
 #include "base/fuchsia/test_log_listener_safe.h"
-#include "base/strings/string_piece.h"
 #include "base/strings/stringprintf.h"
 #include "fuchsia_web/common/test/frame_test_util.h"
 #include "fuchsia_web/webengine/test/context_provider_for_test.h"
 #include "fuchsia_web/webengine/test/isolated_archivist.h"
 #include "fuchsia_web/webengine/web_engine_integration_test_base.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace {
 
@@ -30,7 +30,7 @@ constexpr char kNormalizedPortNumber[] = "678";
 // Replaces the line number in frame_impl.cc with kNormalizedLineNumber and
 // the port with kNormalizedPortNumber to enable reliable comparison of
 // console log messages.
-std::string NormalizeConsoleLogMessage(base::StringPiece original) {
+std::string NormalizeConsoleLogMessage(std::string_view original) {
   const char kSchemePortColon[] = "http://127.0.0.1:";
   size_t port_begin =
       original.find(kSchemePortColon) + strlen(kSchemePortColon);
@@ -67,7 +67,7 @@ class WebEngineIntegrationLoggingTest : public WebEngineIntegrationTestBase {
   fidl::Client<fuchsia_logger::Log>& log() { return isolated_archivist_.log(); }
 
   IsolatedArchivist isolated_archivist_;
-  absl::optional<ContextProviderForTest> context_provider_;
+  std::optional<ContextProviderForTest> context_provider_;
 };
 
 // Verifies that calling messages from console.debug() calls go to the Fuchsia
@@ -91,7 +91,7 @@ TEST_F(WebEngineIntegrationLoggingTest, SetJavaScriptLogLevel_DEBUG) {
   navigation_listener()->RunUntilTitleEquals("ended");
 
   // Run until the message passed to console.debug() is received.
-  absl::optional<fuchsia_logger::LogMessage> logged_message =
+  std::optional<fuchsia_logger::LogMessage> logged_message =
       log_listener.RunUntilMessageReceived(kLogTestPageDebugMessage);
 
   ASSERT_TRUE(logged_message.has_value());
@@ -102,7 +102,7 @@ TEST_F(WebEngineIntegrationLoggingTest, SetJavaScriptLogLevel_DEBUG) {
 
   // Verify that the Frame's |debug_name| is amongst the log message tags.
   EXPECT_FALSE(logged_message->tags().empty());
-  EXPECT_TRUE(base::Contains(logged_message->tags(), kFrameLogTag));
+  EXPECT_TRUE(std::ranges::contains(logged_message->tags(), kFrameLogTag));
 
   // Verify that the message is formatted as expected.
   EXPECT_EQ(NormalizeConsoleLogMessage(logged_message->msg()),

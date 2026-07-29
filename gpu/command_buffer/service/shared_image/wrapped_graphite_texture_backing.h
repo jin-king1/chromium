@@ -11,8 +11,12 @@
 #include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/types/pass_key.h"
+#include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_backing.h"
+#include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+#include "gpu/command_buffer/service/shared_image/wrapped_graphite_texture_holder.h"
+#include "skia/buildflags.h"
 #include "third_party/skia/include/core/SkAlphaType.h"
 #include "third_party/skia/include/core/SkColorType.h"
 #include "third_party/skia/include/gpu/graphite/BackendTexture.h"
@@ -27,18 +31,13 @@ namespace gpu {
 
 class WrappedSkImageBackingFactory;
 
-// Holds a Skia Graphite allocated BackendTextures. Can only be accessed by
+// Holds Skia Graphite allocated BackendTextures. Can only be accessed by
 // Skia Graphite backend.
 class WrappedGraphiteTextureBacking : public ClearTrackingSharedImageBacking {
  public:
   WrappedGraphiteTextureBacking(base::PassKey<WrappedSkImageBackingFactory>,
                                 const Mailbox& mailbox,
-                                viz::SharedImageFormat format,
-                                const gfx::Size& size,
-                                const gfx::ColorSpace& color_space,
-                                GrSurfaceOrigin surface_origin,
-                                SkAlphaType alpha_type,
-                                uint32_t usage,
+                                const SharedImageInfo& si_info,
                                 scoped_refptr<SharedContextState> context_state,
                                 const bool thread_safe);
 
@@ -58,6 +57,15 @@ class WrappedGraphiteTextureBacking : public ClearTrackingSharedImageBacking {
   SharedImageBackingType GetType() const override;
   void Update(std::unique_ptr<gfx::GpuFence> in_fence) override;
   bool UploadFromMemory(const std::vector<SkPixmap>& pixmaps) override;
+  bool ReadbackToMemory(const std::vector<SkPixmap>& pixmaps) override;
+
+  // Determines if access for a given stream and parameters is supported.
+  static bool CheckSupportForAccessStream(SharedImageAccessStream stream,
+                                          viz::SharedImageFormat format,
+                                          const AccessParams& params);
+
+  bool SupportsAccess(SharedImageAccessStream stream,
+                      const AccessParams& params) const override;
 
  protected:
   std::unique_ptr<SkiaGraphiteImageRepresentation> ProduceSkiaGraphite(
@@ -65,12 +73,35 @@ class WrappedGraphiteTextureBacking : public ClearTrackingSharedImageBacking {
       MemoryTypeTracker* tracker,
       scoped_refptr<SharedContextState> context_state) override;
 
+  // Only used for testing 1-copy path where CopySharedImageToGLTexture is
+  // called via passthrough command decoder with GL context. This happens on
+  // test scenarios with Graphite-Swiftshader-Vulkan backend whereas in
+  // production IOSurfaceImageBacking would be used.
+  std::unique_ptr<SkiaGaneshImageRepresentation> ProduceSkiaGanesh(
+      SharedImageManager* manager,
+      MemoryTypeTracker* tracker,
+      scoped_refptr<SharedContextState> context_state) override;
+
+#if BUILDFLAG(SKIA_USE_DAWN)
+  std::unique_ptr<GLTexturePassthroughImageRepresentation>
+  ProduceGLTexturePassthrough(SharedImageManager* manager,
+                              MemoryTypeTracker* tracker) override;
+
+  std::unique_ptr<DawnImageRepresentation> ProduceDawn(
+      SharedImageManager* manager,
+      MemoryTypeTracker* tracker,
+      const wgpu::Device& device,
+      wgpu::BackendType backend_type,
+      std::vector<wgpu::TextureFormat> view_formats,
+      scoped_refptr<SharedContextState> context_state) override;
+#endif  // BUILDFLAG(SKIA_USE_DAWN)
+
  private:
   class SkiaGraphiteImageRepresentationImpl;
 
-  SkColorType GetSkColorType(int plane_index);
-  const std::vector<skgpu::graphite::BackendTexture>&
-  GetGraphiteBackendTextures();
+  const std::vector<
+      scoped_refptr<SkiaImageRepresentation::GraphiteTextureHolder>>&
+  GetWrappedGraphiteTextureHolders();
   bool InsertRecordingAndSubmit();
 
   skgpu::graphite::Recorder* recorder() const {
@@ -78,7 +109,11 @@ class WrappedGraphiteTextureBacking : public ClearTrackingSharedImageBacking {
   }
 
   scoped_refptr<SharedContextState> context_state_;
-  std::vector<skgpu::graphite::BackendTexture> graphite_textures_;
+  std::vector<scoped_refptr<SkiaImageRepresentation::GraphiteTextureHolder>>
+      texture_holders_;
+
+  // Only stored for thread safe backings.
+  scoped_refptr<base::SingleThreadTaskRunner> created_task_runner_;
 };
 
 }  // namespace gpu

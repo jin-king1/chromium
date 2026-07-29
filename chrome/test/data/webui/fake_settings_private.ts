@@ -3,32 +3,37 @@
 // found in the LICENSE file.
 
 // clang-format off
-import {assertEquals, assertNotEquals} from './chai_assert.js';
+import {assertEquals, assertNotEquals, assertTrue} from './chai_assert.js';
 import {TestBrowserProxy} from './test_browser_proxy.js';
 import {FakeChromeEvent} from './fake_chrome_event.js';
 // clang-format on
 
 /** @fileoverview Fake implementation of chrome.settingsPrivate for testing. */
 
-/**
- * Creates a deep copy of the object.
- */
-function deepCopy(obj: object): object {
-  return JSON.parse(JSON.stringify(obj));
-}
+type SettingsPrivateApi = typeof chrome.settingsPrivate;
+type PrefObject = chrome.settingsPrivate.PrefObject;
+type PrefType = chrome.settingsPrivate.PrefType;
 
 /**
  * Fake of chrome.settingsPrivate API. Use by setting
  * CrSettingsPrefs.deferInitialization to true, then passing a
  * FakeSettingsPrivate to settings-prefs#initialize().
  */
-export class FakeSettingsPrivate extends TestBrowserProxy {
+export class FakeSettingsPrivate extends TestBrowserProxy implements
+    SettingsPrivateApi {
+  // Mirroring chrome.settingsPrivate API members.
+  /* eslint-disable @typescript-eslint/naming-convention */
+  PrefType = chrome.settingsPrivate.PrefType;
+  ControlledBy = chrome.settingsPrivate.ControlledBy;
+  Enforcement = chrome.settingsPrivate.Enforcement;
+  /* eslint-enable @typescript-eslint/naming-convention */
+
+  prefs: Record<string, PrefObject> = {};
+  onPrefsChanged: FakeChromeEvent = new FakeChromeEvent();
   private disallowSetPref_: boolean = false;
   private failNextSetPref_: boolean = false;
-  prefs: {[key: string]: chrome.settingsPrivate.PrefObject} = {};
-  onPrefsChanged: FakeChromeEvent = new FakeChromeEvent();
 
-  constructor(initialPrefs?: chrome.settingsPrivate.PrefObject[]) {
+  constructor(initialPrefs?: PrefObject[]) {
     super([
       'setPref',
       'getPref',
@@ -43,17 +48,16 @@ export class FakeSettingsPrivate extends TestBrowserProxy {
   }
 
   // chrome.settingsPrivate overrides.
-  getAllPrefs(): Promise<chrome.settingsPrivate.PrefObject[]> {
+  getAllPrefs(): Promise<PrefObject[]> {
     // Send a copy of prefs to keep our internal state private.
     const prefs = [];
     for (const key in this.prefs) {
-      prefs.push(
-          deepCopy(this.prefs[key]!) as chrome.settingsPrivate.PrefObject);
+      prefs.push(structuredClone(this.prefs[key]!));
     }
     return Promise.resolve(prefs);
   }
 
-  setPref(key: string, value: any, _pageId: string): Promise<boolean> {
+  setPref(key: string, value: any, _pageId?: string): Promise<boolean> {
     this.methodCalled('setPref', {key, value});
     const pref = this.prefs[key];
     assertNotEquals(undefined, pref);
@@ -67,20 +71,19 @@ export class FakeSettingsPrivate extends TestBrowserProxy {
     assertNotEquals(true, this.disallowSetPref_);
 
     const changed = JSON.stringify(pref!.value) !== JSON.stringify(value);
-    pref!.value = deepCopy(value);
+    pref!.value = structuredClone(value);
     // Like chrome.settingsPrivate, send a notification when prefs change.
     if (changed) {
-      this.sendPrefChanges([{key: key, value: deepCopy(value)}]);
+      this.sendPrefChanges([{key: key, value: structuredClone(value)}]);
     }
     return Promise.resolve(true);
   }
 
-  getPref(key: string): Promise<chrome.settingsPrivate.PrefObject> {
+  getPref(key: string): Promise<PrefObject> {
     this.methodCalled('getPref', key);
     const pref = this.prefs[key];
     assertNotEquals(undefined, pref);
-    return Promise.resolve(
-        deepCopy(pref!) as chrome.settingsPrivate.PrefObject);
+    return Promise.resolve(structuredClone(pref!));
   }
 
   // Functions used by tests.
@@ -100,27 +103,38 @@ export class FakeSettingsPrivate extends TestBrowserProxy {
   }
 
   /**
-   * Notifies the listeners of pref changes.
+   * Updates the underlying PrefObject and notifies the listeners of pref
+   * changes. Any PrefObject property that is passed as "undefined" is deleted.
+   * This useful during tests that need to modify 'controlledBy' and
+   * 'enforcement' fields.
    */
-  sendPrefChanges(changes: Array<{key: string, value: any}>) {
+  sendPrefChanges(changes: Array<Partial<PrefObject>&{key: string}>) {
     const prefs = [];
     for (const change of changes) {
       const pref = this.prefs[change.key];
-      assertNotEquals(undefined, pref);
-      pref!.value = change.value;
-      prefs.push(deepCopy(pref!) as chrome.settingsPrivate.PrefObject);
+      assertTrue(!!pref);
+      for (const property in change) {
+        const key = property as keyof PrefObject;
+        if (change[key] === undefined) {
+          delete pref[key];
+        } else {
+          pref[key] = change[key];
+        }
+      }
+      prefs.push(structuredClone(pref) as PrefObject);
     }
     this.onPrefsChanged.callListeners(prefs);
   }
 
-  getDefaultZoom() {}
+  getDefaultZoom(): Promise<number> {
+    return Promise.resolve(100);
+  }
 
-  setDefaultZoom() {}
+  setDefaultZoom(): void {}
 
   // Private methods for use by the fake API.
 
-  private addPref_(
-      type: chrome.settingsPrivate.PrefType, key: string, value: any) {
+  private addPref_(type: PrefType, key: string, value: any) {
     this.prefs[key] = {
       type: type,
       key: key,

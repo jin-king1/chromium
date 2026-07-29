@@ -7,13 +7,15 @@
  * page.
  */
 
+import 'chrome://resources/cr_elements/cr_icon_button/cr_icon_button.js';
 import 'chrome://resources/cr_elements/cr_shared_vars.css.js';
 import '../i18n_setup.js';
 import '../settings_shared.css.js';
 import './passwords_shared.css.js';
+import './screen_reader_only.css.js';
 
 import {I18nMixin} from '//resources/cr_elements/i18n_mixin.js';
-import {CrButtonElement} from 'chrome://resources/cr_elements/cr_button/cr_button.js';
+import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
 import {getTemplate} from './iban_list_entry.html.js';
@@ -23,16 +25,16 @@ export type DotsIbanMenuClickEvent = CustomEvent<{
   anchorElement: HTMLElement,
 }>;
 
+export type RemoteIbanMenuClickEvent = CustomEvent<{
+  iban: chrome.autofillPrivate.IbanEntry,
+  anchorElement: HTMLElement,
+}>;
+
 declare global {
   interface HTMLElementEventMap {
     'dots-iban-menu-click': DotsIbanMenuClickEvent;
+    'remote-iban-menu-click': RemoteIbanMenuClickEvent;
   }
-}
-
-export interface SettingsIbanListEntryElement {
-  $: {
-    ibanMenu: CrButtonElement,
-  };
 }
 
 const SettingsIbanListEntryElementBase = I18nMixin(PolymerElement);
@@ -51,13 +53,63 @@ export class SettingsIbanListEntryElement extends
     return {
       /** A saved IBAN. */
       iban: Object,
+
+      autofillEnableWalletBrandingEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('autofillEnableWalletBranding');
+        },
+        readOnly: true,
+      },
+
+      autofillEnableGradientGoogleLogosEnabled_: {
+        type: Boolean,
+        value() {
+          return loadTimeData.getBoolean('autofillEnableGradientGoogleLogos');
+        },
+        readOnly: true,
+      },
     };
   }
 
-  iban: chrome.autofillPrivate.IbanEntry;
+  declare iban: chrome.autofillPrivate.IbanEntry;
 
-  get dotsMenu(): HTMLElement {
-    return this.$.ibanMenu;
+  declare private autofillEnableWalletBrandingEnabled_: boolean;
+
+  declare private autofillEnableGradientGoogleLogosEnabled_: boolean;
+
+  get dotsMenu(): HTMLElement|null {
+    return this.shadowRoot!.getElementById('ibanMenu');
+  }
+
+  /**
+   * The 3-dot menu should be shown if the IBAN is a local IBAN.
+   */
+  private showDotsMenu_(): boolean {
+    return !!this.iban.metadata!.isLocal;
+  }
+
+  private shouldShowOutlinkWithWalletBranding_(): boolean {
+    return !this.showDotsMenu_() && this.autofillEnableWalletBrandingEnabled_;
+  }
+
+  private shouldShowOutlinkWithoutWalletBranding_(): boolean {
+    return !this.showDotsMenu_() && !this.autofillEnableWalletBrandingEnabled_;
+  }
+
+  /**
+   * The Google Payments icon should be shown if the IBAN is a server IBAN.
+   */
+  private shouldShowGooglePaymentsIndicator_(): boolean {
+    return !this.iban.metadata!.isLocal;
+  }
+
+  /**
+   * This function returns a string that can be used in a srcset to scale
+   * the provided `url` based on the user's screen resolution.
+   */
+  private getScaledSrcSet_(url: string): string {
+    return `${url} 1x, ${url}@2x 2x`;
   }
 
   /**
@@ -69,7 +121,7 @@ export class SettingsIbanListEntryElement extends
       composed: true,
       detail: {
         iban: this.iban,
-        anchorElement: this.$.ibanMenu,
+        anchorElement: this.dotsMenu,
       },
     }));
   }
@@ -78,7 +130,36 @@ export class SettingsIbanListEntryElement extends
     this.dispatchEvent(new CustomEvent('remote-iban-menu-click', {
       bubbles: true,
       composed: true,
+      detail: {
+        iban: this.iban,
+        anchorElement: this.dotsMenu,
+      },
     }));
+  }
+
+  private getA11yIbanDescription_(iban: chrome.autofillPrivate.IbanEntry):
+      string {
+    // Strip all whitespace and get the pure last four digits of the value.
+    const strippedSummaryLabel =
+        iban.metadata ? iban.metadata.summaryLabel.replace(/\s/g, '') : '';
+    const lastFourDigits = strippedSummaryLabel.substring(
+        Math.max(0, strippedSummaryLabel.length - 4));
+
+    return this.i18n('a11yIbanDescription', lastFourDigits);
+  }
+
+  private getLabel_(iban: chrome.autofillPrivate.IbanEntry): string {
+    if (iban.nickname) {
+      return iban.nickname;
+    }
+    return iban.metadata!.summaryLabel;
+  }
+
+  private getSubLabel_(iban: chrome.autofillPrivate.IbanEntry): string {
+    if (iban.nickname) {
+      return iban.metadata!.summaryLabel;
+    }
+    return iban.nickname || '';
   }
 
   /**
@@ -87,19 +168,25 @@ export class SettingsIbanListEntryElement extends
    *     value.
    */
   private getMoreActionsTitle_(iban: chrome.autofillPrivate.IbanEntry): string {
-    if (iban.nickname) {
-      return this.i18n('moreActionsForIban', iban.nickname);
-    }
-
-    // Strip all whitespace and get the pure last four digits of the value.
-    const strippedSummaryLabel =
-        iban.metadata ? iban.metadata!.summaryLabel.replace(/\s/g, '') : '';
-    const lastFourDigits = strippedSummaryLabel.substring(
-        Math.max(0, strippedSummaryLabel.length - 4));
-
     return this.i18n(
         'moreActionsForIban',
-        this.i18n('moreActionsForIbanDescription', lastFourDigits));
+        iban.nickname || this.getA11yIbanDescription_(iban));
+  }
+
+  private getGooglePayLightModeLogoSrcSet_(
+      isGradientGoogleLogosEnabled: boolean): string {
+    const logoId = isGradientGoogleLogosEnabled ?
+        'chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT_SMALL' :
+        'chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_SMALL';
+    return this.getScaledSrcSet_(logoId);
+  }
+
+  private getGooglePayDarkModeLogoSrcSet_(
+      isGradientGoogleLogosEnabled: boolean): string {
+    const logoId = isGradientGoogleLogosEnabled ?
+        'chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_WITH_GRADIENT_DARK_SMALL' :
+        'chrome://theme/IDR_AUTOFILL_GOOGLE_PAY_DARK_SMALL';
+    return this.getScaledSrcSet_(logoId);
   }
 }
 

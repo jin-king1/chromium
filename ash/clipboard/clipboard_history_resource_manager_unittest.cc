@@ -10,6 +10,7 @@
 #include "ash/clipboard/clipboard_history_controller_impl.h"
 #include "ash/clipboard/clipboard_history_item.h"
 #include "ash/clipboard/clipboard_history_util.h"
+#include "ash/constants/ash_features.h"
 #include "ash/public/cpp/clipboard_image_model_factory.h"
 #include "ash/shell.h"
 #include "ash/test/ash_test_base.h"
@@ -18,7 +19,9 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
-#include "base/test/repeating_test_future.h"
+#include "base/test/gmock_callback_support.h"
+#include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -28,6 +31,29 @@
 namespace ash {
 
 namespace {
+
+using ::testing::_;
+using ::testing::Bool;
+using ::testing::StrictMock;
+using ::testing::WithArg;
+using ::testing::WithParamInterface;
+
+class MockClipboardImageModelFactory : public ClipboardImageModelFactory {
+ public:
+  MOCK_METHOD(void,
+              Render,
+              (const base::UnguessableToken&,
+               const std::string&,
+               const gfx::Size&,
+               ImageModelCallback),
+              (override));
+  MOCK_METHOD(void, CancelRequest, (const base::UnguessableToken&), (override));
+  MOCK_METHOD(void, CancelAllRequests, (), (override));
+  MOCK_METHOD(void, Activate, (), (override));
+  MOCK_METHOD(void, Deactivate, (), (override));
+  MOCK_METHOD(void, RenderCurrentPendingRequests, (), (override));
+  void OnShutdown() override {}
+};
 
 void FlushMessageLoop() {
   base::RunLoop run_loop;
@@ -55,29 +81,6 @@ ui::ImageModel GetRandomImageModel() {
 
 // Tests -----------------------------------------------------------------------
 
-class MockClipboardImageModelFactory : public ClipboardImageModelFactory {
- public:
-  MockClipboardImageModelFactory() = default;
-  MockClipboardImageModelFactory(const MockClipboardImageModelFactory&) =
-      delete;
-  MockClipboardImageModelFactory& operator=(
-      const MockClipboardImageModelFactory&) = delete;
-  ~MockClipboardImageModelFactory() override = default;
-
-  MOCK_METHOD(void,
-              Render,
-              (const base::UnguessableToken&,
-               const std::string&,
-               const gfx::Size&,
-               ImageModelCallback),
-              (override));
-  MOCK_METHOD(void, CancelRequest, (const base::UnguessableToken&), (override));
-  MOCK_METHOD(void, Activate, (), (override));
-  MOCK_METHOD(void, Deactivate, (), (override));
-  MOCK_METHOD(void, RenderCurrentPendingRequests, (), (override));
-  void OnShutdown() override {}
-};
-
 class ClipboardHistoryResourceManagerTest : public AshTestBase {
  public:
   ClipboardHistoryResourceManagerTest()
@@ -88,6 +91,7 @@ class ClipboardHistoryResourceManagerTest : public AshTestBase {
       const ClipboardHistoryResourceManagerTest&) = delete;
   ~ClipboardHistoryResourceManagerTest() override = default;
 
+  // AshTestBase::
   void SetUp() override {
     AshTestBase::SetUp();
     clipboard_history_ =
@@ -95,7 +99,14 @@ class ClipboardHistoryResourceManagerTest : public AshTestBase {
     resource_manager_ =
         Shell::Get()->clipboard_history_controller()->resource_manager();
     mock_image_factory_ =
-        std::make_unique<testing::StrictMock<MockClipboardImageModelFactory>>();
+        std::make_unique<StrictMock<MockClipboardImageModelFactory>>();
+  }
+
+  void TearDown() override {
+    mock_image_factory_.reset();
+    resource_manager_ = nullptr;
+    clipboard_history_ = nullptr;
+    AshTestBase::TearDown();
   }
 
   const ClipboardHistory* clipboard_history() const {
@@ -111,9 +122,8 @@ class ClipboardHistoryResourceManagerTest : public AshTestBase {
   }
 
  private:
-  raw_ptr<const ClipboardHistory, ExperimentalAsh> clipboard_history_;
-  raw_ptr<const ClipboardHistoryResourceManager, ExperimentalAsh>
-      resource_manager_;
+  raw_ptr<const ClipboardHistory> clipboard_history_;
+  raw_ptr<const ClipboardHistoryResourceManager> resource_manager_;
   std::unique_ptr<MockClipboardImageModelFactory> mock_image_factory_;
 };
 
@@ -121,7 +131,7 @@ class ClipboardHistoryResourceManagerTest : public AshTestBase {
 TEST_F(ClipboardHistoryResourceManagerTest, BasicImgCachedImageModel) {
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(testing::WithArg<3>(
+      .WillByDefault(WithArg<3>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_model);
           }));
@@ -130,8 +140,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, BasicImgCachedImageModel) {
 
   {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
-    scw.WriteHTML(u"<img test>", "source_url",
-                  ui::ClipboardContentType::kSanitized);
+    scw.WriteHTML(u"<img test>", "source_url");
   }
   FlushMessageLoop();
 
@@ -145,7 +154,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, BasicImgCachedImageModel) {
 TEST_F(ClipboardHistoryResourceManagerTest, BasicTableCachedImageModel) {
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(testing::WithArg<3>(
+      .WillByDefault(WithArg<3>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_model);
           }));
@@ -154,8 +163,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, BasicTableCachedImageModel) {
 
   {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
-    scw.WriteHTML(u"<table test>", "source_url",
-                  ui::ClipboardContentType::kSanitized);
+    scw.WriteHTML(u"<table test>", "source_url");
   }
   FlushMessageLoop();
 
@@ -170,7 +178,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, BasicTableCachedImageModel) {
 TEST_F(ClipboardHistoryResourceManagerTest, BasicIneligibleCachedImageModel) {
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(testing::WithArg<3>(
+      .WillByDefault(WithArg<3>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_model);
           }));
@@ -179,8 +187,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, BasicIneligibleCachedImageModel) {
 
   {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
-    scw.WriteHTML(u"HTML with no img or table tag", "source_url",
-                  ui::ClipboardContentType::kSanitized);
+    scw.WriteHTML(u"HTML with no img or table tag", "source_url");
   }
   FlushMessageLoop();
 
@@ -194,7 +201,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, BasicIneligibleCachedImageModel) {
 TEST_F(ClipboardHistoryResourceManagerTest, DuplicateHTML) {
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(testing::WithArg<3>(
+      .WillByDefault(WithArg<3>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_model);
           }));
@@ -205,15 +212,13 @@ TEST_F(ClipboardHistoryResourceManagerTest, DuplicateHTML) {
   // are added to the clipboard history.
   {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
-    scw.WriteHTML(u"<img test>", "source_url_1",
-                  ui::ClipboardContentType::kSanitized);
+    scw.WriteHTML(u"<img test>", "source_url_1");
   }
   FlushMessageLoop();
 
   {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
-    scw.WriteHTML(u"<img test>", "source_url_2",
-                  ui::ClipboardContentType::kSanitized);
+    scw.WriteHTML(u"<img test>", "source_url_2");
   }
   FlushMessageLoop();
 
@@ -234,7 +239,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, DifferentHTML) {
   std::deque<ui::ImageModel> expected_image_models{first_expected_image_model,
                                                    second_expected_image_model};
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(testing::WithArg<3>(
+      .WillByDefault(WithArg<3>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             std::move(callback).Run(expected_image_models.front());
             expected_image_models.pop_front();
@@ -243,15 +248,13 @@ TEST_F(ClipboardHistoryResourceManagerTest, DifferentHTML) {
   EXPECT_CALL(*mock_image_factory(), CancelRequest).Times(0);
   {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
-    scw.WriteHTML(u"<img test>", "source_url",
-                  ui::ClipboardContentType::kSanitized);
+    scw.WriteHTML(u"<img test>", "source_url");
   }
   FlushMessageLoop();
 
   {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
-    scw.WriteHTML(u"<img different>", "source_url",
-                  ui::ClipboardContentType::kSanitized);
+    scw.WriteHTML(u"<img different>", "source_url");
   }
   FlushMessageLoop();
 
@@ -276,8 +279,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, IneligibleDisplayTypes) {
   // image model should be rendered.
   {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
-    scw.WriteHTML(u"<img test>", "source_url",
-                  ui::ClipboardContentType::kSanitized);
+    scw.WriteHTML(u"<img test>", "source_url");
     scw.WriteImage(GetRandomBitmap());
   }
   FlushMessageLoop();
@@ -294,7 +296,8 @@ TEST_F(ClipboardHistoryResourceManagerTest, IneligibleDisplayTypes) {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
     scw.WriteText(u"test");
     scw.WriteRTF("rtf");
-    scw.WriteBookmark(u"bookmark_title", "test_url");
+    scw.WriteURL(ui::ClipboardUrlInfo{.url = GURL("test_url"),
+                                      .title = u"bookmark_title"});
   }
   FlushMessageLoop();
 
@@ -309,7 +312,7 @@ TEST_F(ClipboardHistoryResourceManagerTest, PlaceholderDuringRender) {
   constexpr const auto kRenderDelay = base::Seconds(1);
   ui::ImageModel expected_image_model = GetRandomImageModel();
   ON_CALL(*mock_image_factory(), Render)
-      .WillByDefault(testing::WithArg<3>(
+      .WillByDefault(WithArg<3>(
           [&](ClipboardImageModelFactory::ImageModelCallback callback) {
             // Delay the processing of the rendered image until after the
             // clipboard history item has been created.
@@ -321,16 +324,15 @@ TEST_F(ClipboardHistoryResourceManagerTest, PlaceholderDuringRender) {
   EXPECT_CALL(*mock_image_factory(), CancelRequest).Times(0);
   EXPECT_CALL(*mock_image_factory(), Render).Times(1);
 
-  base::test::RepeatingTestFuture<bool> operation_confirmed_future_;
+  base::test::TestFuture<bool> operation_confirmed_future_;
   Shell::Get()
       ->clipboard_history_controller()
       ->set_confirmed_operation_callback_for_test(
-          operation_confirmed_future_.GetCallback());
+          operation_confirmed_future_.GetRepeatingCallback());
 
   {
     ui::ScopedClipboardWriter scw(ui::ClipboardBuffer::kCopyPaste);
-    scw.WriteHTML(u"<img test>", "source_url",
-                  ui::ClipboardContentType::kSanitized);
+    scw.WriteHTML(u"<img test>", "source_url");
   }
 
   // Wait for the clipboard history item to be created. This allows us to check

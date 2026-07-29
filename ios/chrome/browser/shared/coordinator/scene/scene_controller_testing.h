@@ -7,13 +7,16 @@
 
 class Browser;
 struct UrlLoadParams;
-@class TabGridCoordinator;
+@class SceneCoordinator;
 @class WrangledBrowser;
+
+// If `params` is for a Dino game URL, update transition type to allow opening.
+[[nodiscard]] UrlLoadParams UpdateParamsForDinoGame(UrlLoadParams params);
 
 // Methods exposed for testing. This is terrible and should be rewritten.
 @interface SceneController ()
 
-@property(nonatomic, strong) TabGridCoordinator* mainCoordinator;
+@property(nonatomic, strong) SceneCoordinator* mainCoordinator;
 
 - (void)addANewTabAndPresentBrowser:(Browser*)browser
                   withURLLoadParams:(const UrlLoadParams&)urlLoadParams;

@@ -2,17 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#import <Foundation/Foundation.h>
-
 #import "ios/chrome/common/app_group/app_group_utils.h"
+
+#import <Foundation/Foundation.h>
 
 #import "ios/chrome/common/app_group/app_group_constants.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace {
+
+NSString* const kFieldTrialValueKey = @"FieldTrialValue";
 
 void ClearAppGroupFolder(NSString* app_group) {
   if (!app_group) {
@@ -45,7 +43,7 @@ void ClearAppGroupUserDefaults(NSString* app_group) {
   }
   [user_defaults synchronize];
 }
-}
+}  // namespace
 
 namespace app_group {
 
@@ -54,6 +52,12 @@ void ClearAppGroupSandbox() {
   ClearAppGroupUserDefaults(app_group::ApplicationGroup());
   ClearAppGroupFolder(app_group::CommonApplicationGroup());
   ClearAppGroupUserDefaults(app_group::CommonApplicationGroup());
+}
+
+NSString* UserDefaultsStringForKey(NSString* key, NSString* default_value) {
+  NSString* string = [app_group::GetGroupUserDefaults() stringForKey:key];
+  // Returns the string if it is non nil. Returns `default_value` otherwise.
+  return string ?: default_value;
 }
 
 }  // namespace app_group

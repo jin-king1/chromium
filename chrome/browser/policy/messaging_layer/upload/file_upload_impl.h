@@ -6,16 +6,15 @@
 #define CHROME_BROWSER_POLICY_MESSAGING_LAYER_UPLOAD_FILE_UPLOAD_IMPL_H_
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/files/file.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
-#include "base/strings/string_piece.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/thread_annotations.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/messaging_layer/upload/file_upload_job.h"
 #include "components/reporting/resources/resource_manager.h"
 #include "components/reporting/util/status.h"
@@ -37,6 +36,9 @@ class FileUploadDelegate : public FileUploadJob::Delegate {
 
   static std::string GetFileUploadUrl();
 
+  static void SetAllowedDirectoryForTesting(
+      const base::FilePath* allowed_directory);
+
  private:
   // Helper classes.
   class AccessTokenRetriever;
@@ -48,30 +50,30 @@ class FileUploadDelegate : public FileUploadJob::Delegate {
 
   // FileUploadJob::Delegate:
   void DoInitiate(
-      base::StringPiece origin_path,
-      base::StringPiece upload_parameters,
+      std::string_view origin_path,
+      std::string_view upload_parameters,
       base::OnceCallback<void(
           StatusOr<std::pair<int64_t /*total*/,
                              std::string /*session_token*/>>)> cb) override;
   void DoNextStep(
       int64_t total,
       int64_t uploaded,
-      base::StringPiece session_token,
+      std::string_view session_token,
       ScopedReservation scoped_reservation,
       base::OnceCallback<void(
           StatusOr<std::pair<int64_t /*uploaded*/,
                              std::string /*session_token*/>>)> cb) override;
   void DoFinalize(
-      base::StringPiece session_token,
+      std::string_view session_token,
       base::OnceCallback<void(StatusOr<std::string /*access_parameters*/>)> cb)
       override;
 
-  void DoDeleteFile(base::StringPiece origin_path) override;
+  void DoDeleteFile(std::string_view origin_path) override;
 
   // Called once authentication is finished (with token or failure status).
   void OnAccessTokenResult(
-      base::StringPiece origin_path,
-      base::StringPiece upload_parameters,
+      std::string_view origin_path,
+      std::string_view upload_parameters,
       base::OnceCallback<void(
           StatusOr<
               std::pair<int64_t /*total*/, std::string /*session_token*/>>)> cb,
@@ -125,7 +127,16 @@ class FileUploadDelegate : public FileUploadJob::Delegate {
   // Maximum upload size allowed for a single request.
   int64_t max_upload_buffer_size_ GUARDED_BY_CONTEXT(sequence_checker_);
 
-  base::WeakPtrFactory<FileUploadDelegate> weak_ptr_factory_{this};
+  static bool IsPathAllowed(const base::FilePath& path);
+
+  bool IsResumableUploadUrlAllowed(const GURL& url) const;
+
+  // Weak pointer factory used by this delegate.
+  // Note that weak pointers here are all dereferenced on UI task runner, and so
+  // the factory needs to be reset there as well - because of that we make it
+  // moveable by using smart pointer.
+  std::unique_ptr<base::WeakPtrFactory<FileUploadDelegate>> weak_ptr_factory_{
+      new base::WeakPtrFactory<FileUploadDelegate>{this}};
 };
 }  // namespace reporting
 

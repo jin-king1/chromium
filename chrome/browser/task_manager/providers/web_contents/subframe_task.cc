@@ -13,7 +13,9 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/security_principal.h"
 #include "content/public/browser/site_instance.h"
+#include "pdf/buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
 
 namespace task_manager {
@@ -30,18 +32,17 @@ constexpr UrlIdentity::FormatOptions kUrlIdentityOptions = {
 }  // namespace
 
 SubframeTask::SubframeTask(content::RenderFrameHost* render_frame_host,
-                           RendererTask* main_task)
+                           base::WeakPtr<RendererTask> main_task)
     : RendererTask(std::u16string(), nullptr, render_frame_host),
       site_instance_(render_frame_host->GetSiteInstance()),
-      main_task_(main_task) {
+      main_task_(std::move(main_task)) {
   set_title(GetTitle());
   // Note that we didn't get the RenderProcessHost from the WebContents, but
   // rather from the RenderFrameHost. Out-of-process iframes reside on
   // different processes than that of their main frame.
 }
 
-SubframeTask::~SubframeTask() {
-}
+SubframeTask::~SubframeTask() = default;
 
 void SubframeTask::UpdateTitle() {
   set_title(GetTitle());
@@ -52,7 +53,7 @@ void SubframeTask::UpdateFavicon() {
   // frame, but this Task represents other frames, so we don't care.
 }
 
-Task* SubframeTask::GetParentTask() const {
+base::WeakPtr<Task> SubframeTask::GetParentTask() const {
   return main_task_;
 }
 
@@ -73,18 +74,28 @@ std::u16string SubframeTask::GetTitle() {
   // For Isolated Web Apps, subframe rows display IWA name:
   //     "Subframe: Example Isolated Web App"
 
-  const GURL& site_url = site_instance_->GetSiteURL();
+  const GURL& site_url =
+      site_instance_->GetSecurityPrincipal().GetDeprecatedSiteURL();
   Profile* profile =
       Profile::FromBrowserContext(site_instance_->GetBrowserContext());
 
-  int message_id = profile->IsOffTheRecord()
-                       ? IDS_TASK_MANAGER_SUBFRAME_INCOGNITO_PREFIX
-                       : IDS_TASK_MANAGER_SUBFRAME_PREFIX;
   return l10n_util::GetStringFUTF16(
-      message_id,
+      GetMessageId(profile),
       UrlIdentity::CreateFromUrl(profile, site_url, kUrlIdentityAllowedTypes,
                                  kUrlIdentityOptions)
           .name);
+}
+
+int SubframeTask::GetMessageId(Profile* profile) {
+#if BUILDFLAG(ENABLE_PDF)
+  if (site_instance_->HasProcess() && site_instance_->GetProcess()->IsPdf()) {
+    return profile->IsOffTheRecord()
+               ? IDS_TASK_MANAGER_PDF_SUBFRAME_INCOGNITO_PREFIX
+               : IDS_TASK_MANAGER_PDF_SUBFRAME_PREFIX;
+  }
+#endif  // BUILDFLAG(ENABLE_PDF)
+  return profile->IsOffTheRecord() ? IDS_TASK_MANAGER_SUBFRAME_INCOGNITO_PREFIX
+                                   : IDS_TASK_MANAGER_SUBFRAME_PREFIX;
 }
 
 }  // namespace task_manager

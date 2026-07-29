@@ -7,35 +7,31 @@ package org.chromium.chrome.browser.app.tabmodel;
 import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 
-/**
- * Tests for the {@link ChromeNextTabPolicySupplier}.
- */
+/** Tests for the {@link ChromeNextTabPolicySupplier}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Batch(Batch.PER_CLASS)
 public class ChromeNextTabPolicySupplierTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
-
-    @Before
-    public void setUp() {
-        mActivityTestRule.startMainActivityFromLauncher();
-    }
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.fastAutoResetCtaActivityRule();
 
     @Test
     @SmallTest
     public void verifyOverviewModeBehaviorIsNotNull() {
-        Assert.assertNotNull(mActivityTestRule.getActivity()
-                                     .getNextTabPolicySupplier()
-                                     .getLayoutStateProvider());
+        RegularNewTabPageStation ntp = mActivityTestRule.startOnNtp();
+        Assert.assertNotNull(ntp.getActivity().getNextTabPolicySupplier().getLayoutStateProvider());
     }
 }

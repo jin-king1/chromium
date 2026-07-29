@@ -3,43 +3,50 @@
 // found in the LICENSE file.
 
 #include "chromeos/services/network_config/public/cpp/cros_network_config_util.h"
-
 #include "components/device_event_log/device_event_log.h"
 #include "components/onc/onc_constants.h"
 
 namespace chromeos::network_config {
 
+const char kMojoKeySecurity[] = "security";
+const char kMojoKeySsid[] = "ssid";
+const char kMojoKeyPassphrase[] = "passphrase";
+const char kMojoKeyEapInner[] = "inner";
+const char kMojoKeyEapOuter[] = "outer";
+const char kMojoKeyEapIdentity[] = "identity";
+const char kMojoKeyEapAnonymousIdentity[] = "anonymousIdentity";
+const char kMojoKeyEapPassword[] = "password";
+const char kMojoKeyEap[] = "eap";
+const char kMojoKeyWifi[] = "wifi";
+const char kMojoKeyTypeConfig[] = "typeConfig";
+
 namespace {
 
-absl::optional<std::string> GetString(const base::Value::Dict& onc_apn,
-                                      const char* key) {
+std::optional<std::string> GetString(const base::DictValue& onc_apn,
+                                     const char* key) {
   const std::string* v = onc_apn.FindString(key);
-  return v ? absl::make_optional<std::string>(*v) : absl::nullopt;
+  return v ? std::make_optional<std::string>(*v) : std::nullopt;
 }
 
-std::string GetRequiredString(const base::Value::Dict& onc_apn,
-                              const char* key) {
+std::string GetRequiredString(const base::DictValue& onc_apn, const char* key) {
   const std::string* v = onc_apn.FindString(key);
   if (!v) {
     NOTREACHED() << "Required key missing: " << key;
-    return std::string();
   }
   return *v;
 }
 
-std::vector<std::string> GetRequiredStringList(const base::Value::Dict& dict,
+std::vector<std::string> GetRequiredStringList(const base::DictValue& dict,
                                                const char* key) {
-  const base::Value::List* v = dict.FindList(key);
+  const base::ListValue* v = dict.FindList(key);
   if (!v) {
     NOTREACHED() << "Required key missing: " << key;
-    return {};
   }
   std::vector<std::string> result;
   result.reserve(v->size());
   for (const base::Value& e : *v) {
     if (!e.is_string()) {
       NOTREACHED() << "Expected string, found: " << e;
-      break;
     }
     result.push_back(e.GetString());
   }
@@ -47,7 +54,7 @@ std::vector<std::string> GetRequiredStringList(const base::Value::Dict& dict,
 }
 
 mojom::ApnAuthenticationType OncApnAuthenticationTypeToMojo(
-    const absl::optional<std::string>& authentication_type) {
+    const std::optional<std::string>& authentication_type) {
   if (!authentication_type.has_value() || authentication_type->empty() ||
       authentication_type == ::onc::cellular_apn::kAuthenticationAutomatic) {
     return mojom::ApnAuthenticationType::kAutomatic;
@@ -61,11 +68,9 @@ mojom::ApnAuthenticationType OncApnAuthenticationTypeToMojo(
 
   NOTREACHED() << "Unexpected ONC APN Authentication type: "
                << authentication_type.value();
-  return mojom::ApnAuthenticationType::kAutomatic;
 }
 
-mojom::ApnIpType OncApnIpTypeToMojo(
-    const absl::optional<std::string>& ip_type) {
+mojom::ApnIpType OncApnIpTypeToMojo(const std::optional<std::string>& ip_type) {
   if (!ip_type.has_value() || ip_type->empty() ||
       ip_type == ::onc::cellular_apn::kIpTypeAutomatic) {
     return mojom::ApnIpType::kAutomatic;
@@ -81,12 +86,29 @@ mojom::ApnIpType OncApnIpTypeToMojo(
   }
 
   NOTREACHED() << "Unexpected ONC APN IP type: " << ip_type.value();
-  return mojom::ApnIpType::kAutomatic;
+}
+
+mojom::ApnSource OncApnSourceToMojo(const std::optional<std::string>& source) {
+  if (!source.has_value() || source->empty() ||
+      source == ::onc::cellular_apn::kSourceModem) {
+    return mojom::ApnSource::kModem;
+  }
+  if (source == ::onc::cellular_apn::kSourceModb) {
+    return mojom::ApnSource::kModb;
+  }
+  if (source == ::onc::cellular_apn::kSourceUi) {
+    return mojom::ApnSource::kUi;
+  }
+
+  // TODO(b/5429735): Add mojom::ApnSource::kAdmin in follow up CL
+
+  NET_LOG(DEBUG) << "Unexpected APN source: " << source.value();
+  return mojom::ApnSource::kModem;
 }
 
 }  // namespace
 
-bool GetBoolean(const base::Value::Dict* dict,
+bool GetBoolean(const base::DictValue* dict,
                 const char* key,
                 bool value_if_key_missing_from_dict) {
   const base::Value* v = dict->Find(key);
@@ -97,18 +119,18 @@ bool GetBoolean(const base::Value::Dict* dict,
   return v ? v->GetBool() : value_if_key_missing_from_dict;
 }
 
-absl::optional<std::string> GetString(const base::Value::Dict* dict,
-                                      const char* key) {
+std::optional<std::string> GetString(const base::DictValue* dict,
+                                     const char* key) {
   const base::Value* v = dict->Find(key);
   if (v && !v->is_string()) {
     NET_LOG(ERROR) << "Expected string, found: " << *v;
-    return absl::nullopt;
+    return std::nullopt;
   }
-  return v ? absl::make_optional(v->GetString()) : absl::nullopt;
+  return v ? std::make_optional(v->GetString()) : std::nullopt;
 }
 
-const base::Value::Dict* GetDictionary(const base::Value::Dict* dict,
-                                       const char* key) {
+const base::DictValue* GetDictionary(const base::DictValue* dict,
+                                     const char* key) {
   const base::Value* v = dict->Find(key);
   if (!v) {
     return nullptr;
@@ -120,7 +142,7 @@ const base::Value::Dict* GetDictionary(const base::Value::Dict* dict,
   return &v->GetDict();
 }
 
-ManagedDictionary GetManagedDictionary(const base::Value::Dict* onc_dict) {
+ManagedDictionary GetManagedDictionary(const base::DictValue* onc_dict) {
   ManagedDictionary result;
 
   // When available, the active value (i.e. the value from Shill) is used.
@@ -129,7 +151,7 @@ ManagedDictionary GetManagedDictionary(const base::Value::Dict* onc_dict) {
         onc_dict->Find(::onc::kAugmentationActiveSetting)->Clone();
   }
 
-  absl::optional<std::string> effective =
+  std::optional<std::string> effective =
       GetString(onc_dict, ::onc::kAugmentationEffectiveSetting);
   if (!effective) {
     return result;
@@ -196,7 +218,7 @@ ManagedDictionary GetManagedDictionary(const base::Value::Dict* onc_dict) {
   return result;
 }
 
-mojom::ManagedStringPtr GetManagedString(const base::Value::Dict* dict,
+mojom::ManagedStringPtr GetManagedString(const base::DictValue* dict,
                                          const char* key) {
   const base::Value* v = dict->Find(key);
   if (!v) {
@@ -225,7 +247,7 @@ mojom::ManagedStringPtr GetManagedString(const base::Value::Dict* dict,
   return nullptr;
 }
 
-mojom::ManagedStringPtr GetRequiredManagedString(const base::Value::Dict* dict,
+mojom::ManagedStringPtr GetRequiredManagedString(const base::DictValue* dict,
                                                  const char* key) {
   mojom::ManagedStringPtr result = GetManagedString(dict, key);
   if (!result) {
@@ -236,9 +258,9 @@ mojom::ManagedStringPtr GetRequiredManagedString(const base::Value::Dict* dict,
 }
 
 mojom::ManagedApnPropertiesPtr GetManagedApnProperties(
-    const base::Value::Dict* cellular_dict,
+    const base::DictValue* cellular_dict,
     const char* key) {
-  const base::Value::Dict* apn_dict = cellular_dict->FindDict(key);
+  const base::DictValue* apn_dict = cellular_dict->FindDict(key);
   if (!apn_dict) {
     return nullptr;
   }
@@ -279,7 +301,6 @@ bool NetworkTypeMatchesType(mojom::NetworkType network_type,
       return network_type == match_type;
   }
   NOTREACHED();
-  return false;
 }
 
 bool NetworkStateMatchesType(const mojom::NetworkStateProperties* network,
@@ -298,7 +319,6 @@ bool StateIsConnected(mojom::ConnectionStateType connection_state) {
       return false;
   }
   NOTREACHED();
-  return false;
 }
 
 int GetWirelessSignalStrength(const mojom::NetworkStateProperties* network) {
@@ -319,33 +339,32 @@ int GetWirelessSignalStrength(const mojom::NetworkStateProperties* network) {
       break;
   }
   NOTREACHED();
-  return 0;
 }
 
 bool IsInhibited(const mojom::DeviceStateProperties* device) {
   return device->inhibit_reason != mojom::InhibitReason::kNotInhibited;
 }
 
-base::Value::Dict CustomApnListToOnc(const std::string& network_guid,
-                                     const base::Value::List* custom_apn_list) {
-  base::Value::Dict onc;
+base::DictValue CustomApnListToOnc(const std::string& network_guid,
+                                   const base::ListValue* custom_apn_list) {
+  CHECK(custom_apn_list);
+  base::DictValue onc;
   onc.Set(::onc::network_config::kGUID, network_guid);
   onc.Set(::onc::network_config::kType, ::onc::network_type::kCellular);
-  base::Value::Dict type_dict;
-  // If |custom_apn_list| is a nullptr, set the value as Value::Type::NONE
-  if (custom_apn_list) {
-    type_dict.Set(::onc::cellular::kCustomAPNList, custom_apn_list->Clone());
-  } else {
-    type_dict.Set(::onc::cellular::kCustomAPNList, base::Value());
-  }
+  base::DictValue type_dict;
+  type_dict.Set(::onc::cellular::kCustomAPNList, custom_apn_list->Clone());
   onc.Set(::onc::network_type::kCellular, std::move(type_dict));
   return onc;
 }
 
 std::vector<mojom::ApnType> OncApnTypesToMojo(
     const std::vector<std::string>& apn_types) {
-  DCHECK(!apn_types.empty());
   std::vector<mojom::ApnType> apn_types_result;
+  if (apn_types.empty()) {
+    NET_LOG(ERROR) << "APN types is empty";
+    return apn_types_result;
+  }
+
   apn_types_result.reserve(apn_types.size());
   for (const std::string& apn_type : apn_types) {
     if (apn_type == ::onc::cellular_apn::kApnTypeDefault) {
@@ -356,6 +375,10 @@ std::vector<mojom::ApnType> OncApnTypesToMojo(
       apn_types_result.push_back(mojom::ApnType::kAttach);
       continue;
     }
+    if (apn_type == ::onc::cellular_apn::kApnTypeTether) {
+      apn_types_result.push_back(mojom::ApnType::kTether);
+      continue;
+    }
 
     NOTREACHED() << "Unexpected ONC APN Type: " << apn_type;
   }
@@ -363,7 +386,7 @@ std::vector<mojom::ApnType> OncApnTypesToMojo(
   return apn_types_result;
 }
 
-mojom::ApnPropertiesPtr GetApnProperties(const base::Value::Dict& onc_apn,
+mojom::ApnPropertiesPtr GetApnProperties(const base::DictValue& onc_apn,
                                          bool is_apn_revamp_enabled) {
   auto apn = mojom::ApnProperties::New();
   apn->access_point_name =
@@ -374,6 +397,12 @@ mojom::ApnPropertiesPtr GetApnProperties(const base::Value::Dict& onc_apn,
   apn->localized_name = GetString(onc_apn, ::onc::cellular_apn::kLocalizedName);
   apn->name = GetString(onc_apn, ::onc::cellular_apn::kName);
   apn->password = GetString(onc_apn, ::onc::cellular_apn::kPassword);
+
+  // We are not able to depend on and include ash::policy_util::kFakeCredential
+  // so its value is hard coded below.
+  if (apn->password.has_value() && !apn->password->empty()) {
+    apn->password = "FAKE_CREDENTIAL_VPaJDV9x";
+  }
   apn->username = GetString(onc_apn, ::onc::cellular_apn::kUsername);
   apn->attach = GetString(onc_apn, ::onc::cellular_apn::kAttach);
 
@@ -383,6 +412,8 @@ mojom::ApnPropertiesPtr GetApnProperties(const base::Value::Dict& onc_apn,
         OncApnIpTypeToMojo(GetString(onc_apn, ::onc::cellular_apn::kIpType));
     apn->apn_types = OncApnTypesToMojo(
         GetRequiredStringList(onc_apn, ::onc::cellular_apn::kApnTypes));
+    apn->source =
+        OncApnSourceToMojo(GetString(onc_apn, ::onc::cellular_apn::kSource));
   }
 
   return apn;
@@ -424,6 +455,46 @@ mojom::ManagedApnListPtr GetManagedApnList(const base::Value* value,
   }
   NET_LOG(ERROR) << "Expected list or dictionary, found: " << *value;
   return nullptr;
+}
+
+base::DictValue WiFiConfigPropertiesToMojoJsValue(
+    const mojo::StructPtr<
+        chromeos::network_config::mojom::WiFiConfigProperties>& wifi_config) {
+  base::DictValue prefilled_wifi_config;
+  prefilled_wifi_config.Set(kMojoKeySecurity,
+                            static_cast<int>(wifi_config->security));
+  if (wifi_config->ssid.has_value()) {
+    prefilled_wifi_config.Set(kMojoKeySsid, *(wifi_config->ssid));
+  }
+  if (wifi_config->passphrase.has_value()) {
+    prefilled_wifi_config.Set(kMojoKeyPassphrase, *(wifi_config->passphrase));
+  }
+  if (!wifi_config->eap.is_null()) {
+    auto& eap_config = wifi_config->eap;
+    base::DictValue prefilled_eap_config;
+    if (eap_config->inner.has_value()) {
+      prefilled_eap_config.Set(kMojoKeyEapInner, *(eap_config->inner));
+    }
+    if (eap_config->outer.has_value()) {
+      prefilled_eap_config.Set(kMojoKeyEapOuter, *(eap_config->outer));
+    }
+    if (eap_config->identity.has_value()) {
+      prefilled_eap_config.Set(kMojoKeyEapIdentity, *(eap_config->identity));
+    }
+    if (eap_config->anonymous_identity.has_value()) {
+      prefilled_eap_config.Set(kMojoKeyEapAnonymousIdentity,
+                               *(eap_config->anonymous_identity));
+    }
+    if (eap_config->password.has_value()) {
+      prefilled_eap_config.Set(kMojoKeyEapPassword, *(eap_config->password));
+    }
+    prefilled_wifi_config.Set(kMojoKeyEap, prefilled_eap_config.Clone());
+  }
+  base::DictValue type_config;
+  type_config.Set(kMojoKeyWifi, prefilled_wifi_config.Clone());
+  base::DictValue config;
+  config.Set(kMojoKeyTypeConfig, type_config.Clone());
+  return config;
 }
 
 }  // namespace chromeos::network_config

@@ -12,15 +12,16 @@
 #include "base/timer/timer.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/ash/accessibility/magnification_manager.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller_impl.h"
 #include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chrome/browser/ash/power/ml/adaptive_screen_brightness_ukm_logger.h"
 #include "chrome/browser/ash/power/ml/screen_brightness_event.pb.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/tabs/tab_activity_simulator.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/test_browser_window_aura.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "chromeos/dbus/power/fake_power_manager_client.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "chromeos/dbus/power_manager/backlight.pb.h"
@@ -109,13 +110,15 @@ class AdaptiveScreenBrightnessManagerTest
         task_environment()->GetMainThreadTaskRunner());
     screen_brightness_manager_ =
         std::make_unique<AdaptiveScreenBrightnessManager>(
-            std::move(logger), &user_activity_detector_,
+            std::move(logger), ui::UserActivityDetector::Get(),
             chromeos::FakePowerManagerClient::Get(), nullptr, nullptr,
             observer.InitWithNewPipeAndPassReceiver(),
             std::move(periodic_timer));
+    browser_controller_ = std::make_unique<ash::BrowserControllerImpl>();
   }
 
   void TearDown() override {
+    browser_controller_.reset();
     screen_brightness_manager_.reset();
     chromeos::PowerManagerClient::Shutdown();
     ChromeRenderViewHostTestHarness::TearDown();
@@ -138,14 +141,14 @@ class AdaptiveScreenBrightnessManagerTest
   }
 
   void ReportLidEvent(const chromeos::PowerManagerClient::LidState state) {
-    chromeos::FakePowerManagerClient::Get()->SetLidState(
-        state, base::TimeTicks::UnixEpoch());
+    chromeos::FakePowerManagerClient::Get()->SetLidState(state,
+                                                         base::TimeTicks());
   }
 
   void ReportTabletModeEvent(
       const chromeos::PowerManagerClient::TabletMode mode) {
-    chromeos::FakePowerManagerClient::Get()->SetTabletMode(
-        mode, base::TimeTicks::UnixEpoch());
+    chromeos::FakePowerManagerClient::Get()->SetTabletMode(mode,
+                                                           base::TimeTicks());
   }
 
   void ReportBrightnessChangeEvent(
@@ -199,9 +202,9 @@ class AdaptiveScreenBrightnessManagerTest
         chrome::CreateBrowserWithAuraTestWindowForParams(
             std::move(dummy_window), &params);
     if (is_focused) {
-      browser->window()->Activate();
+      browser->GetWindow()->Activate();
     } else {
-      browser->window()->Deactivate();
+      browser->GetWindow()->Deactivate();
     }
     return browser;
   }
@@ -225,7 +228,7 @@ class AdaptiveScreenBrightnessManagerTest
   }
 
   const gfx::Point kEventLocation = gfx::Point(90, 90);
-  const ui::MouseEvent kMouseEvent = ui::MouseEvent(ui::ET_MOUSE_MOVED,
+  const ui::MouseEvent kMouseEvent = ui::MouseEvent(ui::EventType::kMouseMoved,
                                                     kEventLocation,
                                                     kEventLocation,
                                                     base::TimeTicks(),
@@ -239,10 +242,9 @@ class AdaptiveScreenBrightnessManagerTest
 
  private:
   FakeChromeUserManager fake_user_manager_;
-
-  ui::UserActivityDetector user_activity_detector_;
   std::unique_ptr<AdaptiveScreenBrightnessManager> screen_brightness_manager_;
-  raw_ptr<TestingAdaptiveScreenBrightnessUkmLogger, ExperimentalAsh>
+  std::unique_ptr<BrowserControllerImpl> browser_controller_;
+  raw_ptr<TestingAdaptiveScreenBrightnessUkmLogger, DanglingUntriaged>
       ukm_logger_;
 };
 
@@ -593,20 +595,20 @@ TEST_F(AdaptiveScreenBrightnessManagerTest, UserEventCounts) {
   ReportUserActivity(&kMouseEvent);
 
   const ui::TouchEvent kTouchEvent(
-      ui::ET_TOUCH_PRESSED, kEventLocation, base::TimeTicks(),
+      ui::EventType::kTouchPressed, kEventLocation, base::TimeTicks(),
       ui::PointerDetails(ui::EventPointerType::kTouch, 0));
   ReportUserActivity(&kTouchEvent);
   ReportUserActivity(&kTouchEvent);
 
   const ui::KeyEvent kKeyEvent(
-      ui::ET_KEY_PRESSED, ui::VKEY_A, ui::DomCode::US_A, 0,
+      ui::EventType::kKeyPressed, ui::VKEY_A, ui::DomCode::US_A, 0,
       ui::DomKey::FromCharacter('a'), base::TimeTicks());
   ReportUserActivity(&kKeyEvent);
   ReportUserActivity(&kKeyEvent);
   ReportUserActivity(&kKeyEvent);
 
   const ui::TouchEvent kStylusEvent(
-      ui::ET_TOUCH_MOVED, kEventLocation, base::TimeTicks(),
+      ui::EventType::kTouchMoved, kEventLocation, base::TimeTicks(),
       ui::PointerDetails(ui::EventPointerType::kPen, 0), ui::EF_NONE);
   ReportUserActivity(&kStylusEvent);
   ReportUserActivity(&kStylusEvent);
@@ -626,11 +628,11 @@ TEST_F(AdaptiveScreenBrightnessManagerTest, UserEventCounts) {
   EXPECT_EQ(4, features.activity_data().num_recent_stylus_events());
 }
 
-// Test is flaky. See https://crbug.com/938055.
+// Test is flaky. See https://crbug.com/41444814.
 TEST_F(AdaptiveScreenBrightnessManagerTest, DISABLED_SingleBrowser) {
   std::unique_ptr<Browser> browser =
       CreateTestBrowser(true /* is_visible */, true /* is_focused */);
-  BrowserList::GetInstance()->SetLastActive(browser.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser.get());
   TabStripModel* tab_strip_model = browser->tab_strip_model();
   CreateTestWebContents(tab_strip_model, kUrl1, false /* is_active */);
   const ukm::SourceId source_id2 =
@@ -648,7 +650,7 @@ TEST_F(AdaptiveScreenBrightnessManagerTest, DISABLED_SingleBrowser) {
   tab_strip_model->CloseAllTabs();
 }
 
-// Test is flaky. See https://crbug.com/944325.
+// Test is flaky. See https://crbug.com/172225977.
 TEST_F(AdaptiveScreenBrightnessManagerTest,
        DISABLED_MultipleBrowsersWithActive) {
   // Simulates three browsers:
@@ -662,9 +664,9 @@ TEST_F(AdaptiveScreenBrightnessManagerTest,
   std::unique_ptr<Browser> browser3 =
       CreateTestBrowser(true /* is_visible */, false /* is_focused */);
 
-  BrowserList::GetInstance()->SetLastActive(browser3.get());
-  BrowserList::GetInstance()->SetLastActive(browser2.get());
-  BrowserList::GetInstance()->SetLastActive(browser1.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser3.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser2.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser1.get());
 
   TabStripModel* tab_strip_model1 = browser1->tab_strip_model();
   CreateTestWebContents(tab_strip_model1, kUrl1, true /* is_active */);
@@ -704,9 +706,9 @@ TEST_F(AdaptiveScreenBrightnessManagerTest,
   std::unique_ptr<Browser> browser3 =
       CreateTestBrowser(true /* is_visible */, false /* is_focused */);
 
-  BrowserList::GetInstance()->SetLastActive(browser3.get());
-  BrowserList::GetInstance()->SetLastActive(browser2.get());
-  BrowserList::GetInstance()->SetLastActive(browser1.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser3.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser2.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser1.get());
 
   TabStripModel* tab_strip_model1 = browser1->tab_strip_model();
   CreateTestWebContents(tab_strip_model1, kUrl1, true /* is_active */);
@@ -745,9 +747,9 @@ TEST_F(AdaptiveScreenBrightnessManagerTest, BrowsersWithIncognito) {
   std::unique_ptr<Browser> browser3 = CreateTestBrowser(
       true /* is_visible */, true /* is_focused */, true /* is_incognito */);
 
-  BrowserList::GetInstance()->SetLastActive(browser3.get());
-  BrowserList::GetInstance()->SetLastActive(browser2.get());
-  BrowserList::GetInstance()->SetLastActive(browser1.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser3.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser2.get());
+  ui_test_utils::DeprecatedFakeActivateBrowser(browser1.get());
 
   TabStripModel* tab_strip_model1 = browser1->tab_strip_model();
   CreateTestWebContents(tab_strip_model1, kUrl1, true /* is_active */);

@@ -2,8 +2,6 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-import six
-
 from page_sets.system_health import platforms
 from page_sets.system_health import story_tags
 
@@ -48,8 +46,7 @@ class _MetaSystemHealthStory(type):
     return cls.__dict__.get('ABSTRACT_STORY', False)
 
 
-class SystemHealthStory(
-    six.with_metaclass(_MetaSystemHealthStory, page_module.Page)):
+class SystemHealthStory(page_module.Page, metaclass=_MetaSystemHealthStory):
   """Abstract base class for System Health user stories."""
 
   # The full name of a single page story has the form CASE:GROUP:PAGE:[VERSION]
@@ -64,6 +61,7 @@ class SystemHealthStory(
   TAGS = []
   PLATFORM_SPECIFIC = False
   WEBVIEW_NOT_SUPPORTED = False
+  HEAVY_PAGE = False  # True to allow longer runtimes.
 
   def __init__(self, story_set, take_memory_measurement,
       extra_browser_args=None):
@@ -106,7 +104,9 @@ class SystemHealthStory(
 
   def _Measure(self, action_runner):
     if self._take_memory_measurement:
-      action_runner.MeasureMemory(deterministic_mode=True)
+      action_runner.MeasureMemory(
+          deterministic_mode=True,
+          timeout_in_seconds=300 if self.HEAVY_PAGE else 60)
     else:
       action_runner.Wait(_WAIT_TIME_AFTER_LOAD)
 

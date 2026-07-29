@@ -20,6 +20,7 @@ class TestV4GetHashProtocolManagerFactory;
 class InsertingDatabaseFactory;
 class GURL;
 
+// TODO(crbug.com/362791941): Handle v4 references.
 // This class wraps a couple of safe browsing utilities that enable updating
 // underlying SafeBrowsing lists to match URLs.
 class TestSafeBrowsingDatabaseHelper {
@@ -64,12 +65,14 @@ class TestSafeBrowsingDatabaseHelper {
 
  private:
   std::unique_ptr<safe_browsing::TestSafeBrowsingServiceFactory> sb_factory_;
-  // Owned by the V4Database.
-  raw_ptr<InsertingDatabaseFactory, DanglingUntriaged> v4_db_factory_ = nullptr;
+  // Owned by the SBDatabase.
+  raw_ptr<InsertingDatabaseFactory, AcrossTasksDanglingUntriaged>
+      sb_db_factory_ = nullptr;
 
   // Owned by the V4GetHashProtocolManager. Will stay nullptr if the v4 hash
   // factory is not being mocked.
-  raw_ptr<safe_browsing::TestV4GetHashProtocolManagerFactory, DanglingUntriaged>
+  raw_ptr<safe_browsing::TestV4GetHashProtocolManagerFactory,
+          AcrossTasksDanglingUntriaged>
       v4_get_hash_factory_ = nullptr;
 };
 

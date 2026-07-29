@@ -5,11 +5,15 @@
 #ifndef COMPONENTS_PRIVACY_SANDBOX_PRIVACY_SANDBOX_SETTINGS_H_
 #define COMPONENTS_PRIVACY_SANDBOX_PRIVACY_SANDBOX_SETTINGS_H_
 
+#include "base/time/time.h"
+#include "components/browsing_topics/common/common_types.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/privacy_sandbox/canonical_topic.h"
-#include "components/privacy_sandbox/privacy_sandbox_attestations/privacy_sandbox_attestations.h"
 
 class GURL;
+
+namespace content {
+class RenderFrameHost;
+}
 
 namespace url {
 class Origin;
@@ -17,22 +21,49 @@ class Origin;
 
 namespace privacy_sandbox {
 
-// A service which acts as a intermediary between Privacy Sandbox APIs and the
-// preferences and content settings which define when they are allowed to be
-// accessed. Privacy Sandbox APIs, regardless of where they live (renderer,
-// browser, network etc), must consult this service to determine when
-// they are allowed to run. While a basic on/off control is provided by this
-// service, embedders are expected to achieve fine-grained control though
-// the underlying preferences and content settings separately.
+class CanonicalTopic;
+
+// When a new enum value is added:
+// 1. Update kMaxValue to match it.
+// 2. Update `PrivacySandboxAttestationsGatedAPIProto` in
+//    `privacy_sandbox_attestations.proto`.
+// 3. Update `InsertAPI` in `privacy_sandbox_attestations_parser.cc`.
+enum class PrivacySandboxAttestationsGatedAPI {
+  kTopics,
+  kProtectedAudience,
+  kPrivateAggregation,
+  kSharedStorage,
+
+  kMaxValue = kSharedStorage,
+};
+
+// The possible operations performable by parties related to the Interest
+// Group API.
+enum class InterestGroupApiOperation {
+  kJoin,
+  kLeave,
+  kUpdate,
+  kSell,
+  kBuy,
+  kRead
+};
+
+// A service which acts as a intermediary between Privacy Sandbox APIs and
+// the preferences and content settings which define when they are allowed
+// to be accessed. Privacy Sandbox APIs, regardless of where they live
+// (renderer, browser, network etc), must consult this service to determine
+// when they are allowed to run. While a basic on/off control is provided by
+// this service, embedders are expected to achieve fine-grained control
+// though the underlying preferences and content settings separately.
 class PrivacySandboxSettings : public KeyedService {
  public:
   class Observer {
    public:
     virtual void OnTopicsDataAccessibleSinceUpdated() {}
 
-    // Fired when the First-Party Sets changes to being `enabled` as a result of
-    // the kPrivacySandboxFirstPartySets preference changing.
-    virtual void OnFirstPartySetsEnabledChanged(bool enabled) {}
+    // Fired when the Related Website Sets changes to being `enabled` as a
+    // result of the kPrivacySandboxRelatedWebsiteSets preference changing.
+    virtual void OnRelatedWebsiteSetsEnabledChanged(bool enabled) {}
   };
 
   class Delegate {
@@ -40,10 +71,15 @@ class PrivacySandboxSettings : public KeyedService {
     virtual ~Delegate() = default;
 
     // Allows the delegate to restrict access to the Privacy Sandbox. When
-    // the Privacy Sandbox is restricted, all API access is disabled. This is
-    // consulted on every access check, and it is acceptable for this to change
-    // return value over the life of the service.
+    // the Privacy Sandbox is restricted, all API access is disabled. This
+    // is consulted on every access check, and it is acceptable for this to
+    // change return value over the life of the service.
     virtual bool IsPrivacySandboxRestricted() const = 0;
+
+    // Allows the delegate to query in real time if Privacy Sandbox is currently
+    // unrestricted. Unlike IsPrivacySandboxRestricted, does NOT
+    // restrict/unrestrict access to the Privacy Sandbox.
+    virtual bool IsPrivacySandboxCurrentlyUnrestricted() const = 0;
 
     // Whether the current profile is Incognito or not. For Incognito, the
     // privacy sandbox APIs are restricted.
@@ -57,6 +93,10 @@ class PrivacySandboxSettings : public KeyedService {
     // Whether the profile is subject to being given notice of restrictions to
     // the standard set of Privacy Sandbox APIs.
     virtual bool IsSubjectToM1NoticeRestricted() const = 0;
+
+    // Whether the Privacy Sandbox is partially enabled based on
+    // restrictions.
+    virtual bool IsRestrictedNoticeEnabled() const = 0;
   };
 
   // Returns whether the Topics API is allowed at all. If false, Topics API
@@ -68,13 +108,20 @@ class PrivacySandboxSettings : public KeyedService {
   // Determines whether the Topics API is allowable in a particular context.
   // |top_frame_origin| is used to check for content settings which could both
   // affect 1P and 3P contexts.
-  virtual bool IsTopicsAllowedForContext(const url::Origin& top_frame_origin,
-                                         const GURL& url) const = 0;
+  // If provided, `console_frame` is used to log errors to the console upon
+  // attestation failure.
+  virtual bool IsTopicsAllowedForContext(
+      const url::Origin& top_frame_origin,
+      const GURL& url,
+      content::RenderFrameHost* console_frame = nullptr) const = 0;
 
   // Returns whether |topic| can be either considered as a top topic for the
   // current epoch, or provided to a website as a previous / current epochs
   // site assigned topic.
   virtual bool IsTopicAllowed(const CanonicalTopic& topic) = 0;
+
+  // Returns whether |topic| is prioritized by Finch settings.
+  virtual bool IsTopicPrioritized(const CanonicalTopic& topic) = 0;
 
   // Sets |topic| to |allowed|. Whether a topic is allowed or not is made
   // available through IsTopicAllowed().
@@ -93,28 +140,6 @@ class PrivacySandboxSettings : public KeyedService {
   // future, in which case no history is eligible.
   virtual base::Time TopicsDataAccessibleSince() const = 0;
 
-  // Returns whether any Attribution Reporting operation would ever be allowed.
-  // If false, no attribution reporting operation is allowed (e.g. because the
-  // user has disabled the setting). If true, the appropriate context specific
-  // check must also be made.
-  virtual bool IsAttributionReportingEverAllowed() const = 0;
-
-  // Determines whether Attribution Reporting is allowable in a particular
-  // context. Should be called at both source and trigger registration. At each
-  // of these points |top_frame_origin| is the same as either the source origin
-  // or the destination origin respectively.
-  virtual bool IsAttributionReportingAllowed(
-      const url::Origin& top_frame_origin,
-      const url::Origin& reporting_origin) const = 0;
-
-  // Called before sending the associated attribution report to
-  // |reporting_origin|. Re-checks that |reporting_origin| is allowable as a 3P
-  // on both |source_origin| and |destination_origin|.
-  virtual bool MaySendAttributionReport(
-      const url::Origin& source_origin,
-      const url::Origin& destination_origin,
-      const url::Origin& reporting_origin) const = 0;
-
   // Sets the ability for |top_frame_etld_plus1| to join the profile to interest
   // groups to |allowed|. This information is stored in preferences, and is made
   // available to the API via IsFledgeJoiningAllowed(). |top_frame_etld_plus1|
@@ -129,47 +154,88 @@ class PrivacySandboxSettings : public KeyedService {
   virtual void ClearFledgeJoiningAllowedSettings(base::Time start_time,
                                                  base::Time end_time) = 0;
 
-  // Determines whether the user may be joined to FLEDGE interest groups on, or
-  // by, |top_frame_origin|. This is an additional check that must be
-  // combined with the more generic IsFledgeAllowed().
-  virtual bool IsFledgeJoiningAllowed(
-      const url::Origin& top_frame_origin) const = 0;
-
   // Determine whether |auction_party| can register an interest group, or sell
   // buy in an auction, on |top_frame_origin|.
-  virtual bool IsFledgeAllowed(const url::Origin& top_frame_origin,
-                               const url::Origin& auction_party) const = 0;
+  // If provided, `console_frame` is used to log errors to the console upon
+  // attestation failure.
+  virtual bool IsFledgeAllowed(
+      const url::Origin& top_frame_origin,
+      const url::Origin& auction_party,
+      InterestGroupApiOperation interest_group_api_operation,
+      content::RenderFrameHost* console_frame = nullptr) const = 0;
+
+  // Determine whether |destination_origin| is allowed to receive events
+  // (reportEvent(), automatic beacons) reported by an API like Protected
+  // Audience or Shared Storage. This does not check if the API itself is
+  // allowed by the calling context, since the corresponding registerAdBeacon
+  // and selectUrl caller sites were also checked for attestation.
+  virtual bool IsEventReportingDestinationAttested(
+      const url::Origin& destination_origin,
+      privacy_sandbox::PrivacySandboxAttestationsGatedAPI invoking_api)
+      const = 0;
 
   // Determines whether Shared Storage is allowable in a particular context.
   // `top_frame_origin` can be the same as `accessing_origin` in the case of a
   // top-level document calling Shared Storage.
+  //
+  // If non-null, `out_debug_message` is updated in this call to relay details
+  // back to the caller about how the returned boolean result was obtained.
+  //
+  // If provided, `console_frame` is used to log errors to the console upon
+  // attestation failure.
+  //
+  // The out parameter `out_block_is_site_setting_specific` will be set to true
+  // in the case that the return value is false and the failure to be allowed is
+  // due to site-settings. Otherwise the parameter will be set to false (because
+  // either the return value is true, or the failure is due to a
+  // non-site-setting-specific reason).
   virtual bool IsSharedStorageAllowed(
       const url::Origin& top_frame_origin,
-      const url::Origin& accessing_origin) const = 0;
+      const url::Origin& accessing_origin,
+      std::string* out_debug_message,
+      content::RenderFrameHost* console_frame,
+      bool* out_block_is_site_setting_specific) const = 0;
 
   // Controls whether Shared Storage SelectURL is allowable for
   // `accessing_origin` in the context of `top_frame_origin`. Does not override
   // a false return value from IsSharedStorageAllowed.
-  // TODO(crbug.com/1378703): This just redirects to the general
-  // IsSharedStorageAllowed(). The implementation needs to be updated to reflect
-  // the M1 preferences when release 4 is enabled.
+  //
+  // If non-null, `out_debug_message` is updated in this call to relay details
+  // back to the caller about how the returned boolean result was obtained.
+  //
+  // The out parameter `out_block_is_site_setting_specific` will be set to true
+  // in the case that the return value is false and the failure to be allowed is
+  // due to site-settings. Otherwise the parameter will be set to false (because
+  // either the return value is true, or the failure is due to a
+  // non-site-setting-specific reason).
   virtual bool IsSharedStorageSelectURLAllowed(
       const url::Origin& top_frame_origin,
-      const url::Origin& accessing_origin) const = 0;
+      const url::Origin& accessing_origin,
+      std::string* out_debug_message,
+      bool* out_block_is_site_setting_specific) const = 0;
 
   // Determines whether the Private Aggregation API is allowable in a particular
   // context. `top_frame_origin` is the associated top-frame origin of the
   // calling context. Applicable to all uses of Private Aggregation.
+  //
+  // The out parameter `out_block_is_site_setting_specific` will be set to true
+  // in the case that the return value is false and the failure to be allowed is
+  // due to site-settings. Otherwise the parameter will be set to false (because
+  // either the return value is true, or the failure is due to a
+  // non-site-setting-specific reason).
   virtual bool IsPrivateAggregationAllowed(
       const url::Origin& top_frame_origin,
-      const url::Origin& reporting_origin) const = 0;
+      const url::Origin& reporting_origin,
+      bool* out_block_is_site_setting_specific) const = 0;
 
-  // Returns whether the profile has the Privacy Sandbox enabled. This consults
-  // the main preference, as well as the delegate to check whether the sandbox
-  // is restricted. It does not consider any cookie settings. A return value of
-  // false means that no Privacy Sandbox operations can occur. A return value of
-  // true must be followed up with the appropriate IsXAllowed() call.
-  virtual bool IsPrivacySandboxEnabled() const = 0;
+  // Determines whether the Private Aggregation API's debug mode is allowable in
+  // a particular context. Note that if IsPrivateAggregationAllowed() is false,
+  // this will always be false too. `top_frame_origin` is the associated
+  // top-frame origin of the calling context. Applicable to all uses of Private
+  // Aggregation.
+  virtual bool IsPrivateAggregationDebugModeAllowed(
+      const url::Origin& top_frame_origin,
+      const url::Origin& reporting_origin) const = 0;
 
   // Allows all Privacy Sandbox prefs for testing. This should be used if tests
   // don't depend on specific access control and just would like to have Privacy
@@ -180,18 +246,16 @@ class PrivacySandboxSettings : public KeyedService {
   // Blocks Topics pref for testing.
   virtual void SetTopicsBlockedForTesting() = 0;
 
-  // Disables the Privacy Sandbox completely if |enabled| is false, if |enabled|
-  // is true, more granular checks will still be performed, and the delegate
-  // consulted, to determine if specific APIs are available in specific
-  // contexts.
-  // DEPRECATED: Use `SetAllPrivacySandboxAllowedForTesting()` to allow all
-  // Privacy Sandbox prefs or per-API block-for-testing functions.
-  virtual void SetPrivacySandboxEnabled(bool enabled) = 0;
-
   // Returns whether the Privacy Sandbox is being restricted by the associated
   // delegate. Forwards directly to the corresponding delegate function.
   // Virtual to allow mocking in tests.
   virtual bool IsPrivacySandboxRestricted() const = 0;
+
+  // Returns whether the Privacy Sandbox is being unrestricted by the associated
+  // delegate. Forwards directly to the corresponding delegate function.
+  // Virtual to allow mocking in tests. Unlike IsPrivacySandboxRestricted
+  // this method always return the current restriction status.
+  virtual bool IsPrivacySandboxCurrentlyUnrestricted() const = 0;
 
   // Returns whether the privacy sandbox restricted notice should be shown,
   // based on account characteristics. Forwards to the delegate. Virtual for
@@ -199,7 +263,8 @@ class PrivacySandboxSettings : public KeyedService {
   virtual bool IsSubjectToM1NoticeRestricted() const = 0;
 
   // Returns whether the Privacy Sandbox is partially enabled based on
-  // restrictions.
+  // restrictions. Forwards to the delegate. Virtual for
+  // mocking in tests.
   virtual bool IsRestrictedNoticeEnabled() const = 0;
 
   // Called when there's a broad cookies clearing action. For example, this
@@ -213,9 +278,8 @@ class PrivacySandboxSettings : public KeyedService {
   // Overrides the internal delegate for test purposes.
   virtual void SetDelegateForTesting(std::unique_ptr<Delegate> delegate) = 0;
 
-  // Overrides the privacy sandbox attestations map for testing.
-  virtual void SetPrivacySandboxAttestationsMapForTesting(
-      const PrivacySandboxAttestationsMap& attestations_map) = 0;
+  // Source of truth for whether related website sets are enabled.
+  virtual bool AreRelatedWebsiteSetsEnabled() const = 0;
 };
 
 }  // namespace privacy_sandbox

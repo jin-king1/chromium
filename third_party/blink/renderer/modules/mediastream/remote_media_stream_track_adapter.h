@@ -7,6 +7,7 @@
 
 #include "base/check_op.h"
 #include "base/dcheck_is_on.h"
+#include "base/feature_list.h"
 #include "base/memory/scoped_refptr.h"
 #include "third_party/blink/public/platform/web_string.h"
 #include "third_party/blink/public/web/web_frame.h"
@@ -26,6 +27,12 @@ class SingleThreadTaskRunner;
 
 namespace blink {
 
+// Killswitch for setting the remote MediaStreamTrack label to "remote <kind>"
+// per https://w3c.github.io/webrtc-pc/#rtcrtpreceiver-interface. When disabled,
+// the label falls back to the track id.
+// TODO(crbug.com/40684245): Remove after the new behavior has rolled out.
+MODULES_EXPORT BASE_DECLARE_FEATURE(kWebRtcRemoteTrackLabel);
+
 class TrackObserver;
 
 // Base class used for mapping between webrtc and blink MediaStream tracks.
@@ -33,7 +40,7 @@ class TrackObserver;
 // (RemoteAudioTrackAdapter) and video (RemoteVideoTrackAdapter) track.
 template <typename WebRtcMediaStreamTrackType>
 class MODULES_EXPORT RemoteMediaStreamTrackAdapter
-    : public WTF::ThreadSafeRefCounted<
+    : public ThreadSafeRefCounted<
           RemoteMediaStreamTrackAdapter<WebRtcMediaStreamTrackType>> {
  public:
   RemoteMediaStreamTrackAdapter(
@@ -43,7 +50,7 @@ class MODULES_EXPORT RemoteMediaStreamTrackAdapter
       : main_thread_(main_thread),
         webrtc_track_(webrtc_track),
         track_execution_context_(track_execution_context),
-        id_(String::FromUTF8(webrtc_track->id())) {}
+        id_(String::FromUtf8(webrtc_track->id())) {}
 
   RemoteMediaStreamTrackAdapter(const RemoteMediaStreamTrackAdapter&) = delete;
   RemoteMediaStreamTrackAdapter& operator=(
@@ -74,7 +81,7 @@ class MODULES_EXPORT RemoteMediaStreamTrackAdapter
   }
 
  protected:
-  friend class WTF::ThreadSafeRefCounted<
+  friend class ThreadSafeRefCounted<
       RemoteMediaStreamTrackAdapter<WebRtcMediaStreamTrackType>>;
 
   virtual ~RemoteMediaStreamTrackAdapter() {
@@ -88,8 +95,13 @@ class MODULES_EXPORT RemoteMediaStreamTrackAdapter
     DCHECK(main_thread_->BelongsToCurrentThread());
     DCHECK(!component_);
 
+    String label = id_;
+    if (base::FeatureList::IsEnabled(kWebRtcRemoteTrackLabel)) {
+      label = (type == MediaStreamSource::kTypeAudio) ? String("remote audio")
+                                                      : String("remote video");
+    }
     auto* source = MakeGarbageCollected<MediaStreamSource>(
-        id_, type, id_, true /*remote*/, std::move(platform_source));
+        id_, type, label, /*remote=*/true, std::move(platform_source));
     component_ = MakeGarbageCollected<MediaStreamComponentImpl>(
         id_, source, std::move(platform_track));
     // If we have a reference to a window frame where the track was created,
@@ -99,10 +111,14 @@ class MODULES_EXPORT RemoteMediaStreamTrackAdapter
         To<LocalDOMWindow>(track_execution_context_.Get())->GetFrame()) {
       // IsWindow() being true means that the ExecutionContext is a
       // LocalDOMWindow, so these casts should be safe.
-      component_->SetCreationFrame(
-          WebFrame::FromCoreFrame(
-              To<LocalDOMWindow>(track_execution_context_.Get())->GetFrame())
-              ->ToWebLocalFrame());
+      component_->SetCreationFrameGetter(BindRepeating(
+          [](LocalFrame* local_frame) {
+            return local_frame
+                       ? WebFrame::FromCoreFrame(local_frame)->ToWebLocalFrame()
+                       : nullptr;
+          },
+          WrapWeakPersistent(
+              To<LocalDOMWindow>(track_execution_context_.Get())->GetFrame())));
     }
     DCHECK(component_);
   }

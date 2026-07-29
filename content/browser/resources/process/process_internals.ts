@@ -4,11 +4,13 @@
 
 import 'chrome://resources/cr_elements/cr_tree/cr_tree.js';
 
-import {CrTreeElement} from 'chrome://resources/cr_elements/cr_tree/cr_tree.js';
-import {CrTreeItemElement, MAY_HAVE_CHILDREN_ATTR} from 'chrome://resources/cr_elements/cr_tree/cr_tree_item.js';
-import {assert} from 'chrome://resources/js/assert_ts.js';
+import type {CrTreeElement} from 'chrome://resources/cr_elements/cr_tree/cr_tree.js';
+import type {CrTreeItemElement} from 'chrome://resources/cr_elements/cr_tree/cr_tree_item.js';
+import {MAY_HAVE_CHILDREN_ATTR} from 'chrome://resources/cr_elements/cr_tree/cr_tree_item.js';
+import {assert} from 'chrome://resources/js/assert.js';
 
-import {FrameInfo, FrameInfo_Type, ProcessInternalsHandler, ProcessInternalsHandlerRemote, WebContentsInfo} from './process_internals.mojom-webui.js';
+import type {FrameInfo, ProcessInternalsHandlerRemote, WebContentsInfo} from './process_internals.mojom-webui.js';
+import {FrameInfo_Type, ProcessInternalsHandler} from './process_internals.mojom-webui.js';
 
 /**
  * Reference to the backend providing all the data.
@@ -81,6 +83,12 @@ async function loadProcessCountInfo() {
   assert(processCountTotal);
   processCountTotal.innerText = String(info.rendererProcessCountTotal);
 
+  const liveProcessesCountTotal =
+      document.querySelector<HTMLElement>('#live-processes-count-total');
+  assert(liveProcessesCountTotal);
+  liveProcessesCountTotal.innerText =
+      String(info.liveRendererProcessesCountTotal);
+
   const processCountForLimit =
       document.querySelector<HTMLElement>('#process-count-for-limit');
   assert(processCountForLimit);
@@ -148,16 +156,18 @@ function frameToTreeItem(frame: FrameInfo, parentProcessId: number = -1):
   }
 
   itemLabel += ` SI:${frame.siteInstance.id}`;
+  itemLabel += `, SIG:${frame.siteInstance.siteInstanceGroupId}`;
+  itemLabel += `, BI:${frame.siteInstance.browsingInstanceId}`;
   if (frame.siteInstance.locked) {
     itemLabel += ', locked';
   } else {
     itemLabel += ', unlocked';
   }
   if (frame.siteInstance.siteUrl) {
-    itemLabel += `, site:${frame.siteInstance.siteUrl.url}`;
+    itemLabel += `, site:${frame.siteInstance.siteUrl}`;
   }
   if (frame.siteInstance.processLockUrl) {
-    itemLabel += `, lock:${frame.siteInstance.processLockUrl.url}`;
+    itemLabel += `, lock:${frame.siteInstance.processLockUrl}`;
   }
   if (frame.siteInstance.requiresOriginKeyedProcess) {
     itemLabel += ', origin-keyed';
@@ -168,11 +178,20 @@ function frameToTreeItem(frame: FrameInfo, parentProcessId: number = -1):
   if (frame.siteInstance.isGuest) {
     itemLabel += ', guest';
   }
+  if (frame.siteInstance.isPdf) {
+    itemLabel += ', pdf';
+  }
+  // TODO(crbug.com/398265332): only show the non-default case.
+  if (frame.siteInstance.areJavascriptOptimizersEnabled) {
+    itemLabel += ', js-opt-on';
+  } else {
+    itemLabel += ', js-opt-off';
+  }
   if (frame.siteInstance.storagePartition) {
     itemLabel += `, partition:${frame.siteInstance.storagePartition}`;
   }
   if (frame.lastCommittedUrl) {
-    itemLabel += ` | url: ${frame.lastCommittedUrl.url}`;
+    itemLabel += ` | url: ${frame.lastCommittedUrl}`;
   }
 
   const item = document.createElement('cr-tree-item');
@@ -403,6 +422,14 @@ document.addEventListener('DOMContentLoaded', function() {
       document.querySelector<HTMLElement>('#refresh-process-info');
   assert(refreshProcessInfoButton);
   refreshProcessInfoButton.addEventListener('click', loadProcessCountInfo);
+
+  // Get the ProcessPerSite mode and populate it.
+  pageHandler.getProcessPerSiteMode().then((response) => {
+    const sharingMode =
+        document.querySelector<HTMLElement>('#process-per-site-mode');
+    assert(sharingMode);
+    sharingMode.innerText = response.mode;
+  });
 
   // Get the Site Isolation mode and populate it.
   pageHandler.getIsolationMode().then((response) => {

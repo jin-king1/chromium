@@ -26,6 +26,22 @@ constexpr uint64_t kDeviceTierSegmentVersion = 1;
 constexpr SegmentId kDeviceTierSegmentId = SegmentId::DEVICE_TIER_SEGMENT;
 constexpr int64_t kDeviceTierSegmentSignalStorageLength = 28;
 constexpr int64_t kDeviceTierSegmentMinSignalCollectionLength = 0;
+constexpr FeaturePair<DeviceTierSegment::Feature> kDeviceTierSegmentFeatures[] =
+    {{DeviceTierSegment::kFeatureDeviceRamInMb,
+      features::Feature::FromCustomInput(features::CustomInput{
+          .tensor_length = 1,
+          .fill_policy = proto::CustomInput::FILL_DEVICE_RAM_MB,
+          .name = "DeviceRAMInMB"})},
+     {DeviceTierSegment::kFeatureDeviceOsVersionNumber,
+      features::Feature::FromCustomInput(features::CustomInput{
+          .tensor_length = 1,
+          .fill_policy = proto::CustomInput::FILL_DEVICE_OS_VERSION_NUMBER,
+          .name = "DeviceOSVersionNumber"})},
+     {DeviceTierSegment::kFeatureDevicePpi,
+      features::Feature::FromCustomInput(features::CustomInput{
+          .tensor_length = 1,
+          .fill_policy = proto::CustomInput::FILL_DEVICE_PPI,
+          .name = "DevicePPI"})}};
 }  // namespace
 
 // static
@@ -38,87 +54,69 @@ std::unique_ptr<Config> DeviceTierSegment::GetConfig() {
   auto config = std::make_unique<Config>();
   config->segmentation_key = kDeviceTierKey;
   config->segmentation_uma_name = kDeviceTierUmaName;
+  config->auto_execute_and_cache = true;
   config->AddSegmentId(kDeviceTierSegmentId,
                        std::make_unique<DeviceTierSegment>());
   config->is_boolean_segment = true;
   return config;
 }
 
-DeviceTierSegment::DeviceTierSegment() : ModelProvider(kDeviceTierSegmentId) {}
+DeviceTierSegment::DeviceTierSegment()
+    : DefaultModelProvider(kDeviceTierSegmentId) {}
 
-void DeviceTierSegment::InitAndFetchModel(
-    const ModelUpdatedCallback& model_updated_callback) {
+std::unique_ptr<DefaultModelProvider::ModelConfig>
+DeviceTierSegment::GetModelConfig() {
   proto::SegmentationModelMetadata device_tier_metadata;
   MetadataWriter writer(&device_tier_metadata);
   writer.SetDefaultSegmentationMetadataConfig(
       kDeviceTierSegmentMinSignalCollectionLength,
       kDeviceTierSegmentSignalStorageLength);
 
-  // Adding custom inputs.
-  writer.AddCustomInput(MetadataWriter::CustomInput{
-      .tensor_length = 1,
-      .fill_policy = proto::CustomInput::FILL_DEVICE_RAM_MB,
-      .name = "DeviceRAMInMB"});
-
-  writer.AddCustomInput(MetadataWriter::CustomInput{
-      .tensor_length = 1,
-      .fill_policy = proto::CustomInput::FILL_DEVICE_OS_VERSION_NUMBER,
-      .name = "DeviceOSVersionNumber"});
-
-  writer.AddCustomInput(MetadataWriter::CustomInput{
-      .tensor_length = 1,
-      .fill_policy = proto::CustomInput::FILL_DEVICE_PPI,
-      .name = "DevicePPI"});
+  // Set features.
+  writer.AddFeatures<Feature>(kDeviceTierSegmentFeatures);
 
   //  Set OutputConfig.
   writer.AddOutputConfigForBinnedClassifier(
-      /*bins=*/{{1, kDeviceTierSegmentLabelLow},
-                {2, kDeviceTierSegmentLabelMedium},
-                {3, kDeviceTierSegmentLabelHigh}},
+      /*bins=*/{{kLabelLow, kDeviceTierSegmentLabelLow},
+                {kLabelMedium, kDeviceTierSegmentLabelMedium},
+                {kLabelHigh, kDeviceTierSegmentLabelHigh}},
       /*underflow_label=*/kDeviceTierSegmentLabelNone);
   writer.AddPredictedResultTTLInOutputConfig(
       /*top_label_to_ttl_list=*/{}, /*default_ttl=*/7,
       /*time_unit=*/proto::TimeUnit::DAY);
 
-  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE,
-      base::BindRepeating(model_updated_callback, kDeviceTierSegmentId,
-                          std::move(device_tier_metadata),
-                          kDeviceTierSegmentVersion));
+  return std::make_unique<ModelConfig>(std::move(device_tier_metadata),
+                                       kDeviceTierSegmentVersion);
 }
 
 void DeviceTierSegment::ExecuteModelWithInput(
     const ModelProvider::Request& inputs,
     ExecutionCallback callback) {
   // Invalid inputs.
-  if (inputs.size() != 3) {
+  if (inputs.size() != kFeatureCount) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), absl::nullopt));
+        FROM_HERE, base::BindOnce(std::move(callback), std::nullopt));
     return;
   }
   float score = 0;
-  float device_ram_in_gb = inputs[0] / 1024;
-  float device_os_version = inputs[1];
-  float device_ppi = inputs[2];
+  float device_ram_in_gb = inputs[kFeatureDeviceRamInMb] / 1024;
+  float device_os_version = inputs[kFeatureDeviceOsVersionNumber];
+  float device_ppi = inputs[kFeatureDevicePpi];
   if ((device_ram_in_gb >= 8 && device_os_version >= 10 && device_ppi > 370) ||
       (device_ram_in_gb >= 6 && device_os_version >= 11 && device_ppi > 370)) {
-    score = 3;
+    score = kLabelHigh;
   } else if ((device_ram_in_gb >= 6 &&
               (device_os_version < 11 || device_ppi <= 370)) ||
              (device_ram_in_gb > 2 && device_os_version >= 10)) {
-    score = 2;
+    score = kLabelMedium;
   } else if (device_ram_in_gb >= 1 && device_os_version >= 1) {
-    score = 1;
+    score = kLabelLow;
   } else {
-    score = 0;
+    score = kLabelNone;
   }
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(std::move(callback), ModelProvider::Response(1, score)));
-}
-
-bool DeviceTierSegment::ModelAvailable() {
-  return true;
 }
 
 }  // namespace segmentation_platform

@@ -7,20 +7,21 @@
 #include "ash/constants/ash_pref_names.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
-#include "chrome/browser/ash/login/users/chrome_user_manager.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/policy/core/device_policy_cros_browser_test.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part_ash.h"
-#include "chrome/browser/enterprise/signals/signals_common.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/test/base/testing_profile.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "chromeos/ash/components/dbus/shill/shill_device_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_profile_client.h"
 #include "chromeos/ash/components/dbus/shill/shill_service_client.h"
 #include "chromeos/ash/components/network/network_state_handler.h"
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
+#include "components/device_signals/core/browser/signals_types.h"
+#include "components/device_signals/core/common/common_types.h"
 #include "components/device_signals/core/common/signals_constants.h"
 #include "components/policy/proto/device_management_backend.pb.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -28,6 +29,7 @@
 #include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/test/browser_test.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/cros_system_api/dbus/shill/dbus-constants.h"
 
@@ -50,8 +52,8 @@ constexpr char kWifiServicePath[] = "/service/stub_wifi";
 constexpr char kFakeSerialNumber[] = "fake_serial_number";
 constexpr char kFakeDeviceHostName[] = "fake_device_host_name";
 
-base::Value::List GetExpectedMacAddresses() {
-  base::Value::List mac_addresses;
+base::ListValue GetExpectedMacAddresses() {
+  base::ListValue mac_addresses;
   mac_addresses.Append(kMacAddress);
   return mac_addresses;
 }
@@ -124,7 +126,7 @@ class AshSignalsDecoratorBrowserTest
 
   std::unique_ptr<TestingProfile> testing_profile_;
   TestingPrefServiceSimple prefs_;
-  raw_ptr<policy::BrowserPolicyConnectorAsh, ExperimentalAsh> connector_;
+  raw_ptr<policy::BrowserPolicyConnectorAsh, DanglingUntriaged> connector_;
 
   ash::system::ScopedFakeStatisticsProvider fake_statistics_provider_;
 };
@@ -136,8 +138,8 @@ IN_PROC_BROWSER_TEST_F(AshSignalsDecoratorBrowserTest,
   testing_profile()->GetPrefs()->SetBoolean(ash::prefs::kAllowScreenLock,
                                             false);
   // Set fake serial number.
-  fake_statistics_provider_.SetMachineStatistic(
-      ash::system::kSerialNumberKeyForTest, kFakeSerialNumber);
+  fake_statistics_provider_.SetMachineStatistic(ash::system::kSerialNumberKey,
+                                                kFakeSerialNumber);
   // Set fake device hostname.
   ash::NetworkHandler::Get()->network_state_handler()->SetHostname(
       kFakeDeviceHostName);
@@ -146,7 +148,7 @@ IN_PROC_BROWSER_TEST_F(AshSignalsDecoratorBrowserTest,
 
   base::RunLoop run_loop;
   AshSignalsDecorator decorator(connector_, testing_profile());
-  base::Value::Dict signals;
+  base::DictValue signals;
   decorator.Decorate(signals, run_loop.QuitClosure());
 
   run_loop.Run();
@@ -167,13 +169,13 @@ IN_PROC_BROWSER_TEST_F(AshSignalsDecoratorBrowserTest,
   auto disk_encrypted = signals.FindInt(device_signals::names::kDiskEncrypted);
   ASSERT_TRUE(disk_encrypted);
   EXPECT_EQ(disk_encrypted.value(),
-            static_cast<int32_t>(enterprise_signals::SettingValue::ENABLED));
+            static_cast<int32_t>(device_signals::SettingValue::ENABLED));
 
   auto screen_lock_secured =
       signals.FindInt(device_signals::names::kScreenLockSecured);
   ASSERT_TRUE(screen_lock_secured);
   EXPECT_EQ(screen_lock_secured.value(),
-            static_cast<int32_t>(enterprise_signals::SettingValue::ENABLED));
+            static_cast<int32_t>(device_signals::SettingValue::ENABLED));
 }
 
 IN_PROC_BROWSER_TEST_F(AshSignalsDecoratorBrowserTest, TestNetworkSignals) {
@@ -186,27 +188,23 @@ IN_PROC_BROWSER_TEST_F(AshSignalsDecoratorBrowserTest, TestNetworkSignals) {
       ash::ProfileHelper::Get()->GetUserByProfile(profile);
   AshSignalsDecorator decorator(connector_, profile);
 
-  base::flat_set<std::string> user_affiliation_ids;
-  user_affiliation_ids.insert(kFakeAffilationID);
-
-  ash::ChromeUserManager::Get()->SetUserAffiliation(user->GetAccountId(),
-                                                    user_affiliation_ids);
+  user_manager::UserManager::Get()->SetUserPolicyStatus(user->GetAccountId(),
+                                                        /*is_managed=*/true,
+                                                        /*is_affiliated=*/true);
 
   // Test for no network
   {
     base::RunLoop run_loop;
-    base::Value::Dict signals;
+    base::DictValue signals;
     decorator.Decorate(signals, run_loop.QuitClosure());
 
     run_loop.Run();
 
-    base::Value::List* imei_list =
-        signals.FindList(device_signals::names::kImei);
+    base::ListValue* imei_list = signals.FindList(device_signals::names::kImei);
     ASSERT_TRUE(imei_list);
     EXPECT_TRUE(imei_list->empty());
 
-    base::Value::List* meid_list =
-        signals.FindList(device_signals::names::kMeid);
+    base::ListValue* meid_list = signals.FindList(device_signals::names::kMeid);
     ASSERT_TRUE(meid_list);
     EXPECT_TRUE(meid_list->empty());
   }
@@ -216,7 +214,7 @@ IN_PROC_BROWSER_TEST_F(AshSignalsDecoratorBrowserTest, TestNetworkSignals) {
     SetupFakeNetwork();
 
     base::RunLoop run_loop;
-    base::Value::Dict signals;
+    base::DictValue signals;
     decorator.Decorate(signals, run_loop.QuitClosure());
 
     run_loop.Run();
@@ -226,15 +224,50 @@ IN_PROC_BROWSER_TEST_F(AshSignalsDecoratorBrowserTest, TestNetworkSignals) {
     ASSERT_TRUE(mac_addresses);
     EXPECT_EQ(*mac_addresses, GetExpectedMacAddresses());
 
-    base::Value::List* imei_list =
-        signals.FindList(device_signals::names::kImei);
+    base::ListValue* imei_list = signals.FindList(device_signals::names::kImei);
     EXPECT_EQ(imei_list->size(), 1u);
     EXPECT_EQ(imei_list->front(), kFakeImei);
 
-    base::Value::List* meid_list =
-        signals.FindList(device_signals::names::kMeid);
+    base::ListValue* meid_list = signals.FindList(device_signals::names::kMeid);
     EXPECT_EQ(meid_list->size(), 1u);
     EXPECT_EQ(meid_list->front(), kFakeMeid);
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(AshSignalsDecoratorBrowserTest, TestSignalTrigger) {
+  // Test with user profile
+  {
+    base::RunLoop run_loop;
+    AshSignalsDecorator decorator(connector_, testing_profile());
+    base::DictValue signals;
+    decorator.Decorate(signals, run_loop.QuitClosure());
+
+    run_loop.Run();
+
+    auto browser_context_type =
+        signals.FindInt(device_signals::names::kTrigger);
+    ASSERT_TRUE(browser_context_type);
+    EXPECT_EQ(
+        browser_context_type.value(),
+        static_cast<int32_t>(device_signals::Trigger::kBrowserNavigation));
+  }
+
+  // Test with signin profile
+  {
+    base::RunLoop run_loop;
+    AshSignalsDecorator decorator(
+        connector_,
+        ash::ProfileHelper::GetSigninProfile()->GetOriginalProfile());
+    base::DictValue signals;
+    decorator.Decorate(signals, run_loop.QuitClosure());
+
+    run_loop.Run();
+
+    auto browser_context_type =
+        signals.FindInt(device_signals::names::kTrigger);
+    ASSERT_TRUE(browser_context_type);
+    EXPECT_EQ(browser_context_type.value(),
+              static_cast<int32_t>(device_signals::Trigger::kLoginScreen));
   }
 }
 

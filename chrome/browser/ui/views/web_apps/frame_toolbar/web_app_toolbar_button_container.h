@@ -5,17 +5,22 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_WEB_APPS_FRAME_TOOLBAR_WEB_APP_TOOLBAR_BUTTON_CONTAINER_H_
 #define CHROME_BROWSER_UI_VIEWS_WEB_APPS_FRAME_TOOLBAR_WEB_APP_TOOLBAR_BUTTON_CONTAINER_H_
 
+#include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/ui/views/download/bubble/download_toolbar_button_view.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
+#include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
+#include "chrome/browser/ui/views/page_action/page_action_container_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_container.h"
 #include "chrome/browser/ui/views/page_action/page_action_icon_view.h"
 #include "chrome/browser/ui/views/profiles/avatar_toolbar_button.h"
+#include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_menu_button.h"
 #include "chrome/browser/ui/web_applications/web_app_menu_model.h"
+#include "components/webapps/common/web_app_id.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/layout/flex_layout_types.h"
@@ -24,21 +29,22 @@
 class WebAppContentSettingsContainer;
 class BrowserView;
 class ToolbarButtonProvider;
-class ExtensionsToolbarContainer;
-class WebAppMenuButton;
+class PinnedToolbarActionsContainer;
+class ExtensionsToolbarDesktop;
 class WebAppOriginText;
 class WindowControlsOverlayToggleButton;
 class SystemAppAccessibleName;
+class ExtensionsToolbarCoordinator;
 
 class WebAppToolbarButtonContainer : public views::View,
                                      public IconLabelBubbleView::Delegate,
-                                     public ContentSettingImageView::Delegate,
+                                     public ContentSettingImageViewDelegate,
                                      public ImmersiveModeController::Observer,
                                      public PageActionIconView::Delegate,
                                      public PageActionIconContainer {
- public:
-  METADATA_HEADER(WebAppToolbarButtonContainer);
+  METADATA_HEADER(WebAppToolbarButtonContainer, views::View)
 
+ public:
   // Timing parameters for the origin fade animation.
   // These control how long it takes for the origin text and menu button
   // highlight to fade in, pause then fade out.
@@ -58,27 +64,37 @@ class WebAppToolbarButtonContainer : public views::View,
 
   void UpdateStatusIconsVisibility();
 
+  void WindowControlsOverlayEnabledChanged();
+
   void SetColors(SkColor foreground_color,
                  SkColor background_color,
                  bool color_changed);
 
   views::FlexRule GetFlexRule() const;
 
+  ToolbarButton* GetDownloadButton();
+
   WebAppContentSettingsContainer* content_settings_container() {
     return content_settings_container_;
   }
 
-  PageActionIconController* page_action_icon_controller() {
-    return page_action_icon_controller_.get();
+  page_actions::PageActionContainerView* page_action_container() {
+    return page_action_container_.get();
   }
 
-  ExtensionsToolbarContainer* extensions_container() {
+  ExtensionsToolbarDesktop* extensions_container() {
     return extensions_container_;
   }
 
-  DownloadToolbarButtonView* download_button() {
-    return download_button_.get();
+  PinnedToolbarActionsContainer* pinned_toolbar_actions_container() {
+    return pinned_toolbar_actions_container_;
   }
+
+  ExtensionsToolbarCoordinator* extensions_toolbar_coordinator() {
+    return extensions_toolbar_coordinator_.get();
+  }
+
+  ToolbarButton* uninstall_button() { return uninstall_button_; }
 
   WebAppMenuButton* web_app_menu_button() { return web_app_menu_button_; }
 
@@ -88,7 +104,7 @@ class WebAppToolbarButtonContainer : public views::View,
 
   AvatarToolbarButton* avatar_button() { return avatar_button_; }
 
-  static void DisableAnimationForTesting();
+  static void DisableAnimationForTesting(bool disable);
 
  private:
   friend class ImmersiveModeControllerChromeosWebAppBrowserTest;
@@ -114,6 +130,8 @@ class WebAppToolbarButtonContainer : public views::View,
 
   void FadeInContentSettingIcons();
 
+  void OnUninstallButtonClicked();
+
   void ChildPreferredSizeChanged(views::View* child) override;
 
   // IconLabelBubbleView::Delegate:
@@ -135,6 +153,13 @@ class WebAppToolbarButtonContainer : public views::View,
   // views::View:
   void AddedToWidget() override;
 
+#if BUILDFLAG(IS_MAC)
+  void AppShimChanged(const webapps::AppId& changed_app_id);
+#endif
+
+  // Calculates the appropriate insets for a page action, given the icon's size.
+  gfx::Insets PageActionIconInsetsFromSize(int icon_size) const;
+
   // Timers for synchronising their respective parts of the titlebar animation.
   base::OneShotTimer animation_start_delay_;
   base::OneShotTimer icon_fade_in_delay_;
@@ -146,19 +171,29 @@ class WebAppToolbarButtonContainer : public views::View,
   SkColor foreground_color_ = gfx::kPlaceholderColor;
   SkColor background_color_ = gfx::kPlaceholderColor;
 
-  std::unique_ptr<PageActionIconController> page_action_icon_controller_;
   int page_action_insertion_point_ = 0;
+  raw_ptr<page_actions::PageActionContainerView> page_action_container_;
+
+  std::unique_ptr<ExtensionsToolbarCoordinator> extensions_toolbar_coordinator_;
+
+#if BUILDFLAG(IS_MAC)
+  base::CallbackListSubscription app_shim_registry_observation_;
+#endif
 
   // All remaining members are owned by the views hierarchy.
   raw_ptr<WebAppOriginText> web_app_origin_text_ = nullptr;
   raw_ptr<WindowControlsOverlayToggleButton>
       window_controls_overlay_toggle_button_ = nullptr;
   raw_ptr<WebAppContentSettingsContainer> content_settings_container_ = nullptr;
-  raw_ptr<ExtensionsToolbarContainer> extensions_container_ = nullptr;
+  raw_ptr<ExtensionsToolbarDesktop> extensions_container_ = nullptr;
+  raw_ptr<PinnedToolbarActionsContainer> pinned_toolbar_actions_container_ =
+      nullptr;
+  raw_ptr<ToolbarButton> uninstall_button_ = nullptr;
   raw_ptr<WebAppMenuButton> web_app_menu_button_ = nullptr;
   raw_ptr<SystemAppAccessibleName> system_app_accessible_name_ = nullptr;
-  raw_ptr<DownloadToolbarButtonView> download_button_ = nullptr;
   raw_ptr<AvatarToolbarButton> avatar_button_ = nullptr;
+
+  base::WeakPtrFactory<WebAppToolbarButtonContainer> weak_ptr_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_WEB_APPS_FRAME_TOOLBAR_WEB_APP_TOOLBAR_BUTTON_CONTAINER_H_

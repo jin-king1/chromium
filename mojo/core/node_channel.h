@@ -11,6 +11,7 @@
 #include "base/containers/queue.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
 #include "base/process/process.h"
 #include "base/process/process_handle.h"
@@ -26,8 +27,12 @@
 namespace mojo {
 namespace core {
 
-constexpr uint64_t kNodeCapabilityNone = 0;
-constexpr uint64_t kNodeCapabilitySupportsUpgrade = 1;
+inline constexpr uint64_t kNodeCapabilityNone = 0;
+
+// Removed capability bit. Must not be reused.
+inline constexpr uint64_t kNodeCapabilitySupportsUpgradeRemoved = 1;
+
+inline constexpr uint32_t kNodeChannelHeaderSize = 8;
 
 // Wraps a Channel to send and receive Node control messages.
 class MOJO_SYSTEM_IMPL_EXPORT NodeChannel
@@ -127,6 +132,7 @@ class MOJO_SYSTEM_IMPL_EXPORT NodeChannel
 
   // Used for context in Delegate calls (via |from_node| arguments.)
   void SetRemoteNodeName(const ports::NodeName& name);
+  const ports::NodeName& GetRemoteNodeName() const { return remote_node_name_; }
 
   void AcceptInvitee(const ports::NodeName& inviter_name,
                      const ports::NodeName& token);
@@ -199,7 +205,8 @@ class MOJO_SYSTEM_IMPL_EXPORT NodeChannel
   // Channel::Delegate:
   void OnChannelMessage(const void* payload,
                         size_t payload_size,
-                        std::vector<PlatformHandle> handles) override;
+                        std::vector<PlatformHandle> handles,
+                        scoped_refptr<ipcz_driver::Envelope> envelope) override;
   void OnChannelError(Channel::Error error) override;
 
   void WriteChannelMessage(Channel::MessagePtr message);
@@ -208,7 +215,10 @@ class MOJO_SYSTEM_IMPL_EXPORT NodeChannel
   // for this channel.
   void InitializeLocalCapabilities();
 
-  const raw_ptr<Delegate> delegate_;
+  // This dangling raw_ptr occurred in:
+  // mojo_unittests: NodeChannelTest.MessagesCannotBeSmallerThanOldestVersion
+  // https://ci.chromium.org/ui/p/chromium/builders/try/linux-rel/1425190/test-results?q=ExactID%3Aninja%3A%2F%2Fmojo%3Amojo_unittests%2FNodeChannelTest.MessagesCannotBeSmallerThanOldestVersion+VHash%3A589215eb23c7875a
+  const raw_ptr<Delegate, FlakyDanglingUntriaged> delegate_;
   const ProcessErrorCallback process_error_callback_;
 
   base::Lock channel_lock_;

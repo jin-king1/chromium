@@ -17,7 +17,6 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/values.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/services/printing/public/mojom/print_backend_service.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -27,14 +26,11 @@
 #include "printing/print_settings.h"
 #include "printing/printed_document.h"
 #include "printing/printing_context.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
-#if BUILDFLAG(IS_WIN)
-#include "base/types/expected.h"
-#include "chrome/services/printing/public/mojom/printer_xml_parser.mojom.h"
-#include "mojo/public/cpp/bindings/pending_remote.h"
-#include "mojo/public/cpp/bindings/remote.h"
-#endif  // BUILDFLAG(IS_WIN)
+#if BUILDFLAG(IS_LINUX)
+#include "printing/printing_context_linux.h"
+#endif
 
 #if !BUILDFLAG(ENABLE_OOP_PRINTING)
 #error "Out-of-process printing must be enabled."
@@ -91,6 +87,11 @@ class UnsandboxedPrintBackendHostImpl
 
 class PrintBackendServiceImpl : public mojom::PrintBackendService {
  public:
+  struct StartPrintingResult {
+    mojom::ResultCode result;
+    int job_id;
+  };
+
   explicit PrintBackendServiceImpl(
       mojo::PendingReceiver<mojom::PrintBackendService> receiver);
   PrintBackendServiceImpl(const PrintBackendServiceImpl&) = delete;
@@ -99,14 +100,7 @@ class PrintBackendServiceImpl : public mojom::PrintBackendService {
 
  protected:
   // Common initialization for both production and test instances.
-  void InitCommon(
-#if BUILDFLAG(IS_WIN)
-      const std::string& locale,
-      mojo::PendingRemote<mojom::PrinterXmlParser> remote
-#else
-      const std::string& locale
-#endif  // BUILDFLAG(IS_WIN)
-  );
+  void InitCommon(const std::string& locale);
 
  private:
   friend class PrintBackendServiceTestImpl;
@@ -132,27 +126,20 @@ class PrintBackendServiceImpl : public mojom::PrintBackendService {
 
    private:
 #if BUILDFLAG(ENABLE_OOP_BASIC_PRINT_DIALOG)
-    gfx::NativeView parent_native_view_ = nullptr;
+    gfx::NativeView parent_native_view_ = gfx::NativeView();
 #endif
     std::string locale_;
   };
 
   // mojom::PrintBackendService implementation:
-  void Init(
-#if BUILDFLAG(IS_WIN)
-      const std::string& locale,
-      mojo::PendingRemote<mojom::PrinterXmlParser> remote
-#else
-      const std::string& locale
-#endif  // BUILDFLAG(IS_WIN)
-      ) override;
+  void Init(const std::string& locale) override;
   void Poke() override;
   void EnumeratePrinters(
       mojom::PrintBackendService::EnumeratePrintersCallback callback) override;
   void GetDefaultPrinterName(
       mojom::PrintBackendService::GetDefaultPrinterNameCallback callback)
       override;
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   void GetPrinterSemanticCapsAndDefaults(
       const std::string& printer_name,
       mojom::PrintBackendService::GetPrinterSemanticCapsAndDefaultsCallback
@@ -187,7 +174,7 @@ class PrintBackendServiceImpl : public mojom::PrintBackendService {
 #endif
   void UpdatePrintSettings(
       uint32_t context_id,
-      base::Value::Dict job_settings,
+      base::DictValue job_settings,
       mojom::PrintBackendService::UpdatePrintSettingsCallback callback)
       override;
   void StartPrinting(
@@ -195,7 +182,7 @@ class PrintBackendServiceImpl : public mojom::PrintBackendService {
       int document_cookie,
       const std::u16string& document_name,
 #if !BUILDFLAG(ENABLE_OOP_BASIC_PRINT_DIALOG)
-      const absl::optional<PrintSettings>& settings,
+      const std::optional<PrintSettings>& settings,
 #endif
       mojom::PrintBackendService::StartPrintingCallback callback) override;
 #if BUILDFLAG(IS_WIN)
@@ -230,7 +217,7 @@ class PrintBackendServiceImpl : public mojom::PrintBackendService {
       mojom::ResultCode result);
 #endif
   void OnDidStartPrintingReadyDocument(DocumentHelper& document_helper,
-                                       mojom::ResultCode result);
+                                       StartPrintingResult printing_result);
   void OnDidDocumentDone(
       DocumentHelper& document_helper,
       mojom::PrintBackendService::DocumentDoneCallback callback,
@@ -244,13 +231,6 @@ class PrintBackendServiceImpl : public mojom::PrintBackendService {
   DocumentHelper* GetDocumentHelper(int document_cookie);
   void RemoveDocumentHelper(DocumentHelper& document_helper);
 
-#if BUILDFLAG(IS_WIN)
-  // Get XPS capabilities for printer `printer_name`, or return
-  // mojom::ResultCode on error.
-  base::expected<XpsCapabilities, mojom::ResultCode> GetXpsCapabilities(
-      const std::string& printer_name);
-#endif  // BUILDFLAG(IS_WIN)
-
   // The locale provided at initialization that should be used with all
   // PrintingContext::Delegate instances.
   std::string locale_;
@@ -261,6 +241,11 @@ class PrintBackendServiceImpl : public mojom::PrintBackendService {
   std::unique_ptr<crash_keys::ScopedPrinterInfo> crash_keys_;
 
   scoped_refptr<PrintBackend> print_backend_;
+
+#if BUILDFLAG(IS_LINUX)
+  std::unique_ptr<PrintingContextLinux::PrintDialogFactory>
+      print_dialog_factory_;
+#endif
 
   // Map from a context ID to a printing device context.  Accessed only from
   // the main thread.
@@ -278,10 +263,6 @@ class PrintBackendServiceImpl : public mojom::PrintBackendService {
   std::vector<std::unique_ptr<DocumentHelper>> documents_;
 
   mojo::Receiver<mojom::PrintBackendService> receiver_;
-
-#if BUILDFLAG(IS_WIN)
-  mojo::Remote<mojom::PrinterXmlParser> xml_parser_remote_;
-#endif  // BUILDFLAG(IS_WIN)
 };
 
 }  // namespace printing

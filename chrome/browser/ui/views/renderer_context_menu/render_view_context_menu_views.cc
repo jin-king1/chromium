@@ -4,26 +4,19 @@
 
 #include "chrome/browser/ui/views/renderer_context_menu/render_view_context_menu_views.h"
 
-#include <string>
 #include <utility>
 
 #include "base/command_line.h"
-#include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
-#include "base/observer_list.h"
 #include "base/scoped_observation.h"
 #include "base/task/current_thread.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/side_panel/side_panel_coordinator.h"
 #include "chrome/common/chrome_switches.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/lens/buildflags.h"
-#include "components/lens/lens_features.h"
 #include "components/renderer_context_menu/views/toolkit_delegate_views.h"
 #include "content/public/browser/render_view_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -34,6 +27,7 @@
 #include "ui/aura/window.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/strings/grit/ui_strings.h"
 #include "ui/views/controls/menu/menu_host.h"
@@ -54,8 +48,9 @@ class RenderViewContextMenuViews::SubmenuViewObserver
       : parent_(parent), submenu_view_(submenu_view) {
     submenu_view_observation_.Observe(submenu_view);
     auto* widget = submenu_view_->host();
-    if (widget)
+    if (widget) {
       submenu_widget_observation_.Observe(widget);
+    }
   }
 
   SubmenuViewObserver(const SubmenuViewObserver&) = delete;
@@ -84,8 +79,9 @@ class RenderViewContextMenuViews::SubmenuViewObserver
   void OnViewAddedToWidget(views::View* observed_view) override {
     DCHECK_EQ(submenu_view_, observed_view);
     auto* widget = submenu_view_->host();
-    if (widget)
+    if (widget) {
       submenu_widget_observation_.Observe(widget);
+    }
   }
 
   // WidgetObserver:
@@ -119,28 +115,36 @@ class RenderViewContextMenuViews::SubmenuViewObserver
 
 RenderViewContextMenuViews::RenderViewContextMenuViews(
     content::RenderFrameHost& render_frame_host,
-    const content::ContextMenuParams& params)
-    : RenderViewContextMenu(render_frame_host, params),
+    const content::ContextMenuParams& params,
+    bool is_paste_enabled,
+    bool is_paste_and_match_style_enabled)
+    : RenderViewContextMenu(render_frame_host,
+                            params,
+                            is_paste_enabled,
+                            is_paste_and_match_style_enabled),
       bidi_submenu_model_(this) {
   std::unique_ptr<ToolkitDelegate> delegate(new ToolkitDelegateViews);
   set_toolkit_delegate(std::move(delegate));
 }
 
-RenderViewContextMenuViews::~RenderViewContextMenuViews() {
-}
+RenderViewContextMenuViews::~RenderViewContextMenuViews() = default;
 
 // static
 RenderViewContextMenuViews* RenderViewContextMenuViews::Create(
     content::RenderFrameHost& render_frame_host,
-    const content::ContextMenuParams& params) {
-  return new RenderViewContextMenuViews(render_frame_host, params);
+    const content::ContextMenuParams& params,
+    bool is_paste_enabled,
+    bool is_paste_and_match_style_enabled) {
+  return new RenderViewContextMenuViews(render_frame_host, params,
+                                        is_paste_enabled,
+                                        is_paste_and_match_style_enabled);
 }
 
 void RenderViewContextMenuViews::RunMenuAt(views::Widget* parent,
                                            const gfx::Point& point,
-                                           ui::MenuSourceType type) {
-  static_cast<ToolkitDelegateViews*>(toolkit_delegate())->
-      RunMenuAt(parent, point, type);
+                                           ui::mojom::MenuSourceType type) {
+  static_cast<ToolkitDelegateViews*>(toolkit_delegate())
+      ->RunMenuAt(parent, point, type);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -162,8 +166,8 @@ bool RenderViewContextMenuViews::GetAcceleratorForCommandId(
 
     case IDC_CONTENT_CONTEXT_REDO:
       // TODO(jcampan): should it be Ctrl-Y?
-      *accel = ui::Accelerator(ui::VKEY_Z,
-                               ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
+      *accel =
+          ui::Accelerator(ui::VKEY_Z, ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
       return true;
 
     case IDC_CONTENT_CONTEXT_CUT:
@@ -179,8 +183,8 @@ bool RenderViewContextMenuViews::GetAcceleratorForCommandId(
       return true;
 
     case IDC_CONTENT_CONTEXT_PASTE_AND_MATCH_STYLE:
-      *accel = ui::Accelerator(ui::VKEY_V,
-                               ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
+      *accel =
+          ui::Accelerator(ui::VKEY_V, ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
       return true;
 
     case IDC_CONTENT_CONTEXT_SELECTALL:
@@ -207,38 +211,25 @@ bool RenderViewContextMenuViews::GetAcceleratorForCommandId(
       *accel = ui::Accelerator(ui::VKEY_R, ui::EF_CONTROL_DOWN);
       return true;
 
-    case IDC_CONTENT_CONTEXT_SAVEAVAS:
+    case IDC_CONTENT_CONTEXT_SAVEPLUGINAS:
     case IDC_SAVE_PAGE:
       *accel = ui::Accelerator(ui::VKEY_S, ui::EF_CONTROL_DOWN);
       return true;
-
-#if BUILDFLAG(ENABLE_LENS_DESKTOP_GOOGLE_BRANDED_FEATURES)
-    case IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH:
-    case IDC_CONTENT_CONTEXT_WEB_REGION_SEARCH:
-      if (base::FeatureList::IsEnabled(
-              lens::features::kEnableRegionSearchKeyboardShortcut)) {
-        // TODO(nguyenbryan): This is a temporary hotkey; update when finalized.
-        *accel = ui::Accelerator(ui::VKEY_E,
-                                 ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN);
-        return true;
-      } else {
-        return false;
-      }
-#endif  // BUILDFLAG(ENABLE_LENS_DESKTOP_GOOGLE_BRANDED_FEATURES)
 
     case IDC_CONTENT_CONTEXT_EXIT_FULLSCREEN: {
       // Esc only works in HTML5 (site-triggered) fullscreen.
       if (IsHTML5Fullscreen()) {
         // Per UX design feedback, do not show an accelerator when press and
         // hold is required to exit fullscreen.
-        if (IsPressAndHoldEscRequiredToExitFullscreen())
+        if (IsPressAndHoldEscRequiredToExitFullscreen()) {
           return false;
+        }
 
         *accel = ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE);
         return true;
       }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
       // Chromebooks typically do not have an F11 key, so do not show an
       // accelerator here.
       return false;
@@ -247,8 +238,9 @@ bool RenderViewContextMenuViews::GetAcceleratorForCommandId(
       // (i.e., F11).
       ui::AcceleratorProvider* accelerator_provider =
           GetBrowserAcceleratorProvider();
-      if (!accelerator_provider)
+      if (!accelerator_provider) {
         return false;
+      }
 
       return accelerator_provider->GetAcceleratorForCommandId(IDC_FULLSCREEN,
                                                               accel);
@@ -275,15 +267,6 @@ bool RenderViewContextMenuViews::GetAcceleratorForCommandId(
       return false;
 #endif
 
-    case IDC_CONTENT_CLIPBOARD_HISTORY_MENU:
-#if BUILDFLAG(IS_CHROMEOS_ASH)
-      *accel = ui::Accelerator(ui::VKEY_V, ui::EF_COMMAND_DOWN);
-      return true;
-#elif BUILDFLAG(IS_CHROMEOS_LACROS)
-      return false;
-#else
-      NOTREACHED_NORETURN();
-#endif
     default:
       return false;
   }
@@ -292,18 +275,26 @@ bool RenderViewContextMenuViews::GetAcceleratorForCommandId(
 void RenderViewContextMenuViews::ExecuteCommand(int command_id,
                                                 int event_flags) {
   switch (command_id) {
-    case IDC_WRITING_DIRECTION_DEFAULT:
+    case kWritingDirectionDefaultId:
       // WebKit's current behavior is for this menu item to always be disabled.
-      NOTREACHED_NORETURN();
+      NOTREACHED();
 
     case IDC_WRITING_DIRECTION_RTL:
     case IDC_WRITING_DIRECTION_LTR: {
-      content::RenderViewHost* view_host = GetRenderViewHost();
-      view_host->GetWidget()->UpdateTextDirection(
-          (command_id == IDC_WRITING_DIRECTION_RTL)
-              ? base::i18n::RIGHT_TO_LEFT
-              : base::i18n::LEFT_TO_RIGHT);
-      view_host->GetWidget()->NotifyTextDirection();
+      // Note: we get the local render frame host so that the writing mode
+      // settings changes apply to the correct frame. See crbug.com/40149229
+      // for a description of what happens if we use the outermost frame.
+      content::RenderFrameHost* rfh = GetRenderFrameHost();
+      // It's possible that the frame drops out from under us while the context
+      // menu is open. In this case, we'll not perform the action, but still
+      // record metrics.
+      if (rfh) {
+        rfh->GetRenderWidgetHost()->UpdateTextDirection(
+            (command_id == IDC_WRITING_DIRECTION_RTL)
+                ? base::i18n::RIGHT_TO_LEFT
+                : base::i18n::LEFT_TO_RIGHT);
+        rfh->GetRenderWidgetHost()->NotifyTextDirection();
+      }
       RenderViewContextMenu::RecordUsedItem(command_id);
       break;
     }
@@ -316,7 +307,7 @@ void RenderViewContextMenuViews::ExecuteCommand(int command_id,
 
 bool RenderViewContextMenuViews::IsCommandIdChecked(int command_id) const {
   switch (command_id) {
-    case IDC_WRITING_DIRECTION_DEFAULT:
+    case kWritingDirectionDefaultId:
       return (params_.writing_direction_default &
               blink::ContextMenuData::kCheckableMenuItemChecked) != 0;
     case IDC_WRITING_DIRECTION_RTL:
@@ -333,9 +324,9 @@ bool RenderViewContextMenuViews::IsCommandIdChecked(int command_id) const {
 
 bool RenderViewContextMenuViews::IsCommandIdEnabled(int command_id) const {
   switch (command_id) {
-    case IDC_WRITING_DIRECTION_MENU:
+    case kWritingDirectionMenuId:
       return true;
-    case IDC_WRITING_DIRECTION_DEFAULT:  // Provided to match OS defaults.
+    case kWritingDirectionDefaultId:  // Provided to match OS defaults.
       return params_.writing_direction_default &
              blink::ContextMenuData::kCheckableMenuItemEnabled;
     case IDC_WRITING_DIRECTION_RTL:
@@ -352,16 +343,18 @@ bool RenderViewContextMenuViews::IsCommandIdEnabled(int command_id) const {
 
 ui::AcceleratorProvider*
 RenderViewContextMenuViews::GetBrowserAcceleratorProvider() const {
-  Browser* browser = GetBrowser();
-  if (!browser)
+  Browser* browser =
+      GetBrowser() ? GetBrowser()->GetBrowserForMigrationOnly() : nullptr;
+  if (!browser) {
     return nullptr;
+  }
 
   return BrowserView::GetBrowserViewForBrowser(browser);
 }
 
 void RenderViewContextMenuViews::AppendPlatformEditableItems() {
   bidi_submenu_model_.AddCheckItem(
-      IDC_WRITING_DIRECTION_DEFAULT,
+      kWritingDirectionDefaultId,
       l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_WRITING_DIRECTION_DEFAULT));
   bidi_submenu_model_.AddCheckItem(
       IDC_WRITING_DIRECTION_LTR,
@@ -371,24 +364,27 @@ void RenderViewContextMenuViews::AppendPlatformEditableItems() {
       l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_WRITING_DIRECTION_RTL));
 
   menu_model_.AddSubMenu(
-      IDC_WRITING_DIRECTION_MENU,
+      kWritingDirectionMenuId,
       l10n_util::GetStringUTF16(IDS_CONTENT_CONTEXT_WRITING_DIRECTION_MENU),
       &bidi_submenu_model_);
 }
 
 void RenderViewContextMenuViews::Show() {
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kKioskMode))
+  if (base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kKioskMode)) {
     return;
+  }
 
   // Menus need a Widget to work. If we're not the active tab we won't
   // necessarily be in a widget.
   views::Widget* top_level_widget = GetTopLevelWidget();
-  if (!top_level_widget)
+  if (!top_level_widget) {
     return;
+  }
 
   // Don't show empty menus.
-  if (menu_model().GetItemCount() == 0)
+  if (menu_model().GetItemCount() == 0) {
     return;
+  }
 
   // Convert from target window coordinates to root window coordinates.
   gfx::Point screen_point(params().x, params().y);
@@ -409,9 +405,10 @@ void RenderViewContextMenuViews::Show() {
                            ->GetSubmenu();
   if (submenu_view) {
     for (auto& observer : observers_) {
-      if (submenu_view->host())
+      if (submenu_view->host()) {
         observer.OnContextMenuShown(
             params_, submenu_view->host()->GetWindowBoundsInScreen());
+      }
     }
 
     submenu_view_observer_ =

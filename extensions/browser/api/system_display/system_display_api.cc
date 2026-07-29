@@ -6,20 +6,30 @@
 
 #include <map>
 #include <memory>
-#include <set>
 #include <string>
 
+#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
+#include "base/lazy_instance.h"
+#include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
+#include "content/public/browser/browser_context.h"
+#include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "extensions/browser/api/system_display/display_info_provider.h"
+#include "extensions/buildflags/buildflags.h"
+#include "extensions/common/mojom/context_type.mojom.h"
 #include "extensions/common/permissions/permissions_data.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "extensions/common/manifest_handlers/kiosk_mode_info.h"
 #endif
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -106,7 +116,7 @@ class OverscanTracker::OverscanWebObserver
   }
 
  private:
-  std::set<std::string> display_ids_;
+  absl::flat_hash_set<std::string> display_ids_;
 };
 
 static OverscanTracker* g_overscan_tracker = nullptr;
@@ -165,7 +175,79 @@ bool HasAutotestPrivate(const ExtensionFunction& function) {
              mojom::APIPermissionID::kAutoTestPrivate);
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+#if BUILDFLAG(IS_ANDROID)
+class SystemDisplayEventRouter {
+ public:
+  static SystemDisplayEventRouter* GetInstance();
+
+  SystemDisplayEventRouter() = default;
+  SystemDisplayEventRouter(const SystemDisplayEventRouter&) = delete;
+  SystemDisplayEventRouter& operator=(const SystemDisplayEventRouter&) = delete;
+  ~SystemDisplayEventRouter() = default;
+
+  void CheckForDisplayListeners(content::BrowserContext* context);
+  void ShutdownForContext(content::BrowserContext* context);
+
+ private:
+  void StartOrStopDisplayEventDispatcherIfNecessary();
+
+  bool is_dispatching_display_events_ = false;
+  base::flat_set<raw_ptr<content::BrowserContext>>
+      contexts_with_display_listeners_;
+};
+
+// static
+SystemDisplayEventRouter* SystemDisplayEventRouter::GetInstance() {
+  static base::NoDestructor<SystemDisplayEventRouter> instance;
+  return instance.get();
+}
+
+void SystemDisplayEventRouter::CheckForDisplayListeners(
+    content::BrowserContext* context) {
+  if (EventRouter::Get(context)->HasEventListener(
+          display::OnDisplayChanged::kEventName)) {
+    contexts_with_display_listeners_.insert(context);
+  } else {
+    contexts_with_display_listeners_.erase(context);
+  }
+
+  StartOrStopDisplayEventDispatcherIfNecessary();
+}
+
+void SystemDisplayEventRouter::ShutdownForContext(
+    content::BrowserContext* context) {
+  contexts_with_display_listeners_.erase(context);
+  StartOrStopDisplayEventDispatcherIfNecessary();
+}
+
+void SystemDisplayEventRouter::StartOrStopDisplayEventDispatcherIfNecessary() {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
+  const bool should_dispatch = !contexts_with_display_listeners_.empty();
+  DisplayInfoProvider* provider = DisplayInfoProvider::Get();
+
+  if (!provider || should_dispatch == is_dispatching_display_events_) {
+    return;
+  }
+
+  if (should_dispatch) {
+    provider->StartObserving();
+  } else {
+    provider->StopObserving();
+  }
+
+  is_dispatching_display_events_ = should_dispatch;
+}
+
+void HandleDisplayListenerAddedOrRemoved(content::BrowserContext* context,
+                                         const std::string& event_name) {
+  if (event_name == display::OnDisplayChanged::kEventName) {
+    SystemDisplayEventRouter::GetInstance()->CheckForDisplayListeners(context);
+  }
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_CHROMEOS)
 // |edid| is available only to Chrome OS kiosk mode applications.
 bool ShouldRestrictEdidInformation(const ExtensionFunction& function) {
   if (function.extension()) {
@@ -173,7 +255,7 @@ bool ShouldRestrictEdidInformation(const ExtensionFunction& function) {
              KioskModeInfo::IsKioskEnabled(function.extension()));
   }
 
-  return function.source_context_type() != Feature::WEBUI_CONTEXT;
+  return function.source_context_type() != mojom::ContextType::kWebUi;
 }
 #endif
 
@@ -195,12 +277,13 @@ bool SystemDisplayCrOSRestrictedFunction::PreRunValidation(std::string* error) {
   if (!SystemDisplayFunction::PreRunValidation(error))
     return false;
 
-#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+#if BUILDFLAG(IS_CHROMEOS)
   if (!ShouldRestrictToKioskAndWebUI())
     return true;
 
-  if (source_context_type() == Feature::WEBUI_CONTEXT)
+  if (source_context_type() == mojom::ContextType::kWebUi) {
     return true;
+  }
   if (KioskModeInfo::IsKioskEnabled(extension()))
     return true;
   *error = kKioskOnlyError;
@@ -216,7 +299,7 @@ bool SystemDisplayCrOSRestrictedFunction::ShouldRestrictToKioskAndWebUI() {
 }
 
 ExtensionFunction::ResponseAction SystemDisplayGetInfoFunction::Run() {
-  absl::optional<display::GetInfo::Params> params =
+  std::optional<display::GetInfo::Params> params =
       display::GetInfo::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -231,7 +314,7 @@ ExtensionFunction::ResponseAction SystemDisplayGetInfoFunction::Run() {
 
 void SystemDisplayGetInfoFunction::Response(
     std::vector<api::system_display::DisplayUnitInfo> all_displays_info) {
-#if BUILDFLAG(IS_CHROMEOS_ASH) || BUILDFLAG(IS_CHROMEOS_LACROS)
+#if BUILDFLAG(IS_CHROMEOS)
   if (ShouldRestrictEdidInformation(*this)) {
     for (auto& display_info : all_displays_info)
       display_info.edid.reset();
@@ -243,15 +326,8 @@ void SystemDisplayGetInfoFunction::Response(
 ExtensionFunction::ResponseAction SystemDisplayGetDisplayLayoutFunction::Run() {
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
-  provider->GetDisplayLayout(
-      base::BindOnce(&SystemDisplayGetDisplayLayoutFunction::Response, this));
-  return RespondLater();
-}
-
-void SystemDisplayGetDisplayLayoutFunction::Response(
-    std::vector<api::system_display::DisplayLayout> display_layout) {
-  return Respond(
-      ArgumentList(display::GetDisplayLayout::Results::Create(display_layout)));
+  return RespondNow(ArgumentList(display::GetDisplayLayout::Results::Create(
+      provider->GetDisplayLayout())));
 }
 
 bool SystemDisplayGetDisplayLayoutFunction::ShouldRestrictToKioskAndWebUI() {
@@ -260,7 +336,7 @@ bool SystemDisplayGetDisplayLayoutFunction::ShouldRestrictToKioskAndWebUI() {
 
 ExtensionFunction::ResponseAction
 SystemDisplaySetDisplayPropertiesFunction::Run() {
-  absl::optional<display::SetDisplayProperties::Params> params =
+  std::optional<display::SetDisplayProperties::Params> params =
       display::SetDisplayProperties::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -272,29 +348,23 @@ SystemDisplaySetDisplayPropertiesFunction::Run() {
 }
 
 void SystemDisplaySetDisplayPropertiesFunction::Response(
-    absl::optional<std::string> error) {
+    std::optional<std::string> error) {
   Respond(error ? Error(*error) : NoArguments());
 }
 
 ExtensionFunction::ResponseAction SystemDisplaySetDisplayLayoutFunction::Run() {
-  absl::optional<display::SetDisplayLayout::Params> params =
+  std::optional<display::SetDisplayLayout::Params> params =
       display::SetDisplayLayout::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
-  provider->SetDisplayLayout(
-      params->layouts,
-      base::BindOnce(&SystemDisplaySetDisplayLayoutFunction::Response, this));
-  return RespondLater();
-}
-
-void SystemDisplaySetDisplayLayoutFunction::Response(
-    absl::optional<std::string> error) {
-  Respond(error ? Error(*error) : NoArguments());
+  base::expected<void, std::string> result =
+      provider->SetDisplayLayout(params->layouts);
+  return RespondNow(result.has_value() ? NoArguments() : Error(result.error()));
 }
 
 ExtensionFunction::ResponseAction
 SystemDisplayEnableUnifiedDesktopFunction::Run() {
-  absl::optional<display::EnableUnifiedDesktop::Params> params =
+  std::optional<display::EnableUnifiedDesktop::Params> params =
       display::EnableUnifiedDesktop::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -304,7 +374,7 @@ SystemDisplayEnableUnifiedDesktopFunction::Run() {
 
 ExtensionFunction::ResponseAction
 SystemDisplayOverscanCalibrationStartFunction::Run() {
-  absl::optional<display::OverscanCalibrationStart::Params> params =
+  std::optional<display::OverscanCalibrationStart::Params> params =
       display::OverscanCalibrationStart::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -316,7 +386,7 @@ SystemDisplayOverscanCalibrationStartFunction::Run() {
 
 ExtensionFunction::ResponseAction
 SystemDisplayOverscanCalibrationAdjustFunction::Run() {
-  absl::optional<display::OverscanCalibrationAdjust::Params> params =
+  std::optional<display::OverscanCalibrationAdjust::Params> params =
       display::OverscanCalibrationAdjust::Params::Create(args());
   if (!params)
     return RespondNow(Error("Invalid parameters"));
@@ -332,7 +402,7 @@ SystemDisplayOverscanCalibrationAdjustFunction::Run() {
 
 ExtensionFunction::ResponseAction
 SystemDisplayOverscanCalibrationResetFunction::Run() {
-  absl::optional<display::OverscanCalibrationReset::Params> params =
+  std::optional<display::OverscanCalibrationReset::Params> params =
       display::OverscanCalibrationReset::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -344,7 +414,7 @@ SystemDisplayOverscanCalibrationResetFunction::Run() {
 
 ExtensionFunction::ResponseAction
 SystemDisplayOverscanCalibrationCompleteFunction::Run() {
-  absl::optional<display::OverscanCalibrationComplete::Params> params =
+  std::optional<display::OverscanCalibrationComplete::Params> params =
       display::OverscanCalibrationComplete::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -358,7 +428,7 @@ SystemDisplayOverscanCalibrationCompleteFunction::Run() {
 
 ExtensionFunction::ResponseAction
 SystemDisplayShowNativeTouchCalibrationFunction::Run() {
-  absl::optional<display::ShowNativeTouchCalibration::Params> params =
+  std::optional<display::ShowNativeTouchCalibration::Params> params =
       display::ShowNativeTouchCalibration::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -371,13 +441,13 @@ SystemDisplayShowNativeTouchCalibrationFunction::Run() {
 }
 
 void SystemDisplayShowNativeTouchCalibrationFunction::OnCalibrationComplete(
-    absl::optional<std::string> error) {
+    std::optional<std::string> error) {
   Respond(error ? Error(*error) : WithArguments(true));
 }
 
 ExtensionFunction::ResponseAction
 SystemDisplayStartCustomTouchCalibrationFunction::Run() {
-  absl::optional<display::StartCustomTouchCalibration::Params> params =
+  std::optional<display::StartCustomTouchCalibration::Params> params =
       display::StartCustomTouchCalibration::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -390,7 +460,7 @@ SystemDisplayStartCustomTouchCalibrationFunction::Run() {
 
 ExtensionFunction::ResponseAction
 SystemDisplayCompleteCustomTouchCalibrationFunction::Run() {
-  absl::optional<display::CompleteCustomTouchCalibration::Params> params =
+  std::optional<display::CompleteCustomTouchCalibration::Params> params =
       display::CompleteCustomTouchCalibration::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -403,7 +473,7 @@ SystemDisplayCompleteCustomTouchCalibrationFunction::Run() {
 
 ExtensionFunction::ResponseAction
 SystemDisplayClearTouchCalibrationFunction::Run() {
-  absl::optional<display::ClearTouchCalibration::Params> params =
+  std::optional<display::ClearTouchCalibration::Params> params =
       display::ClearTouchCalibration::Params::Create(args());
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
   DCHECK(provider);
@@ -413,7 +483,7 @@ SystemDisplayClearTouchCalibrationFunction::Run() {
 }
 
 ExtensionFunction::ResponseAction SystemDisplaySetMirrorModeFunction::Run() {
-  absl::optional<display::SetMirrorMode::Params> params =
+  std::optional<display::SetMirrorMode::Params> params =
       display::SetMirrorMode::Params::Create(args());
 
   DisplayInfoProvider* provider = DisplayInfoProvider::Get();
@@ -425,8 +495,43 @@ ExtensionFunction::ResponseAction SystemDisplaySetMirrorModeFunction::Run() {
 }
 
 void SystemDisplaySetMirrorModeFunction::Response(
-    absl::optional<std::string> error) {
+    std::optional<std::string> error) {
   Respond(error ? Error(*error) : NoArguments());
 }
+
+#if BUILDFLAG(IS_ANDROID)
+namespace {
+static base::LazyInstance<BrowserContextKeyedAPIFactory<SystemDisplayAPI>>::
+    DestructorAtExit g_factory = LAZY_INSTANCE_INITIALIZER;
+}  // namespace
+
+// static
+BrowserContextKeyedAPIFactory<SystemDisplayAPI>*
+SystemDisplayAPI::GetFactoryInstance() {
+  return g_factory.Pointer();
+}
+
+SystemDisplayAPI::SystemDisplayAPI(content::BrowserContext* context)
+    : browser_context_(context) {
+  EventRouter* router = EventRouter::Get(browser_context_);
+  router->RegisterObserver(this, display::OnDisplayChanged::kEventName);
+  SystemDisplayEventRouter::GetInstance()->CheckForDisplayListeners(context);
+}
+
+SystemDisplayAPI::~SystemDisplayAPI() = default;
+
+void SystemDisplayAPI::Shutdown() {
+  EventRouter::Get(browser_context_)->UnregisterObserver(this);
+  SystemDisplayEventRouter::GetInstance()->ShutdownForContext(browser_context_);
+}
+
+void SystemDisplayAPI::OnListenerAdded(const EventListenerInfo& details) {
+  HandleDisplayListenerAddedOrRemoved(browser_context_, details.event_name);
+}
+
+void SystemDisplayAPI::OnListenerRemoved(const EventListenerInfo& details) {
+  HandleDisplayListenerAddedOrRemoved(browser_context_, details.event_name);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace extensions

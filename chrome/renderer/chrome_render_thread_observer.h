@@ -7,9 +7,12 @@
 
 #include <memory>
 
+#include "base/memory/ref_counted.h"
 #include "base/synchronization/lock.h"
+#include "base/synchronization/waitable_event.h"
 #include "base/thread_annotations.h"
-#include "build/chromeos_buildflags.h"
+#include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/common/renderer_configuration.mojom.h"
 #include "components/content_settings/common/content_settings_manager.mojom.h"
 #include "components/content_settings/core/common/content_settings.h"
@@ -20,13 +23,13 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/renderer/chromeos_delayed_callback_group.h"
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 class BoundSessionRequestThrottledInRendererManager;
-class BoundSessionRequestThrottledListener;
+class BoundSessionRequestThrottledHandler;
 #endif
 
 namespace visitedlink {
@@ -40,7 +43,7 @@ class VisitedLinkReader;
 class ChromeRenderThreadObserver : public content::RenderThreadObserver,
                                    public chrome::mojom::RendererConfiguration {
  public:
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   // A helper class to handle Mojo calls that need to be dispatched to the IO
   // thread instead of the main thread as is the norm.
   // This class is thread-safe.
@@ -55,21 +58,24 @@ class ChromeRenderThreadObserver : public content::RenderThreadObserver,
     ChromeOSListener& operator=(const ChromeOSListener&) = delete;
 
     // Is the merge session still running?
-    bool IsMergeSessionRunning() const;
+    // Virtual for testing.
+    virtual bool IsMergeSessionRunning() const;
 
     // Run |callback| on the calling sequence when the merge session has
     // finished (or timed out).
-    void RunWhenMergeSessionFinished(DelayedCallbackGroup::Callback callback);
+    // Virtual for testing.
+    virtual void RunWhenMergeSessionFinished(
+        DelayedCallbackGroup::Callback callback);
 
    protected:
     // chrome::mojom::ChromeOSListener:
     void MergeSessionComplete() override;
 
-   private:
-    friend class base::RefCountedThreadSafe<ChromeOSListener>;
-
     ChromeOSListener();
     ~ChromeOSListener() override;
+
+   private:
+    friend class base::RefCountedThreadSafe<ChromeOSListener>;
 
     void BindOnIOThread(mojo::PendingReceiver<chrome::mojom::ChromeOSListener>
                             chromeos_listener_receiver);
@@ -79,7 +85,7 @@ class ChromeRenderThreadObserver : public content::RenderThreadObserver,
     mutable base::Lock lock_;
     mojo::Receiver<chrome::mojom::ChromeOSListener> receiver_{this};
   };
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   ChromeRenderThreadObserver();
 
@@ -89,26 +95,24 @@ class ChromeRenderThreadObserver : public content::RenderThreadObserver,
 
   ~ChromeRenderThreadObserver() override;
 
-  static bool is_incognito_process() { return is_incognito_process_; }
-
   // Return a copy of the dynamic parameters - those that may change while the
   // render process is running.
   chrome::mojom::DynamicParamsPtr GetDynamicParams() const;
 
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-  std::unique_ptr<BoundSessionRequestThrottledListener>
-  CreateBoundSessionRequestThrottledListener() const;
+  std::unique_ptr<BoundSessionRequestThrottledHandler>
+  CreateBoundSessionRequestThrottledHandler() const;
 #endif
 
   visitedlink::VisitedLinkReader* visited_link_reader() {
     return visited_link_reader_.get();
   }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   scoped_refptr<ChromeOSListener> chromeos_listener() const {
     return chromeos_listener_;
   }
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
   content_settings::mojom::ContentSettingsManager* content_settings_manager() {
     if (content_settings_manager_)
@@ -130,14 +134,17 @@ class ChromeRenderThreadObserver : public content::RenderThreadObserver,
           chromeos_listener_receiver,
       mojo::PendingRemote<content_settings::mojom::ContentSettingsManager>
           content_settings_manager,
-      mojo::PendingRemote<chrome::mojom::BoundSessionRequestThrottledListener>
-          bound_session_request_throttled_listener) override;
+      mojo::PendingRemote<chrome::mojom::BoundSessionRequestThrottledHandler>
+          bound_session_request_throttled_handler) override;
   void SetConfiguration(chrome::mojom::DynamicParamsPtr params) override;
+#if !BUILDFLAG(IS_ANDROID)
+  void SetConfigurationOnProcessLockUpdate(
+      chrome::mojom::StaticParamsPtr params) override;
+#endif  // !BUILDFLAG(IS_ANDROID)
   void OnRendererConfigurationAssociatedRequest(
       mojo::PendingAssociatedReceiver<chrome::mojom::RendererConfiguration>
           receiver);
 
-  static bool is_incognito_process_;
   mojo::Remote<content_settings::mojom::ContentSettingsManager>
       content_settings_manager_;
 
@@ -150,11 +157,15 @@ class ChromeRenderThreadObserver : public content::RenderThreadObserver,
       GUARDED_BY(dynamic_params_lock_);
   mutable base::Lock dynamic_params_lock_;
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
-  // Only set if the Chrome OS merge session was running when the renderer
+#if !BUILDFLAG(IS_ANDROID)
+  bool static_renderer_params_set_ = false;
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(IS_CHROMEOS)
+  // Only set if the ChromeOS merge session was running when the renderer
   // was started.
   scoped_refptr<ChromeOSListener> chromeos_listener_;
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
   scoped_refptr<BoundSessionRequestThrottledInRendererManager>

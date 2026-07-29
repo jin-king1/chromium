@@ -18,6 +18,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
+#include "ui/views/border.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/test/views_test_base.h"
@@ -27,13 +28,13 @@ namespace ash {
 namespace test {
 
 namespace {
-int kDefaultSearchItems = 3;
+constexpr int kDefaultSearchItems = 3;
 
 // Preferred sizing for different types of search result views.
 constexpr int kPreferredWidth = 640;
 constexpr int kDefaultViewHeight = 40;
-constexpr int kInlineAnswerViewHeight = 80;
-constexpr gfx::Insets kInlineAnswerBorder(12);
+constexpr int kInlineAnswerViewHeight = 88;
+constexpr gfx::Insets kInlineAnswerBorder(16);
 
 // SearchResultListType::SearchResultListType::AnswerCard, and
 //  SearchResultListType::kBestMatch do not have associated categories.
@@ -59,22 +60,21 @@ class SearchResultListViewTest : public views::test::WidgetTest {
 
     default_view_ = std::make_unique<SearchResultListView>(
         &view_delegate_, nullptr,
-        SearchResultView::SearchResultViewType::kDefault, true, absl::nullopt);
+        SearchResultView::SearchResultViewType::kDefault, std::nullopt);
     default_view_->SetListType(
         SearchResultListView::SearchResultListType::kBestMatch);
     default_view_->SetActive(true);
 
     answer_card_view_ = std::make_unique<SearchResultListView>(
         &view_delegate_, nullptr,
-        SearchResultView::SearchResultViewType::kAnswerCard, true,
-        absl::nullopt);
+        SearchResultView::SearchResultViewType::kAnswerCard, std::nullopt);
     answer_card_view_->SetListType(
         SearchResultListView::SearchResultListType::kAnswerCard);
     answer_card_view_->SetActive(true);
 
     widget_->SetBounds(gfx::Rect(0, 0, 700, 500));
-    widget_->GetContentsView()->AddChildView(default_view_.get());
-    widget_->GetContentsView()->AddChildView(answer_card_view_.get());
+    widget_->GetContentsView()->AddChildViewRaw(default_view_.get());
+    widget_->GetContentsView()->AddChildViewRaw(answer_card_view_.get());
     widget_->Show();
     default_view_->SetResults(GetResults());
     answer_card_view_->SetResults(GetResults());
@@ -83,7 +83,9 @@ class SearchResultListViewTest : public views::test::WidgetTest {
   void TearDown() override {
     default_view_.reset();
     answer_card_view_.reset();
-    widget_->CloseNow();
+    auto* widget = widget_.get();
+    widget_ = nullptr;
+    widget->CloseNow();
     views::test::WidgetTest::TearDown();
   }
 
@@ -109,6 +111,10 @@ class SearchResultListViewTest : public views::test::WidgetTest {
     return result_view->get_title_container_for_test();
   }
 
+  views::FlexLayoutView* GetProgressBarContents(SearchResultView* result_view) {
+    return result_view->get_progress_bar_container_for_test();
+  }
+
   views::FlexLayoutView* GetDetailsContents(SearchResultView* result_view) {
     return result_view->get_details_container_for_test();
   }
@@ -119,7 +125,7 @@ class SearchResultListViewTest : public views::test::WidgetTest {
 
   std::vector<SearchResultView*> GetAssistantResultViews() const {
     std::vector<SearchResultView*> results;
-    for (auto* view : default_view_->search_result_views_) {
+    for (ash::SearchResultView* view : default_view_->search_result_views_) {
       auto* result = view->result();
       if (result &&
           result->result_type() == AppListSearchResultType::kAssistantText)
@@ -231,6 +237,25 @@ class SearchResultListViewTest : public views::test::WidgetTest {
     RunPendingMessages();
   }
 
+  void SetupProgressBarAnswerCard() {
+    SearchModel::SearchResults* results = GetResults();
+    std::unique_ptr<TestSearchResult> result =
+        std::make_unique<TestSearchResult>();
+    result->set_display_type(ash::SearchResultDisplayType::kAnswerCard);
+    result->set_best_match(true);
+
+    result->SetAccessibleName(u"Memory 2.4GB | 7.6 GB total");
+    result->SetDetails(u"Memory 2.4GB | 7.6 GB total");
+    auto system_info_data =
+        std::make_unique<ash::SystemInfoAnswerCardData>(0.5);
+
+    result->SetSystemInfoAnswerCardData(*system_info_data.get());
+    results->Add(std::move(result));
+
+    // Adding results will schedule Update().
+    RunPendingMessages();
+  }
+
   int GetOpenResultCountAndReset(int ranking) {
     EXPECT_GT(view_delegate_.open_search_result_counts().count(ranking), 0u);
     int result = view_delegate_.open_search_result_counts()[ranking];
@@ -254,7 +279,7 @@ class SearchResultListViewTest : public views::test::WidgetTest {
   void DeleteResultAt(int index) { GetResults()->DeleteAt(index); }
 
   bool KeyPress(ui::KeyboardCode key_code) {
-    ui::KeyEvent event(ui::ET_KEY_PRESSED, key_code, ui::EF_NONE);
+    ui::KeyEvent event(ui::EventType::kKeyPressed, key_code, ui::EF_NONE);
     return default_view_->OnKeyPressed(event);
   }
 
@@ -277,7 +302,7 @@ class SearchResultListViewTest : public views::test::WidgetTest {
   AppListTestViewDelegate view_delegate_;
   std::unique_ptr<SearchResultListView> default_view_;
   std::unique_ptr<SearchResultListView> answer_card_view_;
-  raw_ptr<views::Widget, ExperimentalAsh> widget_;
+  raw_ptr<views::Widget> widget_;
 };
 
 TEST_F(SearchResultListViewTest, SpokenFeedback) {
@@ -330,6 +355,23 @@ TEST_F(SearchResultListViewTest, KeyboardShortcutAnswerCard) {
       GetResultTextSeparatorLabel(GetAnswerCardResultViewAt(0))->GetVisible());
 
   EXPECT_FALSE(GetDetailsContents(GetAnswerCardResultViewAt(0))->GetVisible());
+}
+
+// Verifies that details and progress contents are shown for system info answer
+// cards which are of bar chart type normally
+TEST_F(SearchResultListViewTest, ProgressBarAnswerCardTest) {
+  default_view()->SetBounds(0, 0, kPreferredWidth, 400);
+  SetupProgressBarAnswerCard();  // Details,and progress bar views should be
+                                 // visible.
+  EXPECT_FALSE(GetTitleContents(GetAnswerCardResultViewAt(0))->GetVisible());
+  EXPECT_TRUE(GetDetailsContents(GetAnswerCardResultViewAt(0))->GetVisible());
+  EXPECT_TRUE(
+      GetProgressBarContents(GetAnswerCardResultViewAt(0))->GetVisible());
+
+  EXPECT_FALSE(
+      GetResultTextSeparatorLabel(GetAnswerCardResultViewAt(0))->GetVisible());
+  EXPECT_FALSE(
+      GetKeyboardShortcutContents(GetAnswerCardResultViewAt(0))->GetVisible());
 }
 
 TEST_F(SearchResultListViewTest, CorrectEnumLength) {

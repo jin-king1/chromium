@@ -5,15 +5,20 @@
 #ifndef MEDIA_CAST_SENDER_VIDEO_BITRATE_SUGGESTER_H_
 #define MEDIA_CAST_SENDER_VIDEO_BITRATE_SUGGESTER_H_
 
+#include "base/functional/callback.h"
 #include "media/cast/cast_config.h"
-#include "media/cast/sender/frame_sender.h"
 
 namespace media::cast {
 
+// This class is responsible for suggesting a video bitrate based on both the
+// current network conditions and the performance of the encoder (monitored
+// via frame drops).
 class VideoBitrateSuggester {
  public:
+  using GetVideoNetworkBandwidthCB = base::RepeatingCallback<uint32_t()>;
+
   VideoBitrateSuggester(const FrameSenderConfig& config,
-                        FrameSender::GetSuggestedVideoBitrateCB get_bitrate_cb);
+                        GetVideoNetworkBandwidthCB get_bitrate_cb);
   VideoBitrateSuggester(VideoBitrateSuggester&& other) = delete;
   VideoBitrateSuggester& operator=(VideoBitrateSuggester&& other) = delete;
   VideoBitrateSuggester(const VideoBitrateSuggester&) = delete;
@@ -22,23 +27,31 @@ class VideoBitrateSuggester {
 
   void RecordShouldDropNextFrame(bool should_drop);
 
-  int GetSuggestedBitrate();
+  uint32_t GetSuggestedBitrate();
 
  private:
+  // NOTE: the exponential algorithm is currently undergoing an experiment
+  // versus the legacy implementation.
+  // TODO(https://issuetracker.google.com/302584587): determine if new algorithm
+  // is more effective.
+  void UpdateSuggestionUsingExponentialAlgorithm();
+  void UpdateSuggestionUsingLinearAlgorithm();
+
   // The method for getting the recommended bitrate.
-  FrameSender::GetSuggestedVideoBitrateCB get_bitrate_cb_;
+  GetVideoNetworkBandwidthCB get_bandwidth_cb_;
 
   // The minimum and maximum bitrates set from the config.
-  int min_bitrate_ = 0;
-  int max_bitrate_ = 0;
+  const uint32_t min_bitrate_ = 0;
+  const uint32_t max_bitrate_ = 0;
+  const double max_frame_rate_ = 0;
 
-  // The suggested maximum bitrate, factoring in frame drops.
-  int suggested_max_bitrate_ = 0;
+  // The suggested bitrate, factoring in frame drops.
+  uint32_t suggested_bitrate_ = 0;
 
   // We keep track of how many frames get dropped in order to lower the video
   // bitrate when appropriate.
-  int number_of_frames_requested_ = 0;
-  int number_of_frames_dropped_ = 0;
+  int frames_requested_ = 0;
+  int frames_dropped_ = 0;
 };
 
 }  // namespace media::cast

@@ -111,10 +111,9 @@ MediaStreamComponent* MediaStreamTrackGenerator::MakeMediaStreamComponent(
       break;
     default:
       NOTREACHED();
-      return nullptr;
   }
 
-  const String track_id = WTF::CreateCanonicalUUIDString();
+  const String track_id = CreateCanonicalUuidString();
   return MakeGarbageCollected<MediaStreamComponentImpl>(
       MakeGarbageCollected<MediaStreamSource>(track_id, type, track_id,
                                               /*remote=*/false,
@@ -136,14 +135,14 @@ MediaStreamTrackGenerator::MediaStreamTrackGenerator(
 
 WritableStream* MediaStreamTrackGenerator::writable(ScriptState* script_state) {
   if (writable_)
-    return writable_;
+    return writable_.Get();
 
   if (kind() == "video")
     CreateVideoStream(script_state);
   else if (kind() == "audio")
     CreateAudioStream(script_state);
 
-  return writable_;
+  return writable_.Get();
 }
 
 PushableMediaStreamVideoSource* MediaStreamTrackGenerator::PushableVideoSource()
@@ -174,7 +173,7 @@ void MediaStreamTrackGenerator::CreateAudioStream(ScriptState* script_state) {
           Component()->Source()->GetPlatformSource());
   audio_underlying_sink_ =
       MakeGarbageCollected<MediaStreamAudioTrackUnderlyingSink>(
-          source->GetBroker());
+          script_state, source->GetBroker());
   writable_ = WritableStream::CreateWithCountQueueingStrategy(
       script_state, audio_underlying_sink_, /*high_water_mark=*/1,
       audio_underlying_sink_->GetTransferringOptimizer());

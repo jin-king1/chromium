@@ -46,8 +46,7 @@ BaseAudioContext* AudioWorklet::GetBaseAudioContext() const {
   return context_.Get();
 }
 
-const Vector<CrossThreadAudioParamInfo>
-    AudioWorklet::GetParamInfoListForProcessor(
+Vector<CrossThreadAudioParamInfo> AudioWorklet::GetParamInfoListForProcessor(
     const String& name) {
   DCHECK(IsMainThread());
   DCHECK(GetMessagingProxy());
@@ -80,7 +79,8 @@ WorkletGlobalScopeProxy* AudioWorklet::CreateGlobalScope() {
       MakeGarbageCollected<AudioWorkletMessagingProxy>(GetExecutionContext(),
                                                        this);
   proxy->Initialize(MakeGarbageCollected<WorkerClients>(),
-                    ModuleResponsesMap());
+                    ModuleResponsesMap(),
+                    WorkerBackingThreadStartupData::CreateDefault());
   return proxy;
 }
 
@@ -89,6 +89,14 @@ AudioWorkletMessagingProxy* AudioWorklet::GetMessagingProxy() {
              ? nullptr
              : static_cast<AudioWorkletMessagingProxy*>(
                    FindAvailableGlobalScope());
+}
+
+void AudioWorklet::TerminateProxies() {
+  DCHECK(IsMainThread());
+  AbortPendingTasks();
+  for (const auto& proxy : proxies_) {
+    proxy->TerminateWorkletGlobalScope();
+  }
 }
 
 void AudioWorklet::Trace(Visitor* visitor) const {

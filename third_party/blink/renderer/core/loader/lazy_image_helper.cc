@@ -4,8 +4,6 @@
 
 #include "third_party/blink/renderer/core/loader/lazy_image_helper.h"
 
-#include "base/metrics/histogram_macros.h"
-#include "base/numerics/safe_conversions.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
@@ -14,43 +12,43 @@
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/html_image_element.h"
-#include "third_party/blink/renderer/core/html/lazy_load_image_observer.h"
 #include "third_party/blink/renderer/core/html/loading_attribute.h"
+#include "third_party/blink/renderer/core/html/media/lazy_load_media_observer.h"
 
 namespace blink {
 
 namespace {
 
-// Records |bytes| to |histogram_name| in kilobytes (i.e., bytes / 1024).
-// https://almanac.httparchive.org/en/2022/page-weight#fig-12 reports the 90th
-// percentile of jpeg images is 213KB with a max of ~64MB. The max bucket size
-// has been set at 64MB to capture this range with as much granularity as
-// possible.
-#define IMAGE_BYTES_HISTOGRAM(histogram_name, bytes)                        \
-  UMA_HISTOGRAM_CUSTOM_COUNTS(histogram_name,                               \
-                              base::saturated_cast<int>((bytes) / 1024), 1, \
-                              64 * 1024, 50)
-
-Document* GetRootDocumentOrNull(Element* element) {
-  if (LocalFrame* frame = element->GetDocument().GetFrame())
+Document* GetRootDocumentOrNull(Node* node) {
+  if (LocalFrame* frame = node->GetDocument().GetFrame()) {
     return frame->LocalFrameRoot().GetDocument();
+  }
   return nullptr;
 }
 
 }  // namespace
 
 // static
-void LazyImageHelper::StartMonitoring(blink::Element* element) {
+void LazyImageHelper::StartMonitoring(Element* element) {
   if (Document* document = GetRootDocumentOrNull(element)) {
-    document->EnsureLazyLoadImageObserver().StartMonitoringNearViewport(
+    document->EnsureLazyLoadMediaObserver().StartMonitoringNearViewport(
         document, element);
   }
 }
 
 void LazyImageHelper::StopMonitoring(Element* element) {
   if (Document* document = GetRootDocumentOrNull(element)) {
-    document->EnsureLazyLoadImageObserver().StopMonitoring(element);
+    document->EnsureLazyLoadMediaObserver().StopMonitoring(element);
   }
+}
+
+// static
+bool LazyImageHelper::LoadAllImagesAndBlockLoadEvent(Document& document) {
+  if (Document* root_document = GetRootDocumentOrNull(&document)) {
+    return root_document->EnsureLazyLoadMediaObserver()
+        .LoadAllImagesAndBlockLoadEvent(document);
+  }
+  return false;
 }
 
 // static
@@ -82,38 +80,6 @@ bool LazyImageHelper::ShouldDeferImageLoad(LocalFrame& frame,
   }
 
   return true;
-}
-
-// static
-void LazyImageHelper::StartMonitoringVisibilityMetrics(
-    HTMLImageElement* html_image) {
-  if (Document* root_document = GetRootDocumentOrNull(html_image)) {
-    root_document->EnsureLazyLoadImageObserver().StartMonitoringVisibility(
-        root_document, html_image);
-  }
-}
-
-void LazyImageHelper::RecordMetricsOnLoadFinished(
-    HTMLImageElement* image_element) {
-  if (!image_element->is_lazy_loaded()) {
-    return;
-  }
-
-  Document* root_document = GetRootDocumentOrNull(image_element);
-  if (!root_document) {
-    return;
-  }
-
-  if (ImageResourceContent* content = image_element->CachedImage()) {
-    int64_t response_size = content->GetResponse().EncodedDataLength();
-    IMAGE_BYTES_HISTOGRAM("Blink.LazyLoadedImage.Size", response_size);
-    if (!root_document->LoadEventFinished()) {
-      IMAGE_BYTES_HISTOGRAM("Blink.LazyLoadedImageBeforeDocumentOnLoad.Size",
-                            response_size);
-    }
-  }
-
-  root_document->EnsureLazyLoadImageObserver().OnLoadFinished(image_element);
 }
 
 }  // namespace blink

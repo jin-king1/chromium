@@ -15,13 +15,15 @@
 #include "base/memory/singleton.h"
 #include "build/branding_buildflags.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/ui/commander/commander.h"
 #include "printing/buildflags/buildflags.h"
 #import "ui/base/accelerators/platform_accelerator_cocoa.h"
 #import "ui/events/cocoa/cocoa_event_utils.h"
 #import "ui/events/keycodes/keyboard_code_conversion_mac.h"
 
 namespace {
+
+bool is_for_pwa = false;
+bool singleton_exists = false;
 
 const struct AcceleratorMapping {
   int command_id;
@@ -68,8 +70,9 @@ const struct AcceleratorMapping {
 
     // The key combinations for IDC_CLOSE_WINDOW and IDC_CLOSE_TAB are context
     // dependent. A static mapping doesn't make sense. :(
+    // We used to define IDC_CLOSE_WINDOW here. Instead, see
+    // AcceleratorForCloseWindow().
     {IDC_CLOSE_TAB, ui::EF_COMMAND_DOWN, ui::VKEY_W},
-    {IDC_CLOSE_WINDOW, ui::EF_COMMAND_DOWN, ui::VKEY_W},
 
     {IDC_EMAIL_PAGE_LOCATION, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
      ui::VKEY_I},
@@ -99,8 +102,8 @@ const struct AcceleratorMapping {
     {IDC_BOOKMARK_ALL_TABS, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
      ui::VKEY_D},
     {IDC_MINIMIZE_WINDOW, ui::EF_COMMAND_DOWN, ui::VKEY_M},
-    {IDC_SELECT_NEXT_TAB, ui::EF_CONTROL_DOWN, ui::VKEY_TAB},
-    {IDC_SELECT_PREVIOUS_TAB, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
+    {IDC_CYCLE_TO_NEXT_TAB, ui::EF_CONTROL_DOWN, ui::VKEY_TAB},
+    {IDC_CYCLE_TO_PREV_TAB, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
      ui::VKEY_TAB},
     {IDC_HELP_PAGE_VIA_MENU, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
      ui::VKEY_OEM_2},
@@ -111,17 +114,23 @@ const struct AcceleratorMapping {
      ui::VKEY_I},
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
     {IDC_TAB_SEARCH, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_A},
+    {IDC_TOGGLE_VERTICAL_TABS_COLLAPSE, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+     ui::VKEY_L},
 };
 
-ui::Accelerator enterFullscreenAccelerator() {
-  int modifiers = ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN;
+ui::Accelerator AcceleratorForCloseWindow() {
+  int modifiers = ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN;
 
-  // The default keyboard accelerator for Enter Full Screen changed in macOS 12.
-  if (base::mac::IsAtLeastOS12()) {
-    modifiers = ui::EF_FUNCTION_DOWN;
+  if (is_for_pwa) {
+    modifiers = ui::EF_COMMAND_DOWN;
   }
 
-  return ui::Accelerator(ui::VKEY_F, modifiers);
+  return ui::Accelerator(ui::VKEY_W, modifiers);
+}
+
+ui::Accelerator AcceleratorForEnterFullscreen() {
+  return ui::Accelerator(ui::VKEY_F, ui::EF_COMMAND_DOWN | ui::EF_CONTROL_DOWN |
+                                         ui::EF_FUNCTION_DOWN);
 }
 
 }  // namespace
@@ -135,19 +144,15 @@ AcceleratorsCocoa::AcceleratorsCocoa() {
     DCHECK(result.second);
   }
 
+  accelerators_[IDC_CLOSE_WINDOW] = AcceleratorForCloseWindow();
+
   auto result = accelerators_.insert(
-      std::make_pair(IDC_FULLSCREEN, enterFullscreenAccelerator()));
+      std::make_pair(IDC_FULLSCREEN, AcceleratorForEnterFullscreen()));
   DCHECK(result.second);
 
-  if (commander::IsEnabled()) {
-    result = accelerators_.insert(
-        std::make_pair(IDC_TOGGLE_QUICK_COMMANDS,
-                       ui::Accelerator(ui::VKEY_SPACE, ui::EF_CONTROL_DOWN)));
-    DCHECK(result.second);
-  }
-
-  if (!base::i18n::IsRTL())
+  if (!base::i18n::IsRTL()) {
     return;
+  }
 
   // If running in RTL, swap the keyboard shortcuts for History -> Forward
   // and Back.
@@ -161,7 +166,18 @@ AcceleratorsCocoa::AcceleratorsCocoa() {
 AcceleratorsCocoa::~AcceleratorsCocoa() {}
 
 // static
+void AcceleratorsCocoa::CreateForPWA(bool flag) {
+  is_for_pwa = flag;
+
+  if (singleton_exists) {
+    GetInstance()->accelerators_[IDC_CLOSE_WINDOW] =
+        AcceleratorForCloseWindow();
+  }
+}
+
 AcceleratorsCocoa* AcceleratorsCocoa::GetInstance() {
+  singleton_exists = true;
+
   return base::Singleton<AcceleratorsCocoa>::get();
 }
 

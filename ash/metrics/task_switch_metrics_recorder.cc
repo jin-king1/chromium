@@ -14,8 +14,6 @@ namespace ash {
 
 namespace {
 
-const char kAshTaskSwitchHistogramName[] = "Ash.TimeBetweenTaskSwitches";
-
 const char kAcceleratorWindowCycleHistogramName[] =
     "Ash.WindowCycleController.TimeBetweenTaskSwitches";
 
@@ -25,18 +23,16 @@ const char kOverviewModeHistogramName[] =
 // Returns the histogram name for the given |task_switch_source|.
 const char* GetHistogramName(TaskSwitchSource task_switch_source) {
   switch (task_switch_source) {
-    case TaskSwitchSource::ANY:
-      return kAshTaskSwitchHistogramName;
     case TaskSwitchSource::OVERVIEW_MODE:
       return kOverviewModeHistogramName;
     case TaskSwitchSource::WINDOW_CYCLE_CONTROLLER:
       return kAcceleratorWindowCycleHistogramName;
+    case TaskSwitchSource::ANY:
     case TaskSwitchSource::DESKTOP:
     case TaskSwitchSource::SHELF:
       return nullptr;
   }
   NOTREACHED();
-  return nullptr;
 }
 
 }  // namespace
@@ -78,8 +74,7 @@ TaskSwitchTimeTracker* TaskSwitchMetricsRecorder::FindTaskSwitchTimeTracker(
 
 void TaskSwitchMetricsRecorder::AddTaskSwitchTimeTracker(
     TaskSwitchSource task_switch_source) {
-  CHECK(histogram_map_.find(static_cast<int>(task_switch_source)) ==
-        histogram_map_.end());
+  CHECK(!histogram_map_.contains(static_cast<int>(task_switch_source)));
 
   const char* histogram_name = GetHistogramName(task_switch_source);
   if (histogram_name) {

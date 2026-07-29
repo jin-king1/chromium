@@ -10,36 +10,47 @@
 #include "base/json/json_writer.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/printing/print_view_manager_common.h"
-#include "chrome/browser/ui/webui/print_preview/print_preview_handler.h"
+#include "printing/buildflags/buildflags.h"
 #include "printing/mojom/print.mojom.h"
 #include "printing/print_job_constants.h"
+
+#if BUILDFLAG(ENABLE_OOP_PRINTING_NO_OOP_BASIC_PRINT_DIALOG)
+#include "chrome/browser/printing/oop_features.h"
+#endif
 
 namespace printing::test {
 
 const char kPrinterName[] = "DefaultPrinter";
 
-const PrinterSemanticCapsAndDefaults::Paper kPaperLetter{
-    /*display_name=*/"Letter", /*vendor_id=*/"45",
-    /*size_um=*/gfx::Size(215900, 279400),
-    /*printable_area_um=*/gfx::Rect(1764, 1764, 212372, 275872)};
-const PrinterSemanticCapsAndDefaults::Paper kPaperLegal{
-    /*display_name=*/"Legal", /*vendor_id=*/"46",
-    /*size_um=*/gfx::Size(215900, 355600),
-    /*printable_area_um=*/gfx::Rect(1764, 1764, 212372, 352072)};
+PrinterSemanticCapsAndDefaults::Paper GetPaperLetter() {
+  return PrinterSemanticCapsAndDefaults::Paper{
+      /*display_name=*/"Letter", /*vendor_id=*/"45",
+      /*size_um=*/gfx::Size(215900, 279400),
+      /*printable_area_um=*/gfx::Rect(1764, 1764, 212372, 275872)};
+}
 
-const std::vector<gfx::Size> kPrinterCapabilitiesDefaultDpis{
-    kPrinterCapabilitiesDpi};
-const PrinterBasicInfoOptions kPrintInfoOptions{{"opt1", "123"},
-                                                {"opt2", "456"}};
+PrinterSemanticCapsAndDefaults::Paper GetPaperLegal() {
+  return PrinterSemanticCapsAndDefaults::Paper{
+      /*display_name=*/"Legal", /*vendor_id=*/"46",
+      /*size_um=*/gfx::Size(215900, 355600),
+      /*printable_area_um=*/gfx::Rect(1764, 1764, 212372, 352072)};
+}
 
-base::Value::Dict GetPrintTicket(mojom::PrinterType type) {
-  DCHECK_NE(type, mojom::PrinterType::kPrivetDeprecated);
+std::vector<gfx::Size> GetPrinterCapabilitiesDefaultDpis() {
+  return std::vector<gfx::Size>{kPrinterCapabilitiesDpi};
+}
 
-  base::Value::Dict ticket;
+PrinterBasicInfoOptions GetPrintInfoOptions() {
+  return PrinterBasicInfoOptions{{"opt1", "123"}, {"opt2", "456"}};
+}
+
+base::DictValue GetPrintTicket(mojom::PrinterType type) {
+  base::DictValue ticket;
 
   // Letter
-  base::Value::Dict media_size;
+  base::DictValue media_size;
   media_size.Set(kSettingMediaSizeIsDefault, true);
   media_size.Set(kSettingMediaSizeWidthMicrons, 215900);
   media_size.Set(kSettingMediaSizeHeightMicrons, 279400);
@@ -70,17 +81,14 @@ base::Value::Dict GetPrintTicket(mojom::PrinterType type) {
   ticket.Set(kSettingShowSystemDialog, false);
 
   if (type == mojom::PrinterType::kExtension) {
-    base::Value::Dict capabilities;
+    base::DictValue capabilities;
     capabilities.Set("duplex", true);  // non-empty
-    std::string caps_string;
-    base::JSONWriter::Write(capabilities, &caps_string);
-    ticket.Set(kSettingCapabilities, caps_string);
-    base::Value::Dict print_ticket;
+    ticket.Set(kSettingCapabilities,
+               base::WriteJson(capabilities).value_or(""));
+    base::DictValue print_ticket;
     print_ticket.Set("version", "1.0");
     print_ticket.Set("print", base::Value());
-    std::string ticket_string;
-    base::JSONWriter::Write(print_ticket, &ticket_string);
-    ticket.Set(kSettingTicket, ticket_string);
+    ticket.Set(kSettingTicket, base::WriteJson(print_ticket).value_or(""));
   }
 
   return ticket;
@@ -102,20 +110,52 @@ std::unique_ptr<PrintSettings> MakeDefaultPrintSettings(
   settings->set_dpi(kPrinterDefaultRenderDpi);
   settings->set_page_setup_device_units(kPageSetup);
   settings->set_device_name(base::ASCIIToUTF16(printer_name));
+  settings->set_duplex_mode(mojom::DuplexMode::kSimplex);
+  settings->set_color(mojom::ColorModel::kGray);
   return settings;
 }
 
 std::unique_ptr<PrintSettings> MakeUserModifiedPrintSettings(
-    const std::string& printer_name) {
+    const std::string& printer_name,
+    const PageRanges* page_ranges) {
   std::unique_ptr<PrintSettings> settings =
       MakeDefaultPrintSettings(printer_name);
   settings->set_copies(kPrintSettingsCopies + 1);
+  if (page_ranges) {
+    settings->set_ranges(*page_ranges);
+  }
+#if BUILDFLAG(ENABLE_OOP_PRINTING_NO_OOP_BASIC_PRINT_DIALOG)
+  if (ShouldPrintJobOop()) {
+    // Supply fake data to mimic what might be collected from the system print
+    // dialog.  Platform-specific since the fake data still has to be able to
+    // pass mojom data validation.
+    base::DictValue data;
+
+#if BUILDFLAG(IS_MAC)
+    data.Set(kMacSystemPrintDialogDataDestinationType, 2);
+    data.Set(kMacSystemPrintDialogDataPageFormat,
+             base::Value::BlobStorage({0xF1}));
+    data.Set(kMacSystemPrintDialogDataPrintSettings,
+             base::Value::BlobStorage({0xB2}));
+
+#elif BUILDFLAG(IS_LINUX)
+    data.Set(kLinuxSystemPrintDialogDataPrinter, printer_name);
+    data.Set(kLinuxSystemPrintDialogDataPrintSettings, "print-settings");
+    data.Set(kLinuxSystemPrintDialogDataPageSetup, "page-setup");
+
+#else
+#error "Missing fake system print dialog data for this platform."
+#endif
+
+    settings->set_system_print_dialog_data(std::move(data));
+  }
+#endif  // BUILDFLAG(ENABLE_OOP_PRINTING_NO_OOP_BASIC_PRINT_DIALOG)
   return settings;
 }
 
 void StartPrint(content::WebContents* contents) {
   printing::StartPrint(contents,
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
                        /*print_renderer=*/mojo::NullAssociatedRemote(),
 #endif
                        /*print_preview_disabled=*/false,

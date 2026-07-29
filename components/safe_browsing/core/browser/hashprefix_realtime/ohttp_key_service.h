@@ -5,6 +5,10 @@
 #ifndef COMPONENTS_SAFE_BROWSING_CORE_BROWSER_HASHPREFIX_REALTIME_OHTTP_KEY_SERVICE_H_
 #define COMPONENTS_SAFE_BROWSING_CORE_BROWSER_HASHPREFIX_REALTIME_OHTTP_KEY_SERVICE_H_
 
+#include <list>
+#include <optional>
+#include <string>
+
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
@@ -12,13 +16,8 @@
 #include "base/timer/timer.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 class PrefService;
-
-namespace net {
-class HttpResponseHeaders;
-}  // namespace net
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -34,7 +33,7 @@ class BackoffOperator;
 class OhttpKeyService : public KeyedService {
  public:
   using Callback =
-      base::OnceCallback<void(absl::optional<std::string> ohttp_key)>;
+      base::OnceCallback<void(std::optional<std::string> ohttp_key)>;
 
   struct OhttpKeyAndExpiration {
     // The OHTTP key in this struct is formatted as described in
@@ -43,9 +42,47 @@ class OhttpKeyService : public KeyedService {
     base::Time expiration;
   };
 
+  // The reason that a key fetch is triggered.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class FetchTriggerReason {
+    // The key fetch is triggered during hash real-time lookup because there is
+    // no available cached key.
+    kDuringHashRealTimeLookup = 0,
+    // The key fetch is triggered asynchronously by background scheduler.
+    kAsyncFetch = 1,
+    // The key fetch is triggered because the response from real-time lookup
+    // contains key related error code.
+    kKeyRelatedHttpErrorCode = 2,
+    // OBSOLETE: The key fetch is triggered because the response from real-time
+    // lookup contains key rotated header.
+    kObsoleteKeyRotatedHeader = 3,
+    kMaxValue = kObsoleteKeyRotatedHeader
+  };
+
+  // The outcome of a key fetch.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  enum class FetchOutcome {
+    // The key fetch was successful and the key parsed successfully.
+    kSuccess = 0,
+    // The key fetch failed due to a network error.
+    kNetworkError = 1,
+    // The key fetch succeeded at the network level, but was empty.
+    kEmptyResponse = 2,
+    // The key fetch succeeded at the network level, but failed to parse.
+    kInvalidResponse = 3,
+    // The key fetch succeeded at the network level, but there were no keys.
+    kNoKeys = 4,
+    kMaxValue = kNoKeys,
+  };
+
   OhttpKeyService(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      PrefService* pref_service);
+      PrefService* pref_service,
+      PrefService* local_state,
+      base::RepeatingCallback<std::optional<std::string>()> country_getter,
+      bool are_background_lookups_allowed);
 
   OhttpKeyService(const OhttpKeyService&) = delete;
   OhttpKeyService& operator=(const OhttpKeyService&) = delete;
@@ -62,37 +99,34 @@ class OhttpKeyService : public KeyedService {
   virtual void GetOhttpKey(Callback callback);
 
   // Notifies the key service with the response from the lookup request. |key|
-  // is used for the lookup request, |response_code| and |headers| are returned
+  // is used for the lookup request, and |response_code| is returned
   // from the lookup server. It may trigger a key fetch if the response contains
-  // key related error or header. This function is overridden in tests.
-  virtual void NotifyLookupResponse(
-      const std::string& key,
-      int response_code,
-      scoped_refptr<net::HttpResponseHeaders> headers);
+  // key related error. This function is overridden in tests.
+  virtual void NotifyLookupResponse(const std::string& key, int response_code);
 
   // KeyedService:
   // Called before the actual deletion of the object.
   void Shutdown() override;
 
   void set_ohttp_key_for_testing(OhttpKeyAndExpiration ohttp_key);
-  absl::optional<OhttpKeyAndExpiration> get_ohttp_key_for_testing();
+  std::optional<OhttpKeyAndExpiration> get_ohttp_key_for_testing();
 
  private:
-  // Listens to Safe Browsing state changes to enable/disable the service.
-  void OnSafeBrowsingStateChanged();
+  // Listens to prefs changes that configure enabling/disabling the service.
+  void OnConfiguringPrefsChanged();
 
   // Enables/disables the service.
   void SetEnabled(bool enable);
 
   // Starts to fetch a new key from the Safe Browsing key hosting endpoint. It
   // may be triggered by sync (|GetOhttpKey|) or async (|MaybeStartAsyncFetch|)
-  // workflows.
-  void StartFetch(Callback callback);
+  // workflows. |trigger_reason| is used for logging metrics.
+  void StartFetch(Callback callback, FetchTriggerReason trigger_reason);
 
   // Called when the response from the Safe Browsing key hosting endpoint is
   // received.
   void OnURLLoaderComplete(base::TimeTicks request_start_time,
-                           std::unique_ptr<std::string> response_body);
+                           std::optional<std::string> response_body);
 
   // Async workflow:
   // Starts to fetch a new key if the current key is close to expiration.
@@ -102,15 +136,16 @@ class OhttpKeyService : public KeyedService {
   // async fetch based on the fetch result. Note that it does not use the
   // |ohttp_key| parameter because |ohttp_key_| already gets populated to it
   // when relevant before this method is called.
-  void OnAsyncFetchCompleted(absl::optional<std::string> ohttp_key);
+  void OnAsyncFetchCompleted(std::optional<std::string> ohttp_key);
   // Returns if async fetch should be started immediately, which is if the
   // |ohttp_key_| is unpopulated, is expired, or will soon expire.
   bool ShouldStartAsyncFetch();
 
   // Server triggered workflow:
   // Starts a key fetch if the |previous_key| is different from |ohttp_key_| or
-  // the |ohttp_key_| is empty.
-  void MaybeStartServerTriggeredFetch(std::string previous_key);
+  // the |ohttp_key_| is empty. |trigger_reason| is used for logging metrics.
+  void MaybeStartServerTriggeredFetch(std::string previous_key,
+                                      FetchTriggerReason trigger_reason);
 
   // Pref functions:
   // Gets the key and expiration time from pref. If there is an unexpired key,
@@ -120,28 +155,56 @@ class OhttpKeyService : public KeyedService {
   // |ohttp_key_|.
   void StoreKeyToPref();
 
+  // Calls all pending callbacks with |ohttp_key|.
+  void NotifyPendingCallbacks(std::optional<std::string> ohttp_key);
+  // Calls all pending callbacks whose |timeout_time| is in the past with
+  // |nullopt|.
+  void PendingCallbacksTimerFired();
+
   // The URLLoaderFactory we use to issue a network request.
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   // |url_loader_| is not null iff there is a network request in progress.
   std::unique_ptr<network::SimpleURLLoader> url_loader_;
 
+  // Represents a |GetOhttpKey| callback with an associated timeout.
+  struct PendingCallback {
+    Callback callback;
+    // If set, time at which the callback will be called with |nullopt| if no
+    // response has been received yet.
+    std::optional<base::TimeTicks> timeout_time;
+
+    PendingCallback();
+    ~PendingCallback();
+    PendingCallback(const PendingCallback&) = delete;
+    PendingCallback& operator=(const PendingCallback&) = delete;
+    PendingCallback(PendingCallback&& other);
+    PendingCallback& operator=(PendingCallback&& other) = delete;
+  };
+
   // All callbacks that have requested an OHTTP key but haven't received a
-  // response yet.
-  base::OnceCallbackList<Callback::RunType> pending_callbacks_;
+  // response yet. Ordered such that the front of the list will fire first.
+  std::list<PendingCallback> pending_callbacks_;
+  // Timer that will fire on the next pending callback timeout time.
+  base::DeadlineTimer pending_callbacks_timer_;
 
   // The key cached in memory.
-  absl::optional<OhttpKeyAndExpiration> ohttp_key_;
+  std::optional<OhttpKeyAndExpiration> ohttp_key_;
 
   // Unowned object used for synchronizing the OHTTP key between the prefs and
   // the OHTTP key service.
   raw_ptr<PrefService> pref_service_;
 
-  // Observes changes in Safe Browsing state.
+  // Observes changes to profile prefs that configure whether the service is
+  // enabled.
   PrefChangeRegistrar pref_change_registrar_;
 
-  // Keeps track of the state of the service. The service should be enabled when
-  // standard protection is on, and disabled when Safe Browsing is off or
-  // enhanced protection is on.
+  // Observes changes to local state prefs that configure whether the service is
+  // enabled.
+  PrefChangeRegistrar local_state_pref_change_registrar_;
+
+  // Keeps track of the state of the service. It's enabled when standard
+  // protection is on and the policy kHashPrefixRealTimeChecksAllowedByPolicy
+  // isn't disabled.
   bool enabled_ = false;
 
   // Used to schedule async key fetch.
@@ -153,6 +216,18 @@ class OhttpKeyService : public KeyedService {
 
   // Helper object that manages backoff state.
   std::unique_ptr<BackoffOperator> backoff_operator_;
+
+  // Callback used to help determine if the service should be enabled.
+  base::RepeatingCallback<std::optional<std::string>()> country_getter_;
+
+  // Indicates whether a lookup response has been received using the current
+  // |ohttp_key_|. Set to false when a new key is obtained. Set back to true
+  // when the first response is received using this key. Used for logging
+  // metrics.
+  bool has_received_lookup_response_from_current_key_ = true;
+
+  // Determines whether a background HPRT lookup can be sent.
+  bool are_background_lookups_allowed_;
 
   base::WeakPtrFactory<OhttpKeyService> weak_factory_{this};
 };

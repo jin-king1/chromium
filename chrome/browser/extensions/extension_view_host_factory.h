@@ -7,16 +7,21 @@
 
 #include <memory>
 
-class Browser;
-class GURL;
-class Profile;
+#include "build/build_config.h"
+#include "extensions/buildflags/buildflags.h"
 
-namespace content {
-class WebContents;
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
+class BrowserWindowInterface;
+class GURL;
+
+namespace tabs {
+class TabInterface;
 }
 
 namespace extensions {
 
+class Extension;
 class ExtensionViewHost;
 
 // A utility class to make ExtensionViewHosts for UI views that are backed
@@ -29,21 +34,21 @@ class ExtensionViewHostFactory {
   // Creates a new ExtensionHost with its associated view, grouping it in the
   // appropriate SiteInstance (and therefore process) based on the URL and
   // profile.
-  static std::unique_ptr<ExtensionViewHost> CreatePopupHost(const GURL& url,
-                                                            Browser* browser);
+  static std::unique_ptr<ExtensionViewHost> CreatePopupHost(
+      const Extension& extension,
+      const GURL& url,
+      BrowserWindowInterface* browser);
 
-  // Some dialogs may not be associated with a particular browser window and
-  // hence only require a |profile|.
-  static std::unique_ptr<ExtensionViewHost> CreateDialogHost(const GURL& url,
-                                                             Profile* profile);
-
+#if BUILDFLAG(ENABLE_EXTENSIONS)
   // Creates a new ExtensionHost with its associated view, grouping it in the
   // appropriate SiteInstance (and therefore process) based on the URL and
   // profile.
   static std::unique_ptr<ExtensionViewHost> CreateSidePanelHost(
+      const Extension& extension,
       const GURL& url,
-      Browser* browser,
-      content::WebContents* web_contents);
+      BrowserWindowInterface* browser,
+      tabs::TabInterface* tab_interface);
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 };
 
 }  // namespace extensions

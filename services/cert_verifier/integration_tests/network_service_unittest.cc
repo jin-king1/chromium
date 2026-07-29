@@ -5,7 +5,6 @@
 #include <memory>
 
 #include "base/feature_list.h"
-#include "base/files/file_util.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/task_traits.h"
@@ -66,6 +65,7 @@ class NetworkServiceIntegrationTest : public testing::Test {
     // Create a cert verifier service.
     cert_verifier_service_impl_.GetNewCertVerifierForTesting(
         cv_service_remote.InitWithNewPipeAndPassReceiver(),
+        /*updater_receiver=*/mojo::NullReceiver(),
         cv_service_client.InitWithNewPipeAndPassRemote(),
         mojom::CertVerifierCreationParams::New(),
         &cert_net_fetcher_url_loader_);
@@ -94,19 +94,19 @@ class NetworkServiceIntegrationTest : public testing::Test {
     request.url = url;
     request.method = "GET";
     request.request_initiator = url::Origin();
-    StartLoadingURL(request, 0 /* process_id */, options);
+    StartLoadingURL(request, network::OriginatingProcessId::browser(), options);
     client_->RunUntilComplete();
   }
 
   void StartLoadingURL(const network::ResourceRequest& request,
-                       uint32_t process_id,
+                       network::OriginatingProcessId process_id,
                        int options = network::mojom::kURLLoadOptionNone) {
     client_ = std::make_unique<network::TestURLLoaderClient>();
     mojo::Remote<network::mojom::URLLoaderFactory> loader_factory;
     network::mojom::URLLoaderFactoryParamsPtr params =
         network::mojom::URLLoaderFactoryParams::New();
     params->process_id = process_id;
-    params->is_corb_enabled = false;
+    params->is_orb_enabled = false;
     network_context_->CreateURLLoaderFactory(
         loader_factory.BindNewPipeAndPassReceiver(), std::move(params));
 
@@ -148,13 +148,6 @@ class NetworkServiceIntegrationTest : public testing::Test {
   mojo::Remote<network::mojom::URLLoader> loader_;
 };
 
-// TODO(crbug.com/860189): AIA tests fail on iOS
-#if BUILDFLAG(IS_IOS)
-#define MAYBE(test_name) DISABLED_##test_name
-#else
-#define MAYBE(test_name) test_name
-#endif
-
 class NetworkServiceAIATest : public NetworkServiceIntegrationTest {
  public:
   NetworkServiceAIATest() : test_server_(net::EmbeddedTestServer::TYPE_HTTPS) {}
@@ -194,7 +187,7 @@ class NetworkServiceAIATest : public NetworkServiceIntegrationTest {
   net::EmbeddedTestServer test_server_;
 };
 
-TEST_F(NetworkServiceAIATest, MAYBE(AIAFetching)) {
+TEST_F(NetworkServiceAIATest, AIAFetching) {
   PerformAIATest();
 }
 
@@ -202,10 +195,9 @@ TEST_F(NetworkServiceAIATest, MAYBE(AIAFetching)) {
 // backing the CertNetFetcherURLLoader disconnects.
 // Only relevant if testing with the CertVerifierService, and the underlying
 // CertVerifier uses the CertNetFetcher.
-TEST_F(NetworkServiceAIATest,
-       MAYBE(AIAFetchingWithURLLoaderFactoryDisconnect)) {
+TEST_F(NetworkServiceAIATest, AIAFetchingWithURLLoaderFactoryDisconnect) {
   if (!cert_net_fetcher_url_loader()) {
-    // TODO(crbug.com/1015706): Switch to GTEST_SKIP().
+    // TODO(crbug.com/40103822): Switch to GTEST_SKIP().
     LOG(WARNING) << "Skipping AIA reconnection test because the underlying "
                     "cert verifier does not use a CertNetFetcherURLLoader.";
     return;

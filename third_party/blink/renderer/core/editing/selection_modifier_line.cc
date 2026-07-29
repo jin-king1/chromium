@@ -32,10 +32,13 @@
 
 #include "third_party/blink/renderer/core/editing/editing_utilities.h"
 #include "third_party/blink/renderer/core/editing/inline_box_position.h"
+#include "third_party/blink/renderer/core/editing/ng_flat_tree_shorthands.h"
 #include "third_party/blink/renderer/core/editing/visible_position.h"
 #include "third_party/blink/renderer/core/editing/visible_units.h"
 #include "third_party/blink/renderer/core/layout/geometry/logical_rect.h"
-#include "third_party/blink/renderer/core/layout/ng/inline/ng_line_utils.h"
+#include "third_party/blink/renderer/core/layout/geometry/writing_mode_converter.h"
+#include "third_party/blink/renderer/core/layout/inline/line_utils.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 
 namespace blink {
 
@@ -60,24 +63,34 @@ class AbstractLineBox {
     if (cursor_.Current().IsEmptyLineBox())
       return false;
     const PhysicalSize physical_size = cursor_.Current().Size();
-    const LogicalSize logical_size = physical_size.ConvertToLogical(
-        cursor_.Current().Style().GetWritingMode());
+    const LogicalSize logical_size = ToLogicalSize(
+        physical_size, cursor_.Current().Style().GetWritingMode());
     if (!logical_size.block_size)
       return false;
-    for (NGInlineCursor cursor(cursor_); cursor; cursor.MoveToNext()) {
-      const NGInlineCursorPosition& current = cursor.Current();
-      if (current.GetLayoutObject() && current.IsInlineLeaf())
-        return true;
+    for (InlineCursor cursor(cursor_); cursor; cursor.MoveToNext()) {
+      const InlineCursorPosition& current = cursor.Current();
+      if (current.GetLayoutObject() && current.IsInlineLeaf()) {
+        // Pseudo-elements (like ::before/::after) don't have DOM nodes that
+        // can be used for caret positioning. Skip lines that only contain
+        // pseudo-elements to ensure we find a valid caret position.
+        if (current.GetLayoutObject()->NonPseudoNode()) {
+          return true;
+        }
+      }
     }
     return false;
   }
 
   AbstractLineBox PreviousLine() const {
     DCHECK(IsNotNull());
-    NGInlineCursor previous_line = cursor_;
+    InlineCursor previous_line = cursor_;
     do {
       previous_line.MoveToPreviousIncludingFragmentainer();
-    } while (previous_line && !previous_line.Current().IsLineBox());
+    } while (
+        previous_line &&
+        (!previous_line.Current().IsLineBox() ||
+         (RuntimeEnabledFeatures::EditingLineMovementWithRubyFixEnabled() &&
+          previous_line.Current().IsRubyAnnotationLine())));
     if (!previous_line || previous_line.Current()->IsBlockInInline())
       return AbstractLineBox();
     return AbstractLineBox(previous_line);
@@ -85,10 +98,14 @@ class AbstractLineBox {
 
   AbstractLineBox NextLine() const {
     DCHECK(IsNotNull());
-    NGInlineCursor next_line = cursor_;
+    InlineCursor next_line = cursor_;
     do {
       next_line.MoveToNextIncludingFragmentainer();
-    } while (next_line && !next_line.Current().IsLineBox());
+    } while (
+        next_line &&
+        (!next_line.Current().IsLineBox() ||
+         (RuntimeEnabledFeatures::EditingLineMovementWithRubyFixEnabled() &&
+          next_line.Current().IsRubyAnnotationLine())));
     if (!next_line || next_line.Current()->IsBlockInInline())
       return AbstractLineBox();
     return AbstractLineBox(next_line);
@@ -117,17 +134,17 @@ class AbstractLineBox {
       bool only_editable_leaves) const {
     return PositionForPoint(cursor_, point_in_container, only_editable_leaves);
   }
-
- private:
-  explicit AbstractLineBox(const NGInlineCursor& cursor)
-      : cursor_(cursor), type_(Type::kLayoutNG) {
-    DCHECK(cursor_.Current().IsLineBox());
-  }
-
   const LayoutBlockFlow& GetBlock() const {
     DCHECK(IsNotNull());
     return *cursor_.GetLayoutBlockFlow();
   }
+
+ private:
+  explicit AbstractLineBox(const InlineCursor& cursor)
+      : cursor_(cursor), type_(Type::kLayoutNG) {
+    DCHECK(cursor_.Current().IsLineBox());
+  }
+
 
   LayoutUnit PhysicalBlockOffset() const {
     DCHECK(IsNotNull());
@@ -140,7 +157,7 @@ class AbstractLineBox {
 
   bool IsLayoutNG() const { return type_ == Type::kLayoutNG; }
 
-  static bool IsEditable(const NGInlineCursor& cursor) {
+  static bool IsEditable(const InlineCursor& cursor) {
     const LayoutObject* const layout_object =
         cursor.Current().GetLayoutObject();
     return layout_object && layout_object->GetNode() &&
@@ -148,19 +165,20 @@ class AbstractLineBox {
   }
 
   static PositionInFlatTreeWithAffinity PositionForPoint(
-      const NGInlineCursor& line,
+      const InlineCursor& line,
       const PhysicalOffset& point,
       bool only_editable_leaves) {
     DCHECK(line.Current().IsLineBox());
     const PhysicalSize unit_square(LayoutUnit(1), LayoutUnit(1));
     const LogicalOffset logical_point =
-        point.ConvertToLogical({line.Current().Style().GetWritingMode(),
-                                line.Current().BaseDirection()},
-                               line.Current().Size(), unit_square);
+        WritingModeConverter({line.Current().Style().GetWritingMode(),
+                              line.Current().BaseDirection()},
+                             line.Current().Size())
+            .ToLogical(point, unit_square);
     const LayoutUnit inline_offset = logical_point.inline_offset;
-    NGInlineCursor closest_leaf_child;
+    InlineCursor closest_leaf_child;
     LayoutUnit closest_leaf_distance;
-    for (NGInlineCursor cursor = line.CursorForDescendants(); cursor;
+    for (InlineCursor cursor = line.CursorForDescendants(); cursor;
          cursor.MoveToNext()) {
       if (!cursor.Current().GetLayoutObject())
         continue;
@@ -208,9 +226,48 @@ class AbstractLineBox {
 
   enum class Type { kNull, kLayoutNG };
 
-  NGInlineCursor cursor_;
+  InlineCursor cursor_;
   Type type_ = Type::kNull;
 };
+
+// When the cursor is inside an atomic inline element (e.g., inline-block),
+// escapes to the outer formatting context to find the adjacent line.
+// Returns the previous or next line (based on |direction|) in the outer
+// context, or a null AbstractLineBox if not inside an atomic inline or no line
+// found.
+AbstractLineBox EscapeAtomicInlineAndFindLine(
+    const PositionInFlatTree& position,
+    SelectionModifyVerticalDirection direction) {
+  // Check if position is inside an atomic inline formatting context.
+  const LayoutBlockFlow* context = NGInlineFormattingContextOf(position);
+  if (!context || !context->IsInline()) {
+    return AbstractLineBox();
+  }
+
+  Node* atomic_inline_node = context->NonPseudoNode();
+  if (!atomic_inline_node) {
+    return AbstractLineBox();
+  }
+
+  const bool is_down = direction == SelectionModifyVerticalDirection::kDown;
+
+  // Position just outside the atomic inline element.
+  PositionInFlatTreeWithAffinity outer_pos(
+      is_down ? PositionInFlatTree::AfterNode(*atomic_inline_node)
+              : PositionInFlatTree::BeforeNode(*atomic_inline_node));
+
+  AbstractLineBox line = AbstractLineBox::CreateFor(outer_pos);
+  if (!line) {
+    return AbstractLineBox();
+  }
+
+  line = is_down ? line.NextLine() : line.PreviousLine();
+  if (!line || !line.CanBeCaretContainer()) {
+    return AbstractLineBox();
+  }
+
+  return line;
+}
 
 // static
 AbstractLineBox AbstractLineBox::CreateFor(
@@ -221,11 +278,11 @@ AbstractLineBox AbstractLineBox::CreateFor(
   }
 
   const PositionWithAffinity adjusted =
-      ToPositionInDOMTreeWithAffinity(ComputeInlineAdjustedPosition(position));
+      ToPositionInDomTreeWithAffinity(ComputeInlineAdjustedPosition(position));
   if (adjusted.IsNull())
     return AbstractLineBox();
 
-  const NGInlineCursor& line = NGContainingLineBoxOf(adjusted);
+  const InlineCursor& line = NGContainingLineBoxOf(adjusted);
   if (line)
     return AbstractLineBox(line);
   return AbstractLineBox();
@@ -394,8 +451,17 @@ PositionInFlatTreeWithAffinity SelectionModifier::PreviousLinePosition(
   AbstractLineBox line = AbstractLineBox::CreateFor(position);
   if (line) {
     line = line.PreviousLine();
-    if (!line || !line.CanBeCaretContainer())
+    if (!line || !line.CanBeCaretContainer()) {
       line = AbstractLineBox();
+    }
+  }
+
+  // When cursor is inside an inline-block element, pressing up arrow
+  // should escape to the outer formatting context to find the previous
+  // line, rather than getting stuck at the inline-block boundary.
+  if (!line && RuntimeEnabledFeatures::InlineBlockLineNavigationEnabled()) {
+    line =
+        EscapeAtomicInlineAndFindLine(p, SelectionModifyVerticalDirection::kUp);
   }
 
   if (!line) {
@@ -464,6 +530,14 @@ PositionInFlatTreeWithAffinity SelectionModifier::NextLinePosition(
     line = line.NextLine();
     if (!line || !line.CanBeCaretContainer())
       line = AbstractLineBox();
+  }
+
+  // When cursor is inside an inline-block element, pressing down arrow
+  // should escape to the outer formatting context to find the next line,
+  // rather than getting stuck at the inline-block boundary.
+  if (!line && RuntimeEnabledFeatures::InlineBlockLineNavigationEnabled()) {
+    line = EscapeAtomicInlineAndFindLine(
+        p, SelectionModifyVerticalDirection::kDown);
   }
 
   if (!line) {

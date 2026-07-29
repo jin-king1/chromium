@@ -40,7 +40,7 @@ class SubresourceFilterInterceptingBrowserTest
   SubresourceFilterInterceptingBrowserTest& operator=(
       const SubresourceFilterInterceptingBrowserTest&) = delete;
 
-  ~SubresourceFilterInterceptingBrowserTest() override {}
+  ~SubresourceFilterInterceptingBrowserTest() override = default;
 
   net::test_server::EmbeddedTestServer* safe_browsing_test_server() {
     return safe_browsing_test_server_.get();
@@ -55,7 +55,7 @@ class SubresourceFilterInterceptingBrowserTest
     threat_match.set_threat_entry_type(safe_browsing::URL);
 
     safe_browsing::FullHashStr enforce_full_hash =
-        safe_browsing::V4ProtocolManagerUtil::GetFullHash(url);
+        safe_browsing::SBProtocolManagerUtil::GetFullHash(url);
     threat_match.mutable_threat()->set_hash(enforce_full_hash);
     threat_match.mutable_cache_duration()->set_seconds(300);
 

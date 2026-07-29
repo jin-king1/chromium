@@ -4,29 +4,22 @@
 
 #include "ui/linux/fallback_linux_ui.h"
 
-#include "base/time/time.h"
+#include "base/notimplemented.h"
 #include "ui/base/ime/linux/linux_input_method_context.h"
+#include "ui/base/ime/text_edit_commands.h"
+#include "ui/base/ui_base_switches.h"
 #include "ui/events/keycodes/dom/dom_keyboard_layout_map.h"
-#include "ui/gfx/color_palette.h"
+#include "ui/gfx/font_render_params.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/platform_font.h"
 #include "ui/linux/nav_button_provider.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/shell_dialogs/select_file_policy.h"
-#include "ui/views/controls/textfield/textfield.h"
 
 namespace ui {
 
-FallbackLinuxUi::FallbackLinuxUi() {
-  gfx::FontRenderParamsQuery query;
-  query.pixel_size = gfx::PlatformFont::kDefaultBaseFontSize;
-  query.style = gfx::Font::NORMAL;
-  query.weight = gfx::Font::Weight::NORMAL;
-  query.device_scale_factor = GetDeviceScaleFactor();
-  default_font_render_params_ =
-      gfx::GetFontRenderParams(query, &default_font_family_);
-}
+FallbackLinuxUi::FallbackLinuxUi() = default;
 
 FallbackLinuxUi::~FallbackLinuxUi() = default;
 
@@ -37,21 +30,11 @@ FallbackLinuxUi::CreateInputMethodContext(
   return nullptr;
 }
 
-gfx::FontRenderParams FallbackLinuxUi::GetDefaultFontRenderParams() const {
-  return default_font_render_params_;
-}
-
-void FallbackLinuxUi::GetDefaultFontDescription(
-    std::string* family_out,
-    int* size_pixels_out,
-    int* style_out,
-    int* weight_out,
-    gfx::FontRenderParams* params_out) const {
-  *family_out = default_font_family_;
-  *size_pixels_out = gfx::PlatformFont::kDefaultBaseFontSize;
-  *style_out = gfx::Font::NORMAL;
-  *weight_out = static_cast<int>(gfx::Font::Weight::NORMAL);
-  *params_out = GetDefaultFontRenderParams();
+gfx::FontRenderParams FallbackLinuxUi::GetDefaultFontRenderParams() {
+  if (!default_font_render_params_.has_value()) {
+    InitializeFontSettings();
+  }
+  return *default_font_render_params_;
 }
 
 ui::SelectFileDialog* FallbackLinuxUi::CreateSelectFileDialog(
@@ -66,6 +49,28 @@ ui::SelectFileDialog* FallbackLinuxUi::CreateSelectFileDialog(
 
 bool FallbackLinuxUi::Initialize() {
   return true;
+}
+
+void FallbackLinuxUi::InitializeFontSettings() {
+  gfx::FontRenderParamsQuery query;
+  query.pixel_size = gfx::PlatformFont::kDefaultBaseFontSize;
+  query.style = gfx::Font::NORMAL;
+  query.weight = gfx::Font::Weight::NORMAL;
+  query.device_scale_factor = display_config().primary_scale;
+  std::string default_font_family;
+  // gfx::GetFontRenderParams() calls GetDefaultFontRenderParams(), so
+  // initialize `default_font_render_params_`.  This is intended to use
+  // the FontConfig settings when there's no toolkit to obtain font
+  // settings from.
+  default_font_render_params_ = gfx::FontRenderParams();
+  default_font_render_params_ =
+      gfx::GetFontRenderParams(query, &default_font_family);
+  set_default_font_settings(FontSettings{
+      .family = std::move(default_font_family),
+      .size_pixels = query.pixel_size,
+      .style = query.style,
+      .weight = static_cast<int>(query.weight),
+  });
 }
 
 bool FallbackLinuxUi::GetColor(int id,
@@ -88,10 +93,6 @@ void FallbackLinuxUi::GetInactiveSelectionBgColor(SkColor* color) const {}
 
 void FallbackLinuxUi::GetInactiveSelectionFgColor(SkColor* color) const {}
 
-base::TimeDelta FallbackLinuxUi::GetCursorBlinkInterval() const {
-  return views::Textfield::GetCaretBlinkInterval();
-}
-
 gfx::Image FallbackLinuxUi::GetIconForContentType(
     const std::string& content_type,
     int size,
@@ -112,13 +113,19 @@ LinuxUi::WindowFrameAction FallbackLinuxUi::GetWindowFrameAction(
   }
 }
 
-float FallbackLinuxUi::GetDeviceScaleFactor() const {
-  return 1.0f;
+std::vector<std::string> FallbackLinuxUi::GetCmdLineFlagsForCopy() const {
+  return {std::string(switches::kUiToolkitFlag) + "=fallback"};
 }
 
 bool FallbackLinuxUi::PreferDarkTheme() const {
-  return false;
+  return theme_is_dark_;
 }
+
+void FallbackLinuxUi::SetDarkTheme(bool dark) {
+  theme_is_dark_ = dark;
+}
+
+void FallbackLinuxUi::SetAccentColor(std::optional<SkColor> accent_color) {}
 
 bool FallbackLinuxUi::AnimationsEnabled() const {
   return true;
@@ -130,14 +137,25 @@ void FallbackLinuxUi::AddWindowButtonOrderObserver(
 void FallbackLinuxUi::RemoveWindowButtonOrderObserver(
     ui::WindowButtonOrderObserver* observer) {}
 
-std::unique_ptr<ui::NavButtonProvider>
-FallbackLinuxUi::CreateNavButtonProvider() {
+std::unique_ptr<ui::NavButtonProvider> FallbackLinuxUi::CreateNavButtonProvider(
+    ui::FrameType type) {
   return nullptr;
 }
 
 ui::WindowFrameProvider* FallbackLinuxUi::GetWindowFrameProvider(
-    bool solid_frame) {
+    FrameType type,
+    bool solid_frame,
+    bool tiled,
+    bool maximized) {
   return nullptr;
+}
+
+bool FallbackLinuxUi::PrimaryPasteEnabled() const {
+  return true;
+}
+
+int FallbackLinuxUi::GetWindowDragThresholdPx() const {
+  return kDefaultWindowDragThreshold;
 }
 
 base::flat_map<std::string, std::string>
@@ -161,15 +179,15 @@ ui::NativeTheme* FallbackLinuxUi::GetNativeTheme() const {
   return ui::NativeTheme::GetInstanceForNativeUi();
 }
 
-bool FallbackLinuxUi::GetTextEditCommandsForEvent(
+ui::TextEditCommand FallbackLinuxUi::GetTextEditCommandForEvent(
     const ui::Event& event,
-    std::vector<ui::TextEditCommandAuraLinux>* commands) {
-  return false;
+    int text_flags) {
+  return ui::TextEditCommand::INVALID_COMMAND;
 }
 
 #if BUILDFLAG(ENABLE_PRINTING)
-printing::PrintDialogLinuxInterface* FallbackLinuxUi::CreatePrintDialog(
-    printing::PrintingContextLinux* context) {
+std::unique_ptr<printing::PrintDialogLinuxInterface>
+FallbackLinuxUi::CreatePrintDialog(printing::PrintingContextLinux* context) {
   // A print dialog won't be created.  Chrome's print dialog (Ctrl-P)
   // should be used instead of the system (Ctrl-Shift-P) dialog.
   NOTIMPLEMENTED();

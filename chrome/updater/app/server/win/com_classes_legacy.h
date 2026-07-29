@@ -6,27 +6,34 @@
 #define CHROME_UPDATER_APP_SERVER_WIN_COM_CLASSES_LEGACY_H_
 
 #include <windows.h>
+
 #include <wrl/implements.h>
 
+#include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/process/process.h"
+#include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "base/types/expected.h"
 #include "base/win/win_util.h"
 #include "chrome/updater/app/server/win/updater_legacy_idl.h"
+#include "chrome/updater/get_updater_scope.h"
 #include "chrome/updater/policy/service.h"
 #include "chrome/updater/update_service.h"
-#include "chrome/updater/updater_scope.h"
 #include "chrome/updater/util/util.h"
 #include "chrome/updater/util/win_util.h"
 #include "chrome/updater/win/app_command_runner.h"
 #include "chrome/updater/win/setup/setup_util.h"
+#include "components/update_client/update_client.h"
 
 // Definitions for COM updater classes provided for backward compatibility
 // with Google Update.
@@ -61,13 +68,12 @@ template <typename TDualInterface, typename... TInterfaces>
 class IDispatchImpl
     : public WrlRuntimeDispatchClass<TDualInterface, TInterfaces...> {
  public:
-  IDispatchImpl(const std::unordered_map<IID, IID>& user_iid_map,
-                const std::unordered_map<IID, IID>& system_iid_map)
+  IDispatchImpl(const base::flat_map<IID, IID, IidComparator>& user_iid_map,
+                const base::flat_map<IID, IID, IidComparator>& system_iid_map)
       : iid_map_(IsSystemInstall() ? system_iid_map : user_iid_map),
         hr_load_typelib_(InitializeTypeInfo()) {}
   IDispatchImpl(const IDispatchImpl&) = default;
   IDispatchImpl& operator=(const IDispatchImpl&) = default;
-  ~IDispatchImpl() override = default;
 
   // IUnknown override.
   IFACEMETHODIMP QueryInterface(REFIID riid, void** object) override {
@@ -146,17 +152,17 @@ class IDispatchImpl
     if (HRESULT hr = ::LoadTypeLib(typelib_path.value().c_str(), &type_lib);
         FAILED(hr)) {
       LOG(ERROR) << __func__ << " ::LoadTypeLib failed, " << typelib_path
-                 << ", " << std::hex << hr << ", IID: "
-                 << base::win::WStringFromGUID(__uuidof(TDualInterface));
+                 << ", " << std::hex << hr
+                 << ", IID: " << StringFromGuid(__uuidof(TDualInterface));
       return hr;
     }
 
     if (HRESULT hr =
             type_lib->GetTypeInfoOfGuid(__uuidof(TDualInterface), &type_info_);
         FAILED(hr)) {
-      LOG(ERROR) << __func__ << " ::GetTypeInfoOfGuid failed"
-                 << ", " << std::hex << hr << ", IID: "
-                 << base::win::WStringFromGUID(__uuidof(TDualInterface));
+      LOG(ERROR) << __func__ << " ::GetTypeInfoOfGuid failed" << ", "
+                 << std::hex << hr
+                 << ", IID: " << StringFromGuid(__uuidof(TDualInterface));
       return hr;
     }
 
@@ -164,7 +170,7 @@ class IDispatchImpl
   }
 
  private:
-  const std::unordered_map<IID, IID> iid_map_;
+  const base::flat_map<IID, IID, IidComparator> iid_map_;
   Microsoft::WRL::ComPtr<ITypeInfo> type_info_;
   const HRESULT hr_load_typelib_;
 };
@@ -190,7 +196,9 @@ class LegacyProcessLauncherImpl
     : public Microsoft::WRL::RuntimeClass<
           Microsoft::WRL::RuntimeClassFlags<Microsoft::WRL::ClassicCom>,
           IProcessLauncher,
-          IProcessLauncher2> {
+          IProcessLauncherSystem,
+          IProcessLauncher2,
+          IProcessLauncher2System> {
  public:
   LegacyProcessLauncherImpl();
   LegacyProcessLauncherImpl(const LegacyProcessLauncherImpl&) = delete;
@@ -251,17 +259,31 @@ class LegacyProcessLauncherImpl
 // back-slash, double-quotes, space, and tab is applied if necessary.
 class LegacyAppCommandWebImpl : public IDispatchImpl<IAppCommandWeb> {
  public:
+  struct ErrorParams {
+    int error_code = 0;
+    int extra_code1 = 0;
+  };
+
+  using PingSender =
+      base::RepeatingCallback<void(UpdaterScope scope,
+                                   const std::string& app_id,
+                                   const std::string& command_id,
+                                   ErrorParams error_params,
+                                   update_client::Callback callback)>;
   LegacyAppCommandWebImpl();
   LegacyAppCommandWebImpl(const LegacyAppCommandWebImpl&) = delete;
   LegacyAppCommandWebImpl& operator=(const LegacyAppCommandWebImpl&) = delete;
 
   // Initializes an instance of `IAppCommandWeb` for the given `scope`,
-  // `app_id`, and `command_id`. Returns an error if the command format does not
-  // exist in the registry, or if the command format in the registry has an
-  // invalid formatting, or if the type information could not be initialized.
+  // `app_id`, `command_id`, and a `ping_sender`. Returns an error if the
+  // command format does not exist in the registry, or if the command format in
+  // the registry has an invalid formatting, or if the type information could
+  // not be initialized.
   HRESULT RuntimeClassInitialize(UpdaterScope scope,
                                  const std::wstring& app_id,
-                                 const std::wstring& command_id);
+                                 const std::wstring& command_id,
+                                 PingSender ping_sender = base::BindRepeating(
+                                     &LegacyAppCommandWebImpl::SendPing));
 
   // Overrides for IAppCommandWeb.
   IFACEMETHODIMP get_status(UINT* status) override;
@@ -286,13 +308,30 @@ class LegacyAppCommandWebImpl : public IDispatchImpl<IAppCommandWeb> {
                          VARIANT substitution8,
                          VARIANT substitution9) override;
 
+  base::Process process() const {
+    base::AutoLock lock(lock_);
+    return process_.Duplicate();
+  }
+
  private:
+  friend class LegacyAppCommandWebImplTest;
+
+  static void SendPing(UpdaterScope scope,
+                       const std::string& app_id,
+                       const std::string& command_id,
+                       ErrorParams error_params,
+                       update_client::Callback callback);
+
   ~LegacyAppCommandWebImpl() override;
 
-  base::Process process_;
-  HResultOr<AppCommandRunner> app_command_runner_;
-
-  friend class LegacyAppCommandWebImplTest;
+  mutable base::Lock lock_;
+  base::Process process_ GUARDED_BY(lock_);
+  bool is_executing_ GUARDED_BY(lock_) = false;
+  HResultOr<scoped_refptr<AppCommandRunner>> app_command_runner_;
+  UpdaterScope scope_ = UpdaterScope::kSystem;
+  std::string app_id_;
+  std::string command_id_;
+  PingSender ping_sender_ = base::DoNothing();
 };
 
 // This class implements the legacy Omaha3 IPolicyStatus* interfaces, which
@@ -300,8 +339,10 @@ class LegacyAppCommandWebImpl : public IDispatchImpl<IAppCommandWeb> {
 // and device management.
 //
 // This class is used by chrome://policy to show the current updater policies.
-class PolicyStatusImpl
-    : public IDispatchImpl<IPolicyStatus3, IPolicyStatus2, IPolicyStatus> {
+class PolicyStatusImpl : public IDispatchImpl<IPolicyStatus4,
+                                              IPolicyStatus3,
+                                              IPolicyStatus2,
+                                              IPolicyStatus> {
  public:
   PolicyStatusImpl();
   PolicyStatusImpl(const PolicyStatusImpl&) = delete;
@@ -309,7 +350,7 @@ class PolicyStatusImpl
 
   HRESULT RuntimeClassInitialize();
 
-  // IPolicyStatus/IPolicyStatus2/IPolicyStatus3. See
+  // IPolicyStatus/IPolicyStatus2/IPolicyStatus3/IPolicyStatus4. See
   // `updater_legacy_idl.template` for the description of the properties below.
   IFACEMETHODIMP get_lastCheckPeriodMinutes(DWORD* minutes) override;
   IFACEMETHODIMP get_updatesSuppressedTimes(
@@ -360,6 +401,8 @@ class PolicyStatusImpl
                                    IPolicyStatusValue** value) override;
   IFACEMETHODIMP get_forceInstallApps(VARIANT_BOOL is_machine,
                                       IPolicyStatusValue** value) override;
+  IFACEMETHODIMP get_cloudPolicyOverridesPlatformPolicy(
+      IPolicyStatusValue** value) override;
 
  private:
   ~PolicyStatusImpl() override;

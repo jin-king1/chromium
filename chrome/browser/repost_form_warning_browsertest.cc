@@ -2,10 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/test/run_until.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/chrome_notification_types.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/login/login_handler.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/common/url_constants.h"
@@ -22,12 +23,12 @@ using web_modal::WebContentsModalDialogManager;
 
 class RepostFormWarningTest : public DialogBrowserTest {
  public:
-  RepostFormWarningTest() {}
+  RepostFormWarningTest() = default;
 
   RepostFormWarningTest(const RepostFormWarningTest&) = delete;
   RepostFormWarningTest& operator=(const RepostFormWarningTest&) = delete;
 
-  ~RepostFormWarningTest() override {}
+  ~RepostFormWarningTest() override = default;
 
   // BrowserTestBase:
   void SetUpOnMainThread() override;
@@ -63,7 +64,7 @@ content::WebContents* RepostFormWarningTest::TryReload() {
   return web_contents;
 }
 
-// If becomes flaky, disable on Windows and use http://crbug.com/47228
+// If becomes flaky, disable on Windows and use http://crbug.com/40411916
 IN_PROC_BROWSER_TEST_F(RepostFormWarningTest, TestDoubleReload) {
   // Try to reload it twice, checking for repost.
   content::WebContents* web_contents = TryReload();
@@ -82,21 +83,20 @@ IN_PROC_BROWSER_TEST_F(RepostFormWarningTest, TestDoubleReload) {
   EXPECT_FALSE(web_contents_modal_dialog_manager->IsDialogActive());
 }
 
-// If becomes flaky, disable on Windows and use http://crbug.com/47228
+// If becomes flaky, disable on Windows and use http://crbug.com/40411916
 IN_PROC_BROWSER_TEST_F(RepostFormWarningTest, TestLoginAfterRepost) {
   // Try to reload it, checking for repost.
   content::WebContents* web_contents = TryReload();
 
   // Navigate to a page that requires authentication, bringing up another
   // tab-modal sheet.
-  content::NavigationController& controller = web_contents->GetController();
-  content::WindowedNotificationObserver observer(
-      chrome::NOTIFICATION_AUTH_NEEDED,
-      content::Source<content::NavigationController>(&controller));
-  browser()->OpenURL(content::OpenURLParams(
-      embedded_test_server()->GetURL("/auth-basic"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED, false));
-  observer.Wait();
+  browser()->OpenURL(
+      content::OpenURLParams(
+          embedded_test_server()->GetURL("/auth-basic"), content::Referrer(),
+          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED, false),
+      /*navigation_handle_callback=*/{});
+  ASSERT_TRUE(base::test::RunUntil(
+      []() { return LoginHandler::GetAllLoginHandlersForTest().size() == 1; }));
 
   // Try to reload it again.
   web_contents->GetController().Reload(content::ReloadType::NORMAL, true);
@@ -105,14 +105,16 @@ IN_PROC_BROWSER_TEST_F(RepostFormWarningTest, TestLoginAfterRepost) {
   // because that waits for the current page to stop loading first, which won't
   // happen while the auth dialog is up.
   content::TestNavigationObserver navigation_observer(web_contents);
-  browser()->OpenURL(content::OpenURLParams(
-      embedded_test_server()->GetURL("/bar"), content::Referrer(),
-      WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED, false));
+  browser()->OpenURL(
+      content::OpenURLParams(
+          embedded_test_server()->GetURL("/bar"), content::Referrer(),
+          WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED, false),
+      /*navigation_handle_callback=*/{});
   navigation_observer.Wait();
 }
 
 // Disable on Mac OS until dialogs are using toolkit-views for MacViews project.
-// https://crbug.com/683356
+// https://crbug.com/41296226
 #if !BUILDFLAG(IS_MAC)
 IN_PROC_BROWSER_TEST_F(RepostFormWarningTest, InvokeUi_TestRepostWarning) {
   ShowAndVerifyUi();

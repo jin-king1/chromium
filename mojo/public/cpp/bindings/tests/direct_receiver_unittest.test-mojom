@@ -7,4 +7,3 @@ module mojo.test.direct_receiver_unittest.mojom;
 interface Service {
   Ping() => ();
 };
-

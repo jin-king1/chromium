@@ -58,7 +58,7 @@ void ExtensionTelemetryConfigManager::SaveConfig(
   if (configuration_version <= GetConfigVersion()) {
     return;
   }
-  base::Value::Dict telemetry_config_dict;
+  base::DictValue telemetry_config_dict;
   telemetry_config_dict.Set(kConfigurationVersion,
                             static_cast<int>(configuration_version));
   if (telemetry_config.has_reporting_interval_seconds()) {
@@ -76,7 +76,7 @@ void ExtensionTelemetryConfigManager::SaveConfig(
        telemetry_config.extension_parameters()) {
     uint64_t signal_enables_bitmask =
         proto_extension_parameter.signal_enable_mask();
-    base::Value::Dict extension_dict;
+    base::DictValue extension_dict;
     // In order to store the bitmask into the base::value::dict object
     // the `signal_enables` bitmask must be split from it's uint64 form
     // into two int32 variables.
@@ -94,8 +94,7 @@ void ExtensionTelemetryConfigManager::SaveConfig(
 bool ExtensionTelemetryConfigManager::IsSignalEnabled(
     const extensions::ExtensionId& extension_id,
     ExtensionSignalType signal_type) const {
-  const base::Value::Dict* extension_dict =
-      configuration_.FindDict(extension_id);
+  const base::DictValue* extension_dict = configuration_.FindDict(extension_id);
   if (!extension_dict) {
     return true;
   }
@@ -105,24 +104,23 @@ bool ExtensionTelemetryConfigManager::IsSignalEnabled(
 }
 
 uint32_t ExtensionTelemetryConfigManager::GetWritesPerInterval() const {
-  absl::optional<int> param = configuration_.FindInt(kWritesPerInterval);
+  std::optional<int> param = configuration_.FindInt(kWritesPerInterval);
   return static_cast<uint32_t>(param.value_or(kDefaultWritesPerInterval));
 }
 
 uint32_t ExtensionTelemetryConfigManager::GetConfigVersion() const {
-  absl::optional<int> param = configuration_.FindInt(kConfigurationVersion);
+  std::optional<int> param = configuration_.FindInt(kConfigurationVersion);
   return static_cast<uint32_t>(param.value_or(kDefaultConfigVersion));
 }
 
 uint32_t ExtensionTelemetryConfigManager::GetReportingInterval() const {
-  absl::optional<int> param = configuration_.FindInt(kReportingInterval);
+  std::optional<int> param = configuration_.FindInt(kReportingInterval);
   return static_cast<uint32_t>(param.value_or(kDefaultReportingInterval));
 }
 
 uint64_t ExtensionTelemetryConfigManager::GetSignalEnables(
     const extensions::ExtensionId& extension_id) const {
-  const base::Value::Dict* extension_dict =
-      configuration_.FindDict(extension_id);
+  const base::DictValue* extension_dict = configuration_.FindDict(extension_id);
   if (!extension_dict) {
     // By default, all signals are enabled for extensions.
     return kDefaultSignalEnables;

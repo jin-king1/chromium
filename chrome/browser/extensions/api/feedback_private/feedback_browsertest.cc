@@ -19,7 +19,6 @@
 #include "chrome/common/extensions/extension_constants.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/ui_test_utils.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -72,7 +71,7 @@ class TestFeedbackUploaderDelegate
   base::OnceClosure quit_callback_;
 };
 
-// TODO(crbug.com/1241504): disable tests.
+// TODO(crbug.com/40194697): disable tests.
 IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_ShowFeedback) {
   WaitForExtensionViewsToLoad();
 
@@ -81,7 +80,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_ShowFeedback) {
   VerifyFeedbackAppLaunch();
 }
 
-// TODO(crbug.com/1241504): disable tests.
+// TODO(crbug.com/40194697): disable tests.
 IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_ShowLoginFeedback) {
   WaitForExtensionViewsToLoad();
 
@@ -102,7 +101,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_ShowLoginFeedback) {
 }
 
 // Tests that there's an option in the email drop down box with a value ''.
-// TODO(crbug.com/1241504): disable tests.
+// TODO(crbug.com/40194697): disable tests.
 IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_AnonymousUser) {
   WaitForExtensionViewsToLoad();
 
@@ -129,7 +128,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_AnonymousUser) {
 
 // Ensures that when extra diagnostics are provided with feedback, they are
 // injected properly in the system information.
-// TODO(crbug.com/1241504): disable tests.
+// TODO(crbug.com/40194697): disable tests.
 IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_ExtraDiagnostics) {
   WaitForExtensionViewsToLoad();
 
@@ -158,7 +157,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_ExtraDiagnostics) {
 
 // Ensures that when triggered from Assistant with Google account, Assistant
 // checkbox are not hidden.
-// Disabled due to flake: https://crbug.com/1240591
+// Disabled due to flake: https://crbug.com/40194309
 IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_ShowFeedbackFromAssistant) {
   WaitForExtensionViewsToLoad();
 
@@ -184,7 +183,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_ShowFeedbackFromAssistant) {
                 "  })());"));
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 // Ensures that when triggered from a Google account and a Bluetooth related
 // string is entered into the description, that we provide the option for
 // uploading Bluetooth logs as well.
@@ -315,9 +314,9 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_AppendQuestionnaireNotGoogler) {
                 "    return !elem.value.includes('please answer');"
                 "  })());"));
 }
-#endif  // BUILDFLAG(IS_CHROMEOS_ASH)
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
-// Disabled due to flake: https://crbug.com/1069870
+// Disabled due to flake: https://crbug.com/40126107
 IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_GetTargetTabUrl) {
   const std::pair<std::string, std::string> test_cases[] = {
       {"https://www.google.com/", "https://www.google.com/"},
@@ -328,7 +327,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_GetTargetTabUrl) {
   for (const auto& test_case : test_cases) {
     GURL expected_url = GURL(test_case.second);
 
-    ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(test_case.first)));
+    ASSERT_TRUE(NavigateToURL(GetActiveWebContents(), GURL(test_case.first)));
 
     // Sanity check that we always have one tab in the browser.
     ASSERT_EQ(browser()->tab_strip_model()->count(), 1);
@@ -338,8 +337,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_GetTargetTabUrl) {
                                 ->GetWebContentsAt(0)
                                 ->GetLastCommittedURL());
 
-    ASSERT_EQ(expected_url,
-              chrome::GetTargetTabUrl(browser()->session_id(), 0));
+    ASSERT_EQ(expected_url, chrome::GetTargetTabUrl(browser(), 0));
 
     // Open a DevTools window.
     DevToolsWindow* devtools_window =
@@ -347,17 +345,15 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_GetTargetTabUrl) {
 
     // Verify the expected url returned from GetTargetTabUrl against a
     // DevTools window.
-    ASSERT_EQ(expected_url, chrome::GetTargetTabUrl(
-                                DevToolsWindowTesting::Get(devtools_window)
-                                    ->browser()
-                                    ->session_id(),
-                                0));
+    ASSERT_EQ(expected_url,
+              chrome::GetTargetTabUrl(
+                  DevToolsWindowTesting::Get(devtools_window)->browser(), 0));
 
     DevToolsWindowTesting::CloseDevToolsWindowSync(devtools_window);
   }
 }
 
-// Disabled due to flake: https://crbug.com/1180373
+// Disabled due to flake: https://crbug.com/40750267
 IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_SubmissionTest) {
   WaitForExtensionViewsToLoad();
 
@@ -376,7 +372,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_SubmissionTest) {
   base::RunLoop run_loop;
   TestFeedbackUploaderDelegate delegate(run_loop.QuitClosure());
   feedback::FeedbackUploaderFactoryChrome::GetInstance()
-      ->GetForBrowserContext(browser()->profile())
+      ->GetForBrowserContext(profile())
       ->set_feedback_uploader_delegate(&delegate);
 
   // Click the send button.
@@ -395,7 +391,7 @@ IN_PROC_BROWSER_TEST_F(FeedbackTest, DISABLED_SubmissionTest) {
   // is the main case we are concerned about.
   run_loop.Run();
   feedback::FeedbackUploaderFactoryChrome::GetInstance()
-      ->GetForBrowserContext(browser()->profile())
+      ->GetForBrowserContext(profile())
       ->set_feedback_uploader_delegate(nullptr);
 }
 

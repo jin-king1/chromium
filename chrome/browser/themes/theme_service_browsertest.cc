@@ -19,7 +19,7 @@
 #include "content/public/test/test_utils.h"
 #include "ui/base/buildflags.h"
 #include "ui/color/color_provider.h"
-#include "ui/native_theme/native_theme.h"
+#include "ui/native_theme/mock_os_settings_provider.h"
 
 #if BUILDFLAG(IS_LINUX)
 #include "ui/linux/linux_ui.h"
@@ -37,23 +37,18 @@ bool UsingCustomTheme(const ThemeService& theme_service) {
 }
 
 const ui::ColorProvider* GetColorProviderFor(Browser* browser) {
-  return browser->window()->GetColorProvider();
+  return BrowserWindow::FromBrowser(browser)->GetColorProvider();
 }
 
 class ThemeServiceBrowserTest : public extensions::ExtensionBrowserTest {
  public:
-  ThemeServiceBrowserTest() {
-  }
-
-  ThemeServiceBrowserTest(const ThemeServiceBrowserTest&) = delete;
-  ThemeServiceBrowserTest& operator=(const ThemeServiceBrowserTest&) = delete;
-
-  ~ThemeServiceBrowserTest() override {}
-
   void SetUp() override {
     extensions::ComponentLoader::EnableBackgroundExtensionsForTesting();
     extensions::ExtensionBrowserTest::SetUp();
   }
+
+ private:
+  ui::MockOsSettingsProvider os_settings_provider_;  // Forces light mode.
 };
 
 // Test that the theme is recreated from the extension when the data pack is
@@ -61,7 +56,7 @@ class ThemeServiceBrowserTest : public extensions::ExtensionBrowserTest {
 // The PRE_ part of the test installs the theme and changes where Chrome looks
 // for the theme data pack to make sure that Chrome does not find it.
 IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, PRE_ThemeDataPackInvalid) {
-  Profile* profile = browser()->profile();
+  Profile* profile = browser()->GetProfile();
   ThemeService* theme_service = ThemeServiceFactory::GetForProfile(profile);
 
   // Test initial state.
@@ -91,17 +86,13 @@ IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, PRE_ThemeDataPackInvalid) {
 
 IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, ThemeDataPackInvalid) {
   ThemeService* theme_service =
-      ThemeServiceFactory::GetForProfile(browser()->profile());
+      ThemeServiceFactory::GetForProfile(browser()->GetProfile());
   EXPECT_TRUE(UsingCustomTheme(*theme_service));
   EXPECT_EQ(kThemeNtpLinkColor,
             GetColorProviderFor(browser())->GetColor(kColorNewTabPageLink));
 }
 
 IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, IncognitoTest) {
-  // This test relies on incognito being meaningfully different than default,
-  // which is not currently true in dark mode.
-  ui::NativeTheme::GetInstanceForNativeUi()->set_use_dark_colors(false);
-
   // Should get a different ColorProvider for incognito and original windows.
   Browser* incognito_browser = CreateIncognitoBrowser();
   const auto* color_provider = GetColorProviderFor(browser());
@@ -143,7 +134,7 @@ IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest,
       GetColorProviderFor(incognito_browser)->GetColor(kColorToolbar);
 
   ThemeService* theme_service =
-      ThemeServiceFactory::GetForProfile(browser()->profile());
+      ThemeServiceFactory::GetForProfile(browser()->GetProfile());
   test::ThemeServiceChangedWaiter waiter(theme_service);
   InstallExtension(test_data_dir_.AppendASCII("theme_minimal/"), 1);
   waiter.WaitForThemeChanged();
@@ -158,19 +149,18 @@ IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, GetColorForToolbarButton) {
-  // This test relies on toolbar buttons having no tint, which is not currently
-  // true in dark mode when using the system theme.
-  ui::NativeTheme::GetInstanceForNativeUi()->set_use_dark_colors(false);
 #if BUILDFLAG(IS_LINUX)
+  // This test relies on toolbar buttons having no tint, which is not currently
+  // true when using the system theme.
   ui::LinuxUiGetter::set_instance(nullptr);
-#endif
   ui::NativeTheme::GetInstanceForNativeUi()->NotifyOnNativeThemeUpdated();
+#endif
 
   SkColor default_toolbar_button_color =
       GetColorProviderFor(browser())->GetColor(kColorToolbarButtonIcon);
 
   ThemeService* theme_service =
-      ThemeServiceFactory::GetForProfile(browser()->profile());
+      ThemeServiceFactory::GetForProfile(browser()->GetProfile());
   {
     test::ThemeServiceChangedWaiter waiter(theme_service);
     InstallExtension(
@@ -190,7 +180,7 @@ IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, GetColorForToolbarButton) {
     // non-deterministically; thus, don't check the `expected_change` value.
     InstallExtension(
         test_data_dir_.AppendASCII("theme_test_toolbar_button_tint/"),
-        absl::nullopt);
+        std::nullopt);
     waiter.WaitForThemeChanged();
   }
 
@@ -199,6 +189,46 @@ IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest, GetColorForToolbarButton) {
       GetColorProviderFor(browser())->GetColor(kColorToolbarButtonIcon);
   EXPECT_NE(toolbar_button_tinted_color, default_toolbar_button_color);
   EXPECT_NE(toolbar_button_tinted_color, toolbar_button_explicit_color);
+}
+
+// Test methods that involve resetting and updating multiple theme prefs. Ensure
+// the final state is represented after only a single theme change event.
+IN_PROC_BROWSER_TEST_F(ThemeServiceBrowserTest,
+                       ThemeTransitionsEmitSingleNotification) {
+  ThemeService* theme_service =
+      ThemeServiceFactory::GetForProfile(browser()->GetProfile());
+
+  // User color.
+  {
+    EXPECT_NE(SK_ColorGREEN, theme_service->GetUserColor());
+    test::ThemeServiceChangedWaiter waiter(theme_service);
+    theme_service->SetUserColor(SK_ColorGREEN);
+    waiter.WaitForThemeChanged();
+    EXPECT_EQ(SK_ColorGREEN, theme_service->GetUserColor());
+  }
+
+  // User color + color variant.
+  {
+    EXPECT_NE(SK_ColorRED, theme_service->GetUserColor());
+    EXPECT_NE(ui::mojom::BrowserColorVariant::kTonalSpot,
+              theme_service->GetBrowserColorVariant());
+    test::ThemeServiceChangedWaiter waiter(theme_service);
+    theme_service->SetUserColorAndBrowserColorVariant(
+        SK_ColorRED, ui::mojom::BrowserColorVariant::kTonalSpot);
+    waiter.WaitForThemeChanged();
+    EXPECT_EQ(SK_ColorRED, theme_service->GetUserColor());
+    EXPECT_EQ(ui::mojom::BrowserColorVariant::kTonalSpot,
+              theme_service->GetBrowserColorVariant());
+  }
+
+  // Grayscale.
+  {
+    EXPECT_FALSE(theme_service->GetIsGrayscale());
+    test::ThemeServiceChangedWaiter waiter(theme_service);
+    theme_service->SetIsGrayscale(true);
+    waiter.WaitForThemeChanged();
+    EXPECT_TRUE(theme_service->GetIsGrayscale());
+  }
 }
 
 }  // namespace

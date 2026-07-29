@@ -5,16 +5,13 @@
 #include "third_party/blink/renderer/platform/scheduler/main_thread/frame_task_queue_controller.h"
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/run_loop.h"
-#include "base/task/sequence_manager/task_queue.h"
-#include "base/task/sequence_manager/test/sequence_manager_for_test.h"
 #include "base/test/task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/platform/scheduler/common/task_priority.h"
 #include "third_party/blink/renderer/platform/scheduler/main_thread/frame_scheduler_impl.h"
@@ -23,6 +20,7 @@
 #include "third_party/blink/renderer/platform/scheduler/main_thread/page_scheduler_impl.h"
 #include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_priority.h"
 #include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_queue_type.h"
+#include "third_party/blink/renderer/platform/scheduler/test/task_environment.h"
 #include "third_party/blink/renderer/platform/wtf/hash_map.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 
@@ -48,20 +46,14 @@ class FrameTaskQueueControllerTest : public testing::Test,
   ~FrameTaskQueueControllerTest() override = default;
 
   void SetUp() override {
-    auto settings = base::sequence_manager::SequenceManager::Settings::Builder()
-                        .SetPrioritySettings(CreatePrioritySettings())
-                        .Build();
-    scheduler_ = std::make_unique<MainThreadSchedulerImpl>(
-        base::sequence_manager::SequenceManagerForTest::Create(
-            nullptr, task_environment_.GetMainThreadTaskRunner(),
-            task_environment_.GetMockTickClock(), std::move(settings)));
-    agent_group_scheduler_ = scheduler_->CreateAgentGroupScheduler();
+    agent_group_scheduler_ =
+        task_environment_.GetMainThreadScheduler()->CreateAgentGroupScheduler();
     page_scheduler_ = agent_group_scheduler_->CreatePageScheduler(nullptr);
     frame_scheduler_ = page_scheduler_->CreateFrameScheduler(
-        nullptr, /*is_in_embedded_frame_tree=*/false,
+        nullptr, LocalFrameToken(), /*is_in_embedded_frame_tree=*/false,
         FrameScheduler::FrameType::kSubframe);
     frame_task_queue_controller_ = std::make_unique<FrameTaskQueueController>(
-        scheduler_.get(),
+        task_environment_.GetMainThreadScheduler(),
         static_cast<FrameSchedulerImpl*>(frame_scheduler_.get()), this);
   }
 
@@ -70,8 +62,6 @@ class FrameTaskQueueControllerTest : public testing::Test,
     frame_scheduler_.reset();
     page_scheduler_.reset();
     agent_group_scheduler_ = nullptr;
-    scheduler_->Shutdown();
-    scheduler_.reset();
   }
 
   // FrameTaskQueueController::Delegate implementation.
@@ -117,8 +107,7 @@ class FrameTaskQueueControllerTest : public testing::Test,
   size_t task_queue_created_count() const { return task_queue_created_count_; }
 
  protected:
-  base::test::TaskEnvironment task_environment_;
-  std::unique_ptr<MainThreadSchedulerImpl> scheduler_;
+  blink::test::TaskEnvironmentWithMainThreadScheduler task_environment_;
   Persistent<AgentGroupScheduler> agent_group_scheduler_;
   std::unique_ptr<PageScheduler> page_scheduler_;
   std::unique_ptr<FrameScheduler> frame_scheduler_;
@@ -131,8 +120,7 @@ class FrameTaskQueueControllerTest : public testing::Test,
 TEST_F(FrameTaskQueueControllerTest, CreateAllTaskQueues) {
   enum class QueueCheckResult { kDidNotSeeQueue, kDidSeeQueue };
 
-  WTF::HashMap<scoped_refptr<MainThreadTaskQueue>, QueueCheckResult>
-      all_task_queues;
+  HashMap<scoped_refptr<MainThreadTaskQueue>, QueueCheckResult> all_task_queues;
 
   scoped_refptr<MainThreadTaskQueue> task_queue = LoadingTaskQueue();
   EXPECT_FALSE(all_task_queues.Contains(task_queue));
@@ -183,7 +171,7 @@ TEST_F(FrameTaskQueueControllerTest, CreateAllTaskQueues) {
     auto [task_queue_ptr, voter] = task_queue_and_voter;
 
     EXPECT_NE(task_queue_ptr, nullptr);
-    EXPECT_TRUE(all_task_queues.find(task_queue_ptr) != all_task_queues.end());
+    EXPECT_TRUE(all_task_queues.Contains(task_queue_ptr));
     // Make sure we don't get the same queue twice.
     auto it = all_task_queues.find(task_queue_ptr);
     EXPECT_FALSE(it == all_task_queues.end());
@@ -198,7 +186,7 @@ TEST_F(FrameTaskQueueControllerTest,
   scoped_refptr<MainThreadTaskQueue> task_queue =
       frame_task_queue_controller_->GetTaskQueue(
           MainThreadTaskQueue::QueueTraits());
-  EXPECT_EQ(absl::nullopt, task_queue->GetWebSchedulingPriority());
+  EXPECT_EQ(std::nullopt, task_queue->GetWebSchedulingPriority());
 }
 
 TEST_F(FrameTaskQueueControllerTest, AddWebSchedulingTaskQueues) {
@@ -307,7 +295,6 @@ INSTANTIATE_TEST_SUITE_P(
         QueueTraits::PrioritisationType::kLoadingControl,
         QueueTraits::PrioritisationType::kFindInPage,
         QueueTraits::PrioritisationType::kExperimentalDatabase,
-        QueueTraits::PrioritisationType::kJavaScriptTimer,
         QueueTraits::PrioritisationType::kHighPriorityLocalFrame,
         QueueTraits::PrioritisationType::kInput));
 
@@ -315,7 +302,7 @@ TEST_P(TaskQueueCreationFromQueueTraitsTest,
         AddAndRetrieveAllTaskQueues) {
   // Create queues for all combination of queue traits for all combinations of
   // the 6 QueueTraits bits with different PrioritisationTypes.
-  WTF::HashSet<scoped_refptr<MainThreadTaskQueue>> all_task_queues;
+  HashSet<scoped_refptr<MainThreadTaskQueue>> all_task_queues;
   constexpr size_t kTotalUniqueQueueTraits = 1 << 6;
   for (size_t i = 0; i < kTotalUniqueQueueTraits; i++) {
     QueueTraits::PrioritisationType prioritisation_type = GetParam();

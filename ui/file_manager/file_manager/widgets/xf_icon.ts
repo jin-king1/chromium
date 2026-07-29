@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {util} from '../common/js/util.js';
-import {constants} from '../foreground/js/constants.js';
+import {iconSetToCSSBackgroundImageValue} from '../common/js/util.js';
+import {ICON_TYPES} from '../foreground/js/constants.js';
 
-import {css, customElement, html, property, PropertyValues, styleMap, svg, XfBase} from './xf_base.js';
+import {css, customElement, html, property, type PropertyValues, styleMap, svg, XfBase} from './xf_base.js';
 
 @customElement('xf-icon')
 export class XfIcon extends XfBase {
@@ -17,7 +17,7 @@ export class XfIcon extends XfBase {
 
   /**
    * The icon type, different type will render different SVG file
-   * (from `constants.ICON_TYPES`).
+   * (from `ICON_TYPES`).
    */
   @property({type: String, reflect: true}) type = '';
 
@@ -39,22 +39,22 @@ export class XfIcon extends XfBase {
 
   static get multiColor() {
     return {
-      [constants.ICON_TYPES.OFFLINE]:
-          svg`<use xlink:href="foreground/images/files/ui/offline.svg#offline"></use>`,
-      [constants.ICON_TYPES.CLOUD_DONE]:
+      [ICON_TYPES.CANT_PIN]:
+          svg`<use xlink:href="foreground/images/files/ui/cant_pin.svg#cant_pin"></use>`,
+      [ICON_TYPES.CLOUD_DONE]:
           svg`<use xlink:href="foreground/images/files/ui/cloud_done.svg#cloud_done"></use>`,
-      [constants.ICON_TYPES.CLOUD_ERROR]:
+      [ICON_TYPES.CLOUD_ERROR]:
           svg`<use xlink:href="foreground/images/files/ui/cloud_error.svg#cloud_error"></use>`,
-      [constants.ICON_TYPES.CLOUD_OFFLINE]:
+      [ICON_TYPES.CLOUD_OFFLINE]:
           svg`<use xlink:href="foreground/images/files/ui/cloud_offline.svg#cloud_offline"></use>`,
-      [constants.ICON_TYPES.CLOUD_SYNC]:
+      [ICON_TYPES.CLOUD_PAUSED]:
+          svg`<use xlink:href="foreground/images/files/ui/cloud_paused.svg#cloud_paused"></use>`,
+      [ICON_TYPES.CLOUD_SYNC]:
           svg`<use xlink:href="foreground/images/files/ui/cloud_sync.svg#cloud_sync"></use>`,
-      [constants.ICON_TYPES.CLOUD]:
-          svg`<use xlink:href="foreground/images/files/ui/cloud.svg#cloud"></use>`,
-      [constants.ICON_TYPES.ENCRYPTED]:
-          svg`<use xlink:href="foreground/images/files/ui/encrypted.svg#encrypted"></use>`,
-      [constants.ICON_TYPES.ERROR]:
+      [ICON_TYPES.ERROR]:
           svg`<use xlink:href="foreground/images/files/ui/error.svg#error"></use>`,
+      [ICON_TYPES.OFFLINE]:
+          svg`<use xlink:href="foreground/images/files/ui/offline.svg#offline"></use>`,
     };
   }
 
@@ -63,6 +63,10 @@ export class XfIcon extends XfBase {
   }
 
   override render() {
+    if (this.type === ICON_TYPES.BLANK) {
+      return html``;
+    }
+
     if (Object.keys(XfIcon.multiColor).includes(this.type)) {
       return html`
         <span class="multi-color keep-color">
@@ -74,7 +78,7 @@ export class XfIcon extends XfBase {
 
     if (this.iconSet) {
       const backgroundImageStyle = {
-        'background-image': util.iconSetToCSSBackgroundImageValue(this.iconSet),
+        'background-image': iconSetToCSSBackgroundImageValue(this.iconSet),
       };
       return html`<span class="keep-color" style=${
           styleMap(backgroundImageStyle)}></span>`;
@@ -100,10 +104,10 @@ export class XfIcon extends XfBase {
       console.warn('Empty type will result in an square being rendered.');
       return;
     }
-    const validTypes = Object.values(constants.ICON_TYPES);
+    const validTypes = Object.values(ICON_TYPES);
     if (!validTypes.find((t) => t === type)) {
-      console.warn(`Type ${
-          type} is not a valid icon type, please check constants.ICON_TYPES.`);
+      console.warn(
+          `Type ${type} is not a valid icon type, please check ICON_TYPES.`);
     }
   }
 }
@@ -112,6 +116,11 @@ function getCSS() {
   return css`
     :host {
       --xf-icon-color: var(--cros-sys-on_surface);
+      --xf-icon-base-color: var(--cros-sys-app_base);
+      --xf-icon-positive-color: var(--cros-sys-positive);
+      --xf-icon-error-color: var(--cros-sys-error);
+      --xf-icon-progress-color: var(--cros-sys-progress);
+      --xf-secondary-color: var(--cros-sys-secondary);
       display: inline-block;
     }
 
@@ -130,6 +139,10 @@ function getCSS() {
       background-repeat: no-repeat;
     }
 
+    :host-context([disabled]) span.keep-color {
+      opacity: 0.38;
+    }
+
     span.multi-color {
       display: flex;
       align-items: stretch;
@@ -141,6 +154,10 @@ function getCSS() {
       width: 16px;
     }
 
+    :host([size="extra_small"]) span.keep-color {
+      background-size: 16px 16px;
+    }
+
     :host([size="extra_small"]) span:not(.keep-color) {
       -webkit-mask-size: 16px;
     }
@@ -148,6 +165,10 @@ function getCSS() {
     :host([size="small"]) span {
       height: 20px;
       width: 20px;
+    }
+
+    :host([size="small"]) span.keep-color {
+      background-size: 20px 20px;
     }
 
     :host([size="small"]) span:not(.keep-color) {
@@ -159,6 +180,10 @@ function getCSS() {
       width: 32px;
     }
 
+    :host([size="medium"]) span.keep-color {
+      background-size: 32px 32px;
+    }
+
     :host([size="medium"]) span:not(.keep-color) {
       -webkit-mask-size: 32px;
     }
@@ -166,6 +191,10 @@ function getCSS() {
     :host([size="large"]) span {
       height: 48px;
       width: 48px;
+    }
+
+    :host([size="large"]) span.keep-color {
+      background-size: 48px 48px;
     }
 
     :host([size="large"]) span:not(.keep-color) {
@@ -184,7 +213,11 @@ function getCSS() {
       -webkit-mask-image: url(../foreground/images/filetype/filetype_audio.svg);
     }
 
-    :host([type="bruschetta"]) span, :host([type="crostini"]) span {
+    :host([type="bruschetta"]) span {
+      -webkit-mask-image: url(../foreground/images/volumes/bruschetta.svg);
+    }
+
+    :host([type="crostini"]) span {
       -webkit-mask-image: url(../foreground/images/volumes/linux_files.svg);
     }
 
@@ -218,6 +251,10 @@ function getCSS() {
 
     :host([type="drive_logo"]) span {
       -webkit-mask-image: url(../foreground/images/files/ui/drive_logo.svg);
+    }
+
+    :host([type="drive_bulk_pinning"]) span {
+      -webkit-mask-image: url(../foreground/images/files/ui/drive_bulk_pinning.svg);
     }
 
     :host([type="excel"]) span {
@@ -258,12 +295,20 @@ function getCSS() {
       -webkit-mask-image: url(../foreground/images/filetype/filetype_gmap.svg);
     }
 
+    :host([type="gproject"]) span {
+      -webkit-mask-image: url(../foreground/images/filetype/filetype_gproject.svg);
+    }
+
     :host([type="gsheet"]) span {
       -webkit-mask-image: url(../foreground/images/filetype/filetype_gsheet.svg);
     }
 
     :host([type="gsite"]) span {
       -webkit-mask-image: url(../foreground/images/filetype/filetype_gsite.svg);
+    }
+
+    :host([type="gmaillayout"]) span {
+      -webkit-mask-image: url(../foreground/images/filetype/filetype_gmaillayout.svg);
     }
 
     :host([type="gslides"]) span {
@@ -366,6 +411,10 @@ function getCSS() {
       -webkit-mask-image: url(../foreground/images/files/ui/check.svg);
     }
 
+    :host([type="bulk_pinning_battery_saver"]) span {
+      -webkit-mask-image: url(../foreground/images/files/ui/bulk_pinning_battery_saver.svg);
+    }
+
     :host([type="bulk_pinning_done"]) span {
       -webkit-mask-image: url(../foreground/images/files/ui/bulk_pinning_done.svg);
     }
@@ -374,8 +423,20 @@ function getCSS() {
       -webkit-mask-image: url(../foreground/images/files/ui/bulk_pinning_offline.svg);
     }
 
+    :host([type="cloud"]) span {
+      -webkit-mask-image: url(../foreground/images/files/ui/cloud.svg);
+    }
+
     :host([type="error_banner"]) span {
       -webkit-mask-image: url(../foreground/images/files/ui/error_banner_icon.svg);
+    }
+
+    :host([type='star']) span {
+      -webkit-mask-image: url(../foreground/images/files/ui/star.svg);
+    }
+
+    :host([type='odfs']) span {
+      -webkit-mask-image: url(../foreground/images/files/ui/odfs.svg);
     }
 
     :host([type='gdoc']) span,
@@ -389,7 +450,8 @@ function getCSS() {
     :host([type='image']) span,
     :host([type='gmap']) span,
     :host([type='pdf']) span,
-    :host([type='video']) span {
+    :host([type='video']) span,
+    :host([type='gmaillayout']) span {
       background-color: var(--cros-sys-error);
     }
 
@@ -409,6 +471,10 @@ function getCSS() {
     :host([type='gsite']) span,
     :host([type='sites']) span {
       background-color: var(--cros-sys-file_site);
+    }
+
+    :host([type='gproject']) span {
+      background-color: var(--cros-sys-file_project);
     }
 
     :host([type='excel']) span {
@@ -431,6 +497,7 @@ function getCSS() {
     :host([type='cloud_done']) span,
     :host([type='cloud_error']) span,
     :host([type='cloud_offline']) span,
+    :host([type='cloud_paused']) span,
     :host([type='cloud_sync']) span {
       margin-inline-start: 10px;
       margin-top: 8px;

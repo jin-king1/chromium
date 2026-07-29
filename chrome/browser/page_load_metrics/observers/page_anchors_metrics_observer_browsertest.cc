@@ -4,16 +4,21 @@
 
 #include "chrome/browser/page_load_metrics/observers/page_anchors_metrics_observer.h"
 
+#include <string_view>
+
+#include "base/memory/raw_ptr.h"
 #include "base/test/scoped_run_loop_timeout.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/ukm/test_ukm_recorder.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_source.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 
 class PageAnchorsMetricsObserverBrowserTest
     : public InProcessBrowserTest,
@@ -78,8 +83,8 @@ class PageAnchorsMetricsObserverBrowserTest
     return ukm_recorder_->GetEntriesByName(entry_name).size();
   }
 
-  std::vector<const ukm::mojom::UkmEntry*> GetEntriesByName(
-      base::StringPiece entry_name) const {
+  std::vector<raw_ptr<const ukm::mojom::UkmEntry, VectorExperimental>>
+  GetEntriesByName(std::string_view entry_name) const {
     return ukm_recorder_->GetEntriesByName(entry_name);
   }
 
@@ -92,7 +97,8 @@ class PageAnchorsMetricsObserverBrowserTest
     auto get_entries = [this](ukm::SourceId ukm_source_id,
                               const std::string& entry_name) {
       std::vector<const ukm::mojom::UkmEntry*> entries;
-      for (const auto* entry : ukm_recorder_->GetEntriesByName(entry_name)) {
+      for (const ukm::mojom::UkmEntry* entry :
+           ukm_recorder_->GetEntriesByName(entry_name)) {
         if (entry->source_id == ukm_source_id) {
           entries.push_back(entry);
         }
@@ -127,8 +133,9 @@ class PageAnchorsMetricsObserverBrowserTest
   std::unique_ptr<ukm::TestAutoSetUkmRecorder> ukm_recorder_;
 };
 
+// Disabled for being flaky. See crbug.com/40926120
 IN_PROC_BROWSER_TEST_F(PageAnchorsMetricsObserverBrowserTest,
-                       NavigateAwayShouldRecordUkmData) {
+                       DISABLED_NavigateAwayShouldRecordUkmData) {
   ResetUKM();
   NavigateTo(GetTestURL("/1.html"));
 
@@ -173,8 +180,9 @@ IN_PROC_BROWSER_TEST_F(PageAnchorsMetricsObserverBrowserTest,
       ukm::builders::NavigationPredictorUserInteractions::kAnchorIndexName, 0);
 }
 
+// TODO(crbug.com/40273087): Test is flaky.
 IN_PROC_BROWSER_TEST_F(PageAnchorsMetricsObserverBrowserTest,
-                       TestDifferentUKMSourceIdsPerNavigation) {
+                       DISABLED_TestDifferentUKMSourceIdsPerNavigation) {
   // Start with page 1.
   ResetUKM();
   NavigateTo(GetTestURL("/1.html"));
@@ -252,7 +260,7 @@ IN_PROC_BROWSER_TEST_F(PageAnchorsMetricsObserverBrowserTest,
 
   // Check that we used 4 different SourceIds.
   base::flat_set<ukm::SourceId> source_ids;
-  for (auto* entry : GetEntriesByName(
+  for (const ukm::mojom::UkmEntry* entry : GetEntriesByName(
            ukm::builders::NavigationPredictorUserInteractions::kEntryName)) {
     source_ids.insert(entry->source_id);
   }

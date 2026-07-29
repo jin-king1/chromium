@@ -53,7 +53,7 @@ class CSSFontFamilyWebKitPrefixTest : public SimTest {
     // An extra step is required to ensure that the system font is configured.
     // TODO(crbug.com/969622): Remove this.
     blink::WebFontRendering::SetMenuFontMetrics(
-        blink::WebString::FromASCII("Arial"), 12);
+        blink::WebString::FromAscii("Arial"), 12);
 #endif
   }
 
@@ -88,7 +88,8 @@ TEST_F(CSSFontFamilyWebKitPrefixTest,
 
   // This counter is triggered in FontBuilder when -webkit-body is replaced with
   // a non-empty GenericFontFamilySettings's standard font.
-  GetGenericGenericFontFamilySettings().UpdateStandard("MyStandardFont");
+  GetGenericGenericFontFamilySettings().UpdateStandard(
+      AtomicString("MyStandardFont"));
   LoadPageWithFontFamilyValue("initial");
   ASSERT_FALSE(GetDocument().IsUseCounted(
       WebFeature::kFontBuilderCSSFontFamilyWebKitPrefixBody));
@@ -119,7 +120,8 @@ TEST_F(CSSFontFamilyWebKitPrefixTest,
   // Implementation via FontDescription::GenericFamilyType is weird, here the
   // last specified generic family is set by FontBuilder. So FontSelector will
   // only trigger the counter if -webkit-body is at the last position.
-  GetGenericGenericFontFamilySettings().UpdateStandard("MyStandardFont");
+  GetGenericGenericFontFamilySettings().UpdateStandard(
+      AtomicString("MyStandardFont"));
   LoadPageWithFontFamilyValue("initial");
   ASSERT_FALSE(GetDocument().IsUseCounted(
       WebFeature::kFontSelectorCSSFontFamilyWebKitPrefixBody));

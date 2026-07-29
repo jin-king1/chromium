@@ -5,15 +5,16 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_IMAGE_ELEMENT_TIMING_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_PAINT_TIMING_IMAGE_ELEMENT_TIMING_H_
 
-#include <utility>
-
 #include "base/time/time.h"
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+#include "third_party/blink/renderer/core/paint/timing/container_timing.h"
+#include "third_party/blink/renderer/core/paint/timing/media_record_id.h"
+#include "third_party/blink/renderer/core/paint/timing/paint_timing_callbacks.h"
+#include "third_party/blink/renderer/core/timing/window_performance.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
-#include "third_party/blink/renderer/platform/supplementable.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
@@ -22,15 +23,13 @@ namespace blink {
 class ImageResourceContent;
 class PropertyTreeStateOrAlias;
 class StyleFetchedImage;
+class StyleImage;
 
 // ImageElementTiming is responsible for tracking the paint timings for <img>
 // elements for a given window.
 class CORE_EXPORT ImageElementTiming final
-    : public GarbageCollected<ImageElementTiming>,
-      public Supplement<LocalDOMWindow> {
+    : public GarbageCollected<ImageElementTiming> {
  public:
-  static const char kSupplementName[];
-
   // The maximum amount of characters included in Element Timing and Largest
   // Contentful Paint for inline images.
   static constexpr const unsigned kInlineImageMaxChars = 100;
@@ -38,36 +37,45 @@ class CORE_EXPORT ImageElementTiming final
   explicit ImageElementTiming(LocalDOMWindow&);
   ImageElementTiming(const ImageElementTiming&) = delete;
   ImageElementTiming& operator=(const ImageElementTiming&) = delete;
-  virtual ~ImageElementTiming() = default;
+  ~ImageElementTiming() = default;
 
   static ImageElementTiming& From(LocalDOMWindow&);
 
-  void NotifyImageFinished(const LayoutObject&, const ImageResourceContent*);
+  void NotifyImageFinished(const LayoutObject&, const MediaTiming*);
 
   void NotifyBackgroundImageFinished(const StyleFetchedImage*);
-  base::TimeTicks GetBackgroundImageLoadTime(const StyleFetchedImage*);
+  base::TimeTicks GetBackgroundImageLoadTime(const StyleImage*);
 
-  // Called when the LayoutObject has been painted. This method might queue a
-  // presentation promise to compute and report paint timestamps.
-  void NotifyImagePainted(
+  // Called when the LayoutObject has been painted. Does nothing if the image is
+  // not fully loaded. This method might queue a presentation promise to compute
+  // and report paint timestamps.
+  void NotifyImagePaint(
       const LayoutObject&,
-      const ImageResourceContent& cached_image,
+      const MediaTiming& cached_image,
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
       const gfx::Rect& image_border);
 
   void NotifyBackgroundImagePainted(
       Node&,
-      const StyleFetchedImage& background_image,
+      const StyleImage& background_image,
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
       const gfx::Rect& image_border);
 
-  void NotifyImageRemoved(const LayoutObject*,
+  void NotifyImageRemoved(const LayoutObject&,
                           const ImageResourceContent* image);
 
-  void Trace(Visitor*) const override;
+  void Trace(Visitor*) const;
+
+  OptionalPaintTimingCallback TakePaintTimingCallback();
 
  private:
   friend class ImageElementTimingTest;
+
+  bool ContributesToContainerTiming(const Element*);
+  bool NeededForTiming(const LayoutObject&);
+
+  void EnsureContainerTiming();
+  bool IsContainerTimingEnabled();
 
   void NotifyImagePaintedInternal(
       Node&,
@@ -76,9 +84,6 @@ class CORE_EXPORT ImageElementTiming final
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
       base::TimeTicks load_time,
       const gfx::Rect& image_border);
-
-  // Callback for the presentation promise. Reports paint timestamps.
-  void ReportImagePaintPresentationTime(base::TimeTicks timestamp);
 
   // Class containing information about image element timing.
   class ElementTimingInfo final : public GarbageCollected<ElementTimingInfo> {
@@ -114,7 +119,7 @@ class CORE_EXPORT ImageElementTiming final
 
   // Vector containing the element timing infos that will be reported during the
   // next presentation promise callback.
-  HeapVector<Member<ElementTimingInfo>> element_timings_;
+  Member<GCedHeapVector<Member<ElementTimingInfo>>> element_timings_;
   struct ImageInfo {
     ImageInfo() {}
 
@@ -123,18 +128,21 @@ class CORE_EXPORT ImageElementTiming final
 
     DISALLOW_NEW();
   };
-  typedef std::pair<const LayoutObject*, const ImageResourceContent*> RecordId;
   // Hashmap of pairs of elements, LayoutObjects (for the elements) and
-  // ImageResourceContent (for the src) which correspond to either images or
-  // background images whose paint has been observed. For background images,
-  // only the |is_painted_| bit is used, as the timestamp needs to be tracked by
+  // MediaTiming (for the src) which correspond to either images or background
+  // images whose paint has been observed. For background images, only the
+  // |is_painted_| bit is used, as the timestamp needs to be tracked by
   // |background_image_timestamps_|.
-  WTF::HashMap<RecordId, ImageInfo> images_notified_;
+  HashMap<MediaRecordIdHash, ImageInfo> images_notified_;
 
   // Hashmap of background images which contain information about the load time
   // of the background image.
-  HeapHashMap<WeakMember<const StyleFetchedImage>, base::TimeTicks>
+  HeapHashMap<WeakMember<const StyleImage>, base::TimeTicks>
       background_image_timestamps_;
+
+  Member<ContainerTiming> container_timing_;
+
+  Member<LocalDOMWindow> window_;
 };
 
 }  // namespace blink

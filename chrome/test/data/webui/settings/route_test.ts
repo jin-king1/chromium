@@ -3,12 +3,14 @@
 // found in the LICENSE file.
 
 // clang-format off
-import {buildRouter, Route, Router, routes, setPageVisibilityForTesting} from 'chrome://settings/settings.js';
-import {assertEquals, assertFalse, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {SettingsRoutes} from 'chrome://settings/settings.js';
+import {resetRouterForTesting, buildRouter, loadTimeData, Route, Router, routes, resetPageVisibilityForTesting} from 'chrome://settings/settings.js';
+import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 
 // clang-format on
 
-suite('route', function() {
+suite('Basic', function() {
   /**
    * Returns a new promise that resolves after a window 'popstate' event.
    */
@@ -165,6 +167,11 @@ suite('route', function() {
             routes.APPEARANCE);
       });
 
+  test('navigate back to nested sibling route', function() {
+    return testNavigateBackUsesHistory(
+        routes.FONTS, routes.SECURITY, routes.FONTS);
+  });
+
   test('navigate back to parent when previous route is deeper', function() {
     Router.getInstance().navigateTo(routes.SYNC);
     Router.getInstance().navigateTo(routes.PEOPLE);
@@ -194,7 +201,7 @@ suite('route', function() {
         Router.getInstance().getQueryParameters().toString());
 
     Router.getInstance().navigateTo(
-        routes.SEARCH_ENGINES, undefined,
+        routes.SEARCH, undefined,
         /* removeSearch */ true);
     assertEquals('', Router.getInstance().getQueryParameters().toString());
   });
@@ -253,12 +260,12 @@ suite('route', function() {
     assertTrue(routes.TRIGGERED_RESET_DIALOG.isNavigableDialog);
     assertTrue(routes.TRIGGERED_RESET_DIALOG.parent === routes.RESET);
 
-    // <if expr="chromeos_ash">
+    // <if expr="is_chromeos">
     // Regression test for b/265453606.
-    assertFalse(!!routes.SIGN_OUT);
+    assertFalse('SIGN_OUT' in routes);
     // </if>
 
-    // <if expr="not chromeos_ash">
+    // <if expr="not is_chromeos">
     assertTrue(routes.SIGN_OUT.isNavigableDialog);
     assertTrue(routes.SIGN_OUT.parent === routes.PEOPLE);
     assertTrue(routes.IMPORT_DATA.isNavigableDialog);
@@ -272,9 +279,9 @@ suite('route', function() {
   });
 
   test('pageVisibility affects route availability', function() {
-    setPageVisibilityForTesting({
+    resetPageVisibilityForTesting({
       appearance: false,
-      autofill: false,
+      yourSavedInfo: false,
       defaultBrowser: false,
       onStartup: false,
       reset: false,
@@ -287,7 +294,7 @@ suite('route', function() {
     assertTrue(hasRoute('BASIC'));
 
     assertFalse(hasRoute('APPEARANCE'));
-    assertFalse(hasRoute('AUTOFILL'));
+    assertFalse(hasRoute('YOUR_SAVED_INFO'));
     assertFalse(hasRoute('DEFAULT_BROWSER'));
     assertFalse(hasRoute('ON_STARTUP'));
     assertFalse(hasRoute('RESET'));
@@ -312,6 +319,57 @@ suite('route', function() {
         assertEquals(
             'chrome://settings/languages', routes.LANGUAGES.getAbsolutePath());
       });
+
+  test('resetRouterForTesting updates routes', function() {
+    resetRouterForTesting();
+    const routesLocal1 = Router.getInstance().getRoutes();
+    assertEquals(routes, routesLocal1);
+
+    resetRouterForTesting();
+    const routesLocal2 = Router.getInstance().getRoutes();
+    assertNotEquals(routesLocal1, routesLocal2);
+    assertEquals(routes, routesLocal2);
+  });
+
+
+
+  // <if expr="not is_chromeos">
+  test('account route existence', function() {
+    resetPageVisibilityForTesting({people: true});
+
+    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: false});
+    resetRouterForTesting();
+    assertFalse(!!routes.ACCOUNT);
+
+    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: true});
+    resetRouterForTesting();
+    assertTrue(!!routes.ACCOUNT);
+  });
+
+  test('google services route existence', function() {
+    resetPageVisibilityForTesting({people: true});
+
+    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: false});
+    resetRouterForTesting();
+    assertFalse(!!routes.GOOGLE_SERVICES);
+
+    loadTimeData.overrideValues({replaceSyncPromosWithSignInPromos: true});
+    resetRouterForTesting();
+    assertTrue(!!routes.GOOGLE_SERVICES);
+  });
+  // </if>
+
+  test('search engines route existence', function() {
+    loadTimeData.overrideValues({searchSettingsUpdate: false});
+    resetPageVisibilityForTesting();
+
+    resetRouterForTesting();
+    assertTrue(!!routes.SEARCH_ENGINES);
+
+    loadTimeData.overrideValues({searchSettingsUpdate: true});
+    resetRouterForTesting();
+    assertFalse(!!routes.SEARCH_ENGINES);
+  });
 });
 
 suite('DynamicParameters', function() {
@@ -330,8 +388,8 @@ suite('DynamicParameters', function() {
     const params = new URLSearchParams();
     params.set('bar', 'b=z');
     params.set('biz', '3');
-    Router.getInstance().navigateTo(routes.SEARCH_ENGINES, params);
-    assertEquals(routes.SEARCH_ENGINES, Router.getInstance().getCurrentRoute());
+    Router.getInstance().navigateTo(routes.BASIC, params);
+    assertEquals(routes.BASIC, Router.getInstance().getCurrentRoute());
     assertEquals('b=z', Router.getInstance().getQueryParameters().get('bar'));
     assertEquals('3', Router.getInstance().getQueryParameters().get('biz'));
     assertEquals('?bar=b%3Dz&biz=3', window.location.search);
@@ -359,5 +417,36 @@ suite('NonExistentRoute', function() {
   test('redirect to basic', function() {
     assertEquals(routes.BASIC, Router.getInstance().getCurrentRoute());
     assertEquals('/', location.pathname);
+  });
+});
+
+suite('SafetyHub', function() {
+  let routes: SettingsRoutes;
+
+  function setupRoutes() {
+    resetPageVisibilityForTesting();
+    resetRouterForTesting();
+    routes = Router.getInstance().getRoutes();
+  }
+
+  test('SafetyHubRouteReachable', async function() {
+    setupRoutes();
+    let path = Router.getInstance().getCurrentRoute().path;
+    assertEquals('/', path);
+
+    Router.getInstance().navigateTo(routes.SAFETY_HUB);
+    await flushTasks();
+
+    // Assert that the route is changed to safety hub.
+    path = Router.getInstance().getCurrentRoute().path;
+    assertEquals('/safetyCheck', path);
+  });
+
+  test('SafetyHubRouteNotReachableInGuestMode', function() {
+    loadTimeData.overrideValues({isGuest: true});
+    setupRoutes();
+
+    // Safety Hub should not be reachable in Guest mode.
+    assertEquals(undefined, routes.SAFETY_HUB);
   });
 });

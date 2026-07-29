@@ -6,9 +6,9 @@
 
 #include <stddef.h>
 
+#include <optional>
 #include <utility>
 
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
@@ -16,13 +16,11 @@
 #include "chrome/browser/ash/extensions/users_private/users_private_delegate_factory.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash.h"
 #include "chrome/browser/ash/ownership/owner_settings_service_ash_factory.h"
-#include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/ash/settings/cros_settings.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/browser_process_platform_part.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/extensions/api/users_private.h"
+#include "chromeos/ash/components/install_attributes/install_attributes.h"
+#include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/user.h"
@@ -30,16 +28,13 @@
 #include "components/user_manager/user_names.h"
 #include "extensions/browser/extension_function_registry.h"
 #include "google_apis/gaia/gaia_auth_util.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace extensions {
 
 namespace {
 
 bool IsDeviceEnterpriseManaged() {
-  return g_browser_process->platform_part()
-      ->browser_policy_connector_ash()
-      ->IsDeviceEnterpriseManaged();
+  return ash::InstallAttributes::Get()->IsEnterpriseManaged();
 }
 
 bool IsChild(Profile* profile) {
@@ -48,7 +43,7 @@ bool IsChild(Profile* profile) {
   if (!user)
     return false;
 
-  return user->GetType() == user_manager::UserType::USER_TYPE_CHILD;
+  return user->GetType() == user_manager::UserType::kChild;
 }
 
 bool IsOwnerProfile(Profile* profile) {
@@ -92,8 +87,8 @@ api::users_private::User CreateUnknownApiUser(const std::string& email) {
   return api_user;
 }
 
-base::Value::List GetUsersList(content::BrowserContext* browser_context) {
-  base::Value::List user_list;
+base::ListValue GetUsersList(content::BrowserContext* browser_context) {
+  base::ListValue user_list;
 
   if (!CanModifyUserList(browser_context))
     return user_list;
@@ -101,14 +96,14 @@ base::Value::List GetUsersList(content::BrowserContext* browser_context) {
   // Create one list to set. This is needed because user white list update is
   // asynchronous and sequential. Before previous write comes back, cached
   // list is stale and should not be used for appending. See
-  // http://crbug.com/127215
-  base::Value::List email_list;
+  // http://crbug.com/40205960
+  base::ListValue email_list;
 
   UsersPrivateDelegate* delegate =
       UsersPrivateDelegateFactory::GetForBrowserContext(browser_context);
   PrefsUtil* prefs_util = delegate->GetPrefsUtil();
 
-  absl::optional<api::settings_private::PrefObject> users_pref_object =
+  std::optional<api::settings_private::PrefObject> users_pref_object =
       prefs_util->GetPref(ash::kAccountsPrefUsers);
   if (users_pref_object->value && users_pref_object->value->is_list()) {
     email_list = users_pref_object->value->GetList().Clone();
@@ -126,11 +121,12 @@ base::Value::List GetUsersList(content::BrowserContext* browser_context) {
                         AccountId::FromUserEmail(*email));
   });
 
-  const user_manager::UserList& users = user_manager->GetUsers();
-  for (const auto* user : users) {
-    base::Value email_value(user->GetAccountId().GetUserEmail());
-    if (!base::Contains(email_list, email_value))
-      email_list.Append(std::move(email_value));
+  const user_manager::UserList& users = user_manager->GetPersistedUsers();
+  for (const user_manager::User* user : users) {
+    std::string email_value(user->GetAccountId().GetUserEmail());
+    if (!email_list.contains(email_value)) {
+      email_list.Append(email_value);
+    }
   }
 
   // Now populate the list of User objects for returning to the JS.
@@ -174,7 +170,7 @@ UsersPrivateIsUserInListFunction::UsersPrivateIsUserInListFunction() = default;
 UsersPrivateIsUserInListFunction::~UsersPrivateIsUserInListFunction() = default;
 
 ExtensionFunction::ResponseAction UsersPrivateIsUserInListFunction::Run() {
-  absl::optional<api::users_private::IsUserInList::Params> parameters =
+  std::optional<api::users_private::IsUserInList::Params> parameters =
       api::users_private::IsUserInList::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(parameters);
 
@@ -193,7 +189,7 @@ UsersPrivateAddUserFunction::UsersPrivateAddUserFunction() = default;
 UsersPrivateAddUserFunction::~UsersPrivateAddUserFunction() = default;
 
 ExtensionFunction::ResponseAction UsersPrivateAddUserFunction::Run() {
-  absl::optional<api::users_private::AddUser::Params> parameters =
+  std::optional<api::users_private::AddUser::Params> parameters =
       api::users_private::AddUser::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(parameters);
 
@@ -225,7 +221,7 @@ UsersPrivateRemoveUserFunction::UsersPrivateRemoveUserFunction() = default;
 UsersPrivateRemoveUserFunction::~UsersPrivateRemoveUserFunction() = default;
 
 ExtensionFunction::ResponseAction UsersPrivateRemoveUserFunction::Run() {
-  absl::optional<api::users_private::RemoveUser::Params> parameters =
+  std::optional<api::users_private::RemoveUser::Params> parameters =
       api::users_private::RemoveUser::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(parameters);
 
@@ -250,11 +246,11 @@ ExtensionFunction::ResponseAction UsersPrivateRemoveUserFunction::Run() {
 ////////////////////////////////////////////////////////////////////////////////
 // UsersPrivateIsUserListManagedFunction
 
-UsersPrivateIsUserListManagedFunction::UsersPrivateIsUserListManagedFunction() {
-}
+UsersPrivateIsUserListManagedFunction::UsersPrivateIsUserListManagedFunction() =
+    default;
 
 UsersPrivateIsUserListManagedFunction::
-    ~UsersPrivateIsUserListManagedFunction() {}
+    ~UsersPrivateIsUserListManagedFunction() = default;
 
 ExtensionFunction::ResponseAction UsersPrivateIsUserListManagedFunction::Run() {
   return RespondNow(WithArguments(IsDeviceEnterpriseManaged()));
@@ -293,7 +289,7 @@ ExtensionFunction::ResponseAction UsersPrivateGetLoginStatusFunction::Run() {
   const bool is_screen_locked =
       session_manager::SessionManager::Get()->IsScreenLocked();
 
-  base::Value::Dict result;
+  base::DictValue result;
   result.Set("isLoggedIn", base::Value(is_logged_in));
   result.Set("isScreenLocked", base::Value(is_screen_locked));
   return RespondNow(WithArguments(std::move(result)));

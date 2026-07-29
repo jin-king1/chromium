@@ -5,7 +5,6 @@
 #ifndef ASH_WEBUI_ECHE_APP_UI_ECHE_APP_UI_H_
 #define ASH_WEBUI_ECHE_APP_UI_ECHE_APP_UI_H_
 
-#include "ash/webui/eche_app_ui/mojom/eche_app.mojom-forward.h"
 #include "ash/webui/eche_app_ui/mojom/eche_app.mojom.h"
 #include "ash/webui/eche_app_ui/url_constants.h"
 #include "ash/webui/system_apps/public/system_web_app_ui_config.h"
@@ -55,6 +54,9 @@ class EcheAppUI : public ui::MojoWebUIController {
 
   void BindInterface(
       mojo::PendingReceiver<mojom::ConnectionStatusObserver> receiver);
+
+  void BindInterface(
+      mojo::PendingReceiver<mojom::KeyboardLayoutHandler> receiver);
 
  private:
   raw_ptr<EcheAppManager> manager_;

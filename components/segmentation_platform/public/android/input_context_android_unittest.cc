@@ -7,16 +7,17 @@
 #include <array>
 #include <cstdint>
 #include <string>
+
 #include "base/android/jni_android.h"
 #include "base/android/jni_array.h"
+#include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/time/time.h"
 #include "components/segmentation_platform/public/input_context.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/jni_zero/default_conversions.h"
 #include "url/android/gurl_android.h"
 #include "url/gurl.h"
-
-#include <jni.h>
 
 namespace segmentation_platform {
 
@@ -37,78 +38,47 @@ TEST_F(InputContextAndroidTest, FromJavaParams) {
   const base::android::ScopedJavaLocalRef<jobject> java_gurl =
       url::GURLAndroid::FromNativeGURL(jni_env, test_url);
 
-  std::vector<const std::string> bool_keys({"boolean_argument"});
-  bool bool_values[]{true};
+  base::android::ScopedJavaLocalRef<JArray<jstring>> java_bool_keys =
+      jni_zero::NewStringArray(jni_env, {"boolean_argument"});
+  base::android::ScopedJavaLocalRef<JArray<bool>> java_bool_values =
+      jni_zero::NewArray(jni_env, {true});
 
-  std::vector<const std::string> int_keys(
-      {"int_argument", "negative_int", "large_int"});
-  int int_values[]{1234, -4, INT_MAX};
+  base::android::ScopedJavaLocalRef<JArray<jstring>> java_int_keys =
+      jni_zero::NewStringArray(jni_env,
+                               {"int_argument", "negative_int", "large_int"});
+  base::android::ScopedJavaLocalRef<JArray<int32_t>> java_int_values =
+      jni_zero::NewArray(jni_env, {1234, -4, INT_MAX});
 
-  std::vector<const std::string> float_keys({"float_argument"});
-  float float_values[]{13.37f};
+  base::android::ScopedJavaLocalRef<JArray<jstring>> java_float_keys =
+      jni_zero::NewStringArray(jni_env, {"float_argument"});
+  base::android::ScopedJavaLocalRef<JArray<float>> java_float_values =
+      jni_zero::NewArray(jni_env, {13.37f});
 
-  std::vector<const std::string> double_keys({"double_argument"});
-  double double_values[]{100.3};
+  base::android::ScopedJavaLocalRef<JArray<jstring>> java_double_keys =
+      jni_zero::NewStringArray(jni_env, {"double_argument"});
+  base::android::ScopedJavaLocalRef<JArray<double>> java_double_values =
+      jni_zero::NewArray(jni_env, {100.3});
 
-  std::vector<const std::string> string_keys(
-      {"string_argument", "second_string", "third_string"});
-  std::vector<const std::string> string_values({"Hello, World!", "Foo", "bar"});
+  base::android::ScopedJavaLocalRef<JArray<jstring>> java_string_keys =
+      jni_zero::NewStringArray(
+          jni_env, {"string_argument", "second_string", "third_string"});
+  base::android::ScopedJavaLocalRef<JArray<jstring>> java_string_values =
+      jni_zero::NewStringArray(jni_env, {"Hello, World!", "Foo", "bar"});
 
-  std::vector<const std::string> time_keys({"time_argument"});
-  int64_t time_values[]{time.ToJavaTime()};
+  base::android::ScopedJavaLocalRef<JArray<jstring>> java_time_keys =
+      jni_zero::NewStringArray(jni_env, {"time_argument"});
+  base::android::ScopedJavaLocalRef<JArray<int64_t>> java_time_values =
+      jni_zero::NewArray(jni_env, {time.InMillisecondsSinceUnixEpoch()});
 
-  std::vector<const std::string> int64_keys({"int64_argument"});
-  int64_t int64_values[]{123456};
+  base::android::ScopedJavaLocalRef<JArray<jstring>> java_int64_keys =
+      jni_zero::NewStringArray(jni_env, {"int64_argument"});
+  base::android::ScopedJavaLocalRef<JArray<int64_t>> java_int64_values =
+      jni_zero::NewArray(jni_env, {static_cast<int64_t>(123456)});
 
-  std::vector<const std::string> url_keys({"url_argument"});
-  std::vector<base::android::ScopedJavaLocalRef<jobject>> url_values(
-      {java_gurl});
-
-  base::android::ScopedJavaLocalRef<jobjectArray> java_bool_keys =
-      base::android::ToJavaArrayOfStrings(jni_env, bool_keys);
-  base::android::ScopedJavaLocalRef<jbooleanArray> java_bool_values =
-      base::android::ToJavaBooleanArray(jni_env, bool_values,
-                                        std::size(bool_values));
-
-  base::android::ScopedJavaLocalRef<jobjectArray> java_int_keys =
-      base::android::ToJavaArrayOfStrings(jni_env, int_keys);
-  base::android::ScopedJavaLocalRef<jintArray> java_int_values =
-      base::android::ToJavaIntArray(jni_env, int_values, std::size(int_values));
-
-  base::android::ScopedJavaLocalRef<jobjectArray> java_float_keys =
-      base::android::ToJavaArrayOfStrings(jni_env, float_keys);
-  base::android::ScopedJavaLocalRef<jfloatArray> java_float_values =
-      base::android::ToJavaFloatArray(jni_env, float_values,
-                                      std::size(float_values));
-
-  base::android::ScopedJavaLocalRef<jobjectArray> java_double_keys =
-      base::android::ToJavaArrayOfStrings(jni_env, double_keys);
-  base::android::ScopedJavaLocalRef<jdoubleArray> java_double_values =
-      base::android::ToJavaDoubleArray(jni_env, double_values,
-                                       std::size(double_values));
-
-  base::android::ScopedJavaLocalRef<jobjectArray> java_string_keys =
-      base::android::ToJavaArrayOfStrings(jni_env, string_keys);
-
-  base::android::ScopedJavaLocalRef<jobjectArray> java_string_values =
-      base::android::ToJavaArrayOfStrings(jni_env, string_values);
-
-  base::android::ScopedJavaLocalRef<jobjectArray> java_time_keys =
-      base::android::ToJavaArrayOfStrings(jni_env, time_keys);
-  base::android::ScopedJavaLocalRef<jlongArray> java_time_values =
-      base::android::ToJavaLongArray(jni_env, time_values,
-                                     std::size(time_values));
-
-  base::android::ScopedJavaLocalRef<jobjectArray> java_int64_keys =
-      base::android::ToJavaArrayOfStrings(jni_env, int64_keys);
-  base::android::ScopedJavaLocalRef<jlongArray> java_int64_values =
-      base::android::ToJavaLongArray(jni_env, int64_values,
-                                     std::size(int64_values));
-
-  base::android::ScopedJavaLocalRef<jobjectArray> java_url_keys =
-      base::android::ToJavaArrayOfStrings(jni_env, url_keys);
-  base::android::ScopedJavaLocalRef<jobjectArray> java_url_values =
-      url::GURLAndroid::ToJavaArrayOfGURLs(jni_env, url_values);
+  base::android::ScopedJavaLocalRef<JArray<jstring>> java_url_keys =
+      jni_zero::NewStringArray(jni_env, {"url_argument"});
+  base::android::ScopedJavaLocalRef<JArray<jobject>> java_url_values =
+      jni_zero::NewObjectArray(jni_env, {java_gurl});
 
   segmentation_platform::InputContextAndroid::FromJavaParams(
       jni_env, reinterpret_cast<intptr_t>(native_input_context.get()),
@@ -155,10 +125,11 @@ TEST_F(InputContextAndroidTest, FromJavaParams) {
       native_input_context->metadata_args.find("third_string")->second.str_val);
 
   ASSERT_TRUE(native_input_context->metadata_args.contains("time_argument"));
-  // ToJavaTime is a lossy operation, so we must compare java times.
-  ASSERT_EQ(time.ToJavaTime(),
+  // InMillisecondsSinceUnixEpoch is a lossy operation, so we must compare java
+  // times.
+  ASSERT_EQ(time.InMillisecondsSinceUnixEpoch(),
             native_input_context->metadata_args.find("time_argument")
-                ->second.time_val.ToJavaTime());
+                ->second.time_val.InMillisecondsSinceUnixEpoch());
 
   ASSERT_TRUE(native_input_context->metadata_args.contains("int64_argument"));
   ASSERT_EQ(123456, native_input_context->metadata_args.find("int64_argument")

@@ -113,9 +113,9 @@ TEST(PaintImageTest, BuildPaintWorkletImage) {
       base::MakeRefCounted<TestPaintWorkletInput>(size);
   PaintImage paint_image = PaintImageBuilder::WithDefault()
                                .set_id(1)
-                               .set_paint_worklet_input(std::move(input))
+                               .set_deferred_paint_record(std::move(input))
                                .TakePaintImage();
-  EXPECT_TRUE(paint_image.paint_worklet_input());
+  EXPECT_TRUE(paint_image.deferred_paint_record());
   EXPECT_EQ(paint_image.width(), size.width());
   EXPECT_EQ(paint_image.height(), size.height());
   EXPECT_EQ(paint_image.GetContentColorUsage(), gfx::ContentColorUsage::kSRGB);
@@ -173,6 +173,30 @@ TEST(PaintImageTest, HlgHdrImage) {
 
   EXPECT_TRUE(image.is_high_bit_depth());
   EXPECT_EQ(image.GetContentColorUsage(), gfx::ContentColorUsage::kHDR);
+}
+
+TEST(PaintImageTest, ReinterpretAsSRGBWithGenerator) {
+  auto color_space = gfx::ColorSpace::CreateDisplayP3D65().ToSkColorSpace();
+  auto generator = sk_make_sp<FakePaintImageGenerator>(SkImageInfo::Make(
+      10, 10, kRGBA_F16_SkColorType, kPremul_SkAlphaType, color_space));
+  PaintImage image = PaintImageBuilder::WithDefault()
+                         .set_id(PaintImage::GetNextId())
+                         .set_paint_image_generator(generator)
+                         .set_reinterpret_as_srgb(true)
+                         .TakePaintImage();
+
+  EXPECT_TRUE(image.GetReinterpretAsSRGB());
+
+  auto sk_image = image.GetSwSkImage();
+  ASSERT_TRUE(sk_image);
+  EXPECT_TRUE(SkColorSpace::Equals(sk_image->colorSpace(),
+                                   SkColorSpace::MakeSRGB().get()));
+
+  auto frame_sk_image = image.GetSkImageForFrame(
+      PaintImage::kDefaultFrameIndex, PaintImage::GetNextGeneratorClientId());
+  ASSERT_TRUE(frame_sk_image);
+  EXPECT_TRUE(SkColorSpace::Equals(frame_sk_image->colorSpace(),
+                                   SkColorSpace::MakeSRGB().get()));
 }
 
 }  // namespace cc

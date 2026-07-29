@@ -21,15 +21,16 @@ element.style { ()
         border-right-color: black;
         border-bottom-color: black;
         border-left-color: black;
-        border-image-source: initial;
-        border-image-slice: initial;
-        border-image-width: initial;
-        border-image-outset: initial;
-        border-image-repeat: initial;
+        border-image-source: none;
+        border-image-slice: 100%;
+        border-image-width: 1;
+        border-image-outset: 0;
+        border-image-repeat: stretch;
 
 [expanded] 
 div { (user agent stylesheet)
     display: block;
+    unicode-bidi: isolate;
 
 
 Running: testSetStyleCSSText
@@ -41,6 +42,7 @@ element.style { ()
 [expanded] 
 div { (user agent stylesheet)
     display: block;
+    unicode-bidi: isolate;
 
 
 Running: testSetViaParsedAttributes
@@ -61,15 +63,16 @@ element.style { ()
         border-right-color: green;
         border-bottom-color: green;
         border-left-color: green;
-        border-image-source: initial;
-        border-image-slice: initial;
-        border-image-width: initial;
-        border-image-outset: initial;
-        border-image-repeat: initial;
+        border-image-source: none;
+        border-image-slice: 100%;
+        border-image-width: 1;
+        border-image-outset: 0;
+        border-image-repeat: stretch;
 
 [expanded] 
 div { (user agent stylesheet)
     display: block;
+    unicode-bidi: isolate;
 
 
 Running: testSetViaAncestorClass
@@ -84,6 +87,7 @@ element.style { ()
 [expanded] 
 div { (user agent stylesheet)
     display: block;
+    unicode-bidi: isolate;
 
 ======== Inherited from div#container.red ========
 [expanded] 
@@ -103,6 +107,7 @@ div[foo="bar"] + div { (<style>)
 [expanded] 
 div { (user agent stylesheet)
     display: block;
+    unicode-bidi: isolate;
 
 ======== Inherited from div#container.red ========
 [expanded] 

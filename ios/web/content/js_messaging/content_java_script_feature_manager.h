@@ -5,9 +5,13 @@
 #ifndef IOS_WEB_CONTENT_JS_MESSAGING_CONTENT_JAVA_SCRIPT_FEATURE_MANAGER_H_
 #define IOS_WEB_CONTENT_JS_MESSAGING_CONTENT_JAVA_SCRIPT_FEATURE_MANAGER_H_
 
+#import <map>
 #import <set>
 #import <string>
 #import <vector>
+
+#import "base/feature_list.h"
+#import "ios/web/public/js_messaging/java_script_feature.h"
 
 namespace content {
 class RenderFrameHost;
@@ -19,7 +23,9 @@ class JsCommunicationHost;
 
 namespace web {
 
-class JavaScriptFeature;
+BASE_DECLARE_FEATURE(kContentEnableInjectedFeatureScripts);
+
+class ScriptMessage;
 
 // Configures JavaScriptFeatures, by injecting document start and end scripts,
 // and owning a mapping for routing script message callbacks.
@@ -46,6 +52,12 @@ class ContentJavaScriptFeatureManager {
   // Returns true if this feature manager already has the given `feature`.
   bool HasFeature(const JavaScriptFeature* feature) const;
 
+  // Handles a `script_message` from JavaScript in `web_state`, directed to the
+  // given `handler_name`
+  void ScriptMessageReceived(const ScriptMessage& script_message,
+                             std::string handler_name,
+                             WebState* web_state);
+
  private:
   // Adds the given `feature` to the set of features managed by this feature
   // manager, unless the given `feature` has already been added.
@@ -53,6 +65,10 @@ class ContentJavaScriptFeatureManager {
 
   // The features which are managed by this feature manager.
   std::set<const JavaScriptFeature*> features_;
+
+  // Maps handler names to features that handle script messages.
+  std::map<std::string, base::WeakPtr<JavaScriptFeature>>
+      script_message_features_;
 
   // Scripts that are injected when the document element is created.
   std::vector<std::u16string> document_start_scripts_;

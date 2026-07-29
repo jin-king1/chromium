@@ -4,40 +4,71 @@
 
 #include "chrome/browser/metrics/first_web_contents_profiler_base.h"
 
+#include "base/command_line.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/common/chrome_switches.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/web_contents_observer.h"
+
+namespace {
+
+// Returns whether this instance was launched automatically by the OS as part of
+// its startup.
+bool IsAutoLaunchedByOs() {
+#if BUILDFLAG(IS_WIN)
+  return base::CommandLine::ForCurrentProcess()->HasSwitch(
+      switches::kStartupForegroundLaunch);
+#else
+  return false;
+#endif
+}
+
+}  // namespace
 
 namespace metrics {
 
 FirstWebContentsProfilerBase::FirstWebContentsProfilerBase(
     content::WebContents* web_contents)
-    : content::WebContentsObserver(web_contents) {}
+    : content::WebContentsObserver(web_contents) {
+  // On ChromeOS, session restore can create the profiler *before* the
+  // navigation for a restored tab has started. In this case, GetPendingEntry()
+  // will return nullptr. We store this initial state so that the first
+  // DidStartNavigation event is correctly identified as the initial navigation
+  // rather than an abandoned one. On other platforms, a navigation is
+  // typically pending at construction.
+  first_navigation_started_ = web_contents->GetController().GetPendingEntry();
+}
 
 FirstWebContentsProfilerBase::~FirstWebContentsProfilerBase() = default;
 
 // static
 content::WebContents* FirstWebContentsProfilerBase::GetVisibleContents(
-    Browser* browser) {
-  if (!browser->window()->IsVisible())
+    BrowserWindowInterface* browser) {
+  if (!browser->GetWindow()->IsVisible()) {
     return nullptr;
+  }
 
   // The active WebContents may be hidden when the window height is small.
   content::WebContents* contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+      browser->GetFeatures().tab_strip_model()->GetActiveWebContents();
 
   // It is incorrect to have a visible browser window with no active
   // WebContents, but reports on show that it happens.
-  // See https://crbug.com/1032348 for Mac or https://crbug.com/1414831 for Win.
-  if (!contents)
+  // See https://crbug.com/40662817 for Mac or https://crbug.com/40892329 for
+  // Win.
+  if (!contents) {
     return nullptr;
+  }
 
-  if (contents->GetVisibility() != content::Visibility::VISIBLE)
+  if (contents->GetVisibility() != content::Visibility::VISIBLE) {
     return nullptr;
+  }
 
   return contents;
 }
@@ -47,6 +78,14 @@ void FirstWebContentsProfilerBase::DidStartNavigation(
   // The profiler is concerned with the primary main frame navigation only.
   if (!navigation_handle->IsInPrimaryMainFrame() ||
       navigation_handle->IsSameDocument()) {
+    return;
+  }
+
+  // If a navigation wasn't pending when this profiler was created, the first
+  // DidStartNavigation we see is the initial navigation. We should not treat
+  // it as an abandoned navigation.
+  if (!first_navigation_started_) {
+    first_navigation_started_ = true;
     return;
   }
 
@@ -93,8 +132,54 @@ void FirstWebContentsProfilerBase::DidFirstVisuallyNonEmptyPaint() {
     return;
   }
 
+  if (IsAutoLaunchedByOs()) {
+    RecordFirstNonEmptyPaintForOsLaunch();
+    FinishedCollectingMetrics(
+        StartupProfilingFinishReason::kAbandonNonInteractiveStartup);
+    return;
+  }
+
   RecordFirstNonEmptyPaint();
-  FinishedCollectingMetrics(StartupProfilingFinishReason::kDone);
+
+  if (!ShouldObservePaintTimingMetrics()) {
+    FinishedCollectingMetrics(StartupProfilingFinishReason::kDone);
+    return;
+  }
+
+  // Record the successful finish reason now (preserving its timing), but keep
+  // observing to capture the first contentful paint and the final largest
+  // contentful paint, which occur after the first non-empty paint. The profiler
+  // self-destructs when the page is hidden, a new navigation starts, or the
+  // contents is destroyed.
+  RecordFinishReason(StartupProfilingFinishReason::kDone);
+  finish_reason_recorded_ = true;
+  MaybeRecordFirstContentfulPaint();
+}
+
+void FirstWebContentsProfilerBase::OnFirstContentfulPaintInPrimaryMainFrame(
+    base::TimeTicks presentation_time) {
+  if (!ShouldObservePaintTimingMetrics() || WasStartupInterrupted()) {
+    return;
+  }
+
+  if (first_contentful_paint_ticks_.is_null()) {
+    first_contentful_paint_ticks_ = presentation_time;
+  }
+  MaybeRecordFirstContentfulPaint();
+}
+
+void FirstWebContentsProfilerBase::OnLargestContentfulPaintInPrimaryMainFrame(
+    base::TimeTicks presentation_time) {
+  if (!ShouldObservePaintTimingMetrics() || WasStartupInterrupted()) {
+    return;
+  }
+
+  // The largest contentful paint may be updated multiple times; keep the latest
+  // candidate. It is recorded when profiling ends. Ignore a null timestamp so a
+  // spurious notification cannot clobber a previously observed valid candidate.
+  if (!presentation_time.is_null()) {
+    last_largest_contentful_paint_ticks_ = presentation_time;
+  }
 }
 
 void FirstWebContentsProfilerBase::OnVisibilityChanged(
@@ -112,9 +197,36 @@ void FirstWebContentsProfilerBase::WebContentsDestroyed() {
       StartupProfilingFinishReason::kAbandonContentDestroyed);
 }
 
+void FirstWebContentsProfilerBase::MaybeRecordFirstContentfulPaint() {
+  if (!finish_reason_recorded_ || did_record_first_contentful_paint_ ||
+      first_contentful_paint_ticks_.is_null()) {
+    return;
+  }
+  did_record_first_contentful_paint_ = true;
+  RecordFirstContentfulPaint(first_contentful_paint_ticks_);
+}
+
+void FirstWebContentsProfilerBase::MaybeRecordLargestContentfulPaint() {
+  if (last_largest_contentful_paint_ticks_.is_null()) {
+    return;
+  }
+  RecordLargestContentfulPaint(last_largest_contentful_paint_ticks_);
+}
+
+bool FirstWebContentsProfilerBase::ShouldObservePaintTimingMetrics() {
+  return false;
+}
+
 void FirstWebContentsProfilerBase::FinishedCollectingMetrics(
     StartupProfilingFinishReason finish_reason) {
-  RecordFinishReason(finish_reason);
+  if (finish_reason_recorded_) {
+    // The finish reason was already recorded (kDone) at the first non-empty
+    // paint while observing paint timing metrics. Record the final largest
+    // contentful paint before deleting.
+    MaybeRecordLargestContentfulPaint();
+  } else {
+    RecordFinishReason(finish_reason);
+  }
   delete this;
 }
 

@@ -6,13 +6,15 @@
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <list>
 #include <memory>
 #include <set>
 #include <utility>
 
 #include "base/barrier_closure.h"
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -50,7 +52,7 @@ scoped_refptr<UsbContext> InitializeUsbContextBlocking() {
   return nullptr;
 }
 
-absl::optional<std::vector<ScopedLibusbDeviceRef>> GetDeviceListBlocking(
+std::optional<std::vector<ScopedLibusbDeviceRef>> GetDeviceListBlocking(
     scoped_refptr<UsbContext> usb_context) {
   base::ScopedBlockingCall scoped_blocking_call(FROM_HERE,
                                                 base::BlockingType::MAY_BLOCK);
@@ -61,13 +63,19 @@ absl::optional<std::vector<ScopedLibusbDeviceRef>> GetDeviceListBlocking(
   if (device_count < 0) {
     USB_LOG(ERROR) << "Failed to get device list: "
                    << ConvertPlatformUsbErrorToString(device_count);
-    return absl::nullopt;
+    return std::nullopt;
   }
 
   std::vector<ScopedLibusbDeviceRef> scoped_devices;
   scoped_devices.reserve(device_count);
-  for (ssize_t i = 0; i < device_count; ++i)
-    scoped_devices.emplace_back(platform_devices[i], usb_context);
+  // SAFETY: `platform_devices` is a raw pointer to a NULL-terminated array of
+  // device pointers returned by `libusb_get_device_list`. libusb guarantees
+  // that this array is of size `device_count` + 1.
+  auto devices_span = UNSAFE_BUFFERS(
+      base::span(platform_devices, static_cast<size_t>(device_count)));
+  for (libusb_device* device : devices_span) {
+    scoped_devices.emplace_back(device, usb_context);
+  }
 
   // Free the list but don't unref the devices because ownership has been
   // been transfered to the elements of |scoped_devices|.
@@ -247,7 +255,7 @@ void UsbServiceImpl::RefreshDevices() {
 }
 
 void UsbServiceImpl::OnDeviceList(
-    absl::optional<std::vector<ScopedLibusbDeviceRef>> devices) {
+    std::optional<std::vector<ScopedLibusbDeviceRef>> devices) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!devices) {
     RefreshDevicesComplete();
@@ -259,8 +267,10 @@ void UsbServiceImpl::OnDeviceList(
   // Look for new and existing devices.
   for (auto& device : *devices) {
     // Ignore devices that have failed enumeration previously.
-    if (base::Contains(ignored_devices_, device.get()))
+    if (std::ranges::contains(ignored_devices_, device.get(),
+                              &ScopedLibusbDeviceRef::get)) {
       continue;
+    }
 
     auto it = platform_devices_.find(device.get());
     if (it == platform_devices_.end()) {
@@ -375,14 +385,14 @@ void UsbServiceImpl::EnumerateDevice(ScopedLibusbDeviceRef platform_device,
 }
 
 void UsbServiceImpl::AddDevice(scoped_refptr<UsbDeviceImpl> device) {
-  if (!base::Contains(devices_being_enumerated_, device->platform_device())) {
+  if (!devices_being_enumerated_.contains(device->platform_device())) {
     // Device was removed while being enumerated.
     return;
   }
 
-  DCHECK(!base::Contains(platform_devices_, device->platform_device()));
+  DCHECK(!platform_devices_.contains(device->platform_device()));
   platform_devices_[device->platform_device()] = device;
-  DCHECK(!base::Contains(devices(), device->guid()));
+  DCHECK(!devices().contains(device->guid()));
   devices()[device->guid()] = device;
 
   USB_LOG(USER) << "USB device added: vendor=" << device->vendor_id() << " \""
@@ -442,7 +452,7 @@ int LIBUSB_CALL UsbServiceImpl::HotplugCallback(libusb_context* context,
 void UsbServiceImpl::OnPlatformDeviceAdded(
     ScopedLibusbDeviceRef platform_device) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!base::Contains(platform_devices_, platform_device.get()));
+  DCHECK(!platform_devices_.contains(platform_device.get()));
   EnumerateDevice(std::move(platform_device), base::DoNothing());
 }
 

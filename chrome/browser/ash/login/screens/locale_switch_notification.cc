@@ -8,18 +8,19 @@
 #include <string>
 #include <vector>
 
+#include "ash/login/resources/grit/ash_login_strings.h"
 #include "ash/public/cpp/message_center/oobe_notification_constants.h"
 #include "ash/public/cpp/notification_utils.h"
+#include "base/check_deref.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
-#include "chrome/browser/ash/login/ui/login_display_host.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/notifications/notification_common.h"
 #include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/notifications/notification_display_service_factory.h"
+#include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/webui/ash/login/oobe_ui.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -55,7 +56,9 @@ class LocaleSwitchNotificationDelegate
     : public message_center::NotificationDelegate,
       public OobeUI::Observer {
  public:
+  // `application_locale_storage` must be non-null and must outlive `this`.
   LocaleSwitchNotificationDelegate(
+      ApplicationLocaleStorage* application_locale_storage,
       std::string new_locale,
       Profile* profile,
       locale_util::SwitchLanguageCallback callback);
@@ -69,8 +72,8 @@ class LocaleSwitchNotificationDelegate
   ~LocaleSwitchNotificationDelegate() override;
 
   // message_center::NotificationDelegate overrides:
-  void Click(const absl::optional<int>& button_index,
-             const absl::optional<std::u16string>& reply) override;
+  void Click(const std::optional<int>& button_index,
+             const std::optional<std::u16string>& reply) override;
 
  private:
   // OobeUI::Observer overrides:
@@ -84,18 +87,22 @@ class LocaleSwitchNotificationDelegate
     kSwitchLocale = 0,
   };
 
+  const raw_ref<ApplicationLocaleStorage> application_locale_storage_;
+
   std::string new_locale_;
-  raw_ptr<Profile, ExperimentalAsh> profile_;
+  raw_ptr<Profile> profile_;
   locale_util::SwitchLanguageCallback callback_;
 
   bool is_screen_changed_ = false;
 };
 
 LocaleSwitchNotificationDelegate::LocaleSwitchNotificationDelegate(
+    ApplicationLocaleStorage* application_locale_storage,
     std::string new_locale,
     Profile* profile,
     locale_util::SwitchLanguageCallback callback)
-    : new_locale_(std::move(new_locale)),
+    : application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      new_locale_(std::move(new_locale)),
       profile_(profile),
       callback_(std::move(callback)) {
   LoginDisplayHost* host = LoginDisplayHost::default_host();
@@ -123,8 +130,8 @@ LocaleSwitchNotificationDelegate::~LocaleSwitchNotificationDelegate() {
 }
 
 void LocaleSwitchNotificationDelegate::Click(
-    const absl::optional<int>& button_index,
-    const absl::optional<std::u16string>& reply) {
+    const std::optional<int>& button_index,
+    const std::optional<std::u16string>& reply) {
   // If |button_index| is empty it means that user clicked on the body of a
   // notification. In this case notification will disappear from the screen, but
   // user still will be able to see it in the status tray. This will give user a
@@ -142,8 +149,9 @@ void LocaleSwitchNotificationDelegate::Click(
   if (*button_index == static_cast<int>(NotificationButton::kSwitchLocale)) {
     VLOG(1) << "Switching locale to " << new_locale_
             << " from the notification.";
+
     locale_util::SwitchLanguage(
-        new_locale_,
+        &application_locale_storage_.get(), new_locale_,
         /*enable_locale_keyboard_layouts=*/false,  // The layouts will be synced
                                                    // instead. Also new user
                                                    // could enable required
@@ -195,9 +203,12 @@ void LocaleSwitchNotificationDelegate::CloseNotification() {
 
 // static
 void LocaleSwitchNotification::Show(
+    ApplicationLocaleStorage* application_locale_storage,
     Profile* profile,
     std::string new_locale,
     locale_util::SwitchLanguageCallback locale_switch_callback) {
+  CHECK(application_locale_storage);
+
   // NotifierId for histogram reporting.
   static const base::NoDestructor<NotifierId> kNotifierId(
       NotifierType::SYSTEM_COMPONENT, kOOBELocaleSwitchNotificationId,
@@ -216,7 +227,7 @@ void LocaleSwitchNotification::Show(
   const std::u16string body = l10n_util::GetStringFUTF16(
       IDS_LOCALE_SWITCH_NOTIFICATION_TEXT,
       l10n_util::GetDisplayNameForLocale(
-          new_locale, g_browser_process->GetApplicationLocale(),
+          new_locale, /*display_locale=*/application_locale_storage->Get(),
           /*is_for_ui=*/true));
 
   const std::u16string accept_label = l10n_util::GetStringUTF16(
@@ -231,7 +242,8 @@ void LocaleSwitchNotification::Show(
 
   const scoped_refptr<LocaleSwitchNotificationDelegate> delegate =
       base::MakeRefCounted<LocaleSwitchNotificationDelegate>(
-          std::move(new_locale), profile, std::move(locale_switch_callback));
+          application_locale_storage, std::move(new_locale), profile,
+          std::move(locale_switch_callback));
 
   Notification notification = CreateSystemNotification(
       kNotificationType, kOOBELocaleSwitchNotificationId, title, body,

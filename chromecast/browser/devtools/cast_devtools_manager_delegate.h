@@ -11,6 +11,7 @@
 #include "content/public/browser/devtools_manager_delegate.h"
 
 namespace content {
+class RenderFrameHost;
 class WebContents;
 }
 
@@ -36,8 +37,10 @@ class CastDevToolsManagerDelegate : public content::DevToolsManagerDelegate {
   bool HasEnabledWebContents() const;
 
   // content::DevToolsManagerDelegate implementation.
-  content::DevToolsAgentHost::List RemoteDebuggingTargets() override;
+  content::DevToolsAgentHost::List RemoteDebuggingTargets(
+      TargetType target_type) override;
   std::string GetDiscoveryPageHTML() override;
+  bool AllowInspectingRenderFrameHost(content::RenderFrameHost* rfh) override;
 
  private:
   std::unordered_set<content::WebContents*> enabled_webcontents_;

@@ -12,15 +12,15 @@
 #include "ash/constants/ash_features.h"
 #include "ash/public/cpp/default_user_image.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/logging.h"
+#include "base/notimplemented.h"
 #include "base/rand_util.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
-#include "base/strings/string_piece.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/system/sys_info.h"
-#include "chrome/common/webui_url_constants.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/chromeos/resources/grit/ui_chromeos_resources.h"
@@ -224,16 +224,20 @@ constexpr int kCurrentImageIndexes[] = {
 constexpr bool ValidateCurrentImageIndexes() {
   int num_eligible_images = 0;
   for (const auto info : kDefaultImageInfo) {
-    if (info.eligibility == Eligibility::kEligible)
+    if (info.eligibility == Eligibility::kEligible) {
       num_eligible_images++;
+    }
   }
-  if (num_eligible_images != std::size(kCurrentImageIndexes))
+  if (num_eligible_images != std::size(kCurrentImageIndexes)) {
     return false;
+  }
 
   for (const int index : kCurrentImageIndexes) {
-    if (kDefaultImageInfo[index].eligibility != Eligibility::kEligible)
+    if (UNSAFE_TODO(kDefaultImageInfo[index]).eligibility !=
+        Eligibility::kEligible) {
       return false;
-    if (kDefaultImageInfo[index].description_message_id == 0) {
+    }
+    if (UNSAFE_TODO(kDefaultImageInfo[index]).description_message_id == 0) {
       // All current and new images must have a description.
       return false;
     }
@@ -313,10 +317,11 @@ const std::string GetUrlPrefixForScaleFactor(
 }
 
 ui::ResourceScaleFactor GetMaximumScaleFactorForDefaultImage(int index) {
-  if (index <= kLastLegacyImageIndex)
+  if (index <= kLastLegacyImageIndex) {
     return ui::k100Percent;
-  else
+  } else {
     return ui::k200Percent;
+  }
 }
 
 }  // namespace
@@ -347,8 +352,9 @@ ui::ResourceScaleFactor GetAdjustedScaleFactorForDefaultImage(
     ui::ResourceScaleFactor scale_factor) {
   ui::ResourceScaleFactor max_scale_factor =
       GetMaximumScaleFactorForDefaultImage(index);
-  if (max_scale_factor == ui::k100Percent)
+  if (max_scale_factor == ui::k100Percent) {
     return max_scale_factor;
+  }
 
   return scale_factor;
 }
@@ -363,11 +369,11 @@ GURL GetDefaultImageUrl(
   auto scale_factor_prefix = GetUrlPrefixForScaleFactor(adjusted_scale_factor);
 
   return GURL(base::StrCat({kGstaticImagePrefix, scale_factor_prefix,
-                            kDefaultImageInfo[index].path}));
+                            UNSAFE_TODO(kDefaultImageInfo[index]).path}));
 }
 
 int GetDefaultImageResourceId(int index) {
-  return kDefaultImageInfo[index].resource_id;
+  return UNSAFE_TODO(kDefaultImageInfo[index]).resource_id;
 }
 
 const gfx::ImageSkia& GetStubDefaultImage() {
@@ -376,7 +382,7 @@ const gfx::ImageSkia& GetStubDefaultImage() {
 }
 
 int GetRandomDefaultImageIndex() {
-  return kCurrentImageIndexes[base::RandInt(
+  return UNSAFE_TODO(kCurrentImageIndexes)[base::RandIntInclusive(
       0, std::size(kCurrentImageIndexes) - 1)];
 }
 
@@ -386,14 +392,16 @@ bool IsValidIndex(int index) {
 
 bool IsInCurrentImageSet(int index) {
   return IsValidIndex(index) &&
-         kDefaultImageInfo[index].eligibility == Eligibility::kEligible;
+         UNSAFE_TODO(kDefaultImageInfo[index]).eligibility ==
+             Eligibility::kEligible;
 }
 
 DefaultUserImage GetDefaultUserImage(
     int index,
     ui::ResourceScaleFactor scale_factor /*= ui::k200Percent*/) {
   DCHECK(IsValidIndex(index));
-  int description_message_id = kDefaultImageInfo[index].description_message_id;
+  int description_message_id =
+      UNSAFE_TODO(kDefaultImageInfo[index]).description_message_id;
   std::u16string title = description_message_id
                              ? l10n_util::GetStringUTF16(description_message_id)
                              : std::u16string();
@@ -405,15 +413,16 @@ DefaultUserImage GetDefaultUserImage(
 
 std::vector<DefaultUserImage> GetCurrentImageSet() {
   std::vector<DefaultUserImage> result;
-  for (int index : kCurrentImageIndexes)
+  for (int index : kCurrentImageIndexes) {
     result.push_back(GetDefaultUserImage(index));
+  }
   return result;
 }
 
-base::Value::List GetCurrentImageSetAsListValue() {
-  base::Value::List image_urls;
+base::ListValue GetCurrentImageSetAsListValue() {
+  base::ListValue image_urls;
   for (auto& user_image : GetCurrentImageSet()) {
-    base::Value::Dict image_data;
+    base::DictValue image_data;
     image_data.Set("index", user_image.index);
     image_data.Set("title", std::move(user_image.title));
     image_data.Set("url", user_image.url.spec());
@@ -422,12 +431,13 @@ base::Value::List GetCurrentImageSetAsListValue() {
   return image_urls;
 }
 
-absl::optional<DeprecatedSourceInfo> GetDeprecatedDefaultImageSourceInfo(
+std::optional<DeprecatedSourceInfo> GetDeprecatedDefaultImageSourceInfo(
     size_t index) {
-  if (index >= std::size(kDefaultImageSourceInfoIds))
-    return absl::nullopt;
+  if (index >= std::size(kDefaultImageSourceInfoIds)) {
+    return std::nullopt;
+  }
 
-  const auto& source_info_ids = kDefaultImageSourceInfoIds[index];
+  const auto& source_info_ids = UNSAFE_TODO(kDefaultImageSourceInfoIds[index]);
   return DeprecatedSourceInfo(
       l10n_util::GetStringUTF16(source_info_ids.author_id),
       GURL(l10n_util::GetStringUTF16(source_info_ids.website_id)));

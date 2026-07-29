@@ -5,14 +5,21 @@
 #ifndef CHROME_BROWSER_UI_PASSWORDS_PASSWORD_DIALOG_PROMPTS_H_
 #define CHROME_BROWSER_UI_PASSWORDS_PASSWORD_DIALOG_PROMPTS_H_
 
+#include <memory>
+
 #include "third_party/skia/include/core/SkColor.h"
 
 namespace content {
 class WebContents;
 }
 
+namespace views {
+class Widget;
+}
+
 class CredentialLeakDialogController;
 class CredentialManagerDialogController;
+class PasswordCombinedSelectorController;
 
 // A platform-independent interface for the account chooser dialog.
 class AccountChooserPrompt {
@@ -20,15 +27,17 @@ class AccountChooserPrompt {
   AccountChooserPrompt(const AccountChooserPrompt&) = delete;
   AccountChooserPrompt& operator=(const AccountChooserPrompt&) = delete;
 
+  virtual ~AccountChooserPrompt() = default;
+
   // Shows the account chooser dialog.
   virtual void ShowAccountChooser() = 0;
 
   // Notifies the UI element that it's controller is no longer managing the UI
   // element. The dialog should close.
   virtual void ControllerGone() = 0;
+
  protected:
   AccountChooserPrompt() = default;
-  virtual ~AccountChooserPrompt() = default;
 };
 
 // A platform-independent interface for the autosignin promo.
@@ -43,6 +52,7 @@ class AutoSigninFirstRunPrompt {
   // Notifies the UI element that it's controller is no longer managing the UI
   // element. The dialog should close.
   virtual void ControllerGone() = 0;
+
  protected:
   AutoSigninFirstRunPrompt() = default;
   virtual ~AutoSigninFirstRunPrompt() = default;
@@ -53,22 +63,27 @@ class CredentialLeakPrompt {
  public:
   CredentialLeakPrompt(const CredentialLeakPrompt&) = delete;
   CredentialLeakPrompt& operator=(const CredentialLeakPrompt&) = delete;
+  virtual ~CredentialLeakPrompt() = default;
 
   // Shows the dialog.
   virtual void ShowCredentialLeakPrompt() = 0;
 
-  // Notifies the UI element that its controller is no longer managing the UI
-  // element. The dialog should close.
-  virtual void ControllerGone() = 0;
+  // Returns the underlying Widget associated with the on-screen prompt. For
+  // Testing Only!
+  virtual views::Widget* GetWidgetForTesting() = 0;
 
  protected:
   CredentialLeakPrompt() = default;
-  virtual ~CredentialLeakPrompt() = default;
 };
 
 // Factory function for AccountChooserPrompt on desktop platforms.
-AccountChooserPrompt* CreateAccountChooserPromptView(
+std::unique_ptr<AccountChooserPrompt> CreateAccountChooserPromptView(
     CredentialManagerDialogController* controller,
+    content::WebContents* web_contents);
+
+// Factory function for PasswordCombinedSelectorView on desktop platforms.
+std::unique_ptr<AccountChooserPrompt> CreatePasswordCombinedSelectorPromptView(
+    PasswordCombinedSelectorController* controller,
     content::WebContents* web_contents);
 
 // Factory function for AutoSigninFirstRunPrompt on desktop platforms.
@@ -77,7 +92,7 @@ AutoSigninFirstRunPrompt* CreateAutoSigninPromptView(
     content::WebContents* web_contents);
 
 // Factory function for CredentialsLeakedPrompt on desktop platforms.
-CredentialLeakPrompt* CreateCredentialLeakPromptView(
+std::unique_ptr<CredentialLeakPrompt> CreateCredentialLeakPromptView(
     CredentialLeakDialogController* controller,
     content::WebContents* web_contents);
 

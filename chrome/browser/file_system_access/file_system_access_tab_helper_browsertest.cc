@@ -12,6 +12,7 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/prerender_test_util.h"
 #include "net/dns/mock_host_resolver.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -56,14 +57,18 @@ class FileSystemAccessTabHelperPrerenderingBrowserTest
       const FileSystemAccessTabHelperPrerenderingBrowserTest&) = delete;
 
   void SetUp() override {
-    prerender_test_helper_.SetUp(embedded_test_server());
+    prerender_test_helper_.RegisterServerRequestMonitor(embedded_test_server());
     InProcessBrowserTest::SetUp();
   }
 
   void SetUpOnMainThread() override {
+    // Clear the permission context since setting the testing factory will
+    // destroy the current context outside of the normal shutdown sequence.
+    content::SetFileSystemAccessPermissionContext(browser()->GetProfile(),
+                                                  nullptr);
     FileSystemAccessPermissionContextFactory::GetInstance()
         ->SetTestingFactoryAndUse(
-            browser()->profile(),
+            browser()->GetProfile(),
             base::BindRepeating(
                 &FileSystemAccessTabHelperPrerenderingBrowserTest::
                     BuildMockFileSystemAccessPermissionContext,
@@ -88,7 +93,7 @@ class FileSystemAccessTabHelperPrerenderingBrowserTest
       content::BrowserContext* context) {
     std::unique_ptr<MockFileSystemAccessPermissionContext> service =
         std::make_unique<MockFileSystemAccessPermissionContext>(
-            browser()->profile());
+            browser()->GetProfile());
     mock_service_ = service.get();
     return std::move(service);
   }

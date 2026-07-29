@@ -76,7 +76,10 @@ bool AvPipelineImpl::StartPlayingFrom(
     LOG(INFO) << __FUNCTION__ << " called while in error state";
     return false;
   }
-  DCHECK_EQ(state_, kFlushed);
+  if (state_ != kFlushed) {
+    LOG(ERROR) << __FUNCTION__ << " called in unexpected state " << state_;
+    return false;
+  }
 
   // Buffering related initialization.
   DCHECK(frame_provider_);
@@ -218,8 +221,7 @@ void AvPipelineImpl::ProcessPendingBuffer() {
             key_id, GetEncryptionScheme(pending_buffer_->stream_id()));
     if (!decrypt_context) {
       LOG(INFO) << "frame(pts=" << pending_buffer_->timestamp()
-                << "): waiting for key id "
-                << base::HexEncode(&key_id[0], key_id.size());
+                << "): waiting for key id " << base::HexEncode(key_id);
       if (!client_.waiting_cb.is_null())
         client_.waiting_cb.Run(::media::WaitingReason::kNoDecryptionKey);
       return;

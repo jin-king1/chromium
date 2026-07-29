@@ -29,16 +29,19 @@
 #include "third_party/blink/renderer/platform/audio/hrtf_elevation.h"
 
 #include <math.h>
+
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <utility>
 
+#include "base/compiler_specific.h"
 #include "base/memory/ptr_util.h"
 #include "base/synchronization/lock.h"
 #include "third_party/blink/renderer/platform/audio/audio_bus.h"
 #include "third_party/blink/renderer/platform/audio/hrtf_database.h"
 #include "third_party/blink/renderer/platform/audio/hrtf_panner.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
+#include "third_party/blink/renderer/platform/wtf/hash_map.h"
 
 namespace blink {
 
@@ -72,14 +75,15 @@ constexpr float kResponseSampleRate = 44100;
 // angle. See https://bugs.webkit.org/show_bug.cgi?id=98294#c9 for the
 // elevation angles and their order in the concatenated response.
 constexpr int kElevationIndexTableSize = 10;
-constexpr int kElevationIndexTable[kElevationIndexTableSize] = {
-    0, 15, 30, 45, 60, 75, 90, 315, 330, 345};
+constexpr std::array<int, kElevationIndexTableSize> kElevationIndexTable = {
+    0, 15, 30, 45, 60, 75, 90, 315, 330, 345,
+};
 
 // The range of elevations for the IRCAM impulse responses varies depending on
 // azimuth, but the minimum elevation appears to always be -45.
 //
 // Here's how it goes:
-constexpr int kMaxElevations[] = {
+constexpr auto kMaxElevations = std::to_array<int>({
     //  Azimuth
     //
     90,  // 0
@@ -105,14 +109,14 @@ constexpr int kMaxElevations[] = {
     75,  // 300
     45,  // 315
     60,  // 330
-    45   // 345
-};
+    45,  // 345
+});
 
 // Lazily load a concatenated HRTF database for given subject and store it in a
 // local hash table to ensure quick efficient future retrievals.
 scoped_refptr<AudioBus> GetConcatenatedImpulseResponsesForSubject(
     int subject_resource_id) {
-  typedef HashMap<int, scoped_refptr<AudioBus>> AudioBusMap;
+  using AudioBusMap = HashMap<int, scoped_refptr<AudioBus>>;
   DEFINE_THREAD_SAFE_STATIC_LOCAL(AudioBusMap, audio_bus_map, ());
   DEFINE_THREAD_SAFE_STATIC_LOCAL(base::Lock, lock, ());
 
@@ -141,9 +145,12 @@ scoped_refptr<AudioBus> GetConcatenatedImpulseResponsesForSubject(
   return bus;
 }
 
-}  // namespace
-
-bool HRTFElevation::CalculateKernelsForAzimuthElevation(
+// Given a specific azimuth and elevation angle, returns the left and right
+// HRTFKernel.
+// Valid values for azimuth are 0 -> 345 in 15 degree increments.
+// Valid values for elevation are -45 -> +90 in 15 degree increments.
+// Returns true on success.
+bool CalculateKernelsForAzimuthElevation(
     int azimuth,
     int elevation,
     float sample_rate,
@@ -199,8 +206,14 @@ bool HRTFElevation::CalculateKernelsForAzimuthElevation(
   unsigned stop_frame = start_frame + kResponseFrameSize;
   scoped_refptr<AudioBus> pre_sample_rate_converted_response(
       AudioBus::CreateBufferFromRange(bus.get(), start_frame, stop_frame));
-  scoped_refptr<AudioBus> response(AudioBus::CreateBySampleRateConverting(
+  if (!pre_sample_rate_converted_response) {
+    return false;
+  }
+  scoped_refptr<AudioBus> response(AudioBus::TryCreateBySampleRateConverting(
       pre_sample_rate_converted_response.get(), false, sample_rate));
+  if (!response) {
+    return false;
+  }
 
   // Note that depending on the fftSize returned by the panner, we may be
   // truncating the impulse response we just loaded in, or we might zero-pad it.
@@ -211,12 +224,16 @@ bool HRTFElevation::CalculateKernelsForAzimuthElevation(
     // Create a new response of the right length and copy over the current
     // response.
     scoped_refptr<AudioBus> padded_response(
-        AudioBus::Create(response->NumberOfChannels(), fft_size / 2));
+        AudioBus::TryCreate(response->NumberOfChannels(), fft_size / 2));
+    if (!padded_response) {
+      return false;
+    }
     for (unsigned channel = 0; channel < response->NumberOfChannels();
          ++channel) {
-      memcpy(padded_response->Channel(channel)->MutableData(),
-             response->Channel(channel)->Data(),
-             response->length() * sizeof(float));
+      padded_response->Channel(channel)
+          ->MutableSpan()
+          .first(response->length())
+          .copy_from(response->Channel(channel)->Span());
     }
     response = padded_response;
   }
@@ -234,6 +251,8 @@ bool HRTFElevation::CalculateKernelsForAzimuthElevation(
 
   return true;
 }
+
+}  // namespace
 
 std::unique_ptr<HRTFElevation> HRTFElevation::CreateForSubject(
     int subject_resource_id,

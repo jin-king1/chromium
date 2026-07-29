@@ -7,7 +7,6 @@
 
 #include "ash/webui/eche_app_ui/feature_status_provider.h"
 #include "ash/webui/eche_app_ui/mojom/eche_app.mojom.h"
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "chromeos/ash/components/phonehub/notification.h"
 #include "chromeos/ash/components/phonehub/notification_click_handler.h"
@@ -51,13 +50,11 @@ class EcheNotificationClickHandler : public phonehub::NotificationClickHandler,
  private:
   bool IsClickable(FeatureStatus status);
 
-  raw_ptr<phonehub::NotificationInteractionHandler, ExperimentalAsh> handler_;
-  raw_ptr<phonehub::PhoneModel, ExperimentalAsh> phone_model_;
-  raw_ptr<FeatureStatusProvider, ExperimentalAsh> feature_status_provider_;
-  raw_ptr<LaunchAppHelper, DanglingUntriaged | ExperimentalAsh>
-      launch_app_helper_;
-  raw_ptr<AppsLaunchInfoProvider, DanglingUntriaged | ExperimentalAsh>
-      apps_launch_info_provider_;
+  raw_ptr<phonehub::NotificationInteractionHandler> handler_;
+  raw_ptr<phonehub::PhoneModel> phone_model_;
+  raw_ptr<FeatureStatusProvider> feature_status_provider_;
+  raw_ptr<LaunchAppHelper, DanglingUntriaged> launch_app_helper_;
+  raw_ptr<AppsLaunchInfoProvider, DanglingUntriaged> apps_launch_info_provider_;
   bool is_click_handler_set_ = false;
 };
 

@@ -23,21 +23,49 @@ class OpenXrPlatformHelperWindows;
 class OpenXrGraphicsBindingD3D11 : public OpenXrGraphicsBinding {
  public:
   explicit OpenXrGraphicsBindingD3D11(
-      D3D11TextureHelper* texture_helper,
       base::WeakPtr<OpenXrPlatformHelperWindows> weak_platform_helper);
   ~OpenXrGraphicsBindingD3D11() override;
 
   // OpenXrGraphicsBinding
-  bool Initialize() override;
+  bool Initialize(XrInstance instance, XrSystemId system) override;
   const void* GetSessionCreateInfo() const override;
-  int64_t GetSwapchainFormat() const override;
-  XrResult EnumerateSwapchainImages(
-      const XrSwapchain& color_swapchain,
-      std::vector<SwapChainInfo>& color_swapchain_images) const override;
+  int64_t GetSwapchainFormat(XrSession session) const override;
+  XrResult EnumerateSwapchainImages(OpenXrCompositionLayer& layer) override;
+  bool CanUseSharedImages() const override;
+  void ResizeSharedBuffer(OpenXrCompositionLayer&,
+                          OpenXrSwapchainInfo& swap_chain_info,
+                          gpu::SharedImageInterface* sii) override;
+  void OnSwapchainImageSizeChanged(OpenXrCompositionLayer&) override;
+  void OnSwapchainImageReady(OpenXrCompositionLayer&,
+                             gpu::SharedImageInterface* sii) override;
+  void CleanupWithoutSubmit() override;
+  void OnSetOverlayAndWebXrVisibility() override;
+  void SetWebXrTexture(mojo::PlatformHandle texture_handle,
+                       const gpu::SyncToken& sync_token,
+                       const gfx::RectF& left,
+                       const gfx::RectF& right) override;
+  bool SetOverlayTexture(gfx::GpuMemoryBufferHandle texture,
+                         const gpu::SyncToken& sync_token,
+                         const gfx::RectF& left,
+                         const gfx::RectF& right) override;
+  gfx::Size GetMaxTextureSize() override;
 
- private:
+ protected:
+  // OpenXrGraphicsBinding
+  bool RenderLayer(
+      OpenXrCompositionLayer& layer,
+      const scoped_refptr<viz::ContextProvider>& context_provider) override;
+  void CreateSharedImages(OpenXrCompositionLayer& layer,
+                          gpu::SharedImageInterface* sii) override;
+  bool WaitOnFence(OpenXrCompositionLayer& layer,
+                   gfx::GpuFence& gpu_fence) override;
+  bool ShouldFlipSubmittedImage(OpenXrCompositionLayer& layer) const override;
+  bool SupportsLayers() const override;
+  std::unique_ptr<OpenXrCompositionLayer::GraphicsBindingData>
+  CreateLayerGraphicsBindingData() const override;
+
   bool initialized_ = false;
-  raw_ptr<D3D11TextureHelper> texture_helper_;
+  std::unique_ptr<D3D11TextureHelper> texture_helper_;
   base::WeakPtr<OpenXrPlatformHelperWindows> weak_platform_helper_;
 
   XrGraphicsBindingD3D11KHR binding_{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR,

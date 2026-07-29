@@ -9,9 +9,26 @@
 import {assert, assertNotReached} from 'chrome://resources/ash/common/assert.js';
 import {OncMojo} from 'chrome://resources/ash/common/network/onc_mojo.js';
 import {PromiseResolver} from 'chrome://resources/ash/common/promise_resolver.js';
-import {AlwaysOnVpnMode, AlwaysOnVpnProperties, ApnProperties, CellularSimState, ConfigProperties, CrosNetworkConfigInterface, CrosNetworkConfigObserverRemote, DeviceStateProperties, FilterType, GlobalPolicy, InhibitReason, ManagedProperties, NetworkCertificate, NetworkFilter, NetworkStateProperties, NO_LIMIT, StartConnectResult, TrafficCounter, UInt32Value, VpnProvider} from 'chrome://resources/mojo/chromeos/services/network_config/public/mojom/cros_network_config.mojom-webui.js';
+import {AlwaysOnVpnMode, ApnState, FilterType, InhibitReason, NO_LIMIT, StartConnectResult} from 'chrome://resources/mojo/chromeos/services/network_config/public/mojom/cros_network_config.mojom-webui.js';
 import {ConnectionStateType, DeviceStateType, NetworkType} from 'chrome://resources/mojo/chromeos/services/network_config/public/mojom/network_types.mojom-webui.js';
-import {Time} from 'chrome://resources/mojo/mojo/public/mojom/base/time.mojom-webui.js';
+
+/** @typedef {*} AlwaysOnVpnProperties */
+/** @typedef {*} ApnProperties */
+/** @typedef {*} CellularSimState */
+/** @typedef {*} ConfigProperties */
+/** @typedef {*} ConfigProperties */
+/** @typedef {*} CrosNetworkConfigInterface */
+/** @typedef {*} CrosNetworkConfigObserverRemote */
+/** @typedef {*} DeviceStateProperties */
+/** @typedef {*} GlobalPolicy */
+/** @typedef {*} ManagedProperties */
+/** @typedef {*} NetworkCertificate */
+/** @typedef {*} NetworkFilter */
+/** @typedef {*} NetworkStateProperties */
+/** @typedef {*} Time */
+/** @typedef {*} TrafficCounter */
+/** @typedef {*} UInt32Value */
+/** @typedef {*} VpnProvider */
 
 // Default cellular pin, used when locking/unlocking cellular profiles.
 export const DEFAULT_CELLULAR_PIN = '1111';
@@ -63,9 +80,9 @@ export class FakeNetworkConfig {
      * When updating or changing cellular pin, |testPin| is used to store
      * the updated pin, if not set DEFAULT_CELLULAR_PIN is used to check pin
      * value in |setCellularSimState()|
-     * @type {string}
+     * @private {string}
      */
-    this.testPin = '';
+    this.testPin_ = '';
 
     /**
      * @private {AlwaysOnVpnProperties}
@@ -75,11 +92,11 @@ export class FakeNetworkConfig {
       serviceGuid: '',
     };
 
-    /** @type {Function} */
-    this.beforeGetDeviceStateList = null;
+    /** @private {Function} */
+    this.beforeGetDeviceStateList_ = null;
 
-    /** @type {Function} */
-    this.beforeGetManagedProperties = null;
+    /** @private {Function} */
+    this.beforeGetManagedProperties_ = null;
 
     /** @private {!Array<VpnProvider>} */
     this.vpnProviders_ = [];
@@ -87,13 +104,49 @@ export class FakeNetworkConfig {
     /** @private {!Map<string, !Array<!Object>>} */
     this.trafficCountersMap_ = new Map();
 
-    /** @private {!Map<string, !Array<!Object>>} */
-    this.autoResetValuesMap_ = new Map();
-
     /** @private {!number} */
     this.apnIdCounter_ = 0;
 
+    /** @private {!Array<!{guid: string, properties: ConfigProperties}>} */
+    this.setPropertiesCalls_ = [];
+
     this.resetForTest();
+  }
+
+  /** @return {string} */
+  get testPin() {
+    return this.testPin_ || '';
+  }
+  /** @param {string} val */
+  set testPin(val) {
+    this.testPin_ = val;
+  }
+
+  /** @return {?Function} */
+  get beforeGetDeviceStateList() {
+    return this.beforeGetDeviceStateList_ || null;
+  }
+  /** @param {?Function} val */
+  set beforeGetDeviceStateList(val) {
+    this.beforeGetDeviceStateList_ = val;
+  }
+
+  /** @return {?Function} */
+  get beforeGetManagedProperties() {
+    return this.beforeGetManagedProperties_ || null;
+  }
+  /** @param {?Function} val */
+  set beforeGetManagedProperties(val) {
+    this.beforeGetManagedProperties_ = val;
+  }
+
+  /** @return {!Array<!{guid: string, properties: ConfigProperties}>} */
+  get setPropertiesCalls() {
+    return this.setPropertiesCalls_;
+  }
+  /** @param {!Array<!{guid: string, properties: ConfigProperties}>} val */
+  set setPropertiesCalls(val) {
+    this.setPropertiesCalls_ = val || [];
   }
 
   /**
@@ -124,12 +177,15 @@ export class FakeNetworkConfig {
 
     this.globalPolicy_ =
         /** @type {!GlobalPolicy} */ ({
-          allow_cellular_sim_lock: true,
-          allow_only_policy_cellular_networks: false,
-          allow_only_policy_networks_to_autoconnect: false,
-          allow_only_policy_wifi_networks_to_connect: false,
-          allow_only_policy_wifi_networks_to_connect_if_available: false,
-          blocked_hex_ssids: [],
+          allowApnModification: true,
+          allowCellularSimLock: true,
+          allowOnlyPolicyCellularNetworks: false,
+          allowOnlyPolicyNetworksToAutoconnect: false,
+          allowOnlyPolicyWifiNetworksToConnect: false,
+          allowOnlyPolicyWifiNetworksToConnectIfAvailable: false,
+          dnsQueriesMonitored: false,
+          reportXdrEventsEnabled: false,
+          blockedHexSsids: [],
         });
 
     const eth0 = OncMojo.getDefaultNetworkState(NetworkType.kEthernet, 'eth0');
@@ -142,6 +198,7 @@ export class FakeNetworkConfig {
 
     this.serverCas_ = [];
     this.userCerts_ = [];
+    this.setPropertiesCalls = [];
 
     ['getNetworkState', 'getNetworkStateList', 'getDeviceStateList',
      'getManagedProperties', 'setNetworkTypeEnabledState', 'requestNetworkScan',
@@ -149,8 +206,8 @@ export class FakeNetworkConfig {
      'setProperties', 'setCellularSimState', 'selectCellularMobileNetwork',
      'startConnect', 'startDisconnect', 'configureNetwork', 'forgetNetwork',
      'getAlwaysOnVpn', 'getSupportedVpnTypes', 'requestTrafficCounters',
-     'resetTrafficCounters', 'setTrafficCountersAutoReset', 'removeCustomApn',
-     'createCustomApn', 'modifyCustomApn']
+     'resetTrafficCounters', 'setTrafficCountersResetDay', 'removeCustomApn',
+     'createCustomApn', 'createExclusivelyEnabledCustomApn', 'modifyCustomApn']
         .forEach((methodName) => {
           this.resolverMap_.set(methodName, new PromiseResolver());
         });
@@ -169,7 +226,6 @@ export class FakeNetworkConfig {
 
   /**
    * @param {string} methodName
-   * @protected
    */
   methodCalled(methodName) {
     this.getResolver_(methodName).resolve();
@@ -187,8 +243,7 @@ export class FakeNetworkConfig {
   }
 
   /**
-   * @param {!Array<!NetworkStateProperties>}
-   *     networks
+   * @param {!Array<!NetworkStateProperties>} networks
    */
   addNetworksForTest(networks) {
     this.networkStates_ = this.networkStates_.concat(networks);
@@ -241,6 +296,23 @@ export class FakeNetworkConfig {
       managed.connectionState = state;
     }
     this.onActiveNetworksChanged();
+  }
+
+  /**
+   * @param {string} guid
+   * @param {boolean} visible
+   */
+  setWifiNetworkVisibleForTest(guid, visible) {
+    const network = this.networkStates_.find(state => {
+      return state.guid === guid;
+    });
+    assert(!!network, 'Network not found: ' + guid);
+    assert(
+        network.type === NetworkType.kWiFi,
+        'Network visible can only be set on WiFi type');
+    network.typeState.wifi.visible = visible;
+
+    this.onNetworkStateChanged(network);
   }
 
   /**
@@ -358,6 +430,7 @@ export class FakeNetworkConfig {
    */
   setProperties(guid, properties) {
     return new Promise(resolve => {
+      this.setPropertiesCalls.push({guid, properties});
       this.propertiesToSet_ =
           /** @type(!ConfigProperties)*/ (Object.assign({}, properties));
       this.methodCalled('setProperties');
@@ -367,7 +440,6 @@ export class FakeNetworkConfig {
 
   /**
    * @param {DeviceStateProperties} deviceState
-   * @private
    */
   setDeviceStateForTest(deviceState) {
     assert(deviceState.type !== undefined);
@@ -452,8 +524,7 @@ export class FakeNetworkConfig {
   // networkConfig methods
 
   /**
-   * @param {!CrosNetworkConfigObserverRemote}
-   *     observer
+   * @param {!CrosNetworkConfigObserverRemote} observer
    */
   addObserver(observer) {
     this.observers_.push(observer);
@@ -560,7 +631,7 @@ export class FakeNetworkConfig {
           result = OncMojo.getDefaultManagedProperties(
               foundState.type, foundState.guid, foundState.name);
         } else {
-          console.error('GUID not found: ' + guid);
+          console.warn('GUID not found: ' + guid);
         }
       }
       if (this.beforeGetManagedProperties) {
@@ -570,6 +641,16 @@ export class FakeNetworkConfig {
       this.methodCalled('getManagedProperties');
       resolve({result: result || null});
     });
+  }
+
+  /**
+   * @param {!NetworkType} type
+   * @return {boolean}
+   */
+  getIsDeviceScanning(type) {
+    const deviceState = this.deviceStates_.get(type);
+    assert(!!deviceState);
+    return deviceState.scanning;
   }
 
   /**
@@ -656,6 +737,9 @@ export class FakeNetworkConfig {
 
   /** @param {!NetworkType } type */
   requestNetworkScan(type) {
+    this.deviceStates_.get(type).scanning = true;
+    this.onDeviceStateListChanged();
+
     this.methodCalled('requestNetworkScan');
   }
 
@@ -669,7 +753,7 @@ export class FakeNetworkConfig {
     });
   }
 
-  /** @param {!GlobalPolicy} globalPolicy */
+  /** @param {!GlobalPolicy|undefined} globalPolicy */
   setGlobalPolicy(globalPolicy) {
     this.globalPolicy_ = globalPolicy;
     this.onPoliciesApplied(/*userhash=*/ '');
@@ -762,25 +846,23 @@ export class FakeNetworkConfig {
     const trafficCounters = this.trafficCountersMap_.get(guid);
     assert(!!trafficCounters, 'Network not found: ' + guid);
     trafficCounters.forEach(function(counter) {
-      counter.rxBytes = 0;
-      counter.txBytes = 0;
+      counter.rxBytes = 0n;
+      counter.txBytes = 0n;
     });
     this.methodCalled('resetTrafficCounters');
   }
 
   /**
    * @param {string} guid
-   * @param {boolean} autoReset
    * @param {?UInt32Value} resetDay
    */
-  setAutoResetValues_(guid, autoReset, resetDay) {
+  setResetDay_(guid, resetDay) {
     const network = this.networkStates_.find(state => {
       return state.guid === guid;
     });
     assert(!!network, 'Network not found: ' + guid);
     const managed = this.managedProperties_.get(guid);
     if (managed) {
-      managed.trafficCounterProperties.autoReset = autoReset;
       managed.trafficCounterProperties.userSpecifiedResetDay =
           resetDay ? resetDay.value : 1;
     }
@@ -789,30 +871,57 @@ export class FakeNetworkConfig {
 
   /**
    * @param {string} guid
-   * @param {boolean} autoReset
    * @param {?UInt32Value} resetDay
+   * @return {!Promise<{success: boolean}>}
    */
-  setTrafficCountersAutoReset(guid, autoReset, resetDay) {
+  setTrafficCountersResetDay(guid, resetDay) {
     return new Promise(resolve => {
-      this.methodCalled('setTrafficCountersAutoReset');
-      this.setAutoResetValues_(guid, autoReset, resetDay);
-      resolve(true);
+      this.methodCalled('setTrafficCountersResetDay');
+      this.setResetDay_(guid, resetDay);
+      resolve({success: true});
     });
   }
 
   /**
    * @param {!string} guid
    * @param {!ApnProperties} apn
+   * @return {!Promise<{success: boolean}>}
    */
   createCustomApn(guid, apn) {
-    const properties = this.managedProperties_.get(guid);
-    assert(properties);
-    apn.id = `${this.apnIdCounter_++}`;
-    if (!properties.typeProperties.cellular.customApnList) {
-      properties.typeProperties.cellular.customApnList = [];
-    }
-    properties.typeProperties.cellular.customApnList.unshift(apn);
-    this.methodCalled('createCustomApn');
+    return new Promise(resolve => {
+      const properties = this.managedProperties_.get(guid);
+      assert(properties);
+      apn.id = `${this.apnIdCounter_++}`;
+      if (!properties.typeProperties.cellular.customApnList) {
+        properties.typeProperties.cellular.customApnList = [];
+      }
+      properties.typeProperties.cellular.customApnList.unshift(apn);
+      this.methodCalled('createCustomApn');
+      resolve({success: true});
+    });
+  }
+
+  /**
+   * @param {!string} guid
+   * @param {!ApnProperties} apn
+   * @return {!Promise<{success: boolean}>}
+   */
+  createExclusivelyEnabledCustomApn(guid, apn) {
+    return new Promise(resolve => {
+      const properties = this.managedProperties_.get(guid);
+      assert(properties);
+      apn.id = `${this.apnIdCounter_++}`;
+      if (!properties.typeProperties.cellular.customApnList) {
+        properties.typeProperties.cellular.customApnList = [];
+      }
+      properties.typeProperties.cellular.customApnList.forEach(customApn => {
+        customApn.state = ApnState.kDisabled;
+      });
+      apn.state = ApnState.kEnabled;
+      properties.typeProperties.cellular.customApnList.unshift(apn);
+      this.methodCalled('createExclusivelyEnabledCustomApn');
+      resolve({success: true});
+    });
   }
 
   /**
@@ -853,3 +962,15 @@ export class FakeNetworkConfig {
     this.methodCalled('modifyCustomApn');
   }
 }
+
+/** @type {string} */
+FakeNetworkConfig.prototype.testPin;
+
+/** @type {Function|null} */
+FakeNetworkConfig.prototype.beforeGetDeviceStateList;
+
+/** @type {Function|null} */
+FakeNetworkConfig.prototype.beforeGetManagedProperties;
+
+/** @type {!Array<!{guid: string, properties: ConfigProperties}>} */
+FakeNetworkConfig.prototype.setPropertiesCalls;

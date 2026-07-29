@@ -5,8 +5,7 @@
 from telemetry import story
 from page_sets.desktop_ui import \
     new_tab_page_story, omnibox_story, \
-    side_search_story, tab_search_story, webui_tab_strip_story
-from page_sets.desktop_ui.ui_devtools_utils import IsMac
+    tab_search_story
 
 
 class DesktopUIStorySet(story.StorySet):
@@ -29,13 +28,6 @@ class DesktopUIStorySet(story.StorySet):
       tab_search_story.TabSearchStoryMeasureMemory3TabSearch,
   ]
 
-  WEBUI_TAB_STRIP_STORIES = [
-      webui_tab_strip_story.WebUITabStripStoryCleanSlate,
-      webui_tab_strip_story.WebUITabStripStoryMeasureMemory,
-      webui_tab_strip_story.WebUITabStripStoryMeasureMemory2Window,
-      webui_tab_strip_story.WebUITabStripStoryTop10,
-      webui_tab_strip_story.WebUITabStripStoryTop10Loading,
-  ]
 
   OMNIBOX_STORIES = [
       omnibox_story.OmniboxStoryPedal,
@@ -45,11 +37,6 @@ class DesktopUIStorySet(story.StorySet):
 
   NEW_TAB_PAGE_STORIES = [
       new_tab_page_story.NewTabPageStoryLoading,
-  ]
-
-  SIDE_SEARCH_STORIES = [
-      side_search_story.SideSearchStoryMeasureMemory,
-      side_search_story.SideSearchStoryNavigation,
   ]
 
   def __init__(self):
@@ -63,30 +50,18 @@ class DesktopUIStorySet(story.StorySet):
               '--enable-features=TabSearchUseMetricsReporter',
           ]))
 
-    # WebUI Tab Strip is not available on Mac.
-    if not IsMac():
-      for cls in self.WEBUI_TAB_STRIP_STORIES:
-        self.AddStory(
-            cls(self, [
-                '--enable-features=WebUITabStrip',
-                '--top-chrome-touch-ui=enabled',
-            ]))
-
     for cls in self.OMNIBOX_STORIES:
       self.AddStory(cls(self))
 
     for cls in self.NEW_TAB_PAGE_STORIES:
+      features = [
+          'NtpRecipeTasksModule:NtpRecipeTasksModuleDataParam/fake',
+          'NtpChromeCartModule:NtpChromeCartModuleDataParam/fake',
+          'NtpDriveModule:NtpDriveModuleDataParam/fake',
+          'NtpPhotosModule:NtpPhotosModuleDataParam/1',
+      ]
       self.AddStory(
           cls(self, [
-              '--enable-features=NtpModules,\
-              NtpRecipeTasksModule:NtpRecipeTasksModuleDataParam/fake,\
-              NtpChromeCartModule:NtpChromeCartModuleDataParam/fake,\
-              NtpDriveModule:NtpDriveModuleDataParam/fake,\
-              NtpPhotosModule:NtpPhotosModuleDataParam/1',
+              '--enable-features=%s' % ','.join(features),
               '--signed-out-ntp-modules',
           ]))
-
-    for cls in self.SIDE_SEARCH_STORIES:
-      self.AddStory(cls(self, [
-          '--enable-features=SideSearch',
-      ]))

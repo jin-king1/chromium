@@ -134,10 +134,9 @@ void RtcLogFileReader::DoOpen(OpenCallback callback) {
 
   base::Time::Exploded exploded;
   base::Time::NowFromSystemTime().LocalExplode(&exploded);
-  std::string filename = base::StringPrintf(
+  filename_ = base::FilePath::FromUTF8Unsafe(base::StringPrintf(
       "host-rtc-log-%d-%d-%d_%d-%d-%d", exploded.year, exploded.month,
-      exploded.day_of_month, exploded.hour, exploded.minute, exploded.second);
-  filename_ = base::FilePath::FromUTF8Unsafe(filename);
+      exploded.day_of_month, exploded.hour, exploded.minute, exploded.second));
 
   data_ = rtc_log->TakeLogData();
   current_log_section_ = data_.begin();

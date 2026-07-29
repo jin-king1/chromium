@@ -19,7 +19,6 @@
 #include "third_party/blink/renderer/core/css/media_list.h"
 #include "third_party/blink/renderer/core/css/properties/longhands.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
-#include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/dom/shadow_root.h"
 #include "third_party/blink/renderer/core/frame/settings.h"
 #include "third_party/blink/renderer/core/testing/page_test_base.h"
@@ -34,9 +33,9 @@ TEST_F(CSSStyleSheetTest,
   CSSStyleSheetInit* init = CSSStyleSheetInit::Create();
   init->setMedia(
       MakeGarbageCollected<V8UnionMediaListOrString>("screen, print"));
-  init->setTitle("test");
   init->setAlternate(true);
   init->setDisabled(true);
+  init->setBaseURL("https://example.com/custom/");
   CSSStyleSheet* sheet =
       CSSStyleSheet::Create(GetDocument(), init, exception_state);
   ASSERT_FALSE(exception_state.HadException());
@@ -46,9 +45,9 @@ TEST_F(CSSStyleSheetTest,
   EXPECT_EQ(sheet->ownerRule(), nullptr);
   EXPECT_EQ(sheet->media()->length(), 2U);
   EXPECT_EQ(sheet->media()->mediaText(nullptr), init->media()->GetAsString());
-  EXPECT_EQ(sheet->title(), init->title());
   EXPECT_TRUE(sheet->AlternateFromConstructor());
   EXPECT_TRUE(sheet->disabled());
+  EXPECT_EQ(sheet->BaseURL().GetString(), "https://example.com/custom/");
   EXPECT_EQ(sheet->cssRules(exception_state)->length(), 0U);
   ASSERT_FALSE(exception_state.HadException());
 }
@@ -57,9 +56,9 @@ TEST_F(CSSStyleSheetTest,
        GarbageCollectedShadowRootsRemovedFromAdoptedTreeScopes) {
   SetBodyInnerHTML("<div id='host_a'></div><div id='host_b'></div>");
   auto* host_a = GetElementById("host_a");
-  auto& shadow_a = host_a->AttachShadowRootInternal(ShadowRootType::kOpen);
+  auto& shadow_a = host_a->AttachShadowRootForTesting(ShadowRootMode::kOpen);
   auto* host_b = GetElementById("host_b");
-  auto& shadow_b = host_b->AttachShadowRootInternal(ShadowRootType::kOpen);
+  auto& shadow_b = host_b->AttachShadowRootForTesting(ShadowRootMode::kOpen);
   DummyExceptionStateForTesting exception_state;
   CSSStyleSheetInit* init = CSSStyleSheetInit::Create();
   CSSStyleSheet* sheet =
@@ -83,8 +82,8 @@ TEST_F(CSSStyleSheetTest,
 TEST_F(CSSStyleSheetTest, AdoptedStyleSheetMediaQueryEvalChange) {
   SetBodyInnerHTML("<div id=green></div><div id=blue></div>");
 
-  Element* green = GetDocument().getElementById("green");
-  Element* blue = GetDocument().getElementById("blue");
+  Element* green = GetDocument().getElementById(AtomicString("green"));
+  Element* blue = GetDocument().getElementById(AtomicString("blue"));
 
   CSSStyleSheetInit* init = CSSStyleSheetInit::Create();
   CSSStyleSheet* sheet =
@@ -148,6 +147,22 @@ TEST_F(CSSStyleSheetTest, AdoptedStyleSheetMediaQueryEvalChange) {
   EXPECT_EQ(
       Color::FromRGB(0, 0, 255),
       blue->GetComputedStyle()->VisitedDependentColor(GetCSSPropertyColor()));
+}
+
+TEST_F(CSSStyleSheetTest, DetachCSSOMWrappersWithNullEntries) {
+  auto* sheet = CSSStyleSheet::Create(
+      GetDocument(), CSSStyleSheetInit::Create(), ASSERT_NO_EXCEPTION);
+  sheet->replaceSync(".a { color: red; } .b { color: green; }",
+                     ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(sheet->length(), 2u);
+
+  sheet->item(0);
+  // child_rule_cssom_wrappers_[0] is non-nullptr
+  // child_rule_cssom_wrappers_[1] is nullptr
+
+  // Call DetachCSSOMWrappers via replaceSync.
+  sheet->replaceSync(".c { color: blue; }", ASSERT_NO_EXCEPTION);
+  EXPECT_EQ(sheet->length(), 1u);
 }
 
 }  // namespace blink

@@ -2,25 +2,92 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#import "ios/chrome/browser/shared/ui/util/image/image_util.h"
+
+#import <ImageIO/ImageIO.h>
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
-#import "ios/chrome/browser/shared/ui/util/image/image_util.h"
+#import <algorithm>
+
+#import "base/apple/foundation_util.h"
 #import "ui/gfx/color_analysis.h"
 #import "ui/gfx/image/image.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 namespace {
-NSString* kImageExtensionJPG = @"jpg";
-NSString* kImageExtensionPNG = @"png";
-NSString* kImageExtensionTIF = @"tif";
-NSString* kImageExtensionBMP = @"bmp";
-NSString* kImageExtensionGIF = @"gif";
-NSString* kImageExtensionICO = @"ico";
-NSString* kImageExtensionWebP = @"webp";
+
+NSString* const kImageExtensionJPG = @"jpg";
+NSString* const kImageExtensionPNG = @"png";
+NSString* const kImageExtensionTIF = @"tif";
+NSString* const kImageExtensionBMP = @"bmp";
+NSString* const kImageExtensionGIF = @"gif";
+NSString* const kImageExtensionICO = @"ico";
+NSString* const kImageExtensionWebP = @"webp";
+
+// Returns whether `span` starts with `prefix`.
+template <typename T, size_t E>
+bool starts_with(base::span<T> span, base::span<T, E> prefix) {
+  const auto head = span.first(E);
+  return head == prefix;
+}
+
+// Creates a downsampled UIImage from `source` fitting within `point_size`
+// at the given `scale`. Returns nil if the thumbnail cannot be created.
+UIImage* CreateDownsampledImage(CGImageSourceRef source,
+                                CGSize point_size,
+                                CGFloat scale) {
+  CGFloat max_dimension_in_pixels =
+      std::max(point_size.width, point_size.height) * scale;
+  NSDictionary* downsample_options = @{
+    (__bridge id)kCGImageSourceCreateThumbnailFromImageAlways : @YES,
+    (__bridge id)kCGImageSourceShouldCacheImmediately : @YES,
+    (__bridge id)kCGImageSourceCreateThumbnailWithTransform : @YES,
+    (__bridge id)
+    kCGImageSourceThumbnailMaxPixelSize : @(max_dimension_in_pixels)
+  };
+
+  CGImageRef downsampled_image = CGImageSourceCreateThumbnailAtIndex(
+      source, 0, (__bridge CFDictionaryRef)downsample_options);
+  if (!downsampled_image) {
+    return nil;
+  }
+
+  UIImage* image = [[UIImage alloc] initWithCGImage:downsampled_image
+                                              scale:scale
+                                        orientation:UIImageOrientationUp];
+  CGImageRelease(downsampled_image);
+  return image;
+}
+
+// Returns the logical size of the image, swapping width and height if the
+// EXIF orientation indicates a 90 or 270 degree rotation.
+CGSize GetOrientedImageSize(NSDictionary* properties) {
+  NSNumber* width = properties[(__bridge id)kCGImagePropertyPixelWidth];
+  NSNumber* height = properties[(__bridge id)kCGImagePropertyPixelHeight];
+  if (!width || !height) {
+    return CGSizeZero;
+  }
+
+  CGSize size = CGSizeMake(width.doubleValue, height.doubleValue);
+
+  NSNumber* orientation_num =
+      properties[(__bridge id)kCGImagePropertyOrientation];
+  if (orientation_num) {
+    CGImagePropertyOrientation orientation =
+        static_cast<CGImagePropertyOrientation>(orientation_num.intValue);
+    switch (orientation) {
+      case kCGImagePropertyOrientationLeftMirrored:
+      case kCGImagePropertyOrientationRight:
+      case kCGImagePropertyOrientationRightMirrored:
+      case kCGImagePropertyOrientationLeft:
+        return CGSizeMake(size.height, size.width);
+      default:
+        break;
+    }
+  }
+
+  return size;
+}
 
 }  // namespace
 
@@ -52,33 +119,60 @@ NSString* GetImageExtensionFromData(NSData* data) {
     return nil;
   }
 
-  const char* pdata = static_cast<const char*>(data.bytes);
-  switch (pdata[0]) {
-    case '\xFF':
-      return strncmp(pdata, "\xFF\xD8\xFF", 3) ? nil : kImageExtensionJPG;
-    case '\x89':
-      return strncmp(pdata, "\x89\x50\x4E\x47\x0D\x0A\x1A\x0A", 8)
-                 ? nil
-                 : kImageExtensionPNG;
-    case 'G':
-      return (strncmp(pdata, "GIF87a", 6) && strncmp(pdata, "GIF89a", 6))
-                 ? nil
-                 : kImageExtensionGIF;
-    case '\x49':
-      return strncmp(pdata, "\x49\x49\x2A\x00", 4) ? nil : kImageExtensionTIF;
-    case '\x4D':
-      return strncmp(pdata, "\x4D\x4D\x00\x2A", 4) ? nil : kImageExtensionTIF;
-    case 'B':
-      return strncmp(pdata, "BM", 2) ? nil : kImageExtensionBMP;
-    case 'R':
-      return (strncmp(pdata, "RIFF", 4) || strncmp(pdata + 8, "WEBP", 4))
-                 ? nil
-                 : kImageExtensionWebP;
-    case '\0':
-      return strncmp(pdata, "\x00\x00\x01\x00", 4) ? nil : kImageExtensionICO;
-    default:
+  const base::span<const uint8_t> span = base::apple::NSDataToSpan(data);
+  switch (span[0]) {
+    case uint8_t{0xff}:
+      if (starts_with(span, base::byte_span_from_cstring("\xFF\xD8\xFF"))) {
+        return kImageExtensionJPG;
+      }
+      return nil;
+
+    case uint8_t{0x89}:
+      if (starts_with(span, base::byte_span_from_cstring(
+                                "\x89\x50\x4E\x47\x0D\x0A\x1A\x0A"))) {
+        return kImageExtensionPNG;
+      }
+      return nil;
+
+    case uint8_t{'G'}:
+      if (starts_with(span, base::byte_span_from_cstring("GIF87a")) ||
+          starts_with(span, base::byte_span_from_cstring("GIF89a"))) {
+        return kImageExtensionGIF;
+      }
+      return nil;
+
+    case uint8_t{0x49}:
+      if (starts_with(span, base::byte_span_from_cstring("\x49\x49\x2A\x00"))) {
+        return kImageExtensionTIF;
+      }
+      return nil;
+
+    case uint8_t{0x4D}:
+      if (starts_with(span, base::byte_span_from_cstring("\x4D\x4D\x00\x2A"))) {
+        return kImageExtensionTIF;
+      }
+      return nil;
+
+    case uint8_t{'B'}:
+      if (starts_with(span, base::byte_span_from_cstring("BM"))) {
+        return kImageExtensionBMP;
+      }
+      return nil;
+
+    case uint8_t{'R'}:
+      if (starts_with(span, base::byte_span_from_cstring("RIFF")) &&
+          starts_with(span.subspan(8u), base::byte_span_from_cstring("WEBP"))) {
+        return kImageExtensionWebP;
+      }
+      return nil;
+
+    case uint8_t{0}:
+      if (starts_with(span, base::byte_span_from_cstring("\x00\x00\x01\x00"))) {
+        return kImageExtensionICO;
+      }
       return nil;
   }
+
   return nil;
 }
 
@@ -93,4 +187,94 @@ NSString* GetImageUTIFromData(NSData* data) {
   };
 
   return dict[GetImageExtensionFromData(data)];
+}
+
+CGSize ImageSizeFromData(NSData* data) {
+  if (!data) {
+    return CGSizeZero;
+  }
+
+  CGImageSourceRef source = CGImageSourceCreateWithData(
+      (__bridge CFDataRef)data,
+      (__bridge CFDictionaryRef)
+          @{(__bridge id)kCGImageSourceShouldCache : @NO});
+  if (!source) {
+    return CGSizeZero;
+  }
+
+  CFDictionaryRef properties =
+      CGImageSourceCopyPropertiesAtIndex(source, 0, nil);
+  CFRelease(source);
+  if (!properties) {
+    return CGSizeZero;
+  }
+
+  NSDictionary* dict = CFBridgingRelease(properties);
+  return GetOrientedImageSize(dict);
+}
+
+CGSize ImageSizeFromURL(NSURL* fileURL) {
+  if (!fileURL) {
+    return CGSizeZero;
+  }
+
+  CGImageSourceRef source = CGImageSourceCreateWithURL(
+      (__bridge CFURLRef)fileURL,
+      (__bridge CFDictionaryRef) @{
+        (__bridge id)kCGImageSourceShouldCache : @NO
+      });
+  if (!source) {
+    return CGSizeZero;
+  }
+
+  CFDictionaryRef properties =
+      CGImageSourceCopyPropertiesAtIndex(source, 0, nil);
+  CFRelease(source);
+  if (!properties) {
+    return CGSizeZero;
+  }
+
+  NSDictionary* dict = CFBridgingRelease(properties);
+  return GetOrientedImageSize(dict);
+}
+
+UIImage* DownsampledImageFromData(NSData* data,
+                                  CGSize point_size,
+                                  CGFloat scale) {
+  if (!data || point_size.width <= 0 || point_size.height <= 0 || scale <= 0) {
+    return nil;
+  }
+
+  NSDictionary* source_options =
+      @{(__bridge id)kCGImageSourceShouldCache : @NO};
+  CGImageSourceRef source = CGImageSourceCreateWithData(
+      (__bridge CFDataRef)data, (__bridge CFDictionaryRef)source_options);
+  if (!source) {
+    return nil;
+  }
+
+  UIImage* image = CreateDownsampledImage(source, point_size, scale);
+  CFRelease(source);
+  return image;
+}
+
+UIImage* DownsampledImageFromURL(NSURL* fileURL,
+                                 CGSize point_size,
+                                 CGFloat scale) {
+  if (!fileURL || point_size.width <= 0 || point_size.height <= 0 ||
+      scale <= 0) {
+    return nil;
+  }
+
+  NSDictionary* source_options =
+      @{(__bridge id)kCGImageSourceShouldCache : @NO};
+  CGImageSourceRef source = CGImageSourceCreateWithURL(
+      (__bridge CFURLRef)fileURL, (__bridge CFDictionaryRef)source_options);
+  if (!source) {
+    return nil;
+  }
+
+  UIImage* image = CreateDownsampledImage(source, point_size, scale);
+  CFRelease(source);
+  return image;
 }

@@ -4,11 +4,12 @@
 
 #include "chromeos/ash/components/network/cellular_esim_profile.h"
 
+#include <optional>
+
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "dbus/object_path.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/optional.h"
 
 namespace ash {
 
@@ -18,8 +19,8 @@ TEST(CellularESimProfileTest, ConvertToAndFromDictionary) {
                               "iccid", u"name", u"nickname", u"serviceProvider",
                               "activationCode");
 
-  base::Value::Dict dictionary = profile.ToDictionaryValue();
-  absl::optional<CellularESimProfile> from_dictionary =
+  base::DictValue dictionary = profile.ToDictionaryValue();
+  std::optional<CellularESimProfile> from_dictionary =
       CellularESimProfile::FromDictionaryValue(dictionary);
   EXPECT_TRUE(from_dictionary);
 
@@ -35,9 +36,8 @@ TEST(CellularESimProfileTest, ConvertToAndFromDictionary) {
 
 TEST(CellularESimProfileTest, InvalidDictionary) {
   // Try to convert a dictionary without the required keys.
-  base::Value::Dict dictionary;
-  dictionary.Set("sampleKey", "sampleValue");
-  absl::optional<CellularESimProfile> from_dictionary =
+  auto dictionary = base::DictValue().Set("sampleKey", "sampleValue");
+  std::optional<CellularESimProfile> from_dictionary =
       CellularESimProfile::FromDictionaryValue(dictionary);
   EXPECT_FALSE(from_dictionary);
 }

@@ -4,6 +4,8 @@
 
 #include "services/network/shared_dictionary/shared_dictionary_constants.h"
 
+#include "base/functional/callback.h"
+
 namespace network::shared_dictionary {
 
 namespace {
@@ -15,17 +17,21 @@ size_t g_dictionary_size_limit = kDictionarySizeLimit;
 }  // namespace
 
 const char kUseAsDictionaryHeaderName[] = "use-as-dictionary";
-
 const char kOptionNameMatch[] = "match";
-const char kOptionNameExpires[] = "expires";
-const char kOptionNameAlgorithms[] = "algorithms";
+const char kOptionNameMatchDest[] = "match-dest";
+const char kOptionNameType[] = "type";
+const char kOptionNameId[] = "id";
+const char kOptionNameTTL[] = "ttl";
 
 size_t GetDictionarySizeLimit() {
   return g_dictionary_size_limit;
 }
 
-void SetDictionarySizeLimitForTesting(size_t dictionary_size_limit) {
+base::ScopedClosureRunner SetDictionarySizeLimitForTesting(  // IN-TEST
+    size_t dictionary_size_limit) {
   g_dictionary_size_limit = dictionary_size_limit;
+  return base::ScopedClosureRunner(
+      base::BindOnce([]() { g_dictionary_size_limit = kDictionarySizeLimit; }));
 }
 
 }  // namespace network::shared_dictionary

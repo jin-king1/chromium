@@ -6,14 +6,20 @@
 
 #include <map>
 #include <set>
+#include <string_view>
 
 #include "base/memory/scoped_refptr.h"
+#include "base/strings/string_util.h"
 #include "base/test/mock_callback.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/values.h"
-#include "build/chromeos_buildflags.h"
 #include "components/prefs/testing_pref_store.h"
+#include "components/sync/base/features.h"
+#include "components/sync/test/test_sync_service.h"
+#include "components/sync_preferences/features.h"
 #include "components/sync_preferences/pref_model_associator_client.h"
+#include "components/sync_preferences/syncable_prefs_database.h"
 #include "components/sync_preferences/test_syncable_prefs_database.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -22,29 +28,81 @@ namespace sync_preferences {
 
 namespace {
 
-constexpr char kPref1[] = "pref1";
-constexpr char kPref2[] = "pref2";
-constexpr char kPref3[] = "pref3";
-constexpr char kPrefName[] = "pref";
-constexpr char kPriorityPrefName[] = "priority-pref";
+constexpr char kPref1[] = "regular.pref1";
+constexpr char kPref2[] = "regular.pref2";
+constexpr char kPref3[] = "regular.pref3";
+constexpr char kPrefName[] = "regular.pref";
+constexpr char kPriorityPrefName[] = "priority.pref";
 constexpr char kNonExistentPrefName[] = "nonexistent-pref";
-constexpr char kNonSyncablePrefName[] = "nonsyncable-pref";
+constexpr char kNonSyncablePrefName[] = "nonsyncable.pref";
+constexpr char kHistorySensitivePrefName[] = "sensitive.pref";
+constexpr char kMergeableListPref[] = "mergeable.list.pref";
+constexpr char kMergeableDictPref1[] = "mergeable.dict.pref1";
+constexpr char kMergeableDictPref2[] = "mergeable.dict.pref2";
+constexpr char kCustomMergePref[] = "custom.merge.pref";
+constexpr char kAlwaysSyncingPriorityPrefName[] =
+    "always.syncing.priority.pref";
+constexpr char kAccountScopedPref[] = "account_scoped.pref";
+#if BUILDFLAG(IS_CHROMEOS)
+constexpr char kOsPrefName[] = "os.pref";
+constexpr char kOsPriorityPrefName[] = "os.priority.pref";
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 // Assigning an id of 0 to all the test prefs.
-const std::unordered_map<std::string, SyncablePrefMetadata>
-    kSyncablePrefsDatabase = {
-        {kPref1, {0, syncer::PREFERENCES}},
-        {kPref2, {0, syncer::PREFERENCES}},
-        {kPref3, {0, syncer::PREFERENCES}},
-        {kPrefName, {0, syncer::PREFERENCES}},
-        {kPriorityPrefName, {0, syncer::PRIORITY_PREFERENCES}},
+const TestSyncablePrefsDatabase::PrefsMap kSyncablePrefsDatabase = {
+    {kPref1,
+     {0, syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone}},
+    {kPref2,
+     {0, syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone}},
+    {kPref3,
+     {0, syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone}},
+    {kPrefName,
+     {0, syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone}},
+    {kPriorityPrefName,
+     {0, syncer::PRIORITY_PREFERENCES, PrefSensitivity::kNone,
+      MergeBehavior::kNone}},
+    {kHistorySensitivePrefName,
+     {0, syncer::PREFERENCES, PrefSensitivity::kSensitiveRequiresHistory,
+      MergeBehavior::kNone}},
+    {kMergeableListPref,
+     {0, syncer::PREFERENCES, PrefSensitivity::kNone,
+      MergeBehavior::kMergeableListWithRewriteOnUpdate}},
+    {kMergeableDictPref1,
+     {0, syncer::PREFERENCES, PrefSensitivity::kNone,
+      MergeBehavior::kMergeableDict}},
+    {kMergeableDictPref2,
+     {0, syncer::PREFERENCES, PrefSensitivity::kNone,
+      MergeBehavior::kMergeableDict}},
+    {kCustomMergePref,
+     {0, syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kCustom}},
+    {kAlwaysSyncingPriorityPrefName,
+     {0, syncer::PRIORITY_PREFERENCES,
+      PrefSensitivity::kExemptFromUserControlWhileSignedIn,
+      MergeBehavior::kNone}},
+    {kAccountScopedPref,
+     {0, syncer::PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone,
+      WriteBehavior::kWriteToAccountOnly}},
+#if BUILDFLAG(IS_CHROMEOS)
+    {kOsPrefName,
+     {0, syncer::OS_PREFERENCES, PrefSensitivity::kNone, MergeBehavior::kNone}},
+    {kOsPriorityPrefName,
+     {0, syncer::OS_PRIORITY_PREFERENCES, PrefSensitivity::kNone,
+      MergeBehavior::kNone}},
+#endif  // BUILDFLAG(IS_CHROMEOS)
 };
+
+constexpr char kUserSelectedTypesPrefName[] =
+    "dual_layer_user_pref_store.user_selected_sync_types";
+#if BUILDFLAG(IS_CHROMEOS)
+constexpr char kUserSelectedOsTypesPrefName[] =
+    "dual_layer_user_pref_store.user_selected_os_sync_types";
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 base::Value MakeDict(
     const std::vector<std::pair<std::string, std::string>>& values) {
-  base::Value::Dict dict;
+  base::DictValue dict;
   for (const auto& [key, value] : values) {
-    dict.Set(key, value);
+    dict.SetByDottedPath(key, value);
   }
   return base::Value(std::move(dict));
 }
@@ -83,11 +141,22 @@ testing::AssertionResult ValueInStoreIsAbsent(const PrefStore& store,
   return testing::AssertionSuccess();
 }
 
+testing::AssertionResult ValueInDictByDottedPathIs(
+    const base::DictValue& dict,
+    const std::string& key,
+    const base::Value& expected_value) {
+  if (const base::Value* actual_value = dict.FindByDottedPath(key);
+      actual_value && *actual_value == expected_value) {
+    return testing::AssertionSuccess();
+  }
+  return testing::AssertionFailure();
+}
+
 class MockPrefStoreObserver : public PrefStore::Observer {
  public:
   ~MockPrefStoreObserver() override = default;
 
-  MOCK_METHOD(void, OnPrefValueChanged, (const std::string& key), (override));
+  MOCK_METHOD(void, OnPrefValueChanged, (std::string_view), (override));
   MOCK_METHOD(void, OnInitializationCompleted, (bool succeeded), (override));
 };
 
@@ -102,17 +171,8 @@ class TestPrefModelAssociatorClient : public PrefModelAssociatorClient {
       : syncable_prefs_database_(kSyncablePrefsDatabase) {}
 
   // PrefModelAssociatorClient implementation.
-  bool IsMergeableListPreference(const std::string& pref_name) const override {
-    return false;
-  }
-
-  bool IsMergeableDictionaryPreference(
-      const std::string& pref_name) const override {
-    return false;
-  }
-
   base::Value MaybeMergePreferenceValues(
-      const std::string& pref_name,
+      std::string_view pref_name,
       const base::Value& local_value,
       const base::Value& server_value) const override {
     return base::Value();
@@ -123,6 +183,7 @@ class TestPrefModelAssociatorClient : public PrefModelAssociatorClient {
   }
 
  private:
+  ~TestPrefModelAssociatorClient() override = default;
   TestSyncablePrefsDatabase syncable_prefs_database_;
 };
 
@@ -131,13 +192,18 @@ class DualLayerUserPrefStoreTestBase : public testing::Test {
   explicit DualLayerUserPrefStoreTestBase(bool initialize) {
     local_store_ = base::MakeRefCounted<TestingPrefStore>();
     account_store_ = base::MakeRefCounted<TestingPrefStore>();
+    pref_model_associator_client_ =
+        base::MakeRefCounted<TestPrefModelAssociatorClient>();
     dual_layer_store_ = base::MakeRefCounted<DualLayerUserPrefStore>(
-        local_store_, account_store_, &pref_model_associator_client_);
+        local_store_, account_store_, pref_model_associator_client_);
 
     if (initialize) {
       local_store_->NotifyInitializationCompleted();
       account_store_->NotifyInitializationCompleted();
     }
+    // Set preferences user selected type by default.
+    dual_layer_store_->SetUserSelectedTypesForTest(
+        {syncer::UserSelectableType::kPreferences});
   }
 
   TestingPrefStore* local_store() { return local_store_.get(); }
@@ -147,21 +213,21 @@ class DualLayerUserPrefStoreTestBase : public testing::Test {
  protected:
   scoped_refptr<TestingPrefStore> local_store_;
   scoped_refptr<TestingPrefStore> account_store_;
+  scoped_refptr<TestPrefModelAssociatorClient> pref_model_associator_client_;
   scoped_refptr<DualLayerUserPrefStore> dual_layer_store_;
-  TestPrefModelAssociatorClient pref_model_associator_client_;
 };
 
 class DualLayerUserPrefStoreTest : public DualLayerUserPrefStoreTestBase {
  public:
   DualLayerUserPrefStoreTest() : DualLayerUserPrefStoreTestBase(true) {
-    // TODO(crbug.com/1416480): Add proper test setup to enable and disable data
-    // types appropriately.
+    // TODO(crbug.com/40256875): Add proper test setup to enable and disable
+    // data types appropriately.
     dual_layer_store_->EnableType(syncer::PREFERENCES);
     dual_layer_store_->EnableType(syncer::PRIORITY_PREFERENCES);
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     dual_layer_store_->EnableType(syncer::OS_PREFERENCES);
     dual_layer_store_->EnableType(syncer::OS_PRIORITY_PREFERENCES);
-#endif
+#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 };
 
@@ -287,6 +353,22 @@ TEST_F(DualLayerUserPrefStoreInitializationTest,
   EXPECT_TRUE(store()->IsInitializationComplete());
 }
 
+TEST_F(DualLayerUserPrefStoreInitializationTest, HasReadErrorDelegate) {
+  EXPECT_FALSE(store()->HasReadErrorDelegate());
+
+  store()->ReadPrefsAsync(new MockReadErrorDelegate);
+  EXPECT_TRUE(store()->HasReadErrorDelegate());
+}
+
+TEST_F(DualLayerUserPrefStoreInitializationTest,
+       HasReadErrorDelegateWithNullDelegate) {
+  EXPECT_FALSE(store()->HasReadErrorDelegate());
+
+  store()->ReadPrefsAsync(nullptr);
+  // Returns true even though no instance was passed.
+  EXPECT_TRUE(store()->HasReadErrorDelegate());
+}
+
 TEST_F(DualLayerUserPrefStoreInitializationTest,
        ShouldReportInitializationCompleteAsyncReadAsync) {
   // Should report init completion after async read for underlying stores is
@@ -348,14 +430,16 @@ TEST_F(DualLayerUserPrefStoreTest, ReadsFromBothStores) {
   store()->GetAccountPrefStore()->SetValueSilently(
       kPref3, base::Value("account_value3"), 0);
 
-  base::Value::Dict expected_values;
+  base::DictValue expected_values;
   // For the pref that exists in both stores, the account value should take
   // precedence.
-  expected_values.Set(kPref1, "account_value1");
+  expected_values.SetByDottedPath(kPref1, "account_value1");
   // For the prefs that only exist in one store, their value should be returned.
-  expected_values.Set(kPref2, "local_value2");
-  expected_values.Set(kPref3, "account_value3");
-  EXPECT_EQ(store()->GetValues(), expected_values);
+  expected_values.SetByDottedPath(kPref2, "local_value2");
+  expected_values.SetByDottedPath(kPref3, "account_value3");
+  // TODO(crbug.com/40268520): Also set expectations for GetValue() since
+  // GetValues() isn't used outside of tests and may not test the real codepath.
+  EXPECT_THAT(store()->GetValues(), testing::IsSupersetOf(expected_values));
 }
 
 TEST_F(DualLayerUserPrefStoreTest, WritesToBothStores) {
@@ -424,6 +508,67 @@ TEST_F(DualLayerUserPrefStoreTest, RemovesFromBothStores) {
   EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPref3));
 }
 
+TEST_F(DualLayerUserPrefStoreTest,
+       RemovesValuesByPrefixSilentlyFromBothStores) {
+  // Three prefs: One is set only in the local store, one only in the account
+  // store, and one is set in both stores.
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kPref1, base::Value("local_value1"), 0);
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kPref2, base::Value("account_value2"), 0);
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kPref3, base::Value("local_value3"), 0);
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kPref3, base::Value("account_value3"), 0);
+
+  // Remove `kPref1` from the local store.
+  store()->RemoveValuesByPrefixSilently(kPref1);
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPref1));
+  // `kPref2` and `kPref3` are still there.
+  EXPECT_TRUE(ValueInStoreIs(*store(), kPref2, "account_value2"));
+  EXPECT_TRUE(ValueInStoreIs(*store(), kPref3, "account_value3"));
+
+  // Remove `kPref2` from the account store.
+  store()->RemoveValuesByPrefixSilently(kPref2);
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPref2));
+  // `kPref3` is still there.
+  EXPECT_TRUE(ValueInStoreIs(*store(), kPref3, "account_value3"));
+
+  // Remove `kPref3` using a prefix `kPrefName`.
+  ASSERT_TRUE(base::StartsWith(kPref3, kPrefName));
+  store()->RemoveValuesByPrefixSilently(kPrefName);
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPref3));
+}
+
+TEST_F(DualLayerUserPrefStoreTest,
+       RemoveValuesByPrefixSilentlyRemovesMultiplePrefs) {
+  // Three prefs: Each set in both the stores.
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kPref1, base::Value("local_value1"), 0);
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kPref1, base::Value("account_value1"), 0);
+  // `kPrefName` is a prefix of `kPref1` and is used to remove `kPref1`.
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kPrefName, base::Value("local_value2"), 0);
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kPrefName, base::Value("account_value2"), 0);
+  // `kPriorityPrefName` does not have `kPref1` as prefix.
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kPriorityPrefName, base::Value("local_value3"), 0);
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kPriorityPrefName, base::Value("account_value3"), 0);
+
+  // Remove `kPref1` using prefix `kPrefName`.
+  ASSERT_TRUE(base::StartsWith(kPref1, kPrefName));
+  ASSERT_FALSE(base::StartsWith(kPriorityPrefName, kPrefName));
+
+  store()->RemoveValuesByPrefixSilently(kPrefName);
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPref1));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPrefName));
+  // `kPriorityPrefName` is still there.
+  EXPECT_TRUE(ValueInStoreIs(*store(), kPriorityPrefName, "account_value3"));
+}
+
 TEST_F(DualLayerUserPrefStoreTest, DoesNotReturnNonexistentPref) {
   store()->SetValueSilently(kPrefName, MakeDict({{"key", "value"}}), 0);
 
@@ -451,7 +596,7 @@ TEST_F(DualLayerUserPrefStoreTest, WritesMutableValueFromLocalToBothStores) {
   ASSERT_EQ(*mutable_value, original_value);
 
   // Update it!
-  mutable_value->SetStringKey("key", "new_value");
+  mutable_value->GetDict().Set("key", "new_value");
 
   const base::Value expected_value = mutable_value->Clone();
 
@@ -484,7 +629,7 @@ TEST_F(DualLayerUserPrefStoreTest, WritesMutableValueFromAccountToBothStores) {
   ASSERT_EQ(*mutable_value, original_value);
 
   // Update it!
-  mutable_value->SetStringKey("key", "new_value");
+  mutable_value->GetDict().Set("key", "new_value");
 
   const base::Value expected_value = mutable_value->Clone();
 
@@ -521,7 +666,7 @@ TEST_F(DualLayerUserPrefStoreTest, WritesMutableValueFromBothToBothStores) {
   ASSERT_EQ(*mutable_value, original_account_value);
 
   // Update it!
-  mutable_value->SetStringKey("key", "new_value");
+  mutable_value->GetDict().Set("key", "new_value");
 
   const base::Value expected_value = mutable_value->Clone();
 
@@ -555,7 +700,7 @@ TEST_F(DualLayerUserPrefStoreTest, ClearsMutableValueFromBothStores) {
   ASSERT_TRUE(mutable_value);
   ASSERT_EQ(*mutable_value, original_value);
 
-  mutable_value->SetStringKey("key", "new_value");
+  mutable_value->GetDict().Set("key", "new_value");
 
   // While the mutable value is "pending" (hasn't been "released" via
   // ReportValueChanged()), the pref gets cleared.
@@ -755,17 +900,17 @@ TEST_F(DualLayerUserPrefStoreTest, NotifiesOfMutableValuePrefChanges) {
 
   base::Value* value1 = nullptr;
   ASSERT_TRUE(store()->GetMutableValue(kPref1, &value1));
-  value1->SetStringKey("key1", "new_value1");
+  value1->GetDict().Set("key1", "new_value1");
   store()->ReportValueChanged(kPref1, 0);
 
   base::Value* value2 = nullptr;
   ASSERT_TRUE(store()->GetMutableValue(kPref2, &value2));
-  value2->SetStringKey("key2", "new_value2");
+  value2->GetDict().Set("key2", "new_value2");
   store()->ReportValueChanged(kPref2, 0);
 
   base::Value* value3 = nullptr;
   ASSERT_TRUE(store()->GetMutableValue(kPref3, &value3));
-  value3->SetStringKey("key3", "new_value3");
+  value3->GetDict().Set("key3", "new_value3");
   store()->ReportValueChanged(kPref3, 0);
 
   store()->RemoveObserver(&observer);
@@ -806,48 +951,59 @@ TEST_F(DualLayerUserPrefStoreTest, ShouldCommitPendingWritesForBothStores) {
   EXPECT_TRUE(account_store()->committed());
 }
 
+// Tests that notifications are not sent out if the same value already exists in
+// the local store, i.e. the effective value is unchanged.
+TEST_F(
+    DualLayerUserPrefStoreTest,
+    ShouldNotNotifyIfEffectiveValueIsUnchangedUponSetValueInAccountStoreOnly) {
+  store()->GetLocalPrefStore()->SetValueSilently(kPrefName,
+                                                 base::Value("value"), 0);
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  testing::StrictMock<MockPrefStoreObserver> account_store_observer;
+  store()->GetAccountPrefStore()->AddObserver(&account_store_observer);
+
+  // Effective value in the dual pref store is unchanged, so there shouldn't be
+  // any calls to the observer.
+  EXPECT_CALL(observer, OnPrefValueChanged).Times(0);
+  // Since a new pref is added to the account store, its observers are still
+  // notified.
+  EXPECT_CALL(account_store_observer, OnPrefValueChanged);
+
+  store()->SetValueInAccountStoreOnly(kPrefName, base::Value("value"), 0);
+
+  store()->GetAccountPrefStore()->RemoveObserver(&account_store_observer);
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreTest,
+       ShouldNotifyIfEffectiveValueChangesUponSetValueInAccountStoreOnly) {
+  store()->GetLocalPrefStore()->SetValueSilently(kPrefName,
+                                                 base::Value("value"), 0);
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  testing::StrictMock<MockPrefStoreObserver> account_store_observer;
+  store()->GetAccountPrefStore()->AddObserver(&account_store_observer);
+
+  // Effective value is changing, so observers should be notified.
+  EXPECT_CALL(observer, OnPrefValueChanged);
+  EXPECT_CALL(account_store_observer, OnPrefValueChanged);
+
+  store()->SetValueInAccountStoreOnly(kPrefName, base::Value("new value"), 0);
+
+  store()->GetAccountPrefStore()->RemoveObserver(&account_store_observer);
+  store()->RemoveObserver(&observer);
+}
+
 class DualLayerUserPrefStoreTestForTypes
     : public DualLayerUserPrefStoreTestBase {
  public:
   DualLayerUserPrefStoreTestForTypes() : DualLayerUserPrefStoreTestBase(true) {}
 };
-
-TEST_F(DualLayerUserPrefStoreTestForTypes,
-       ShouldAddOnlyEnabledTypePrefsToAccountStore) {
-  // Enable only PRIORITY_PREFERENCES
-  store()->EnableType(syncer::PRIORITY_PREFERENCES);
-
-  store()->SetValue(kPriorityPrefName, base::Value("priority-value"), 0);
-  store()->SetValue(kPrefName, base::Value("pref-value"), 0);
-
-  ASSERT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(), kPriorityPrefName,
-                             "priority-value"));
-  // Regular pref is only added to the local pref store.
-  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPrefName));
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetLocalPrefStore(), kPrefName, "pref-value"));
-}
-
-TEST_F(DualLayerUserPrefStoreTestForTypes,
-       ShouldAddPrefsToAccountStoreOnlyAfterEnabled) {
-  store()->SetValue(kPrefName, base::Value("pref-value"), 0);
-
-  // Pref is only added to the local pref store.
-  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPrefName));
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetLocalPrefStore(), kPrefName, "pref-value"));
-
-  store()->EnableType(syncer::PREFERENCES);
-  // The pref is not copied to the account store on enable.
-  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPrefName));
-
-  store()->SetValue(kPrefName, base::Value("new_value"), 0);
-  // Both stores are updated now.
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetAccountPrefStore(), kPrefName, "new_value"));
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetLocalPrefStore(), kPrefName, "new_value"));
-}
 
 TEST_F(DualLayerUserPrefStoreTestForTypes,
        ShouldClearAllSyncablePrefsOfTypeFromAccountStoreOnDisable) {
@@ -885,23 +1041,425 @@ TEST_F(DualLayerUserPrefStoreTestForTypes,
                              "priority-value"));
 }
 
+TEST_F(DualLayerUserPrefStoreTestForTypes,
+       ShouldNotifyObserversOnDisableIfEffectiveValueChanges) {
+  store()->EnableType(syncer::PREFERENCES);
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  account_store()->SetValueSilently(kPrefName, base::Value("account_value"), 0);
+  local_store()->SetValueSilently(kPrefName, base::Value("local_value"), 0);
+
+  EXPECT_CALL(observer, OnPrefValueChanged(kPrefName));
+
+  ASSERT_TRUE(ValueInStoreIs(*store(), kPrefName, "account_value"));
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+  ASSERT_TRUE(ValueInStoreIs(*store(), kPrefName, "local_value"));
+
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreTestForTypes,
+       ShouldNotifyObserversOnDisableIfLocalValueDoesNotExist) {
+  store()->EnableType(syncer::PREFERENCES);
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  account_store()->SetValueSilently(kPrefName, base::Value("account_value"), 0);
+
+  EXPECT_CALL(observer, OnPrefValueChanged(kPrefName));
+
+  ASSERT_TRUE(ValueInStoreIs(*store(), kPrefName, "account_value"));
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+  ASSERT_TRUE(ValueInStoreIsAbsent(*store(), kPrefName));
+
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreTestForTypes,
+       ShouldNotNotifyObserversOnDisableIfEffectiveValueDoesNotChange) {
+  store()->EnableType(syncer::PREFERENCES);
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  account_store()->SetValueSilently(kPrefName, base::Value("pref-value"), 0);
+  local_store()->SetValueSilently(kPrefName, base::Value("pref-value"), 0);
+
+  ASSERT_TRUE(ValueInStoreIs(*store(), kPrefName, "pref-value"));
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+  ASSERT_TRUE(ValueInStoreIs(*store(), kPrefName, "pref-value"));
+
+  // `observer` was not notified of any pref change.
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreTestForTypes,
+       ShouldReturnAccountValueForNotActiveTypes) {
+  account_store()->SetValueSilently(kPrefName, base::Value("pref-value"), 0);
+  ASSERT_TRUE(ValueInStoreIs(*account_store(), kPrefName, "pref-value"));
+
+  // PREFERENCES type is not active.
+  ASSERT_EQ(0u, store()->GetActiveTypesForTest().count(syncer::PREFERENCES));
+
+  // `kPrefName` is read from the account store even if PREFERENCES type is not
+  // active.
+  {
+    const base::Value* value = nullptr;
+    ASSERT_TRUE(store()->GetValue(kPrefName, &value));
+    EXPECT_EQ(*value, base::Value("pref-value"));
+  }
+  {
+    base::Value* value = nullptr;
+    ASSERT_TRUE(store()->GetMutableValue(kPrefName, &value));
+    EXPECT_EQ(*value, base::Value("pref-value"));
+  }
+}
+
+TEST_F(DualLayerUserPrefStoreTestForTypes,
+       ShouldClearAllPrefsFromAccountStoreOnDisableAllTypes) {
+  store()->EnableType(syncer::PREFERENCES);
+
+  account_store()->SetValue(kPrefName, base::Value("pref-value"), 0);
+  // Garbage value in account store.
+  account_store()->SetValue(kNonSyncablePrefName,
+                            base::Value("non-syncable-pref-value"), 0);
+
+  ASSERT_TRUE(ValueInStoreIs(*store(), kPrefName, "pref-value"));
+  // Non-syncable prefs are not returned by the getters.
+  ASSERT_TRUE(ValueInStoreIsAbsent(*store(), kNonSyncablePrefName));
+  ASSERT_TRUE(ValueInStoreIs(*account_store(), kNonSyncablePrefName,
+                             "non-syncable-pref-value"));
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  // Notification for syncable prefs.
+  EXPECT_CALL(observer, OnPrefValueChanged(kPrefName));
+  // No notification for garbage values.
+  EXPECT_CALL(observer, OnPrefValueChanged(kNonSyncablePrefName)).Times(0);
+
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+
+  // All values get removed from the account store when all types are disabled.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kPrefName));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kNonSyncablePrefName));
+
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreTestForTypes,
+       ShouldSetAccountValueForNotActiveTypesIfAlreadyExists) {
+  account_store()->SetValueSilently(kPrefName, base::Value("account_value"), 0);
+  ASSERT_TRUE(ValueInStoreIs(*account_store(), kPrefName, "account_value"));
+
+  // PREFERENCES type is not active.
+  ASSERT_EQ(0u, store()->GetActiveTypesForTest().count(syncer::PREFERENCES));
+
+  // `kPrefName` is set to the account store even if PREFERENCES type is not
+  // active since it already exists in the account store.
+  {
+    store()->SetValue(kPrefName, base::Value("new_value1"), 0);
+    EXPECT_TRUE(ValueInStoreIs(*account_store(), kPrefName, "new_value1"));
+  }
+  {
+    store()->SetValueSilently(kPrefName, base::Value("new_value2"), 0);
+    EXPECT_TRUE(ValueInStoreIs(*account_store(), kPrefName, "new_value2"));
+  }
+  {
+    base::Value* value = nullptr;
+    ASSERT_TRUE(store()->GetMutableValue(kPrefName, &value));
+    *value = base::Value("new_value3");
+    store()->ReportValueChanged(kPrefName, 0);
+    EXPECT_TRUE(ValueInStoreIs(*account_store(), kPrefName, "new_value3"));
+  }
+}
+
+class DualLayerUserPrefStoreTestWithoutUseSelectedTypes
+    : public DualLayerUserPrefStoreTestForTypes {
+ public:
+  DualLayerUserPrefStoreTestWithoutUseSelectedTypes() {
+    feature_list_.InitAndDisableFeature(
+        syncer::kSyncPreferencesUseSelectedTypes);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(DualLayerUserPrefStoreTestWithoutUseSelectedTypes,
+       ShouldAddOnlyEnabledTypePrefsToAccountStore) {
+  // Enable only PRIORITY_PREFERENCES
+  store()->EnableType(syncer::PRIORITY_PREFERENCES);
+
+  store()->SetValue(kPriorityPrefName, base::Value("priority-value"), 0);
+  store()->SetValue(kPrefName, base::Value("pref-value"), 0);
+
+  ASSERT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(), kPriorityPrefName,
+                             "priority-value"));
+  // Regular pref is only added to the local pref store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPrefName));
+  EXPECT_TRUE(
+      ValueInStoreIs(*store()->GetLocalPrefStore(), kPrefName, "pref-value"));
+}
+
+TEST_F(DualLayerUserPrefStoreTestWithoutUseSelectedTypes,
+       ShouldAddPrefsToAccountStoreOnlyAfterEnabled) {
+  store()->SetValue(kPrefName, base::Value("pref-value"), 0);
+
+  // Pref is only added to the local pref store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPrefName));
+  EXPECT_TRUE(
+      ValueInStoreIs(*store()->GetLocalPrefStore(), kPrefName, "pref-value"));
+
+  store()->EnableType(syncer::PREFERENCES);
+  // The pref is not copied to the account store on enable.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPrefName));
+
+  store()->SetValue(kPrefName, base::Value("new_value"), 0);
+  // Both stores are updated now.
+  EXPECT_TRUE(
+      ValueInStoreIs(*store()->GetAccountPrefStore(), kPrefName, "new_value"));
+  EXPECT_TRUE(
+      ValueInStoreIs(*store()->GetLocalPrefStore(), kPrefName, "new_value"));
+}
+
+TEST_F(DualLayerUserPrefStoreTestWithoutUseSelectedTypes,
+       ShouldNotSetAccountValueForNotActiveTypesIfNotAlreadyExists) {
+  ASSERT_TRUE(ValueInStoreIsAbsent(*account_store(), kPrefName));
+
+  // Preferences sync is toggled on.
+  store()->SetUserSelectedTypesForTest(
+      {syncer::UserSelectableType::kPreferences});
+  // PREFERENCES type is not active.
+  ASSERT_EQ(0u, store()->GetActiveTypesForTest().count(syncer::PREFERENCES));
+
+  // `kPrefName` is not set to the account store since PREFERENCES type is not
+  // active and the pref does not already exist in the account store.
+  {
+    store()->SetValue(kPrefName, base::Value("new_value1"), 0);
+    EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kPrefName));
+  }
+  {
+    store()->SetValueSilently(kPrefName, base::Value("new_value2"), 0);
+    EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kPrefName));
+  }
+  {
+    base::Value* value = nullptr;
+    ASSERT_TRUE(store()->GetMutableValue(kPrefName, &value));
+    *value = base::Value("new_value3");
+    store()->ReportValueChanged(kPrefName, 0);
+    EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kPrefName));
+  }
+}
+
+class DualLayerUserPrefStoreTestWithUseSelectedTypes
+    : public DualLayerUserPrefStoreTestForTypes {
+ private:
+  base::test::ScopedFeatureList feature_list_{
+      syncer::kSyncPreferencesUseSelectedTypes};
+};
+
+TEST_F(DualLayerUserPrefStoreTestWithUseSelectedTypes,
+       ShouldAddPrefsToAccountStoreIfPrefsIsToggledOn) {
+  // Preferences sync is toggled on.
+  store()->SetUserSelectedTypesForTest(
+      {syncer::UserSelectableType::kPreferences});
+
+  // Enable only PRIORITY_PREFERENCES
+  store()->EnableType(syncer::PRIORITY_PREFERENCES);
+  ASSERT_THAT(store()->GetActiveTypesForTest(),
+              testing::ElementsAre(syncer::PRIORITY_PREFERENCES));
+
+  store()->SetValue(kPriorityPrefName, base::Value("priority-value"), 0);
+  store()->SetValue(kPrefName, base::Value("pref-value"), 0);
+
+  ASSERT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(), kPriorityPrefName,
+                             "priority-value"));
+  // Regular pref is added to the account store even though it is not active
+  // yet.
+  EXPECT_TRUE(
+      ValueInStoreIs(*store()->GetAccountPrefStore(), kPrefName, "pref-value"));
+}
+
+TEST_F(DualLayerUserPrefStoreTestWithUseSelectedTypes,
+       ShouldAddPrefsToAccountStoreOnlyAfterSelected) {
+  // Preferences sync is toggled off.
+  store()->SetUserSelectedTypesForTest({});
+
+  store()->SetValue(kPrefName, base::Value("value"), 0);
+
+  // Pref is only added to the local pref store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPrefName));
+  EXPECT_TRUE(
+      ValueInStoreIs(*store()->GetLocalPrefStore(), kPrefName, "value"));
+
+  // Preferences sync is toggled on.
+  store()->SetUserSelectedTypesForTest(
+      {syncer::UserSelectableType::kPreferences});
+  // The pref is not copied to the account store on enable.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPrefName));
+
+  store()->SetValue(kPrefName, base::Value("new_value"), 0);
+  // Both stores are updated now.
+  EXPECT_TRUE(
+      ValueInStoreIs(*store()->GetAccountPrefStore(), kPrefName, "new_value"));
+  EXPECT_TRUE(
+      ValueInStoreIs(*store()->GetLocalPrefStore(), kPrefName, "new_value"));
+}
+
+TEST_F(DualLayerUserPrefStoreTestWithUseSelectedTypes,
+       ShouldSetAccountValueForNotActiveTypesIfNotAlreadyExists) {
+  ASSERT_TRUE(ValueInStoreIsAbsent(*account_store(), kPrefName));
+
+  // Preferences sync is toggled on.
+  store()->SetUserSelectedTypesForTest(
+      {syncer::UserSelectableType::kPreferences});
+  // PREFERENCES type is not active.
+  ASSERT_EQ(0u, store()->GetActiveTypesForTest().count(syncer::PREFERENCES));
+
+  // `kPrefName` is set in the account store even though PREFERENCES type is not
+  // active and the pref does not already exist in the account store.
+  {
+    store()->SetValue(kPrefName, base::Value("new_value1"), 0);
+    EXPECT_TRUE(ValueInStoreIs(*account_store(), kPrefName, "new_value1"));
+  }
+  {
+    store()->SetValueSilently(kPrefName, base::Value("new_value2"), 0);
+    EXPECT_TRUE(ValueInStoreIs(*account_store(), kPrefName, "new_value2"));
+  }
+  {
+    base::Value* value = nullptr;
+    ASSERT_TRUE(store()->GetMutableValue(kPrefName, &value));
+    *value = base::Value("new_value3");
+    store()->ReportValueChanged(kPrefName, 0);
+    EXPECT_TRUE(ValueInStoreIs(*account_store(), kPrefName, "new_value3"));
+  }
+}
+
+TEST_F(DualLayerUserPrefStoreTestWithUseSelectedTypes,
+       ShouldSetAccountValueForToggledOffTypesIfAlreadyExists) {
+  // Preferences sync is off.
+  store()->SetUserSelectedTypesForTest({});
+
+  // Set pre-existing account pref value.
+  account_store()->SetValue(kPref1, base::Value("value"), 0);
+  // Account pref value is still read.
+  EXPECT_TRUE(ValueInStoreIs(*store(), kPref1, "value"));
+
+  store()->SetValue(kPref1, base::Value("new_value"), 0);
+  store()->SetValue(kPref2, base::Value("new_value2"), 0);
+  // The new value is still written to the account store for `kPref1` even
+  // though preferences sync is off.
+  EXPECT_TRUE(
+      ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1, "new_value"));
+  // The same is not true for `kPref2` since it is not already present in the
+  // account store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPref2));
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+// Test to verify that the user selected OS types are loaded from a pref in the
+// local store.
+TEST_F(DualLayerUserPrefStoreTestWithUseSelectedTypes,
+       ShouldGetUserSelectedOsTypesFromLocalStore) {
+  // Multiple types.
+  local_store()->SetValueSilently(kUserSelectedOsTypesPrefName,
+                                  base::Value(base::ListValue()
+                                                  .Append("passwords")
+                                                  .Append("osPreferences")
+                                                  .Append("osApps")),
+                                  0);
+  // Only the interesting type (osPreferences) is returned.
+  EXPECT_EQ(store()->GetUserSelectedOsTypesForTest(),
+            syncer::UserSelectableOsTypeSet(
+                {syncer::UserSelectableOsType::kOsPreferences}));
+
+  // Empty list.
+  local_store()->SetValueSilently(kUserSelectedOsTypesPrefName,
+                                  base::Value(base::ListValue()), 0);
+  EXPECT_TRUE(store()->GetUserSelectedOsTypesForTest().empty());
+}
+
+// Test to verify that the user selected OS types are stored in a pref in the
+// local store.
+TEST_F(DualLayerUserPrefStoreTestWithUseSelectedTypes,
+       ShouldSetUserSelectedOsTypesToLocalStore) {
+  // Multiple types.
+  store()->SetUserSelectedOsTypesForTest(syncer::UserSelectableOsTypeSet(
+      {syncer::UserSelectableOsType::kOsPreferences}));
+  EXPECT_TRUE(
+      ValueInStoreIs(*local_store(), kUserSelectedOsTypesPrefName,
+                     base::Value(base::ListValue().Append("osPreferences"))));
+  EXPECT_TRUE(
+      ValueInStoreIsAbsent(*account_store(), kUserSelectedOsTypesPrefName));
+
+  // Empty list.
+  store()->SetUserSelectedOsTypesForTest(syncer::UserSelectableOsTypeSet());
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kUserSelectedOsTypesPrefName,
+                             base::Value(base::ListValue())));
+}
+
+// Test to verify that OS prefs are added to the account store only if the OS
+// preferences type is enabled.
+TEST_F(DualLayerUserPrefStoreTestWithUseSelectedTypes,
+       ShouldAddOsPrefsToAccountStoreIfOsPrefsIsToggledOn) {
+  // OS Preferences sync is toggled on.
+  store()->SetUserSelectedOsTypesForTest(
+      {syncer::UserSelectableOsType::kOsPreferences});
+
+  // Enable only OS_PRIORITY_PREFERENCES
+  store()->EnableType(syncer::OS_PRIORITY_PREFERENCES);
+  ASSERT_THAT(store()->GetActiveTypesForTest(),
+              testing::ElementsAre(syncer::OS_PRIORITY_PREFERENCES));
+
+  store()->SetValue(kOsPriorityPrefName, base::Value("priority-value"), 0);
+  store()->SetValue(kOsPrefName, base::Value("pref-value"), 0);
+
+  ASSERT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kOsPriorityPrefName, "priority-value"));
+  // Regular pref is added to the account store even though it is not active
+  // yet.
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(), kOsPrefName,
+                             "pref-value"));
+}
+
+TEST_F(DualLayerUserPrefStoreTestWithUseSelectedTypes,
+       ShouldNotAddOsPrefsToAccountStoreIfOsPrefsIsToggledOff) {
+  // OS Preferences sync is toggled off.
+  store()->SetUserSelectedOsTypesForTest({});
+
+  // Enable only OS_PRIORITY_PREFERENCES
+  store()->EnableType(syncer::OS_PRIORITY_PREFERENCES);
+  ASSERT_THAT(store()->GetActiveTypesForTest(),
+              testing::ElementsAre(syncer::OS_PRIORITY_PREFERENCES));
+
+  store()->SetValue(kOsPriorityPrefName, base::Value("priority-value"), 0);
+  store()->SetValue(kOsPrefName, base::Value("pref-value"), 0);
+
+  // OS prefs are not added to the account store since the OS pref type is
+  // disabled, they are only added to the local pref store.
+  ASSERT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kOsPriorityPrefName,
+                             "priority-value"));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(),
+                                   kOsPriorityPrefName));
+  ASSERT_TRUE(
+      ValueInStoreIs(*store()->GetLocalPrefStore(), kOsPrefName, "pref-value"));
+  EXPECT_TRUE(
+      ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kOsPrefName));
+}
+#endif  // BUILDFLAG(IS_CHROMEOS)
+
 class MergeTestPrefModelAssociatorClient : public PrefModelAssociatorClient {
  public:
   MergeTestPrefModelAssociatorClient()
       : syncable_prefs_database_(kSyncablePrefsDatabase) {}
 
   // PrefModelAssociatorClient implementation.
-  bool IsMergeableListPreference(const std::string& pref_name) const override {
-    return mergeable_list_prefs_.count(pref_name);
-  }
-
-  bool IsMergeableDictionaryPreference(
-      const std::string& pref_name) const override {
-    return mergeable_dict_prefs_.count(pref_name);
-  }
-
   base::Value MaybeMergePreferenceValues(
-      const std::string& pref_name,
+      std::string_view pref_name,
       const base::Value& local_value,
       const base::Value& server_value) const override {
     if (auto it = custom_merge_values_.find(pref_name);
@@ -915,24 +1473,18 @@ class MergeTestPrefModelAssociatorClient : public PrefModelAssociatorClient {
     return syncable_prefs_database_;
   }
 
-  void MarkAsMergeableDictPref(const std::string& pref_name) {
-    mergeable_dict_prefs_.insert(pref_name);
-  }
-
-  void MarkAsMergeableListPref(const std::string& pref_name) {
-    mergeable_list_prefs_.insert(pref_name);
-  }
-
   void SetCustomMergeValue(const std::string& pref_name, base::Value value) {
     custom_merge_values_[pref_name] = std::move(value);
   }
 
  private:
+  ~MergeTestPrefModelAssociatorClient() override = default;
+
   TestSyncablePrefsDatabase syncable_prefs_database_;
 
   std::set<std::string> mergeable_dict_prefs_;
   std::set<std::string> mergeable_list_prefs_;
-  std::map<std::string, base::Value> custom_merge_values_;
+  std::map<std::string, base::Value, std::less<>> custom_merge_values_;
 };
 
 class DualLayerUserPrefStoreMergeTest : public testing::Test {
@@ -940,20 +1492,27 @@ class DualLayerUserPrefStoreMergeTest : public testing::Test {
   DualLayerUserPrefStoreMergeTest() {
     local_store_ = base::MakeRefCounted<TestingPrefStore>();
     account_store_ = base::MakeRefCounted<TestingPrefStore>();
+    pref_model_associator_client_ =
+        base::MakeRefCounted<MergeTestPrefModelAssociatorClient>();
     dual_layer_store_ = base::MakeRefCounted<DualLayerUserPrefStore>(
-        local_store_, account_store_, &pref_model_associator_client_);
+        local_store_, account_store_, pref_model_associator_client_);
 
     local_store_->NotifyInitializationCompleted();
     account_store_->NotifyInitializationCompleted();
 
     dual_layer_store_->AddObserver(&observer_);
 
+    // Set preferences user selected type by default.
+    // TODO(crbug.com/464008640): Also set kOsPreferences for
+    // OS_{,PRIORITY_}PREFERENCES.
+    dual_layer_store_->SetUserSelectedTypesForTest(
+        {syncer::UserSelectableType::kPreferences});
     dual_layer_store_->EnableType(syncer::PREFERENCES);
     dual_layer_store_->EnableType(syncer::PRIORITY_PREFERENCES);
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     dual_layer_store_->EnableType(syncer::OS_PREFERENCES);
     dual_layer_store_->EnableType(syncer::OS_PRIORITY_PREFERENCES);
-#endif
+#endif  // BUILDFLAG(IS_CHROMEOS)
   }
 
   ~DualLayerUserPrefStoreMergeTest() override {
@@ -965,8 +1524,9 @@ class DualLayerUserPrefStoreMergeTest : public testing::Test {
  protected:
   scoped_refptr<TestingPrefStore> local_store_;
   scoped_refptr<TestingPrefStore> account_store_;
+  scoped_refptr<MergeTestPrefModelAssociatorClient>
+      pref_model_associator_client_;
   scoped_refptr<DualLayerUserPrefStore> dual_layer_store_;
-  MergeTestPrefModelAssociatorClient pref_model_associator_client_;
   testing::StrictMock<MockPrefStoreObserver> observer_;
 };
 
@@ -996,16 +1556,16 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
   }
   // Uses GetValues().
   {
-    ASSERT_TRUE(store()->GetValues().contains(kPref1));
-    EXPECT_EQ(*store()->GetValues().Find(kPref1), account_value);
+    EXPECT_TRUE(
+        ValueInDictByDottedPathIs(store()->GetValues(), kPref1, account_value));
   }
 
   // List prefs.
 
-  base::Value account_list(base::Value::List().Append("account_value"));
+  base::Value account_list(base::ListValue().Append("account_value"));
   store()->GetAccountPrefStore()->SetValueSilently(kPref2, account_list.Clone(),
                                                    0);
-  base::Value local_list(base::Value::List().Append("local_value"));
+  base::Value local_list(base::ListValue().Append("local_value"));
   store()->GetLocalPrefStore()->SetValueSilently(kPref2, local_list.Clone(), 0);
 
   // Different values are set in both stores; the one from the account should
@@ -1024,18 +1584,18 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
   }
   // Uses GetValues().
   {
-    ASSERT_TRUE(store()->GetValues().contains(kPref2));
-    EXPECT_EQ(*store()->GetValues().Find(kPref2), account_list);
+    EXPECT_TRUE(
+        ValueInDictByDottedPathIs(store()->GetValues(), kPref2, account_list));
   }
 
   // Dictionary prefs.
 
-  base::Value account_dict(base::Value::Dict()
+  base::Value account_dict(base::DictValue()
                                .Set("account_key", "account_value")
                                .Set("common_key", "account_value"));
   store()->GetAccountPrefStore()->SetValueSilently(kPref3, account_dict.Clone(),
                                                    0);
-  base::Value local_dict(base::Value::Dict()
+  base::Value local_dict(base::DictValue()
                              .Set("local_key", "local_value")
                              .Set("common_key", "local_value"));
   store()->GetLocalPrefStore()->SetValueSilently(kPref3, local_dict.Clone(), 0);
@@ -1056,8 +1616,8 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
   }
   // Uses GetValues().
   {
-    ASSERT_TRUE(store()->GetValues().contains(kPref3));
-    EXPECT_EQ(*store()->GetValues().Find(kPref3), account_dict);
+    EXPECT_TRUE(
+        ValueInDictByDottedPathIs(store()->GetValues(), kPref3, account_dict));
   }
   // The local and the account stores are left untouched.
   EXPECT_TRUE(
@@ -1076,17 +1636,17 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
 
 TEST_F(DualLayerUserPrefStoreMergeTest, ShouldMergeMergeableListPref) {
   base::Value account_list(
-      base::Value::List().Append("account_value").Append("common_value"));
-  store()->GetAccountPrefStore()->SetValueSilently(kPref1, account_list.Clone(),
-                                                   0);
+      base::ListValue().Append("account_value").Append("common_value"));
+  store()->GetAccountPrefStore()->SetValueSilently(kMergeableListPref,
+                                                   account_list.Clone(), 0);
   base::Value local_list(
-      base::Value::List().Append("local_value").Append("common_value"));
-  store()->GetLocalPrefStore()->SetValueSilently(kPref1, local_list.Clone(), 0);
+      base::ListValue().Append("local_value").Append("common_value"));
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableListPref,
+                                                 local_list.Clone(), 0);
 
-  pref_model_associator_client_.MarkAsMergeableListPref(kPref1);
   // Different values are set in both stores; a merged view should be returned.
   // The two lists should be de-duped, with account values coming first.
-  base::Value merged_list(base::Value::List()
+  base::Value merged_list(base::ListValue()
                               .Append("account_value")
                               .Append("common_value")
                               .Append("local_value"));
@@ -1094,107 +1654,107 @@ TEST_F(DualLayerUserPrefStoreMergeTest, ShouldMergeMergeableListPref) {
   // Uses GetValue().
   {
     const base::Value* result = nullptr;
-    ASSERT_TRUE(store()->GetValue(kPref1, &result));
+    ASSERT_TRUE(store()->GetValue(kMergeableListPref, &result));
     EXPECT_EQ(*result, merged_list);
   }
   // Uses GetMutableValue().
   {
     base::Value* result = nullptr;
-    ASSERT_TRUE(store()->GetMutableValue(kPref1, &result));
+    ASSERT_TRUE(store()->GetMutableValue(kMergeableListPref, &result));
     EXPECT_EQ(*result, merged_list);
   }
   // Uses GetValues().
   {
-    ASSERT_TRUE(store()->GetValues().contains(kPref1));
-    EXPECT_EQ(*store()->GetValues().Find(kPref1), merged_list);
+    EXPECT_TRUE(ValueInDictByDottedPathIs(store()->GetValues(),
+                                          kMergeableListPref, merged_list));
   }
 
   // The local and the account stores are left untouched.
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1, local_list));
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1, account_list));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableListPref,
+                             local_list));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kMergeableListPref, account_list));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest, ShouldMergeMergeableDictPref) {
-  base::Value account_dict(base::Value::Dict()
+  base::Value account_dict(base::DictValue()
                                .Set("account_key", "account_value")
                                .Set("common_key", "account_value"));
-  store()->GetAccountPrefStore()->SetValueSilently(kPref1, account_dict.Clone(),
-                                                   0);
-  base::Value local_dict(base::Value::Dict()
+  store()->GetAccountPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                   account_dict.Clone(), 0);
+  base::Value local_dict(base::DictValue()
                              .Set("local_key", "local_value")
                              .Set("common_key", "local_value"));
-  store()->GetLocalPrefStore()->SetValueSilently(kPref1, local_dict.Clone(), 0);
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                 local_dict.Clone(), 0);
 
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
   // Different values are set in both stores; a merged view should be returned.
   // In case of conflict, the value in account store takes precedence.
-  base::Value merged_dict(base::Value::Dict()
+  base::Value merged_dict(base::DictValue()
                               .Set("account_key", "account_value")
                               .Set("local_key", "local_value")
                               .Set("common_key", "account_value"));
   // Uses GetValue().
   {
     const base::Value* result = nullptr;
-    ASSERT_TRUE(store()->GetValue(kPref1, &result));
+    ASSERT_TRUE(store()->GetValue(kMergeableDictPref1, &result));
     EXPECT_EQ(*result, merged_dict);
   }
   // Uses GetMutableValue().
   {
     base::Value* result = nullptr;
-    ASSERT_TRUE(store()->GetMutableValue(kPref1, &result));
+    ASSERT_TRUE(store()->GetMutableValue(kMergeableDictPref1, &result));
     EXPECT_EQ(*result, merged_dict);
   }
   // Uses GetValues().
   {
-    ASSERT_TRUE(store()->GetValues().contains(kPref1));
-    EXPECT_EQ(*store()->GetValues().Find(kPref1), merged_dict);
+    EXPECT_TRUE(ValueInDictByDottedPathIs(store()->GetValues(),
+                                          kMergeableDictPref1, merged_dict));
   }
 
   // The local and the account stores are left untouched.
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1, local_dict));
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1, account_dict));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableDictPref1,
+                             local_dict));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kMergeableDictPref1, account_dict));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest, ShouldMergeSpecialCasedMergeablePref) {
   base::Value account_value("account_value");
-  store()->GetAccountPrefStore()->SetValueSilently(kPref1,
+  store()->GetAccountPrefStore()->SetValueSilently(kCustomMergePref,
                                                    account_value.Clone(), 0);
   base::Value local_value("local_value");
-  store()->GetLocalPrefStore()->SetValueSilently(kPref1, local_value.Clone(),
-                                                 0);
+  store()->GetLocalPrefStore()->SetValueSilently(kCustomMergePref,
+                                                 local_value.Clone(), 0);
 
   base::Value merged_value("custom_merge_value");
-  pref_model_associator_client_.SetCustomMergeValue(kPref1,
-                                                    merged_value.Clone());
+  pref_model_associator_client_->SetCustomMergeValue(kCustomMergePref,
+                                                     merged_value.Clone());
   // Different values are set in both stores; the merge should use the custom
   // logic.
   // Uses GetValue().
   {
     const base::Value* result = nullptr;
-    ASSERT_TRUE(store()->GetValue(kPref1, &result));
+    ASSERT_TRUE(store()->GetValue(kCustomMergePref, &result));
     EXPECT_EQ(*result, merged_value);
   }
   // Uses GetMutableValue().
   {
     base::Value* result = nullptr;
-    ASSERT_TRUE(store()->GetMutableValue(kPref1, &result));
+    ASSERT_TRUE(store()->GetMutableValue(kCustomMergePref, &result));
     EXPECT_EQ(*result, merged_value);
   }
   // Uses GetValues().
   {
-    ASSERT_TRUE(store()->GetValues().contains(kPref1));
-    EXPECT_EQ(*store()->GetValues().Find(kPref1), merged_value);
+    EXPECT_TRUE(ValueInDictByDottedPathIs(store()->GetValues(),
+                                          kCustomMergePref, merged_value));
   }
 
   // The local and the account stores are left untouched.
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1, local_value));
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1, account_value));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kCustomMergePref,
+                             local_value));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(), kCustomMergePref,
+                             account_value));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
@@ -1322,51 +1882,49 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldUpdateMergedPrefOnWriteToUnderlyingStoresUsingSetValue) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
-
   store()->GetAccountPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("account_key", "account_value")
                       .Set("common_key", "account_value")),
       0);
   store()->GetLocalPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("local_key", "local_value")
                       .Set("common_key", "local_value")),
       0);
 
   ASSERT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
                                      .Set("account_key", "account_value")
                                      .Set("local_key", "local_value")
                                      .Set("common_key", "account_value"))));
 
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
   // Update account value.
   store()->GetAccountPrefStore()->SetValue(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("account_key", "new_account_value")
                       .Set("common_key", "account_value")),
       0);
 
   // Updated account value should reflect in the merged view.
   EXPECT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
                                      // Updated value.
                                      .Set("account_key", "new_account_value")
                                      .Set("local_key", "local_value")
                                      .Set("common_key", "account_value"))));
 
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
   // Add new key to local value.
   store()->GetLocalPrefStore()->SetValue(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("local_key", "local_value")
                       // New entry.
                       .Set("new_local_key", "local_value")
@@ -1375,8 +1933,8 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
 
   // Updated local value should reflect in the merged view.
   EXPECT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
                                      .Set("account_key", "new_account_value")
                                      .Set("local_key", "local_value")
                                      // New entry.
@@ -1384,127 +1942,66 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
                                      .Set("common_key", "account_value"))));
 }
 
-TEST_F(DualLayerUserPrefStoreMergeTest,
-       ShouldUpdateMergedPrefOnWriteToUnderlyingStoresUsingSetValueSilently) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
-
-  store()->GetAccountPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
-                      .Set("account_key", "account_value")
-                      .Set("common_key", "account_value")),
-      0);
-  store()->GetLocalPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
-                      .Set("local_key", "local_value")
-                      .Set("common_key", "local_value")),
-      0);
-
-  ASSERT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
-                                     .Set("account_key", "account_value")
-                                     .Set("local_key", "local_value")
-                                     .Set("common_key", "account_value"))));
-
-  // Update account value.
-  store()->GetAccountPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
-                      // Updated value.
-                      .Set("account_key", "new_account_value")
-                      .Set("common_key", "account_value")),
-      0);
-
-  // Updated account value should reflect in the merged view.
-  EXPECT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
-                                     // Updated value.
-                                     .Set("account_key", "new_account_value")
-                                     .Set("local_key", "local_value")
-                                     .Set("common_key", "account_value"))));
-
-  // Add new key to local value.
-  store()->GetLocalPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
-                      .Set("local_key", "local_value")
-                      .Set("new_local_key", "local_value")
-                      .Set("common_key", "local_value")),
-      0);
-
-  // Updated local value should reflect in the merged view.
-  EXPECT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
-                                     .Set("account_key", "new_account_value")
-                                     .Set("local_key", "local_value")
-                                     // New entry.
-                                     .Set("new_local_key", "local_value")
-                                     .Set("common_key", "account_value"))));
-}
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldUpdateMergedPrefOnWriteToUnderlyingStoresUsingMutableValue) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
-
   store()->GetAccountPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("account_key", "account_value")
                       .Set("common_key", "account_value")),
       0);
   store()->GetLocalPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("local_key", "local_value")
                       .Set("common_key", "local_value")),
       0);
 
   ASSERT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
                                      .Set("account_key", "account_value")
                                      .Set("local_key", "local_value")
                                      .Set("common_key", "account_value"))));
 
   base::Value* account_value = nullptr;
-  store()->GetAccountPrefStore()->GetMutableValue(kPref1, &account_value);
+  store()->GetAccountPrefStore()->GetMutableValue(kMergeableDictPref1,
+                                                  &account_value);
   ASSERT_TRUE(account_value && account_value->is_dict());
 
   // Update account value.
-  *account_value = base::Value(base::Value::Dict()
+  *account_value = base::Value(base::DictValue()
                                    // Updated value.
                                    .Set("account_key", "new_account_value")
                                    .Set("common_key", "account_value"));
 
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
-  store()->GetAccountPrefStore()->ReportValueChanged(kPref1, 0);
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->GetAccountPrefStore()->ReportValueChanged(kMergeableDictPref1, 0);
 
   // Updated account value should reflect in the merged view.
   EXPECT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
                                      // Updated value.
                                      .Set("account_key", "new_account_value")
                                      .Set("local_key", "local_value")
                                      .Set("common_key", "account_value"))));
 
   base::Value* local_value = nullptr;
-  store()->GetLocalPrefStore()->GetMutableValue(kPref1, &local_value);
+  store()->GetLocalPrefStore()->GetMutableValue(kMergeableDictPref1,
+                                                &local_value);
   ASSERT_TRUE(local_value && local_value->is_dict());
   // Add new key to local value.
   local_value->GetDict().Set("new_local_key", "local_value");
 
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
-  store()->GetLocalPrefStore()->ReportValueChanged(kPref1, 0);
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->GetLocalPrefStore()->ReportValueChanged(kMergeableDictPref1, 0);
 
   // Updated local value should reflect in the merged view.
   EXPECT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
                                      .Set("account_key", "new_account_value")
                                      .Set("local_key", "local_value")
                                      // New entry.
@@ -1514,171 +2011,168 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldUpdateMergedPrefOnRemoveFromUnderlyingStores) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
-
   store()->GetAccountPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("account_key", "account_value")
                       .Set("common_key", "account_value")),
       0);
   store()->GetLocalPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("local_key", "local_value")
                       .Set("common_key", "local_value")),
       0);
 
   ASSERT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
                                      .Set("account_key", "account_value")
                                      .Set("local_key", "local_value")
                                      .Set("common_key", "account_value"))));
 
-  // Remove pref from the account store.
-  store()->GetAccountPrefStore()->RemoveValuesByPrefixSilently(kPref1);
+  // Remove pref from the account store. This is non-silent so it notifies.
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->GetAccountPrefStore()->RemoveValue(kMergeableDictPref1, 0);
+
   EXPECT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
                                      .Set("local_key", "local_value")
                                      // Value now being by the local store.
                                      .Set("common_key", "local_value"))));
 
   // Remove pref from the local store.
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
-  store()->GetLocalPrefStore()->RemoveValue(kPref1, 0);
-  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPref1));
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->GetLocalPrefStore()->RemoveValue(kMergeableDictPref1, 0);
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kMergeableDictPref1));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest, ShouldClearMergedPrefOnRemove) {
   // Ensures that pref no longer exists in the merged pref store upon remove.
   store()->GetAccountPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("account_key", "account_value")
                       .Set("common_key", "account_value")),
       0);
   store()->GetLocalPrefStore()->SetValueSilently(
-      kPref1,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
                       .Set("local_key", "local_value")
                       .Set("common_key", "local_value")),
       0);
 
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
   ASSERT_TRUE(
-      ValueInStoreIs(*store(), kPref1,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
                                      .Set("account_key", "account_value")
                                      .Set("local_key", "local_value")
                                      .Set("common_key", "account_value"))));
 
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
-  store()->RemoveValue(kPref1, 0);
-  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPref1));
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->RemoveValue(kMergeableDictPref1, 0);
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kMergeableDictPref1));
 
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref2);
   store()->GetAccountPrefStore()->SetValueSilently(
-      kPref2,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref2,
+      base::Value(base::DictValue()
                       .Set("account_key", "account_value")
                       .Set("common_key", "account_value")),
       0);
   store()->GetLocalPrefStore()->SetValueSilently(
-      kPref2,
-      base::Value(base::Value::Dict()
+      kMergeableDictPref2,
+      base::Value(base::DictValue()
                       .Set("local_key", "local_value")
                       .Set("common_key", "local_value")),
       0);
 
   ASSERT_TRUE(
-      ValueInStoreIs(*store(), kPref2,
-                     base::Value(base::Value::Dict()
+      ValueInStoreIs(*store(), kMergeableDictPref2,
+                     base::Value(base::DictValue()
                                      .Set("account_key", "account_value")
                                      .Set("local_key", "local_value")
                                      .Set("common_key", "account_value"))));
 
-  store()->RemoveValuesByPrefixSilently(kPref2);
-  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPref2));
+  store()->RemoveValuesByPrefixSilently(kMergeableDictPref2);
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kMergeableDictPref2));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldUnmergeMergeableDictPrefButNotAddUnchangedValueToAccountStore) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
+  base::Value local_dict(base::DictValue().Set("local_key", "local_value"));
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                 local_dict.Clone(), 0);
 
-  base::Value local_dict(base::Value::Dict().Set("local_key", "local_value"));
-  store()->GetLocalPrefStore()->SetValueSilently(kPref1, local_dict.Clone(), 0);
-
-  // `kPref1` only exists in the local store.
-  ASSERT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(), kPref1));
+  // `kMergeableDictPref1` only exists in the local store.
+  ASSERT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(),
+                                   kMergeableDictPref1));
 
   // Effective value same as local value since pref is not in account store.
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, local_dict));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, local_dict));
 
   // Set the effective/merged value again.
   // Note: Expecting no notification.
-  store()->SetValue(kPref1, local_dict.Clone(), 0);
+  store()->SetValue(kMergeableDictPref1, local_dict.Clone(), 0);
 
   // Value in the local store remains unchanged.
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1, local_dict));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableDictPref1,
+                             local_dict));
   // An empty dict pref is added to the account store.
   // Note: This is an implementation detail. Ideally, not adding the pref to the
   // account store might be a better approach.
-  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1,
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kMergeableDictPref1,
                              base::Value(base::Value::Type::DICT)));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldUnmergeMergeableDictPrefButNotAddUnchangedValueToLocalStore) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
-
   base::Value account_dict(
-      base::Value::Dict().Set("account_key", "account_value"));
-  store()->GetAccountPrefStore()->SetValueSilently(kPref1, account_dict.Clone(),
-                                                   0);
-  // `kPref1` only exists in the account store.
-  ASSERT_TRUE(ValueInStoreIsAbsent(*store()->GetLocalPrefStore(), kPref1));
+      base::DictValue().Set("account_key", "account_value"));
+  store()->GetAccountPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                   account_dict.Clone(), 0);
+  // `kMergeableDictPref1` only exists in the account store.
+  ASSERT_TRUE(
+      ValueInStoreIsAbsent(*store()->GetLocalPrefStore(), kMergeableDictPref1));
 
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, account_dict));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, account_dict));
 
   // Set the effective/merged value again.
   // Note: Expecting no notification.
-  store()->SetValue(kPref1, account_dict.Clone(), 0);
+  store()->SetValue(kMergeableDictPref1, account_dict.Clone(), 0);
 
   // An empty dict pref is added to the local store.
   // Note: This is an implementation detail. Ideally, not adding the pref to the
   // local store might be a better approach.
-  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1,
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableDictPref1,
                              base::Value(base::Value::Type::DICT)));
   // Value in the account store remains unchanged.
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1, account_dict));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kMergeableDictPref1, account_dict));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldUnmergeAndApplyUpdatesForMergeableDictPrefOnSetValue) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
-
-  base::Value local_dict(base::Value::Dict()
+  base::Value local_dict(base::DictValue()
                              .Set("local_key1", "local_value1")
                              .Set("local_key2", "local_value2")
                              .Set("local_key3", "local_value3")
                              .Set("common_key1", "local_value4")
                              .Set("common_key2", "common_value"));
-  store()->GetLocalPrefStore()->SetValueSilently(kPref1, local_dict.Clone(), 0);
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                 local_dict.Clone(), 0);
 
-  base::Value account_dict(base::Value::Dict()
+  base::Value account_dict(base::DictValue()
                                .Set("account_key1", "account_value1")
                                .Set("account_key2", "account_value2")
                                .Set("account_key3", "account_value3")
                                .Set("common_key1", "account_value4")
                                .Set("common_key2", "common_value"));
-  store()->GetAccountPrefStore()->SetValueSilently(kPref1, account_dict.Clone(),
-                                                   0);
+  store()->GetAccountPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                   account_dict.Clone(), 0);
 
-  base::Value merged_dict(base::Value::Dict()
+  base::Value merged_dict(base::DictValue()
                               .Set("account_key1", "account_value1")
                               .Set("account_key2", "account_value2")
                               .Set("account_key3", "account_value3")
@@ -1687,9 +2181,9 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
                               .Set("local_key1", "local_value1")
                               .Set("local_key2", "local_value2")
                               .Set("local_key3", "local_value3"));
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, merged_dict));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, merged_dict));
 
-  base::Value updated_dict(base::Value::Dict()
+  base::Value updated_dict(base::DictValue()
                                // New key, should get added to both
                                // stores.
                                .Set("new_key", "new_value")
@@ -1711,56 +2205,55 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
                                // Updated value, should get added to both
                                // stores.
                                .Set("common_key2", "new_common_value"));
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
-  store()->SetValue(kPref1, updated_dict.Clone(), 0);
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->SetValue(kMergeableDictPref1, updated_dict.Clone(), 0);
 
   // Note: "local_key3" has been deleted.
-  base::Value updated_local_dict(base::Value::Dict()
+  base::Value updated_local_dict(base::DictValue()
                                      .Set("new_key", "new_value")
                                      .Set("account_key1", "new_value1")
                                      .Set("local_key1", "local_value1")
                                      .Set("local_key2", "new_value2")
                                      .Set("common_key1", "local_value4")
                                      .Set("common_key2", "new_common_value"));
-  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1,
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableDictPref1,
                              updated_local_dict));
 
   // Note: "account_key3" has been deleted.
-  base::Value updated_account_dict(base::Value::Dict()
+  base::Value updated_account_dict(base::DictValue()
                                        .Set("new_key", "new_value")
                                        .Set("account_key1", "new_value1")
                                        .Set("account_key2", "account_value2")
                                        .Set("local_key2", "new_value2")
                                        .Set("common_key1", "local_value4")
                                        .Set("common_key2", "new_common_value"));
-  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1,
-                             updated_account_dict));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kMergeableDictPref1, updated_account_dict));
 
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, updated_dict));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, updated_dict));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldUnmergeAndApplyUpdatesForMergeableDictPrefOnSetValueSilently) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
-
-  base::Value local_dict(base::Value::Dict()
+  base::Value local_dict(base::DictValue()
                              .Set("local_key1", "local_value1")
                              .Set("local_key2", "local_value2")
                              .Set("local_key3", "local_value3")
                              .Set("common_key1", "local_value4")
                              .Set("common_key2", "common_value"));
-  store()->GetLocalPrefStore()->SetValueSilently(kPref1, local_dict.Clone(), 0);
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                 local_dict.Clone(), 0);
 
-  base::Value account_dict(base::Value::Dict()
+  base::Value account_dict(base::DictValue()
                                .Set("account_key1", "account_value1")
                                .Set("account_key2", "account_value2")
                                .Set("account_key3", "account_value3")
                                .Set("common_key1", "account_value4")
                                .Set("common_key2", "common_value"));
-  store()->GetAccountPrefStore()->SetValueSilently(kPref1, account_dict.Clone(),
-                                                   0);
+  store()->GetAccountPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                   account_dict.Clone(), 0);
 
-  base::Value merged_dict(base::Value::Dict()
+  base::Value merged_dict(base::DictValue()
                               .Set("account_key1", "account_value1")
                               .Set("account_key2", "account_value2")
                               .Set("account_key3", "account_value3")
@@ -1769,9 +2262,9 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
                               .Set("local_key1", "local_value1")
                               .Set("local_key2", "local_value2")
                               .Set("local_key3", "local_value3"));
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, merged_dict));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, merged_dict));
 
-  base::Value updated_dict(base::Value::Dict()
+  base::Value updated_dict(base::DictValue()
                                // New key, should get added to both
                                // stores.
                                .Set("new_key", "new_value")
@@ -1793,55 +2286,54 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
                                // Updated value, should get added to both
                                // stores.
                                .Set("common_key2", "new_common_value"));
-  store()->SetValueSilently(kPref1, updated_dict.Clone(), 0);
+  store()->SetValueSilently(kMergeableDictPref1, updated_dict.Clone(), 0);
 
   // Note: "local_key3" has been deleted.
-  base::Value updated_local_dict(base::Value::Dict()
+  base::Value updated_local_dict(base::DictValue()
                                      .Set("new_key", "new_value")
                                      .Set("account_key1", "new_value1")
                                      .Set("local_key1", "local_value1")
                                      .Set("local_key2", "new_value2")
                                      .Set("common_key1", "local_value4")
                                      .Set("common_key2", "new_common_value"));
-  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1,
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableDictPref1,
                              updated_local_dict));
 
   // Note: "account_key3" has been deleted.
-  base::Value updated_account_dict(base::Value::Dict()
+  base::Value updated_account_dict(base::DictValue()
                                        .Set("new_key", "new_value")
                                        .Set("account_key1", "new_value1")
                                        .Set("account_key2", "account_value2")
                                        .Set("local_key2", "new_value2")
                                        .Set("common_key1", "local_value4")
                                        .Set("common_key2", "new_common_value"));
-  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1,
-                             updated_account_dict));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kMergeableDictPref1, updated_account_dict));
 
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, updated_dict));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, updated_dict));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldUnmergeAndApplyUpdatesForMergeableDictPrefOnReportPrefChanged) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
-
-  base::Value local_dict(base::Value::Dict()
+  base::Value local_dict(base::DictValue()
                              .Set("local_key1", "local_value1")
                              .Set("local_key2", "local_value2")
                              .Set("local_key3", "local_value3")
                              .Set("common_key1", "local_value4")
                              .Set("common_key2", "common_value"));
-  store()->GetLocalPrefStore()->SetValueSilently(kPref1, local_dict.Clone(), 0);
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                 local_dict.Clone(), 0);
 
-  base::Value account_dict(base::Value::Dict()
+  base::Value account_dict(base::DictValue()
                                .Set("account_key1", "account_value1")
                                .Set("account_key2", "account_value2")
                                .Set("account_key3", "account_value3")
                                .Set("common_key1", "account_value4")
                                .Set("common_key2", "common_value"));
-  store()->GetAccountPrefStore()->SetValueSilently(kPref1, account_dict.Clone(),
-                                                   0);
+  store()->GetAccountPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                   account_dict.Clone(), 0);
 
-  base::Value merged_dict(base::Value::Dict()
+  base::Value merged_dict(base::DictValue()
                               .Set("account_key1", "account_value1")
                               .Set("account_key2", "account_value2")
                               .Set("account_key3", "account_value3")
@@ -1851,10 +2343,10 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
                               .Set("local_key2", "local_value2")
                               .Set("local_key3", "local_value3"));
   base::Value* merged_value = nullptr;
-  ASSERT_TRUE(store()->GetMutableValue(kPref1, &merged_value));
+  ASSERT_TRUE(store()->GetMutableValue(kMergeableDictPref1, &merged_value));
   ASSERT_EQ(*merged_value, merged_dict);
 
-  base::Value updated_dict(base::Value::Dict()
+  base::Value updated_dict(base::DictValue()
                                // New key, should get added to both
                                // stores.
                                .Set("new_key", "new_value")
@@ -1877,95 +2369,1220 @@ TEST_F(DualLayerUserPrefStoreMergeTest,
                                // stores.
                                .Set("common_key2", "new_common_value"));
   *merged_value = updated_dict.Clone();
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
-  store()->ReportValueChanged(kPref1, 0);
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->ReportValueChanged(kMergeableDictPref1, 0);
 
   // Note: "local_key3" has been deleted.
-  base::Value updated_local_dict(base::Value::Dict()
+  base::Value updated_local_dict(base::DictValue()
                                      .Set("new_key", "new_value")
                                      .Set("account_key1", "new_value1")
                                      .Set("local_key1", "local_value1")
                                      .Set("local_key2", "new_value2")
                                      .Set("common_key1", "local_value4")
                                      .Set("common_key2", "new_common_value"));
-  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1,
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableDictPref1,
                              updated_local_dict));
 
   // Note: "account_key3" has been deleted.
-  base::Value updated_account_dict(base::Value::Dict()
+  base::Value updated_account_dict(base::DictValue()
                                        .Set("new_key", "new_value")
                                        .Set("account_key1", "new_value1")
                                        .Set("account_key2", "account_value2")
                                        .Set("local_key2", "new_value2")
                                        .Set("common_key1", "local_value4")
                                        .Set("common_key2", "new_common_value"));
-  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1,
-                             updated_account_dict));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kMergeableDictPref1, updated_account_dict));
 
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, updated_dict));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, updated_dict));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldApplyUpdateOnMergeableListPrefAsNonMergeablePref) {
-  pref_model_associator_client_.MarkAsMergeableListPref(kPref1);
-
   base::Value local_list(
-      base::Value::List().Append("local_value").Append("common_value"));
-  store()->GetLocalPrefStore()->SetValueSilently(kPref1, local_list.Clone(), 0);
+      base::ListValue().Append("local_value").Append("common_value"));
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableListPref,
+                                                 local_list.Clone(), 0);
 
   base::Value account_list(
-      base::Value::List().Append("account_value").Append("common_value"));
-  store()->GetAccountPrefStore()->SetValueSilently(kPref1, account_list.Clone(),
-                                                   0);
+      base::ListValue().Append("account_value").Append("common_value"));
+  store()->GetAccountPrefStore()->SetValueSilently(kMergeableListPref,
+                                                   account_list.Clone(), 0);
 
-  base::Value merged_list(base::Value::List()
+  base::Value merged_list(base::ListValue()
                               .Append("account_value")
                               .Append("common_value")
                               .Append("local_value"));
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, merged_list));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableListPref, merged_list));
 
-  base::Value updated_list(base::Value::List()
+  base::Value updated_list(base::ListValue()
                                .Append("local_value")
                                .Append("account_value")
                                .Append("common_value"));
 
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableListPref));
   // Writes to both stores.
-  store()->SetValue(kPref1, updated_list.Clone(), 0);
+  store()->SetValue(kMergeableListPref, updated_list.Clone(), 0);
 
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1, updated_list));
-  EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1, updated_list));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableListPref,
+                             updated_list));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kMergeableListPref, updated_list));
 
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, updated_list));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableListPref, updated_list));
 }
 
 TEST_F(DualLayerUserPrefStoreMergeTest,
        ShouldNotUnmergeIfIncorrectlyMarkedAsMergeableDict) {
-  pref_model_associator_client_.MarkAsMergeableDictPref(kPref1);
-
   base::Value local_dict_value(
-      base::Value::Dict().Set("local_key", "local_value"));
-  store()->GetLocalPrefStore()->SetValueSilently(kPref1,
+      base::DictValue().Set("local_key", "local_value"));
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableDictPref1,
                                                  local_dict_value.Clone(), 0);
 
   base::Value account_dict_value(
-      base::Value::Dict().Set("account_key", "account_value"));
+      base::DictValue().Set("account_key", "account_value"));
   store()->GetAccountPrefStore()->SetValueSilently(
-      kPref1, account_dict_value.Clone(), 0);
+      kMergeableDictPref1, account_dict_value.Clone(), 0);
 
   base::Value new_value("new_value");
 
-  EXPECT_CALL(observer_, OnPrefValueChanged(kPref1));
-  store()->SetValue(kPref1, new_value.Clone(), 0);
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->SetValue(kMergeableDictPref1, new_value.Clone(), 0);
 
-  ASSERT_TRUE(ValueInStoreIs(*store(), kPref1, new_value));
-  // `kPref1` is considered as incorrectly marked as mergeable and is treated as
-  // a scalar value and overwritten to both stores.
-  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kPref1, new_value));
+  ASSERT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, new_value));
+  // `kMergeableDictPref1` is considered as incorrectly marked as mergeable and
+  // is treated as a scalar value and overwritten to both stores.
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableDictPref1,
+                             new_value));
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetAccountPrefStore(),
+                             kMergeableDictPref1, new_value));
+}
+
+// Regression test for crbug.com/496990174.
+TEST_F(DualLayerUserPrefStoreTest,
+       UnmergeValueHandlesIncorrectTypeInLocalStore) {
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                 base::Value("not_a_dict"), 0);
+
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kMergeableDictPref1, MakeDict({{"account_key", "account_value"}}), 0);
+
+  base::Value new_dict = MakeDict({{"new_key", "new_value"}});
+  store()->SetValue(kMergeableDictPref1, new_dict.Clone(), 0);
+
+  EXPECT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, new_dict));
+}
+
+// Regression test for crbug.com/496990174.
+TEST_F(DualLayerUserPrefStoreTest,
+       UnmergeValueHandlesIncorrectTypeInAccountStore) {
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kMergeableDictPref1, MakeDict({{"local_key", "local_value"}}), 0);
+
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kMergeableDictPref1, base::Value("not_a_dict"), 0);
+
+  base::Value new_dict = MakeDict({{"new_key", "new_value"}});
+  store()->SetValue(kMergeableDictPref1, new_dict.Clone(), 0);
+
+  EXPECT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, new_dict));
+}
+
+TEST_F(
+    DualLayerUserPrefStoreMergeTest,
+    ShouldClearAccountPrefsOnDisableAndNotifyObserversIfEffectiveValueChanges) {
+  base::Value account_dict(
+      base::DictValue().Set("common_key", "account_value"));
+  store()->GetAccountPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                   account_dict.Clone(), 0);
+  base::Value local_dict(base::DictValue().Set("common_key", "local_value"));
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                 local_dict.Clone(), 0);
+
+  base::Value merged_dict(base::DictValue().Set("common_key", "account_value"));
+
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+
+  EXPECT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, merged_dict));
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+
+  // Removed from account store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(),
+                                   kMergeableDictPref1));
+  // Local store is not affected.
+  EXPECT_TRUE(ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableDictPref1,
+                             local_dict));
+  // Effective value has changed.
+  EXPECT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, local_dict));
+}
+
+TEST_F(
+    DualLayerUserPrefStoreMergeTest,
+    ShouldClearAccountPrefsOnDisableButNotNotifyObserversIfEffectiveValueDoesNotChange) {
+  base::Value dict(base::DictValue().Set("common_key", "common_value"));
+
+  store()->GetAccountPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                   dict.Clone(), 0);
+  store()->GetLocalPrefStore()->SetValueSilently(kMergeableDictPref1,
+                                                 dict.Clone(), 0);
+
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1)).Times(0);
+
+  EXPECT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, dict));
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+  // Removed from account store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store()->GetAccountPrefStore(),
+                                   kMergeableDictPref1));
+  // Local store is not affected.
   EXPECT_TRUE(
-      ValueInStoreIs(*store()->GetAccountPrefStore(), kPref1, new_value));
+      ValueInStoreIs(*store()->GetLocalPrefStore(), kMergeableDictPref1, dict));
+  // Effective value has changed as the local value is same as the previous
+  // account value.
+  EXPECT_TRUE(ValueInStoreIs(*store(), kMergeableDictPref1, dict));
+
+  // `observer_` was not notified of any pref change.
+}
+
+class DualLayerUserPrefStoreMaybeMergeEnabledTest
+    : public DualLayerUserPrefStoreMergeTest {
+  base::test::ScopedFeatureList feature_list_{
+      features::kOptimizeDualLayerUserPrefStoreMaybeMerge};
+};
+
+class DualLayerUserPrefStoreMaybeMergeDisabledTest
+    : public DualLayerUserPrefStoreMergeTest {
+ public:
+  DualLayerUserPrefStoreMaybeMergeDisabledTest() {
+    feature_list_.InitAndDisableFeature(
+        features::kOptimizeDualLayerUserPrefStoreMaybeMerge);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(DualLayerUserPrefStoreMaybeMergeDisabledTest,
+       ShouldMergeAndNotifyWhenOptimizationDisabled) {
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("account_key", "account_value")
+                      .Set("common_key", "account_value")),
+      0);
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("local_key", "local_value")
+                      .Set("common_key", "local_value")),
+      0);
+
+  const base::Value* merged_value = nullptr;
+  ASSERT_TRUE(store()->GetValue(kMergeableDictPref1, &merged_value));
+  EXPECT_EQ(*merged_value,
+            base::Value(base::DictValue()
+                            .Set("account_key", "account_value")
+                            .Set("local_key", "local_value")
+                            .Set("common_key", "account_value")));
+
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->GetLocalPrefStore()->SetValue(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("local_key", "new_local_value")
+                      .Set("common_key", "local_value")),
+      0);
+}
+
+TEST_F(DualLayerUserPrefStoreMaybeMergeDisabledTest,
+       ShouldUpdateMergedPrefOnWriteToUnderlyingStoresUsingSetValueSilently) {
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("account_key", "account_value")
+                      .Set("common_key", "account_value")),
+      0);
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("local_key", "local_value")
+                      .Set("common_key", "local_value")),
+      0);
+
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
+                                     .Set("account_key", "account_value")
+                                     .Set("local_key", "local_value")
+                                     .Set("common_key", "account_value"))));
+
+  // Update account value.
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      // Updated value.
+                      .Set("account_key", "new_account_value")
+                      .Set("common_key", "account_value")),
+      0);
+
+  // Updated account value should reflect in the merged view.
+  EXPECT_TRUE(
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
+                                     // Updated value.
+                                     .Set("account_key", "new_account_value")
+                                     .Set("local_key", "local_value")
+                                     .Set("common_key", "account_value"))));
+
+  // Add new key to local value.
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("local_key", "local_value")
+                      .Set("new_local_key", "local_value")
+                      .Set("common_key", "local_value")),
+      0);
+
+  // Updated local value should reflect in the merged view.
+  EXPECT_TRUE(
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
+                                     .Set("account_key", "new_account_value")
+                                     .Set("local_key", "local_value")
+                                     // New entry.
+                                     .Set("new_local_key", "local_value")
+                                     .Set("common_key", "account_value"))));
+}
+
+TEST_F(DualLayerUserPrefStoreMaybeMergeEnabledTest,
+       MergedPrefPointerStabilityOnUnderlyingWrites) {
+  // Initial setup.
+  store()->GetAccountPrefStore()->SetValueSilently(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("account_key", "account_value")
+                      .Set("common_key", "account_value")),
+      0);
+  store()->GetLocalPrefStore()->SetValueSilently(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("local_key", "local_value")
+                      .Set("common_key", "local_value")),
+      0);
+
+  // Get the merged value.
+  const base::Value* merged_value1 = nullptr;
+  ASSERT_TRUE(store()->GetValue(kMergeableDictPref1, &merged_value1));
+  ASSERT_TRUE(merged_value1);
+
+  // 1. Edge Case: Update local store's conflicting key.
+  // Since account store wins on conflicts, the merged value should NOT change.
+  // Use SetValue (non-silent) so it triggers the observer and cache update.
+  store()->GetLocalPrefStore()->SetValue(
+      kMergeableDictPref1,
+      base::Value(
+          base::DictValue()
+              .Set("local_key", "local_value")
+              .Set("common_key",
+                   "new_local_value")),  // Changed, but overridden by account
+      0);
+
+  const base::Value* merged_value2 = nullptr;
+  ASSERT_TRUE(store()->GetValue(kMergeableDictPref1, &merged_value2));
+
+  // The value should be physically the same object (pointer equality) because
+  // the merged value did not change.
+  EXPECT_EQ(merged_value1, merged_value2);
+
+  // 2. Edge Case: Update account store's key.
+  // This changes the merged value.
+  // Clone the old value to verify it actually changes.
+  base::Value old_value = merged_value2->Clone();
+
+  EXPECT_CALL(observer_, OnPrefValueChanged(kMergeableDictPref1));
+  store()->GetAccountPrefStore()->SetValue(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("account_key", "new_account_value")
+                      .Set("common_key", "account_value")),
+      0);
+
+  const base::Value* merged_value3 = nullptr;
+  ASSERT_TRUE(store()->GetValue(kMergeableDictPref1, &merged_value3));
+
+  // The pointer must be EQUAL because the value is updated in-place!
+  EXPECT_EQ(merged_value2, merged_value3);
+  // But the content it points to has changed.
+  EXPECT_NE(old_value, *merged_value3);
+  // The value should be updated.
+  EXPECT_TRUE(
+      ValueInStoreIs(*store(), kMergeableDictPref1,
+                     base::Value(base::DictValue()
+                                     .Set("account_key", "new_account_value")
+                                     .Set("local_key", "local_value")
+                                     .Set("common_key", "account_value"))));
+}
+
+TEST_F(DualLayerUserPrefStoreMaybeMergeEnabledTest,
+       MergedPrefPointerStabilityOnSetValueSameValue) {
+  // Initial setup via SetValueSilently.
+  store()->SetValueSilently(
+      kMergeableDictPref1,
+      base::Value(base::DictValue()
+                      .Set("account_key", "account_value")
+                      .Set("local_key", "local_value")
+                      .Set("common_key", "account_value")),
+      0);
+
+  const base::Value* merged_value1 = nullptr;
+  ASSERT_TRUE(store()->GetValue(kMergeableDictPref1, &merged_value1));
+  ASSERT_TRUE(merged_value1);
+
+  // Set the exact same value again.
+  store()->SetValue(kMergeableDictPref1,
+                    base::Value(base::DictValue()
+                                    .Set("account_key", "account_value")
+                                    .Set("local_key", "local_value")
+                                    .Set("common_key", "account_value")),
+                    0);
+
+  const base::Value* merged_value2 = nullptr;
+  ASSERT_TRUE(store()->GetValue(kMergeableDictPref1, &merged_value2));
+
+  // The pointer should be stable.
+  EXPECT_EQ(merged_value1, merged_value2);
+}
+
+using DualLayerUserPrefStoreHistoryOptInTest = DualLayerUserPrefStoreTest;
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldReturnHistorySensitivePrefFromLocalStoreIfHistorySyncOff) {
+  store()->SetIsHistorySyncEnabledForTest(false);
+
+  local_store()->SetValueSilently(kHistorySensitivePrefName,
+                                  base::Value("local value"), 0);
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    base::Value("account value"), 0);
+
+  // Check GetValue().
+  EXPECT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "local value"));
+
+  // Check GetMutableValue().
+  {
+    base::Value* value = nullptr;
+    ASSERT_TRUE(store()->GetMutableValue(kHistorySensitivePrefName, &value));
+    EXPECT_EQ(*value, base::Value("local value"));
+  }
+
+  // Check GetValues().
+  {
+    base::DictValue values = store()->GetValues();
+    base::Value* value = values.FindByDottedPath(kHistorySensitivePrefName);
+    ASSERT_TRUE(value);
+    EXPECT_EQ(*value, base::Value("local value"));
+  }
+
+  // Verify that a change in history sync opt-in is reflected.
+  store()->SetIsHistorySyncEnabledForTest(true);
+
+  EXPECT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "account value"));
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldNotGetHistorySensitivePrefFromAccountStoreIfHistorySyncOff) {
+  store()->SetIsHistorySyncEnabledForTest(false);
+
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    base::Value("account value"), 0);
+
+  // Check GetValue().
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kHistorySensitivePrefName));
+
+  // Check GetMutableValue().
+  EXPECT_FALSE(store()->GetMutableValue(kHistorySensitivePrefName, nullptr));
+
+  // Check GetValues().
+  base::DictValue values = store()->GetValues();
+  EXPECT_FALSE(values.FindByDottedPath(kHistorySensitivePrefName));
+
+  // Verify that a change in history sync opt-in is reflected.
+  store()->SetIsHistorySyncEnabledForTest(true);
+
+  EXPECT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "account value"));
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldGetHistorySensitivePrefFromAccountStoreIfHistorySyncOn) {
+  store()->SetIsHistorySyncEnabledForTest(true);
+
+  local_store()->SetValueSilently(kHistorySensitivePrefName,
+                                  base::Value("local value"), 0);
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    base::Value("account value"), 0);
+
+  // Check GetValue().
+  EXPECT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "account value"));
+
+  // Check GetMutableValue().
+  {
+    base::Value* value = nullptr;
+    ASSERT_TRUE(store()->GetMutableValue(kHistorySensitivePrefName, &value));
+    EXPECT_EQ(*value, base::Value("account value"));
+  }
+
+  // Check GetValues().
+  {
+    base::DictValue values = store()->GetValues();
+    base::Value* value = values.FindByDottedPath(kHistorySensitivePrefName);
+    ASSERT_TRUE(value);
+    EXPECT_EQ(*value, base::Value("account value"));
+  }
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldNotSetHistorySensitivePrefInAccountStoreIfHistorySyncIsOff) {
+  store()->SetIsHistorySyncEnabledForTest(false);
+
+  testing::StrictMock<MockPrefStoreObserver> account_store_observer;
+  account_store()->AddObserver(&account_store_observer);
+
+  // No call should be made for `kHistorySensitivePrefName` since history sync
+  // is off.
+  EXPECT_CALL(account_store_observer,
+              OnPrefValueChanged(kHistorySensitivePrefName))
+      .Times(0);
+
+  // Check SetValue().
+  store()->SetValue(kHistorySensitivePrefName, base::Value("sensitive value1"),
+                    0);
+
+  EXPECT_TRUE(
+      ValueInStoreIsAbsent(*account_store(), kHistorySensitivePrefName));
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "sensitive value1"));
+
+  // Check SetValueSilently().
+  store()->SetValueSilently(kHistorySensitivePrefName,
+                            base::Value("sensitive value2"), 0);
+
+  EXPECT_TRUE(
+      ValueInStoreIsAbsent(*account_store(), kHistorySensitivePrefName));
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "sensitive value2"));
+
+  // Check ReportValueChanged(). Observer is not notified.
+  base::Value* value = nullptr;
+  ASSERT_TRUE(store()->GetMutableValue(kHistorySensitivePrefName, &value));
+  *value = base::Value("sensitive value3");
+  store()->ReportValueChanged(kHistorySensitivePrefName, 0);
+
+  EXPECT_TRUE(
+      ValueInStoreIsAbsent(*account_store(), kHistorySensitivePrefName));
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "sensitive value3"));
+
+  account_store()->RemoveObserver(&account_store_observer);
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldSetHistorySensitivePrefInAccountStoreIfHistorySyncOn) {
+  store()->SetIsHistorySyncEnabledForTest(true);
+
+  testing::StrictMock<MockPrefStoreObserver> account_store_observer;
+  account_store()->AddObserver(&account_store_observer);
+
+  // Check SetValueSilently().
+  store()->SetValueSilently(kHistorySensitivePrefName,
+                            base::Value("sensitive value1"), 0);
+
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kHistorySensitivePrefName,
+                             "sensitive value1"));
+
+  // Check SetValue().
+  EXPECT_CALL(account_store_observer,
+              OnPrefValueChanged(kHistorySensitivePrefName));
+  store()->SetValue(kHistorySensitivePrefName, base::Value("sensitive value2"),
+                    0);
+
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kHistorySensitivePrefName,
+                             "sensitive value2"));
+
+  // Check ReportValueChanged().
+  base::Value* value = nullptr;
+  ASSERT_TRUE(store()->GetMutableValue(kHistorySensitivePrefName, &value));
+  *value = base::Value("sensitive value3");
+
+  EXPECT_CALL(account_store_observer,
+              OnPrefValueChanged(kHistorySensitivePrefName));
+  store()->ReportValueChanged(kHistorySensitivePrefName, 0);
+
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kHistorySensitivePrefName,
+                             "sensitive value3"));
+
+  account_store()->RemoveObserver(&account_store_observer);
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldNotRemoveFromAccountStoreUponSetIfHistorySyncOff) {
+  store()->SetIsHistorySyncEnabledForTest(false);
+
+  base::Value account_value("account value");
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    account_value.Clone(), 0);
+
+  testing::StrictMock<MockPrefStoreObserver> account_store_observer;
+  account_store()->AddObserver(&account_store_observer);
+
+  // No call should be made for `kHistorySensitivePrefName` since history sync
+  // is off.
+  EXPECT_CALL(account_store_observer,
+              OnPrefValueChanged(kHistorySensitivePrefName))
+      .Times(0);
+
+  // Check SetValue().
+  store()->SetValue(kHistorySensitivePrefName, base::Value("sensitive value1"),
+                    0);
+
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kHistorySensitivePrefName,
+                             account_value));
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "sensitive value1"));
+
+  // Check SetValueSilently().
+  store()->SetValueSilently(kHistorySensitivePrefName,
+                            base::Value("sensitive value2"), 0);
+
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kHistorySensitivePrefName,
+                             account_value));
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "sensitive value2"));
+
+  // Check ReportValueChanged(). Observer is not notified.
+  base::Value* value = nullptr;
+  ASSERT_TRUE(store()->GetMutableValue(kHistorySensitivePrefName, &value));
+  *value = base::Value("sensitive value3");
+  store()->ReportValueChanged(kHistorySensitivePrefName, 0);
+
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kHistorySensitivePrefName,
+                             account_value));
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kHistorySensitivePrefName, "sensitive value3"));
+
+  account_store()->RemoveObserver(&account_store_observer);
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldNotRemoveFromAccountStoreUponRemoveIfHistorySyncOff) {
+  store()->SetIsHistorySyncEnabledForTest(false);
+
+  base::Value local_value("local value");
+  local_store()->SetValueSilently(kHistorySensitivePrefName,
+                                  local_value.Clone(), 0);
+  base::Value account_value("account value");
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    account_value.Clone(), 0);
+
+  testing::StrictMock<MockPrefStoreObserver> account_store_observer;
+  account_store()->AddObserver(&account_store_observer);
+
+  // No call should be made for `kHistorySensitivePrefName` since history sync
+  // is off.
+  EXPECT_CALL(account_store_observer,
+              OnPrefValueChanged(kHistorySensitivePrefName))
+      .Times(0);
+
+  // Check RemoveValue().
+  store()->RemoveValue(kHistorySensitivePrefName, 0);
+
+  // Not removed from the account store.
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kHistorySensitivePrefName,
+                             account_value));
+  // But removed from the local store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*local_store(), kHistorySensitivePrefName));
+
+  // Repopulate the local store.
+  local_store()->SetValueSilently(kHistorySensitivePrefName,
+                                  local_value.Clone(), 0);
+
+  // Check RemoveValuesByPrefixSilently().
+  store()->RemoveValuesByPrefixSilently(kHistorySensitivePrefName);
+
+  // Not removed from the account store.
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kHistorySensitivePrefName,
+                             account_value));
+  // But removed from the local store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*local_store(), kHistorySensitivePrefName));
+
+  account_store()->RemoveObserver(&account_store_observer);
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldCheckHistoryOptInUponSubscribe) {
+  local_store()->SetValueSilently(kHistorySensitivePrefName,
+                                  base::Value("local value"), 0);
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    base::Value("account value"), 0);
+
+  syncer::TestSyncService sync_service;
+
+  ASSERT_FALSE(store()->IsHistorySyncEnabledForTest());
+
+  // OnSyncServiceInitialized() should check the history sync opt-in state.
+  store()->OnSyncServiceInitialized(&sync_service);
+  EXPECT_TRUE(store()->IsHistorySyncEnabledForTest());
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldListenToHistorySyncDisable) {
+  local_store()->SetValueSilently(kHistorySensitivePrefName,
+                                  base::Value("local value"), 0);
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    base::Value("account value"), 0);
+
+  syncer::TestSyncService sync_service;
+  store()->OnSyncServiceInitialized(&sync_service);
+  ASSERT_TRUE(store()->IsHistorySyncEnabledForTest());
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  // Turning history sync off should raise notification since effective value of
+  // `kHistorySensitivePrefName` pref changed.
+  EXPECT_CALL(observer, OnPrefValueChanged(kHistorySensitivePrefName));
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false, syncer::UserSelectableTypeSet());
+  sync_service.FireStateChanged();
+  EXPECT_FALSE(store()->IsHistorySyncEnabledForTest());
+
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldListenToHistorySyncEnable) {
+  local_store()->SetValueSilently(kHistorySensitivePrefName,
+                                  base::Value("local value"), 0);
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    base::Value("account value"), 0);
+
+  syncer::TestSyncService sync_service;
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false, syncer::UserSelectableTypeSet());
+  ASSERT_FALSE(sync_service.GetUserSettings()->GetSelectedTypes().Has(
+      syncer::UserSelectableType::kHistory));
+
+  store()->OnSyncServiceInitialized(&sync_service);
+  ASSERT_FALSE(store()->IsHistorySyncEnabledForTest());
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  // Turning history sync on should raise notification since effective value of
+  // `kHistorySensitivePrefName` pref changed.
+  EXPECT_CALL(observer, OnPrefValueChanged(kHistorySensitivePrefName));
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false,
+      syncer::UserSelectableTypeSet({syncer::UserSelectableType::kHistory}));
+  sync_service.FireStateChanged();
+  EXPECT_TRUE(store()->IsHistorySyncEnabledForTest());
+
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(
+    DualLayerUserPrefStoreHistoryOptInTest,
+    ShouldNotNotifyObserversOnHistoryOptInChangeIfEffectiveValueDoesNotChange) {
+  local_store()->SetValueSilently(kHistorySensitivePrefName,
+                                  base::Value("common value"), 0);
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    base::Value("common value"), 0);
+
+  syncer::TestSyncService sync_service;
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false, syncer::UserSelectableTypeSet());
+  ASSERT_FALSE(sync_service.GetUserSettings()->GetSelectedTypes().Has(
+      syncer::UserSelectableType::kHistory));
+
+  store()->OnSyncServiceInitialized(&sync_service);
+  ASSERT_FALSE(store()->IsHistorySyncEnabledForTest());
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  // Turning history sync on should not raise notification since effective value
+  // of `kHistorySensitivePrefName` pref is unchanged.
+  EXPECT_CALL(observer, OnPrefValueChanged(kHistorySensitivePrefName)).Times(0);
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false,
+      syncer::UserSelectableTypeSet({syncer::UserSelectableType::kHistory}));
+  sync_service.FireStateChanged();
+  EXPECT_TRUE(store()->IsHistorySyncEnabledForTest());
+
+  // Turning history sync off should not raise notification since effective
+  // value of `kHistorySensitivePrefName` pref is unchanged.
+  EXPECT_CALL(observer, OnPrefValueChanged(kHistorySensitivePrefName)).Times(0);
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false, syncer::UserSelectableTypeSet());
+  sync_service.FireStateChanged();
+  EXPECT_FALSE(store()->IsHistorySyncEnabledForTest());
+
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldNotifyObserversOnHistoryOptInChangeIfEffectiveValueChanges) {
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    base::Value("account value"), 0);
+
+  syncer::TestSyncService sync_service;
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false, syncer::UserSelectableTypeSet());
+  ASSERT_FALSE(sync_service.GetUserSettings()->GetSelectedTypes().Has(
+      syncer::UserSelectableType::kHistory));
+
+  store()->OnSyncServiceInitialized(&sync_service);
+  ASSERT_FALSE(store()->IsHistorySyncEnabledForTest());
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  // Turning history sync on should raise notification since effective value
+  // of `kHistorySensitivePrefName` pref changes.
+  EXPECT_CALL(observer, OnPrefValueChanged(kHistorySensitivePrefName)).Times(1);
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false,
+      syncer::UserSelectableTypeSet({syncer::UserSelectableType::kHistory}));
+  sync_service.FireStateChanged();
+  EXPECT_TRUE(store()->IsHistorySyncEnabledForTest());
+
+  // Turning history sync off should raise notification since effective value
+  // of `kHistorySensitivePrefName` pref changes.
+  EXPECT_CALL(observer, OnPrefValueChanged(kHistorySensitivePrefName)).Times(1);
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false, syncer::UserSelectableTypeSet());
+  sync_service.FireStateChanged();
+  EXPECT_FALSE(store()->IsHistorySyncEnabledForTest());
+
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldNotReactIfHistoryOptInIsUnchanged) {
+  local_store()->SetValueSilently(kHistorySensitivePrefName,
+                                  base::Value("local value"), 0);
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    base::Value("account value"), 0);
+
+  syncer::TestSyncService sync_service;
+
+  ASSERT_FALSE(store()->IsHistorySyncEnabledForTest());
+
+  store()->OnSyncServiceInitialized(&sync_service);
+  ASSERT_TRUE(store()->IsHistorySyncEnabledForTest());
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  // Should not lead to notification.
+  sync_service.FireStateChanged();
+  ASSERT_TRUE(store()->IsHistorySyncEnabledForTest());
+
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreHistoryOptInTest,
+       ShouldRemoveSensitivePrefsFromAccountStoreUponDisableIfHistorySyncOff) {
+  store()->SetIsHistorySyncEnabledForTest(false);
+
+  base::Value account_value("account value");
+  account_store()->SetValueSilently(kHistorySensitivePrefName,
+                                    account_value.Clone(), 0);
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  // No call should be made for `kHistorySensitivePrefName` since history sync
+  // is off and the effective is thus unchanged.
+  EXPECT_CALL(observer, OnPrefValueChanged(kHistorySensitivePrefName)).Times(0);
+
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+
+  EXPECT_TRUE(
+      ValueInStoreIsAbsent(*account_store(), kHistorySensitivePrefName));
+
+  store()->RemoveObserver(&observer);
+}
+
+TEST_F(DualLayerUserPrefStoreTest,
+       ShouldGetAllowlistedPrefFromAccountStoreIfUserToggleIsOff) {
+  store()->SetUserSelectedTypesForTest(syncer::UserSelectableTypeSet());
+  account_store()->SetValueSilently(kPriorityPrefName,
+                                    base::Value("account value"), 0);
+  // Allowlisted pref.
+  account_store()->SetValueSilently(kAlwaysSyncingPriorityPrefName,
+                                    base::Value("account value"), 0);
+
+  // Check GetValue().
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPriorityPrefName));
+  EXPECT_TRUE(ValueInStoreIs(*store(), kAlwaysSyncingPriorityPrefName,
+                             "account value"));
+
+  // Check GetMutableValue().
+  EXPECT_FALSE(store()->GetMutableValue(kPriorityPrefName, nullptr));
+  base::Value* value = nullptr;
+  EXPECT_TRUE(store()->GetMutableValue(kAlwaysSyncingPriorityPrefName, &value));
+  EXPECT_THAT(value, testing::Pointee(testing::Eq("account value")));
+
+  // Check GetValues().
+  base::DictValue values = store()->GetValues();
+  EXPECT_FALSE(values.FindByDottedPath(kPriorityPrefName));
+  EXPECT_THAT(values.FindByDottedPath(kAlwaysSyncingPriorityPrefName),
+              testing::Pointee(testing::Eq("account value")));
+}
+
+TEST_F(DualLayerUserPrefStoreTest,
+       ShouldGetRegularPrefFromAccountStoreIfUserToggleIsOn) {
+  store()->SetUserSelectedTypesForTest(syncer::UserSelectableTypeSet(
+      {syncer::UserSelectableType::kPreferences}));
+  account_store()->SetValueSilently(kPriorityPrefName,
+                                    base::Value("account value"), 0);
+  // Allowlisted pref.
+  account_store()->SetValueSilently(kAlwaysSyncingPriorityPrefName,
+                                    base::Value("account value"), 0);
+
+  // Check GetValue().
+  EXPECT_TRUE(ValueInStoreIs(*store(), kPriorityPrefName, "account value"));
+  EXPECT_TRUE(ValueInStoreIs(*store(), kAlwaysSyncingPriorityPrefName,
+                             "account value"));
+
+  // Check GetMutableValue().
+  base::Value* value = nullptr;
+  EXPECT_TRUE(store()->GetMutableValue(kPriorityPrefName, &value));
+  EXPECT_THAT(value, testing::Pointee(testing::Eq("account value")));
+  EXPECT_TRUE(store()->GetMutableValue(kAlwaysSyncingPriorityPrefName, &value));
+  EXPECT_THAT(value, testing::Pointee(testing::Eq("account value")));
+
+  // Check GetValues().
+  base::DictValue values = store()->GetValues();
+  EXPECT_THAT(values.FindByDottedPath(kPriorityPrefName),
+              testing::Pointee(testing::Eq("account value")));
+  EXPECT_THAT(values.FindByDottedPath(kAlwaysSyncingPriorityPrefName),
+              testing::Pointee(testing::Eq("account value")));
+}
+
+TEST_F(DualLayerUserPrefStoreTest, ShouldObserverUserToggleChange) {
+  syncer::TestSyncService sync_service;
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false, syncer::UserSelectableTypeSet());
+  store()->OnSyncServiceInitialized(&sync_service);
+
+  account_store()->SetValueSilently(kPriorityPrefName,
+                                    base::Value("account value"), 0);
+  // Allowlisted pref.
+  account_store()->SetValueSilently(kAlwaysSyncingPriorityPrefName,
+                                    base::Value("account value"), 0);
+
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kPriorityPrefName));
+  EXPECT_TRUE(ValueInStoreIs(*store(), kAlwaysSyncingPriorityPrefName,
+                             "account value"));
+
+  testing::StrictMock<MockPrefStoreObserver> observer;
+  store()->AddObserver(&observer);
+
+  EXPECT_CALL(observer, OnPrefValueChanged(kPriorityPrefName));
+  EXPECT_CALL(observer, OnPrefValueChanged(kAlwaysSyncingPriorityPrefName))
+      .Times(0);
+
+  sync_service.GetUserSettings()->SetSelectedTypes(
+      /*sync_everything=*/false,
+      syncer::UserSelectableTypeSet(
+          {syncer::UserSelectableType::kPreferences}));
+  sync_service.FireStateChanged();
+
+  EXPECT_TRUE(ValueInStoreIs(*store(), kPriorityPrefName, "account value"));
+  EXPECT_TRUE(ValueInStoreIs(*store(), kAlwaysSyncingPriorityPrefName,
+                             "account value"));
+
+  store()->RemoveObserver(&observer);
+}
+
+// Test to verify that the user selected types are loaded from a pref in the
+// local store.
+TEST_F(DualLayerUserPrefStoreTest, ShouldGetUserSelectedTypesFromLocalStore) {
+  // Multiple types.
+  local_store()->SetValueSilently(kUserSelectedTypesPrefName,
+                                  base::Value(base::ListValue()
+                                                  .Append("passwords")
+                                                  .Append("preferences")
+                                                  .Append("typedUrls")),
+                                  0);
+  // Only the interesting types (preferences and history) are returned.
+  EXPECT_EQ(
+      store()->GetUserSelectedTypesForTest(),
+      syncer::UserSelectableTypeSet({syncer::UserSelectableType::kPreferences,
+                                     syncer::UserSelectableType::kHistory}));
+
+  // Empty list.
+  local_store()->SetValueSilently(kUserSelectedTypesPrefName,
+                                  base::Value(base::ListValue()), 0);
+  EXPECT_TRUE(store()->GetUserSelectedTypesForTest().empty());
+}
+
+// Test to verify that the user selected types are stored in a pref in the local
+// store.
+TEST_F(DualLayerUserPrefStoreTest, ShouldSetUserSelectedTypesToLocalStore) {
+  // Multiple types.
+  store()->SetUserSelectedTypesForTest(
+      syncer::UserSelectableTypeSet({syncer::UserSelectableType::kPreferences,
+                                     syncer::UserSelectableType::kHistory}));
+  EXPECT_TRUE(ValueInStoreIs(
+      *local_store(), kUserSelectedTypesPrefName,
+      base::Value(
+          base::ListValue().Append("preferences").Append("typedUrls"))));
+  EXPECT_TRUE(
+      ValueInStoreIsAbsent(*account_store(), kUserSelectedTypesPrefName));
+
+  // Empty list.
+  store()->SetUserSelectedTypesForTest(syncer::UserSelectableTypeSet());
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kUserSelectedTypesPrefName,
+                             base::Value(base::ListValue())));
+}
+
+// Test to verify that the user selected types pref is cleared from the local
+// store upon sync stop.
+TEST_F(DualLayerUserPrefStoreTest,
+       ShouldClearUserSelectedTypesIfLocalStoreUponSyncStop) {
+  store()->SetUserSelectedTypesForTest(
+      syncer::UserSelectableTypeSet({syncer::UserSelectableType::kPreferences,
+                                     syncer::UserSelectableType::kHistory}));
+  const base::Value user_selected_types_value(
+      base::ListValue().Append("preferences").Append("typedUrls"));
+
+  // The pref is only cleared after all the data types are disabled.
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kUserSelectedTypesPrefName,
+                             user_selected_types_value));
+  store()->DisableTypeAndClearAccountStore(syncer::PRIORITY_PREFERENCES);
+#if BUILDFLAG(IS_CHROMEOS)
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kUserSelectedTypesPrefName,
+                             user_selected_types_value));
+  store()->DisableTypeAndClearAccountStore(syncer::OS_PREFERENCES);
+  store()->DisableTypeAndClearAccountStore(syncer::OS_PRIORITY_PREFERENCES);
+#endif
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kUserSelectedTypesPrefName,
+                             base::Value(base::ListValue())));
+}
+
+class DualLayerUserPrefStoreAccountScopedTest
+    : public DualLayerUserPrefStoreTest {
+  base::test::ScopedFeatureList feature_list_{features::kAccountScopedPrefs};
+};
+
+TEST_F(DualLayerUserPrefStoreAccountScopedTest,
+       ShouldWriteOnlyToAccountStoreWhenSyncing) {
+  store()->SetUserSelectedTypesForTest(
+      {syncer::UserSelectableType::kPreferences});
+
+  // Check SetValue().
+  store()->SetValue(kAccountScopedPref, base::Value("value1"), 0);
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kAccountScopedPref, base::Value("value1")));
+  // Should be in account store.
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kAccountScopedPref,
+                             base::Value("value1")));
+  // Should NOT be in local store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*local_store(), kAccountScopedPref));
+
+  // Check SetValueSilently().
+  store()->SetValueSilently(kAccountScopedPref, base::Value("value2"), 0);
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kAccountScopedPref, base::Value("value2")));
+  // Should be in account store.
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kAccountScopedPref,
+                             base::Value("value2")));
+  // Should NOT be in local store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*local_store(), kAccountScopedPref));
+
+  // Check ReportValueChanged().
+  base::Value* value = nullptr;
+  ASSERT_TRUE(store()->GetMutableValue(kAccountScopedPref, &value));
+  *value = base::Value("value3");
+  store()->ReportValueChanged(kAccountScopedPref, 0);
+  // Should be in account store.
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kAccountScopedPref,
+                             base::Value("value3")));
+  // Should NOT be in local store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*local_store(), kAccountScopedPref));
+
+  // Check RemoveValue().
+  // Set a value in the local store to verify that it is not removed - note that
+  // can only happen in a buggy scenario since account-scoped prefs should not
+  // be in the local store.
+  local_store()->SetValueSilently(kAccountScopedPref, base::Value("value4"), 0);
+  store()->RemoveValue(kAccountScopedPref, 0);
+  // Should NOT be in account store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kAccountScopedPref));
+  // Should still be in local store.
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kAccountScopedPref,
+                             base::Value("value4")));
+}
+
+TEST_F(DualLayerUserPrefStoreAccountScopedTest, ShouldNotReadFromLocalStore) {
+  store()->SetUserSelectedTypesForTest(
+      {syncer::UserSelectableType::kPreferences});
+
+  // Set a value in the local store.
+  local_store()->SetValueSilently(kAccountScopedPref,
+                                  base::Value("local_value"), 0);
+
+  // Check GetValue().
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kAccountScopedPref));
+
+  // Check GetMutableValue().
+  EXPECT_FALSE(store()->GetMutableValue(kAccountScopedPref, nullptr));
+
+  // Check GetValues().
+  base::DictValue values = store()->GetValues();
+  EXPECT_FALSE(values.FindByDottedPath(kAccountScopedPref));
+
+  // Now set a value in the account store as well.
+  account_store()->SetValueSilently(kAccountScopedPref,
+                                    base::Value("account_value"), 0);
+
+  // Check GetValue().
+  EXPECT_TRUE(ValueInStoreIs(*store(), kAccountScopedPref, "account_value"));
+
+  // Check GetMutableValue().
+  base::Value* value = nullptr;
+  ASSERT_TRUE(store()->GetMutableValue(kAccountScopedPref, &value));
+  EXPECT_EQ(*value, base::Value("account_value"));
+
+  // Check GetValues().
+  values = store()->GetValues();
+  base::Value* dict_value = values.FindByDottedPath(kAccountScopedPref);
+  ASSERT_TRUE(dict_value);
+  EXPECT_EQ(*dict_value, base::Value("account_value"));
+}
+
+TEST_F(DualLayerUserPrefStoreAccountScopedTest, ShouldNotWriteWhenNotSyncing) {
+  // No types are selected.
+  store()->SetUserSelectedTypesForTest(syncer::UserSelectableTypeSet());
+
+  // Check SetValue().
+  store()->SetValue(kAccountScopedPref, base::Value("value"), 0);
+  // Should not be in any store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kAccountScopedPref));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kAccountScopedPref));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*local_store(), kAccountScopedPref));
+
+  // Check SetValueSilently().
+  store()->SetValueSilently(kAccountScopedPref, base::Value("value"), 0);
+  // Should not be in any store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kAccountScopedPref));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kAccountScopedPref));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*local_store(), kAccountScopedPref));
+
+  // Check ReportValueChanged().
+  store()->ReportValueChanged(kAccountScopedPref, 0);
+  // Should not be in any store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kAccountScopedPref));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kAccountScopedPref));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*local_store(), kAccountScopedPref));
+}
+
+TEST_F(DualLayerUserPrefStoreAccountScopedTest,
+       ShouldClearAccountScopedPrefWhenSyncStops) {
+  store()->SetUserSelectedTypesForTest(
+      {syncer::UserSelectableType::kPreferences});
+
+  store()->SetValue(kAccountScopedPref, base::Value("value"), 0);
+  // Should only be in account store.
+  ASSERT_TRUE(ValueInStoreIs(*account_store(), kAccountScopedPref,
+                             base::Value("value")));
+  ASSERT_TRUE(ValueInStoreIsAbsent(*local_store(), kAccountScopedPref));
+
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+  // Value should be cleared from the account store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kAccountScopedPref));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*store(), kAccountScopedPref));
+}
+
+TEST_F(DualLayerUserPrefStoreAccountScopedTest,
+       ClearAccountScopedPrefsFromLocalStore) {
+  // Directly write account-scoped pref to the local store (simulating a bug or
+  // old state).
+  local_store()->SetValueSilently(kAccountScopedPref,
+                                  base::Value("account_scoped_value"), 0);
+
+  // Directly write a regular pref to the local store to ensure it's NOT
+  // cleared.
+  local_store()->SetValueSilently(kPrefName, base::Value("local_value"), 0);
+
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kAccountScopedPref,
+                             "account_scoped_value"));
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kPrefName, "local_value"));
+
+  store()->DisableTypeAndClearAccountStore(syncer::PREFERENCES);
+
+  // The account-scoped pref is cleared only after all data types are disabled.
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kAccountScopedPref,
+                             "account_scoped_value"));
+
+  store()->DisableTypeAndClearAccountStore(syncer::PRIORITY_PREFERENCES);
+#if BUILDFLAG(IS_CHROMEOS)
+  store()->DisableTypeAndClearAccountStore(syncer::OS_PREFERENCES);
+  store()->DisableTypeAndClearAccountStore(syncer::OS_PRIORITY_PREFERENCES);
+#endif
+
+  // The account-scoped pref should have been cleared from the local store.
+  EXPECT_TRUE(ValueInStoreIsAbsent(*local_store(), kAccountScopedPref));
+
+  // The regular pref should still be there.
+  EXPECT_TRUE(ValueInStoreIs(*local_store(), kPrefName, "local_value"));
+}
+
+class DualLayerUserPrefStoreAccountScopedDisabledTest
+    : public DualLayerUserPrefStoreTest {
+ public:
+  DualLayerUserPrefStoreAccountScopedDisabledTest() {
+    feature_list_.InitAndDisableFeature(features::kAccountScopedPrefs);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+TEST_F(DualLayerUserPrefStoreAccountScopedDisabledTest,
+       ShouldDualWriteToBothStoresWhenSyncing) {
+  store()->SetUserSelectedTypesForTest(
+      {syncer::UserSelectableType::kPreferences});
+
+  // When flag is DISABLED, should dual-write to both stores.
+  store()->SetValue(kAccountScopedPref, base::Value("value"), 0);
+
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kAccountScopedPref, base::Value("value")));
+  EXPECT_TRUE(
+      ValueInStoreIs(*local_store(), kAccountScopedPref, base::Value("value")));
+  EXPECT_TRUE(ValueInStoreIs(*account_store(), kAccountScopedPref,
+                             base::Value("value")));
+}
+
+TEST_F(DualLayerUserPrefStoreAccountScopedDisabledTest,
+       ShouldWriteToLocalStoreWhenNotSyncing) {
+  // No types are selected.
+  store()->SetUserSelectedTypesForTest(syncer::UserSelectableTypeSet());
+
+  // When flag is DISABLED, should write to local store only.
+  store()->SetValue(kAccountScopedPref, base::Value("value"), 0);
+
+  ASSERT_TRUE(
+      ValueInStoreIs(*store(), kAccountScopedPref, base::Value("value")));
+  EXPECT_TRUE(
+      ValueInStoreIs(*local_store(), kAccountScopedPref, base::Value("value")));
+  EXPECT_TRUE(ValueInStoreIsAbsent(*account_store(), kAccountScopedPref));
 }
 
 }  // namespace

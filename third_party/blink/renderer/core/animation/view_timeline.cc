@@ -4,13 +4,13 @@
 
 #include "third_party/blink/renderer/core/animation/view_timeline.h"
 
-#include "third_party/abseil-cpp/absl/types/optional.h"
+#include <optional>
+
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssnumericvalue_string.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_cssnumericvalueorstringsequence_string.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_view_timeline.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_view_timeline_options.h"
 #include "third_party/blink/renderer/core/animation/keyframe_effect.h"
-#include "third_party/blink/renderer/core/animation/view_timeline_attachment.h"
 #include "third_party/blink/renderer/core/css/css_identifier_value.h"
 #include "third_party/blink/renderer/core/css/css_to_length_conversion_data.h"
 #include "third_party/blink/renderer/core/css/css_value_list.h"
@@ -21,8 +21,11 @@
 #include "third_party/blink/renderer/core/css/resolver/element_resolve_context.h"
 #include "third_party/blink/renderer/core/css/style_sheet_contents.h"
 #include "third_party/blink/renderer/core/dom/document.h"
-#include "third_party/blink/renderer/core/dom/node_computed_style.h"
 #include "third_party/blink/renderer/core/layout/layout_box.h"
+#include "third_party/blink/renderer/core/layout/layout_inline.h"
+#include "third_party/blink/renderer/core/layout/svg/layout_svg_root.h"
+#include "third_party/blink/renderer/core/page/scrolling/sticky_position_scrolling_constraints.h"
+#include "third_party/blink/renderer/core/paint/paint_layer.h"
 #include "third_party/blink/renderer/platform/geometry/calculation_value.h"
 
 namespace blink {
@@ -32,15 +35,11 @@ using InsetValueSequence =
 
 namespace {
 
-bool IsBlockDirection(ViewTimeline::ScrollAxis axis, WritingMode writing_mode) {
+bool IsBlockDirection(PhysicalAxis axis, WritingMode writing_mode) {
   switch (axis) {
-    case ViewTimeline::ScrollAxis::kBlock:
-      return true;
-    case ViewTimeline::ScrollAxis::kInline:
-      return false;
-    case ViewTimeline::ScrollAxis::kHorizontal:
+    case PhysicalAxis::kHorizontal:
       return !blink::IsHorizontalWritingMode(writing_mode);
-    case ViewTimeline::ScrollAxis::kVertical:
+    case PhysicalAxis::kVertical:
       return blink::IsHorizontalWritingMode(writing_mode);
   }
 }
@@ -53,23 +52,26 @@ bool IsBlockDirection(ViewTimeline::ScrollAxis axis, WritingMode writing_mode) {
 //
 // https://drafts.csswg.org/scroll-animations-1/#valdef-view-timeline-inset-auto
 TimelineInset ResolveAuto(const TimelineInset& inset,
-                          Element& source,
-                          ViewTimeline::ScrollAxis axis) {
-  const ComputedStyle* style = source.GetComputedStyle();
-  if (!style)
+                          const Node* resolved_source,
+                          PhysicalAxis axis) {
+  const LayoutObject* layout_object =
+      resolved_source ? resolved_source->GetLayoutObject() : nullptr;
+  if (!layout_object) {
     return inset;
+  }
 
+  const ComputedStyle& style = layout_object->StyleRef();
   const Length& start = inset.GetStart();
   const Length& end = inset.GetEnd();
 
-  if (IsBlockDirection(axis, style->GetWritingMode())) {
+  if (IsBlockDirection(axis, style.GetWritingMode())) {
     return TimelineInset(
-        start.IsAuto() ? style->ScrollPaddingBlockStart() : start,
-        end.IsAuto() ? style->ScrollPaddingBlockEnd() : end);
+        start.IsAuto() ? style.ScrollPaddingBlockStart() : start,
+        end.IsAuto() ? style.ScrollPaddingBlockEnd() : end);
   }
   return TimelineInset(
-      start.IsAuto() ? style->ScrollPaddingInlineStart() : start,
-      end.IsAuto() ? style->ScrollPaddingInlineEnd() : end);
+      start.IsAuto() ? style.ScrollPaddingInlineStart() : start,
+      end.IsAuto() ? style.ScrollPaddingInlineEnd() : end);
 }
 
 LayoutUnit ComputeInset(const Length& inset, LayoutUnit viewport_size) {
@@ -114,11 +116,18 @@ const CSSValuePair* ParseInsetPair(Document& document, const String str_value) {
 }
 
 bool IsStyleDependent(const CSSValue* value) {
-  if (!value)
+  if (!value) {
     return false;
+  }
 
   if (const CSSPrimitiveValue* css_primitive_value =
           DynamicTo<CSSPrimitiveValue>(value)) {
+    if (!value->IsNumericLiteralValue()) {
+      // Err on the side of caution with a math expression. No strict guarantee
+      // that we can extract a style-invariant length.
+      return true;
+    }
+
     return !css_primitive_value->IsPx() && !css_primitive_value->IsPercentage();
   }
 
@@ -140,6 +149,23 @@ Length InsetValueToLength(const CSSValue* inset_value,
     return Length(Length::Type::kAuto);
   }
 
+  // If the subject is detached from the document, we cannot resolve the style,
+  // and thus cannot construct length conversion data. Nonetheless, we can
+  // evaluate the length in trivial cases and rely on the inset value being
+  // marked as style dependent otherwise.
+  if (!subject->GetComputedStyle()) {
+    if (const CSSNumericLiteralValue* literal_value =
+            DynamicTo<CSSNumericLiteralValue>(inset_value)) {
+      if (literal_value->IsPx()) {
+        return Length(literal_value->DoubleValue(), Length::Type::kFixed);
+      } else if (literal_value->IsPercentage()) {
+        return Length(literal_value->DoubleValue(), Length::Type::kPercent);
+      }
+    }
+    DCHECK(IsStyleDependent(inset_value));
+    return Length(Length::Type::kAuto);
+  }
+
   if (inset_value->IsPrimitiveValue()) {
     ElementResolveContext element_resolve_context(*subject);
     Document& document = subject->GetDocument();
@@ -148,16 +174,57 @@ Length InsetValueToLength(const CSSValue* inset_value,
     CSSToLengthConversionData::Flags ignored_flags = 0;
     CSSToLengthConversionData length_conversion_data(
         subject->ComputedStyleRef(), element_resolve_context.ParentStyle(),
-        element_resolve_context.RootElementStyle(), document.GetLayoutView(),
+        element_resolve_context.RootElementStyle(),
+        CSSToLengthConversionData::ViewportSize(document.GetLayoutView()),
         CSSToLengthConversionData::ContainerSizes(subject),
-        subject->GetComputedStyle()->EffectiveZoom(), ignored_flags);
+        CSSToLengthConversionData::AnchorData(),
+        subject->GetComputedStyle()->EffectiveZoom(), ignored_flags, subject);
 
     return DynamicTo<CSSPrimitiveValue>(inset_value)
         ->ConvertToLength(length_conversion_data);
   }
 
   NOTREACHED();
-  return Length(Length::Type::kAuto);
+}
+
+enum class StickinessRange {
+  kBeforeEntry,
+  kDuringEntry,
+  kWhileContained,
+  kWhileCovering,
+  kDuringExit,
+  kAfterExit
+};
+
+StickinessRange ComputeStickinessRange(
+    LayoutUnit sticky_box_stuck_pos_in_viewport,
+    LayoutUnit sticky_box_static_pos,
+    double viewport_size,
+    double target_size,
+    double target_pos) {
+  // Need to know: when the sticky box is stuck, where is the view-timeline
+  // target in relation to the scroller's viewport?
+  double target_pos_in_viewport = sticky_box_stuck_pos_in_viewport +
+                                  target_pos - sticky_box_static_pos.ToDouble();
+
+  if (target_pos_in_viewport < 0 &&
+      target_pos_in_viewport + target_size > viewport_size) {
+    return StickinessRange::kWhileCovering;
+  }
+
+  if (target_pos_in_viewport > viewport_size) {
+    return StickinessRange::kBeforeEntry;
+  } else if (target_pos_in_viewport + target_size > viewport_size) {
+    return StickinessRange::kDuringEntry;
+  }
+
+  if (target_pos_in_viewport + target_size < 0) {
+    return StickinessRange::kAfterExit;
+  } else if (target_pos_in_viewport < 0) {
+    return StickinessRange::kDuringExit;
+  }
+
+  return StickinessRange::kWhileContained;
 }
 
 }  // end namespace
@@ -181,8 +248,8 @@ ViewTimeline* ViewTimeline::Create(Document& document,
   const V8UnionCSSNumericValueOrStringSequenceOrString* v8_inset =
       options->inset();
 
-  absl::optional<const CSSValue*> start_inset_value;
-  absl::optional<const CSSValue*> end_inset_value;
+  std::optional<const CSSValue*> start_inset_value;
+  std::optional<const CSSValue*> end_inset_value;
   if (v8_inset && v8_inset->IsCSSNumericValueOrStringSequence()) {
     const InsetValueSequence inset_array =
         v8_inset->GetAsCSSNumericValueOrStringSequence();
@@ -211,7 +278,7 @@ ViewTimeline* ViewTimeline::Create(Document& document,
                                              subject, inset_start_side);
 
   ViewTimeline* view_timeline = MakeGarbageCollected<ViewTimeline>(
-      &document, TimelineAttachment::kLocal, subject, axis,
+      &document, subject, axis,
       TimelineInset(inset_start_side, inset_end_side));
 
   if (start_inset_value && IsStyleDependent(start_inset_value.value()))
@@ -224,94 +291,52 @@ ViewTimeline* ViewTimeline::Create(Document& document,
 }
 
 ViewTimeline::ViewTimeline(Document* document,
-                           TimelineAttachment attachment,
                            Element* subject,
                            ScrollAxis axis,
                            TimelineInset inset)
-    : ScrollTimeline(
-          document,
-          attachment,
-          attachment == TimelineAttachment::kDefer
-              ? nullptr
-              : MakeGarbageCollected<ViewTimelineAttachment>(subject,
-                                                             axis,
-                                                             inset)) {
-  // Ensure that the timeline stays alive as long as the subject.
-  if (subject)
-    subject->RegisterScrollTimeline(this);
-}
-
-AnimationTimeDelta ViewTimeline::CalculateIntrinsicIterationDuration(
-    const Animation* animation,
-    const Timing& timing) {
-  return CalculateIntrinsicIterationDuration(animation->GetRangeStartInternal(),
-                                             animation->GetRangeEndInternal(),
-                                             timing);
-}
-
-AnimationTimeDelta ViewTimeline::CalculateIntrinsicIterationDuration(
-    const absl::optional<TimelineOffset>& rangeStart,
-    const absl::optional<TimelineOffset>& rangeEnd,
-    const Timing& timing) {
-  absl::optional<AnimationTimeDelta> duration = GetDuration();
-
-  // Only run calculation for progress based scroll timelines
-  if (duration && timing.iteration_count > 0) {
-    double active_interval = 1;
-
-    double start = rangeStart ? ToFractionalOffset(rangeStart.value()) : 0;
-    double end = rangeEnd ? ToFractionalOffset(rangeEnd.value()) : 1;
-
-    active_interval -= start;
-    active_interval -= (1 - end);
-    active_interval = std::max(0., active_interval);
-
-    // Start and end delays are proportional to the active interval.
-    double start_delay = timing.start_delay.relative_delay.value_or(0);
-    double end_delay = timing.end_delay.relative_delay.value_or(0);
-    double delay = start_delay + end_delay;
-
-    if (delay >= 1) {
-      return AnimationTimeDelta();
-    }
-
-    active_interval *= (1 - delay);
-    return duration.value() * active_interval / timing.iteration_count;
-  }
-  return AnimationTimeDelta();
-}
+    : ScrollTimeline(document,
+                     ReferenceType::kNearestAncestor,
+                     /* reference_element */ subject,
+                     axis),
+      inset_(inset) {}
 
 void ViewTimeline::CalculateOffsets(PaintLayerScrollableArea* scrollable_area,
-                                    ScrollOrientation physical_orientation,
+                                    PhysicalAxis physical_orientation,
                                     TimelineState* state) const {
   // Do not call this method with an unresolved timeline.
   // Called from ScrollTimeline::ComputeTimelineState, which has safeguard.
   // Any new call sites will require a similar safeguard.
-  DCHECK(IsResolved());
+  LayoutBox* scroll_container =
+      ComputeScrollContainer(state->resolved_source, physical_orientation);
+  DCHECK(scroll_container);
   DCHECK(subject());
 
-  subject_position_ = SubjectPosition();
-  subject_size_ = SubjectSize();
+  std::optional<gfx::SizeF> subject_size = SubjectSize();
+  if (!subject_size) {
+    // Subject size may be null if the type of subject element is not supported.
+    return;
+  }
 
-  DCHECK(subject_position_);
-  target_offset_ = physical_orientation == kHorizontalScroll
-                       ? subject_position_->x()
-                       : subject_position_->y();
+  std::optional<gfx::PointF> subject_position =
+      SubjectPosition(scroll_container);
+  DCHECK(subject_position);
 
-  DCHECK(subject_size_);
+  // TODO(crbug.com/1448801): Handle nested sticky elements.
+  double target_offset = physical_orientation == PhysicalAxis::kHorizontal
+                             ? subject_position->x()
+                             : subject_position->y();
+  double target_size;
   LayoutUnit viewport_size;
-  if (physical_orientation == kHorizontalScroll) {
-    target_size_ = subject_size_->Width().ToDouble();
+  if (physical_orientation == PhysicalAxis::kHorizontal) {
+    target_size = subject_size->width();
     viewport_size = scrollable_area->LayoutContentRect().Width();
   } else {
-    target_size_ = subject_size_->Height().ToDouble();
+    target_size = subject_size->height();
     viewport_size = scrollable_area->LayoutContentRect().Height();
   }
-  viewport_size_ = viewport_size.ToDouble();
 
-  Element* source = CurrentAttachment()->ComputeSourceNoLayout();
-  DCHECK(source);
-  TimelineInset inset = ResolveAuto(GetInset(), *source, GetAxis());
+  TimelineInset inset =
+      ResolveAuto(GetInset(), state->resolved_source, physical_orientation);
 
   // Update inset lengths if style dependent.
   if (style_dependant_start_inset_ || style_dependant_end_inset_) {
@@ -334,53 +359,182 @@ void ViewTimeline::CalculateOffsets(PaintLayerScrollableArea* scrollable_area,
   // source box, whereas "start offset" refers to the start of the timeline,
   // and similarly for end side/offset.
   // [1] https://drafts.csswg.org/css-writing-modes-4/#css-start
-  end_side_inset_ = ComputeInset(inset.GetEnd(), viewport_size);
-  start_side_inset_ = ComputeInset(inset.GetStart(), viewport_size);
+  double end_side_inset = ComputeInset(inset.GetEnd(), viewport_size);
+  double start_side_inset = ComputeInset(inset.GetStart(), viewport_size);
 
-  double start_offset = target_offset_ - viewport_size_ + end_side_inset_;
-  double end_offset = target_offset_ + target_size_ - start_side_inset_;
+  double viewport_size_double = viewport_size.ToDouble();
 
-  state->scroll_offsets =
-      absl::make_optional<ScrollOffsets>(start_offset, end_offset);
-  state->view_offsets = absl::make_optional<ScrollOffsets>(
-      target_offset_, target_offset_ + target_size_);
+  ScrollOffsets scroll_offsets = {
+      target_offset - viewport_size_double + end_side_inset,
+      target_offset + target_size - start_side_inset};
+  ViewOffsets view_offsets = {target_size, target_size};
+  ApplyStickyAdjustments(scroll_offsets, view_offsets, viewport_size_double,
+                         target_size, target_offset, physical_orientation,
+                         scroll_container);
+
+  state->scroll_offsets = scroll_offsets;
+  state->view_offsets = view_offsets;
+  CalculateScrollLimits(scrollable_area, physical_orientation, state);
 }
 
-absl::optional<LayoutSize> ViewTimeline::SubjectSize() const {
+void ViewTimeline::ApplyStickyAdjustments(ScrollOffsets& scroll_offsets,
+                                          ViewOffsets& view_offsets,
+                                          double viewport_size,
+                                          double target_size,
+                                          double target_offset,
+                                          PhysicalAxis orientation,
+                                          LayoutBox* scroll_container) const {
   if (!subject()) {
-    return absl::nullopt;
-  }
-  LayoutBox* subject_layout_box = subject()->GetLayoutBox();
-  if (!subject_layout_box) {
-    return absl::nullopt;
+    return;
   }
 
-  return subject_layout_box->Size();
+  LayoutBox* subject_layout_box = subject()->GetLayoutBox();
+  if (!subject_layout_box || !scroll_container) {
+    return;
+  }
+
+  const LayoutBoxModelObject* sticky_container =
+      subject_layout_box->FindFirstStickyContainer(scroll_container);
+  if (!sticky_container) {
+    return;
+  }
+
+  StickyPositionScrollingConstraints constraints =
+      sticky_container->StickyConstraints();
+
+  const auto* axis_data = constraints.AxisData(orientation);
+  if (!axis_data) {
+    return;
+  }
+
+  const BoxEdge& container =
+      axis_data->scroll_container_relative_containing_block_range;
+  const BoxEdge& sticky = axis_data->scroll_container_relative_sticky_box_range;
+
+  // This is the sticky element's maximum forward displacement (from its static
+  // position) due to having "left" or "top" set. It is based on the available
+  // room for the sticky element to move within its containing block.
+  double max_forward_adjust = 0;
+
+  // This is the sticky element's maximum backward displacement from being
+  // "right"- or "bottom"-stuck.
+  double max_backward_adjust = 0;
+
+  // These values indicate which view-timeline range we will be in (see
+  // https://drafts.csswg.org/scroll-animations-1/#view-timelines-ranges)
+  // when we become left/top-stuck (forward_stickiness) or right/bottom-stuck
+  // (backward_stickiness).
+  StickinessRange backward_stickiness = StickinessRange::kWhileContained;
+  StickinessRange forward_stickiness = StickinessRange::kWhileContained;
+
+  // The maximum adjustment from each offset property is the available room
+  // from the opposite edge of the sticky element in its static position.
+  if (axis_data->min_inset) {
+    max_forward_adjust = (container.End() - sticky.End()).ToDouble();
+    forward_stickiness =
+        ComputeStickinessRange(*axis_data->min_inset, sticky.offset,
+                               viewport_size, target_size, target_offset);
+  }
+  if (axis_data->max_inset) {
+    max_backward_adjust = (container.offset - sticky.offset).ToDouble();
+    backward_stickiness = ComputeStickinessRange(
+        LayoutUnit(viewport_size) - *axis_data->max_inset - sticky.size,
+        sticky.offset, viewport_size, target_size, target_offset);
+  }
+
+  // Now apply the necessary adjustments to scroll_offsets and view_offsets.
+
+  if (forward_stickiness == StickinessRange::kBeforeEntry) {
+    scroll_offsets.start += max_forward_adjust;
+  }
+  if (backward_stickiness != StickinessRange::kBeforeEntry) {
+    scroll_offsets.start += max_backward_adjust;
+  }
+
+  if (forward_stickiness == StickinessRange::kDuringEntry ||
+      forward_stickiness == StickinessRange::kWhileCovering) {
+    view_offsets.entry_crossing_distance += max_forward_adjust;
+  }
+  if (backward_stickiness == StickinessRange::kDuringEntry ||
+      backward_stickiness == StickinessRange::kWhileCovering) {
+    view_offsets.entry_crossing_distance -= max_backward_adjust;
+  }
+
+  if (forward_stickiness == StickinessRange::kDuringExit ||
+      forward_stickiness == StickinessRange::kWhileCovering) {
+    view_offsets.exit_crossing_distance += max_forward_adjust;
+  }
+  if (backward_stickiness == StickinessRange::kDuringExit ||
+      backward_stickiness == StickinessRange::kWhileCovering) {
+    view_offsets.exit_crossing_distance -= max_backward_adjust;
+  }
+
+  if (forward_stickiness != StickinessRange::kAfterExit) {
+    scroll_offsets.end += max_forward_adjust;
+  }
+  if (backward_stickiness == StickinessRange::kAfterExit) {
+    scroll_offsets.end += max_backward_adjust;
+  }
 }
 
-absl::optional<gfx::PointF> ViewTimeline::SubjectPosition() const {
-  if (!subject() || !ResolvedSource()) {
-    return absl::nullopt;
+std::optional<gfx::SizeF> ViewTimeline::SubjectSize() const {
+  if (!subject()) {
+    return std::nullopt;
   }
-  LayoutBox* subject_layout_box = subject()->GetLayoutBox();
-  LayoutBox* source_layout_box = ResolvedSource()->GetLayoutBox();
-  if (!subject_layout_box || !source_layout_box) {
-    return absl::nullopt;
+  const LayoutObject* subject_layout_object = subject()->GetLayoutObject();
+  if (!subject_layout_object) {
+    return std::nullopt;
   }
-  MapCoordinatesFlags flags = kIgnoreScrollOffset | kIgnoreTransforms;
-  gfx::PointF subject_pos =
-      gfx::PointF(subject_layout_box->LocalToAncestorPoint(
-          PhysicalOffset(), source_layout_box, flags));
 
-  // We call LayoutObject::ClientLeft/Top directly and avoid
-  // Element::clientLeft/Top because:
-  //
-  // - We may reach this function during style resolution,
-  //   and clientLeft/Top also attempt to update style/layout.
-  // - Those functions return the unzoomed values, and we require the zoomed
-  //   values.
-  return gfx::PointF(subject_pos.x() - source_layout_box->ClientLeft().Round(),
-                     subject_pos.y() - source_layout_box->ClientTop().Round());
+  if (subject_layout_object->IsSVGChild()) {
+    // Find the outermost SVG root.
+    const LayoutObject* svg_root = subject_layout_object->Parent();
+    while (svg_root && !svg_root->IsSVGRoot()) {
+      svg_root = svg_root->Parent();
+    }
+    // Map the bounds of the element into the (border-box relative) coordinate
+    // space of the CSS box of the outermost SVG root.
+    const gfx::QuadF local_bounds(
+        subject_layout_object->DecoratedBoundingBox());
+    return subject_layout_object
+        ->LocalToAncestorQuad(local_bounds, To<LayoutSVGRoot>(svg_root))
+        .BoundingBox()
+        .size();
+  }
+
+  if (auto* layout_box = DynamicTo<LayoutBox>(subject_layout_object)) {
+    return gfx::SizeF(layout_box->StitchedSize());
+  }
+
+  if (auto* layout_inline = DynamicTo<LayoutInline>(subject_layout_object)) {
+    return layout_inline->LocalBoundingBoxRectF().size();
+  }
+
+  return std::nullopt;
+}
+
+std::optional<gfx::PointF> ViewTimeline::SubjectPosition(
+    LayoutBox* scroll_container) const {
+  if (!subject() || !scroll_container) {
+    return std::nullopt;
+  }
+  LayoutObject* subject_layout_object = subject()->GetLayoutObject();
+  if (!subject_layout_object || !scroll_container) {
+    return std::nullopt;
+  }
+  MapCoordinatesFlags flags =
+      kIgnoreScrollOffset | kIgnoreStickyOffset | kIgnoreTransforms;
+  gfx::PointF subject_pos = subject_layout_object->LocalToAncestorPoint(
+      gfx::PointF(), scroll_container, flags);
+
+  // We call LayoutObject::PhysicalPaddingBoxRect directly and avoid
+  // Element::clientLeft, Element::clientTop because:
+  //  - We may reach this function during style resolution, and
+  //    clientLeft/clientTop also attempt to update style/layout.
+  //  - Those functions return the unzoomed values, and we require
+  //    the zoomed values.
+  return subject_pos -
+         gfx::Vector2dF(scroll_container->PhysicalPaddingBoxRect().offset);
 }
 
 // https://www.w3.org/TR/scroll-animations-1/#named-range-getTime
@@ -402,6 +556,8 @@ CSSNumericValue* ViewTimeline::getCurrentTime(const String& rangeName) {
     range_start.name = TimelineOffset::NamedRange::kExit;
   } else if (rangeName == "exit-crossing") {
     range_start.name = TimelineOffset::NamedRange::kExitCrossing;
+  } else if (rangeName == "scroll") {
+    range_start.name = TimelineOffset::NamedRange::kScroll;
   } else {
     return nullptr;
   }
@@ -419,15 +575,14 @@ CSSNumericValue* ViewTimeline::getCurrentTime(const String& rangeName) {
   if (range == 0)
     return nullptr;
 
-  absl::optional<base::TimeDelta> current_time = CurrentPhaseAndTime().time;
+  std::optional<base::TimeDelta> current_time = CurrentTimeInternal();
   // If current time is null then the timeline must be inactive, which is
   // handled above.
   DCHECK(current_time);
   DCHECK(GetDuration());
 
-  double timeline_progress =
-      CurrentPhaseAndTime().time.value().InMillisecondsF() /
-      GetDuration().value().InMillisecondsF();
+  double timeline_progress = current_time.value().InMillisecondsF() /
+                             GetDuration().value().InMillisecondsF();
 
   double named_range_progress =
       (timeline_progress - relative_start_offset) / range;
@@ -436,138 +591,30 @@ CSSNumericValue* ViewTimeline::getCurrentTime(const String& rangeName) {
 }
 
 Element* ViewTimeline::subject() const {
-  return CurrentAttachment() ? CurrentAttachment()->GetReferenceElement()
-                             : nullptr;
+  return GetReferenceElement();
 }
 
-bool ViewTimeline::Matches(TimelineAttachment attachment_type,
-                           Element* subject,
+bool ViewTimeline::Matches(Element* subject,
                            ScrollAxis axis,
                            const TimelineInset& inset) const {
-  if (!ScrollTimeline::Matches(attachment_type, ReferenceType::kNearestAncestor,
+  if (!ScrollTimeline::Matches(ReferenceType::kNearestAncestor,
                                /* reference_element */ subject, axis)) {
     return false;
   }
-  if (GetTimelineAttachment() == TimelineAttachment::kDefer) {
-    return attachment_type == TimelineAttachment::kDefer;
-  }
-  const auto* attachment =
-      DynamicTo<ViewTimelineAttachment>(CurrentAttachment());
-  DCHECK(attachment);
-  return attachment->GetInset() == inset;
+  return inset_ == inset;
 }
 
 const TimelineInset& ViewTimeline::GetInset() const {
-  if (const auto* attachment =
-          DynamicTo<ViewTimelineAttachment>(CurrentAttachment())) {
-    return attachment->GetInset();
-  }
-
-  DEFINE_STATIC_LOCAL(TimelineInset, default_inset, ());
-  return default_inset;
+  return inset_;
 }
 
 double ViewTimeline::ToFractionalOffset(
     const TimelineOffset& timeline_offset) const {
-  // https://drafts.csswg.org/scroll-animations-1/#view-timelines-ranges
-  double align_subject_start_view_end =
-      target_offset_ - viewport_size_ + end_side_inset_;
-  double align_subject_end_view_start =
-      target_offset_ + target_size_ - start_side_inset_;
-  double align_subject_start_view_start =
-      align_subject_end_view_start - target_size_;
-  double align_subject_end_view_end =
-      align_subject_start_view_end + target_size_;
-  // Timeline is inactive if scroll range is zero.
-  double range = align_subject_end_view_start - align_subject_start_view_end;
-  if (!range) {
-    return 0;
-  }
-
-  double range_start = 0;
-  double range_end = 0;
-  switch (timeline_offset.name) {
-    case TimelineOffset::NamedRange::kNone:
-    case TimelineOffset::NamedRange::kCover:
-      // Represents the full range of the view progress timeline:
-      //   0% progress represents the position at which the start border edge of
-      //   the element’s principal box coincides with the end edge of its view
-      //   progress visibility range.
-      //   100% progress represents the position at which the end border edge of
-      //   the element’s principal box coincides with the start edge of its view
-      //   progress visibility range.
-      range_start = align_subject_start_view_end;
-      range_end = align_subject_end_view_start;
-      break;
-
-    case TimelineOffset::NamedRange::kContain:
-      // Represents the range during which the principal box is either fully
-      // contained by, or fully covers, its view progress visibility range
-      // within the scrollport.
-      // 0% progress represents the earlier position at which:
-      //   1. the start border edge of the element’s principal box coincides
-      //      with the start edge of its view progress visibility range.
-      //   2. the end border edge of the element’s principal box coincides with
-      //      the end edge of its view progress visibility range.
-      // 100% progress represents the later position at which:
-      //   1. the start border edge of the element’s principal box coincides
-      //      with the start edge of its view progress visibility range.
-      //   2. the end border edge of the element’s principal box coincides with
-      //      the end edge of its view progress visibility range.
-      range_start =
-          std::min(align_subject_start_view_start, align_subject_end_view_end);
-      range_end =
-          std::max(align_subject_start_view_start, align_subject_end_view_end);
-      break;
-
-    case TimelineOffset::NamedRange::kEntry:
-      // Represents the range during which the principal box is entering the
-      // view progress visibility range.
-      //   0% is equivalent to 0% of the cover range.
-      //   100% is equivalent to 0% of the contain range.
-      range_start = align_subject_start_view_end;
-      range_end =
-          std::min(align_subject_start_view_start, align_subject_end_view_end);
-      break;
-
-    case TimelineOffset::NamedRange::kEntryCrossing:
-      // Represents the range during which the principal box is crossing the
-      // entry edge of the viewport.
-      //   0% is equivalent to 0% of the cover range.
-      range_start = align_subject_start_view_end;
-      range_end = align_subject_end_view_end;
-      break;
-
-    case TimelineOffset::NamedRange::kExit:
-      // Represents the range during which the principal box is exiting the view
-      // progress visibility range.
-      //   0% is equivalent to 100% of the contain range.
-      //   100% is equivalent to 100% of the cover range.
-      range_start =
-          std::max(align_subject_start_view_start, align_subject_end_view_end);
-      range_end = align_subject_end_view_start;
-      break;
-
-    case TimelineOffset::NamedRange::kExitCrossing:
-      // Represents the range during which the principal box is exiting the view
-      // progress visibility range.
-      //   100% is equivalent to 100% of the cover range.
-      range_start = align_subject_start_view_start;
-      range_end = align_subject_end_view_start;
-      break;
-  }
-
-  DCHECK(range_end >= range_start);
-  DCHECK_GT(range, 0);
-
-  double offset =
-      range_start + MinimumValueForLength(timeline_offset.offset,
-                                          LayoutUnit(range_end - range_start));
-  return (offset - align_subject_start_view_end) / range;
+  return GetTimelineRange().ToFractionalOffset(timeline_offset);
 }
 
 CSSNumericValue* ViewTimeline::startOffset() const {
-  absl::optional<ScrollOffsets> scroll_offsets = GetResolvedScrollOffsets();
+  std::optional<ScrollOffsets> scroll_offsets = GetResolvedScrollOffsets();
   if (!scroll_offsets)
     return nullptr;
 
@@ -576,66 +623,12 @@ CSSNumericValue* ViewTimeline::startOffset() const {
 }
 
 CSSNumericValue* ViewTimeline::endOffset() const {
-  absl::optional<ScrollOffsets> scroll_offsets = GetResolvedScrollOffsets();
+  std::optional<ScrollOffsets> scroll_offsets = GetResolvedScrollOffsets();
   if (!scroll_offsets)
     return nullptr;
 
   DCHECK(GetResolvedZoom());
   return CSSUnitValues::px(scroll_offsets->end / GetResolvedZoom());
-}
-
-void ViewTimeline::UpdateSnapshot() {
-  ScrollTimeline::UpdateSnapshot();
-  ResolveTimelineOffsets();
-}
-
-bool ViewTimeline::ValidateTimelineOffsets() {
-  bool has_keyframe_update = ResolveTimelineOffsets();
-  return !has_keyframe_update;
-}
-
-bool ViewTimeline::CheckIfNeedsValidation() {
-  if (ScrollTimeline::CheckIfNeedsValidation()) {
-    return true;
-  }
-
-  if (subject_size_ != SubjectSize()) {
-    return true;
-  }
-
-  if (subject_position_ != SubjectPosition()) {
-    return true;
-  }
-
-  return false;
-}
-
-bool ViewTimeline::ResolveTimelineOffsets() const {
-  bool has_keyframe_update = false;
-  for (Animation* animation : GetAnimations()) {
-    if (auto* effect = DynamicTo<KeyframeEffect>(animation->effect())) {
-      double range_start =
-          animation->GetRangeStartInternal()
-              ? ToFractionalOffset(animation->GetRangeStartInternal().value())
-              : 0;
-      double range_end =
-          animation->GetRangeEndInternal()
-              ? ToFractionalOffset(animation->GetRangeEndInternal().value())
-              : 1;
-      if (effect->Model()->ResolveTimelineOffsets(range_start, range_end)) {
-        has_keyframe_update = true;
-      }
-    }
-  }
-  return has_keyframe_update;
-}
-
-Animation* ViewTimeline::Play(AnimationEffect* effect,
-                              ExceptionState& exception_state) {
-  if (auto* keyframe_effect = DynamicTo<KeyframeEffect>(effect)) {
-    keyframe_effect->Model()->SetViewTimelineIfRequired(this);
-  }
-  return AnimationTimeline::Play(effect, exception_state);
 }
 
 void ViewTimeline::Trace(Visitor* visitor) const {

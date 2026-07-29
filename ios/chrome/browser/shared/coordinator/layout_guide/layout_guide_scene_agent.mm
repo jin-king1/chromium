@@ -6,17 +6,17 @@
 
 #import "ios/chrome/browser/shared/ui/util/util_swift.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 @implementation LayoutGuideSceneAgent
 
 - (instancetype)init {
   self = [super init];
   if (self) {
-    _layoutGuideCenter = [[LayoutGuideCenter alloc] init];
+    _sceneLayoutGuideCenter = [[LayoutGuideCenter alloc] init];
+    _regularLayoutGuideCenter = [[LayoutGuideCenter alloc] init];
     _incognitoLayoutGuideCenter = [[LayoutGuideCenter alloc] init];
+
+    _regularLayoutGuideCenter.parent = _sceneLayoutGuideCenter;
+    _incognitoLayoutGuideCenter.parent = _sceneLayoutGuideCenter;
   }
   return self;
 }

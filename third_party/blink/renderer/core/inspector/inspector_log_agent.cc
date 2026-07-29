@@ -5,6 +5,7 @@
 #include "third_party/blink/renderer/core/inspector/inspector_log_agent.h"
 
 #include "base/format_macros.h"
+#include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/frame/performance_monitor.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
 #include "third_party/blink/renderer/core/inspector/console_message_storage.h"
@@ -13,6 +14,7 @@
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/bindings/source_location.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -70,20 +72,17 @@ String MessageCategoryValue(mojom::blink::ConsoleMessageCategory category) {
     case mojom::blink::ConsoleMessageCategory::Cors:
       return protocol::Log::LogEntry::CategoryEnum::Cors;
   }
-  return WTF::g_empty_string;
+  return g_empty_string;
 }
 
 }  // namespace
 
 using protocol::Log::ViolationSetting;
 
-InspectorLogAgent::InspectorLogAgent(
-    ConsoleMessageStorage* storage,
-    PerformanceMonitor* performance_monitor,
-    v8_inspector::V8InspectorSession* v8_session)
+InspectorLogAgent::InspectorLogAgent(ConsoleMessageStorage* storage,
+                                     PerformanceMonitor* performance_monitor)
     : storage_(storage),
       performance_monitor_(performance_monitor),
-      v8_session_(v8_session),
       enabled_(&agent_state_, /*default_value=*/false),
       violation_thresholds_(&agent_state_, -1.0) {}
 
@@ -103,7 +102,7 @@ void InspectorLogAgent::Restore() {
   if (violation_thresholds_.IsEmpty())
     return;
   auto settings = std::make_unique<protocol::Array<ViolationSetting>>();
-  for (const WTF::String& key : violation_thresholds_.Keys()) {
+  for (const String& key : violation_thresholds_.Keys()) {
     settings->emplace_back(ViolationSetting::create()
                                .setName(key)
                                .setThreshold(violation_thresholds_.Get(key))
@@ -117,8 +116,8 @@ void InspectorLogAgent::ConsoleMessageAdded(ConsoleMessage* message) {
 
   std::unique_ptr<protocol::Log::LogEntry> entry =
       protocol::Log::LogEntry::create()
-          .setSource(MessageSourceValue(message->Source()))
-          .setLevel(MessageLevelValue(message->Level()))
+          .setSource(MessageSourceValue(message->GetSource()))
+          .setLevel(MessageLevelValue(message->GetLevel()))
           .setText(message->Message())
           .setTimestamp(message->Timestamp())
           .build();
@@ -130,15 +129,16 @@ void InspectorLogAgent::ConsoleMessageAdded(ConsoleMessage* message) {
     entry->setStackTrace(std::move(stack_trace));
   if (message->Location()->LineNumber())
     entry->setLineNumber(message->Location()->LineNumber() - 1);
-  if (message->Source() == mojom::blink::ConsoleMessageSource::kWorker &&
-      !message->WorkerId().empty())
+  if (message->GetSource() == ConsoleMessage::Source::kWorker &&
+      !message->WorkerId().empty()) {
     entry->setWorkerId(message->WorkerId());
-  if (message->Source() == mojom::blink::ConsoleMessageSource::kNetwork &&
+  }
+  if (message->GetSource() == ConsoleMessage::Source::kNetwork &&
       !message->RequestIdentifier().IsNull()) {
     entry->setNetworkRequestId(message->RequestIdentifier());
   }
 
-  if (v8_session_ && message->Frame() && !message->Nodes().empty()) {
+  if (V8Session() && message->Frame() && !message->Nodes().empty()) {
     ScriptForbiddenScope::AllowUserAgentScript allow_script;
     auto remote_objects = std::make_unique<
         protocol::Array<v8_inspector::protocol::Runtime::API::RemoteObject>>();
@@ -148,11 +148,11 @@ void InspectorLogAgent::ConsoleMessageAdded(ConsoleMessage* message) {
       Node* node = DOMNodeIds::NodeForId(node_id);
       if (node) {
         remote_object =
-            ResolveNode(v8_session_, node, "console", protocol::Maybe<int>());
+            ResolveNode(V8Session().get(), node, "console", std::nullopt);
       }
       if (!remote_object) {
         remote_object =
-            NullRemoteObject(v8_session_, message->Frame(), "console");
+            NullRemoteObject(V8Session().get(), message->Frame(), "console");
       }
       if (remote_object) {
         remote_objects->emplace_back(std::move(remote_object));
@@ -180,8 +180,8 @@ void InspectorLogAgent::InnerEnable() {
         protocol::Log::LogEntry::create()
             .setSource(protocol::Log::LogEntry::SourceEnum::Other)
             .setLevel(protocol::Log::LogEntry::LevelEnum::Warning)
-            .setText(String::Number(storage_->ExpiredCount()) +
-                     String(" log entries are not shown."))
+            .setText(StrCat({String::Number(storage_->ExpiredCount()),
+                             " log entries are not shown."}))
             .setTimestamp(0)
             .build();
     GetFrontend()->entryAdded(std::move(expired));
@@ -242,7 +242,7 @@ protocol::Response InspectorLogAgent::startViolationsReport(
   performance_monitor_->UnsubscribeAll(this);
   violation_thresholds_.Clear();
   for (const std::unique_ptr<ViolationSetting>& setting : *settings) {
-    const WTF::String& name = setting->getName();
+    const String& name = setting->getName();
     double threshold = setting->getThreshold();
     PerformanceMonitor::Violation violation = ParseViolation(name);
     if (violation == PerformanceMonitor::kAfterLast)
@@ -280,7 +280,7 @@ void InspectorLogAgent::ReportGenericViolation(PerformanceMonitor::Violation,
                                                SourceLocation* location) {
   auto* message = MakeGarbageCollected<ConsoleMessage>(
       mojom::blink::ConsoleMessageSource::kViolation,
-      mojom::blink::ConsoleMessageLevel::kVerbose, text, location->Clone());
+      mojom::blink::ConsoleMessageLevel::kVerbose, text, location);
   ConsoleMessageAdded(message);
 }
 

@@ -10,11 +10,9 @@
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/observer_list.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "content/browser/renderer_host/media/media_stream_manager.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -48,7 +46,6 @@ const char* TypeToString(blink::mojom::MediaStreamType type) {
     default:
       NOTREACHED();
   }
-  return "INVALID";
 }
 
 std::string GetOpenLogString(const base::UnguessableToken& session_id,
@@ -113,6 +110,7 @@ base::UnguessableToken AudioInputDeviceManager::Open(
   // Generate a new id for this device.
   auto session_id = base::UnguessableToken::Create();
   SendAudioLogMessage(GetOpenLogString(session_id, device));
+  pending_open_sessions_.insert(session_id);
 
   // base::Unretained(this) is safe, because AudioInputDeviceManager is
   // destroyed not earlier than on the IO message loop destruction.
@@ -121,7 +119,7 @@ base::UnguessableToken AudioInputDeviceManager::Open(
     audio_system_->GetAssociatedOutputDeviceID(
         device.id, base::BindOnce(&AudioInputDeviceManager::OpenedOnIOThread,
                                   base::Unretained(this), session_id, device,
-                                  absl::optional<media::AudioParameters>()));
+                                  std::optional<media::AudioParameters>()));
   } else {
     // TODO(tommi): As is, we hit this code path when device.type is
     // MEDIA_GUM_TAB_AUDIO_CAPTURE and the device id is not a device that
@@ -146,8 +144,12 @@ void AudioInputDeviceManager::Close(const base::UnguessableToken& session_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
   SendAudioLogMessage("Close({session_id=" + session_id.ToString() + "})");
   auto device = GetDevice(session_id);
-  if (device == devices_.end())
+  if (device == devices_.end()) {
+    // The asynchronous device query started by Open() may not have completed
+    // yet. Drop the session so that OpenedOnIOThread() does not register it.
+    pending_open_sessions_.erase(session_id);
     return;
+  }
   const blink::mojom::MediaStreamType stream_type = device->type;
   devices_.erase(device);
 
@@ -161,12 +163,18 @@ void AudioInputDeviceManager::Close(const base::UnguessableToken& session_id) {
 void AudioInputDeviceManager::OpenedOnIOThread(
     const base::UnguessableToken& session_id,
     const blink::MediaStreamDevice& device,
-    const absl::optional<media::AudioParameters>& input_params,
-    const absl::optional<std::string>& matched_output_device_id) {
+    const std::optional<media::AudioParameters>& input_params,
+    const std::optional<std::string>& matched_output_device_id) {
   DCHECK_CURRENTLY_ON(BrowserThread::IO);
-  DCHECK(GetDevice(session_id) == devices_.end());
   DCHECK(!input_params || input_params->IsValid());
   DCHECK(!matched_output_device_id || !matched_output_device_id->empty());
+
+  if (!pending_open_sessions_.erase(session_id)) {
+    // The session was closed while the device query was in flight.
+    return;
+  }
+
+  DCHECK(GetDevice(session_id) == devices_.end());
 
   SendAudioLogMessage("Opened({session_id=" + session_id.ToString() + "})");
   blink::MediaStreamDevice media_stream_device(device.type, device.id,

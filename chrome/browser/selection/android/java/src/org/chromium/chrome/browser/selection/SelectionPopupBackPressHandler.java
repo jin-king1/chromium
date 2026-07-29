@@ -6,61 +6,68 @@ package org.chromium.chrome.browser.selection;
 
 import org.chromium.base.Callback;
 import org.chromium.base.lifetime.Destroyable;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableNonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tabmodel.TabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.content_public.browser.SelectionPopupController;
-import org.chromium.content_public.browser.WebContents;
 
 /**
  * {@link BackPressHandler} of {@link SelectionPopupController}. This listens to the change of tab
- * model and notifies whether the current selection popup controller is going to intercept the
- * back press.
+ * model and notifies whether the current selection popup controller is going to intercept the back
+ * press.
  */
-public class SelectionPopupBackPressHandler
-        extends EmptyTabObserver implements BackPressHandler, TabModelObserver, Destroyable {
-    private final ObservableSupplierImpl<Boolean> mBackPressChangedSupplier =
-            new ObservableSupplierImpl<>();
+@NullMarked
+public class SelectionPopupBackPressHandler extends EmptyTabObserver
+        implements BackPressHandler, TabModelObserver, Destroyable {
+    private final SettableNonNullObservableSupplier<Boolean> mBackPressChangedSupplier =
+            ObservableSuppliers.createNonNull(false);
     private final Callback<Boolean> mCallback = this::onActionBarShowingChanged;
 
-    private SelectionPopupController mPopupController;
-    private Tab mTab;
-    private WebContents mWebContents;
+    private @Nullable SelectionPopupController mPopupController;
+    private @Nullable Tab mTab;
 
     /**
-     * @param tabModelSelector A {@link TabModelSelector} which can provide
-     * {@link org.chromium.chrome.browser.tabmodel.TabModelFilterProvider}.
+     * @param tabModelSelector A {@link TabModelSelector}.
      */
     public SelectionPopupBackPressHandler(TabModelSelector tabModelSelector) {
-        tabModelSelector.getTabModelFilterProvider().addTabModelFilterObserver(this);
+        tabModelSelector.addObserverToAllModels(this);
     }
 
     @Override
     public @BackPressResult int handleBackPress() {
         assert mPopupController != null;
-        int res = mPopupController.isSelectActionBarShowing() ? BackPressResult.SUCCESS
-                                                              : BackPressResult.FAILURE;
+        int res =
+                mPopupController.isSelectActionBarShowing()
+                        ? BackPressResult.SUCCESS
+                        : BackPressResult.FAILURE;
         mPopupController.clearSelection();
         return res;
     }
 
     @Override
-    public ObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
+    public boolean invokeBackActionOnEscape() {
+        // For Escape key presses, we do not want to clear selection, which matches with Desktop. We
+        // do not also implement a custom {@link BackPressHandler#handleEscPress()} since we don't
+        // want anything to happen and for the manager to move to the next priority handler.
+        return false;
+    }
+
+    @Override
+    public NonNullObservableSupplier<Boolean> getHandleBackPressChangedSupplier() {
         return mBackPressChangedSupplier;
     }
 
     @Override
-    public void didSelectTab(Tab tab, int type, int lastId) {
+    public void didSelectTab(Tab tab, @TabSelectionType int type, int lastId) {
         mBackPressChangedSupplier.set(false);
-        updatePopupControllerObserving(tab);
-    }
-
-    @Override
-    public void onWebContentsSwapped(Tab tab, boolean didStartLoad, boolean didFinishLoad) {
         updatePopupControllerObserving(tab);
     }
 
@@ -75,30 +82,28 @@ public class SelectionPopupBackPressHandler
         mBackPressChangedSupplier.set(false);
     }
 
-    private void updatePopupControllerObserving(Tab tab) {
+    private void updatePopupControllerObserving(@Nullable Tab tab) {
         if (mPopupController != null) {
             mPopupController.isSelectActionBarShowingSupplier().removeObserver(mCallback);
             mPopupController = null;
         }
         if (mTab != null) mTab.removeObserver(this);
-        if (tab == null) {
-            mWebContents = null;
-            mTab = null;
-            return;
-        }
-        mWebContents = tab.getWebContents();
-        if (tab.getWebContents() == null) return;
-        tab.addObserver(this);
         mTab = tab;
-        mPopupController = SelectionPopupController.fromWebContents(tab.getWebContents());
-        mPopupController.isSelectActionBarShowingSupplier().addObserver(mCallback);
+        if (tab == null) return;
+        var webContents = tab.getWebContents();
+        if (webContents == null) return;
+        tab.addObserver(this);
+        mPopupController = SelectionPopupController.fromWebContents(webContents);
+        mPopupController
+                .isSelectActionBarShowingSupplier()
+                .addSyncObserverAndPostIfNonNull(mCallback);
     }
 
     private void onActionBarShowingChanged(boolean isShowing) {
         mBackPressChangedSupplier.set(isShowing);
     }
 
-    SelectionPopupController getPopupControllerForTesting() {
+    @Nullable SelectionPopupController getPopupControllerForTesting() {
         return mPopupController;
     }
 }

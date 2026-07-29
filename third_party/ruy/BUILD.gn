@@ -35,29 +35,23 @@ config("ruy_cpuinfo_config") {
 # eating the binary size for everybody.
 
 # Analogous to cmake's |ruy_8_mavx2_mfma_arch_AVX2|.
+# Note: No MSVC style flags are used since it is not supported by Chrome.
 config("ruy_avx2_flags") {
   if (current_cpu == "x86_64" || current_cpu == "x64" ||
       current_cpu == "amd64") {
-    if (is_win) {
-      cflags = [ "/arch:AVX2" ]
-    } else {
-      cflags = [
-        "-mavx2",
-        "-mfma",
-      ]
-    }
+    cflags = [
+      "-mavx2",
+      "-mfma",
+    ]
   }
 }
 
 # Analogous to cmake's |ruy_9_mavx_arch_AVX|.
+# Note: No MSVC style flags are used since it is not supported by Chrome.
 config("ruy_avx_flags") {
   if (current_cpu == "x86_64" || current_cpu == "x64" ||
       current_cpu == "amd64") {
-    if (is_win) {
-      cflags = [ "/arch:AVX" ]
-    } else {
-      cflags = [ "-mavx" ]
-    }
+    cflags = [ "-mavx" ]
   }
 }
 
@@ -707,6 +701,7 @@ source_set("ruy_prepare_packed_matrices") {
   configs += [ ":ruy_shared_config" ]
   deps = [
     ":ruy_allocator",
+    ":ruy_check_macros",
     ":ruy_ctx",
     ":ruy_matrix",
     ":ruy_prepacked_cache",
@@ -773,7 +768,10 @@ source_set("ruy_instrumentation") {
     "src/ruy/profiler/instrumentation.cc",
     "src/ruy/profiler/instrumentation.h",
   ]
-  configs += [ ":ruy_shared_config" ]
+  configs += [
+    ":ruy_shared_config",
+    "//build/config/compiler:no_exit_time_destructors",
+  ]
   defines = [ "RUY_PROFILER" ]
 }
 
@@ -812,6 +810,7 @@ source_set("ruy") {
     ":ruy_mul_params",
     ":ruy_path",
     ":ruy_platform",
+    ":ruy_profiler_instrumentation",
     ":ruy_size_util",
     ":ruy_trace",
   ]

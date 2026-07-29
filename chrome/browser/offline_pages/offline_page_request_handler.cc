@@ -6,17 +6,19 @@
 
 #include <utility>
 
+#include "base/byte_size.h"
 #include "base/check_op.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "base/types/expected.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/offline_pages/offline_page_model_factory.h"
@@ -35,6 +37,7 @@
 #include "net/base/file_stream.h"
 #include "net/base/filename_util.h"
 #include "net/base/io_buffer.h"
+#include "net/base/net_errors.h"
 #include "net/base/network_change_notifier.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_response_headers.h"
@@ -76,20 +79,12 @@ enum class RequestResult {
 // Consistent with the buffer size used in url request data reading.
 const size_t kMaxBufferSizeForValidation = 4096;
 
-void GetFileSize(const base::FilePath& file_path, int64_t* file_size) {
-  bool succeeded = base::GetFileSize(file_path, file_size);
-  if (!succeeded) {
-    // Use -1 to indicate that file is not found.
-    *file_size = -1;
-  }
-}
-
 void UpdateDigest(
     const scoped_refptr<OfflinePageRequestHandler::ThreadSafeArchiveValidator>&
         validator,
     scoped_refptr<net::IOBuffer> buffer,
     size_t len) {
-  validator->Update(buffer->data(), len);
+  validator->Update(buffer->first(len));
 }
 
 OfflinePageModel* GetOfflinePageModel(
@@ -302,14 +297,15 @@ OfflinePageRequestHandler::OfflinePageRequestHandler(
       network_state_(NetworkState::CONNECTED_NETWORK),
       candidate_index_(0) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  std::string offline_header_value;
-  extra_request_headers.GetHeader(kOfflinePageHeader, &offline_header_value);
+  std::string offline_header_value =
+      extra_request_headers.GetHeader(kOfflinePageHeader)
+          .value_or(std::string());
   // Note that |offline_header| will be empty if parsing from the header value
   // fails.
   offline_header_ = OfflinePageHeader(offline_header_value);
 }
 
-OfflinePageRequestHandler::~OfflinePageRequestHandler() {}
+OfflinePageRequestHandler::~OfflinePageRequestHandler() = default;
 
 OfflinePageRequestHandler::NetworkState
 OfflinePageRequestHandler::GetNetworkState() const {
@@ -386,11 +382,13 @@ OfflinePageRequestHandler::GetRedirectHeaders() {
 int OfflinePageRequestHandler::ReadRawData(net::IOBuffer* dest, int dest_size) {
   DCHECK_NE(dest_size, 0);
 
-  return stream_->Read(
+  auto result = stream_->Read(
       dest, dest_size,
       base::BindOnce(&OfflinePageRequestHandler::DidReadForServing,
                      weak_ptr_factory_.GetWeakPtr(),
                      base::WrapRefCounted(dest)));
+  return result.has_value() ? base::checked_cast<int>(result->InBytes())
+                            : result.error();
 }
 
 void OfflinePageRequestHandler::OnOfflinePagesAvailable(
@@ -471,7 +469,7 @@ void OfflinePageRequestHandler::Redirect(const GURL& redirected_url) {
       "Non-Authoritative-Reason: offline redirects",
       // 302 is used to remove response bodies in order to
       // avoid leak when going online.
-      net::RedirectUtil::ResponseCode::REDIRECT_302_FOUND,
+      static_cast<int>(net::RedirectUtil::ResponseCode::REDIRECT_302_FOUND),
       redirected_url.spec().c_str());
 
   fake_headers_for_redirect_ = base::MakeRefCounted<net::HttpResponseHeaders>(
@@ -505,9 +503,16 @@ void OfflinePageRequestHandler::OpenFile(
   if (!stream_)
     stream_ = std::make_unique<net::FileStream>(file_task_runner_);
 
-  int flags = base::File::FLAG_OPEN | base::File::FLAG_READ |
-              base::File::FLAG_ASYNC | base::File::FLAG_WIN_EXCLUSIVE_READ;
-  int result = stream_->Open(file_path, flags, callback);
+  int flags =
+      base::File::FLAG_OPEN | base::File::FLAG_READ | base::File::FLAG_ASYNC;
+#if BUILDFLAG(IS_WIN)
+  flags |= base::File::FLAG_WIN_EXCLUSIVE_READ;
+#endif  // BUILDFLAG(IS_WIN)
+  int result =
+      stream_->Open(file_path, flags,
+                    base::BindOnce([](base::RepeatingCallback<void(int)> cb,
+                                      net::Error error) { cb.Run(error); },
+                                   callback));
   if (result != net::ERR_IO_PENDING)
     callback.Run(result);
 }
@@ -515,7 +520,7 @@ void OfflinePageRequestHandler::OpenFile(
 void OfflinePageRequestHandler::UpdateDigestOnBackground(
     scoped_refptr<net::IOBuffer> buffer,
     size_t len,
-    base::OnceCallback<void(void)> digest_updated_callback) {
+    base::OnceClosure digest_updated_callback) {
   DCHECK_GT(len, 0u);
 
   if (!archive_validator_)
@@ -574,23 +579,21 @@ void OfflinePageRequestHandler::ValidateFile() {
 }
 
 void OfflinePageRequestHandler::GetFileSizeForValidation() {
-  int64_t* file_size = new int64_t(0);
-  file_task_runner_->PostTaskAndReply(
-      FROM_HERE,
-      base::BindOnce(&GetFileSize, GetCurrentOfflinePage().file_path,
-                     base::Unretained(file_size)),
+  file_task_runner_->PostTaskAndReplyWithResult(
+      FROM_HERE, base::GetFileSizeCallback(GetCurrentOfflinePage().file_path),
       base::BindOnce(&OfflinePageRequestHandler::DidGetFileSizeForValidation,
-                     weak_ptr_factory_.GetWeakPtr(), base::Owned(file_size)));
+                     weak_ptr_factory_.GetWeakPtr()));
 }
 
 void OfflinePageRequestHandler::DidGetFileSizeForValidation(
-    const int64_t* actual_file_size) {
-  if (*actual_file_size == -1) {
+    std::optional<int64_t> file_size) {
+  int64_t actual_file_size = file_size.value_or(-1);
+  if (actual_file_size == -1) {
     OnFileValidationDone(FileValidationResult::FILE_NOT_FOUND);
     return;
   }
 
-  if (*actual_file_size != GetCurrentOfflinePage().file_size) {
+  if (actual_file_size != GetCurrentOfflinePage().file_size) {
     OnFileValidationDone(FileValidationResult::FILE_VALIDATION_FAILED);
     return;
   }
@@ -608,36 +611,39 @@ void OfflinePageRequestHandler::DidOpenForValidation(int result) {
   }
 
   if (!buffer_)
-    buffer_ = base::MakeRefCounted<net::IOBuffer>(kMaxBufferSizeForValidation);
+    buffer_ = base::MakeRefCounted<net::IOBufferWithSize>(
+        kMaxBufferSizeForValidation);
 
   ReadForValidation();
 }
 
 void OfflinePageRequestHandler::ReadForValidation() {
-  int result = stream_->Read(
+  auto result = stream_->Read(
       buffer_.get(), kMaxBufferSizeForValidation,
       base::BindOnce(&OfflinePageRequestHandler::DidReadForValidation,
                      weak_ptr_factory_.GetWeakPtr()));
-  if (result != net::ERR_IO_PENDING)
-    DidReadForValidation(result);
+  if (result.has_value() || result.error() != net::ERR_IO_PENDING) {
+    DidReadForValidation(std::move(result));
+  }
 }
 
-void OfflinePageRequestHandler::DidReadForValidation(int result) {
-  if (result < 0) {
+void OfflinePageRequestHandler::DidReadForValidation(
+    base::expected<base::ByteSize, net::Error> result) {
+  if (!result.has_value()) {
     OnFileValidationDone(FileValidationResult::FILE_VALIDATION_FAILED);
     return;
   }
 
-  if (result > 0) {
+  if (result->is_positive()) {
     UpdateDigestOnBackground(
-        buffer_, result,
+        buffer_, result->InBytes(),
         base::BindOnce(&OfflinePageRequestHandler::ReadForValidation,
                        weak_ptr_factory_.GetWeakPtr()));
     return;
   }
 
-  // When |result| is 0 (net::OK), it indicates EOF. We need to finalize the
-  // hash to get the actual digest.
+  // When bytes read is 0, it indicates EOF. We need to finalize the hash to
+  // get the actual digest.
   FinalizeDigestOnBackground(base::BindOnce(
       &OfflinePageRequestHandler::DidComputeActualDigestForValidation,
       weak_ptr_factory_.GetWeakPtr()));
@@ -696,48 +702,54 @@ void OfflinePageRequestHandler::DidOpenForServing(int result) {
       0, base::BindOnce(&OfflinePageRequestHandler::DidSeekForServing,
                         weak_ptr_factory_.GetWeakPtr()));
   if (seek_result != net::ERR_IO_PENDING)
-    DidSeekForServing(net::ERR_REQUEST_RANGE_NOT_SATISFIABLE);
+    DidSeekForServing(base::unexpected(net::ERR_REQUEST_RANGE_NOT_SATISFIABLE));
 }
 
-void OfflinePageRequestHandler::DidSeekForServing(int64_t result) {
-  DCHECK_LE(result, 0);
-
-  if (result < 0) {
-    delegate_->NotifyStartError(net::ERR_REQUEST_RANGE_NOT_SATISFIABLE);
+void OfflinePageRequestHandler::DidSeekForServing(
+    base::expected<int64_t, net::Error> result) {
+  if (!result.has_value()) {
+    delegate_->NotifyStartError(result.error());
     return;
   }
+
+  CHECK_EQ(result.value(), 0);
 
   delegate_->NotifyHeadersComplete(GetCurrentOfflinePage().file_size);
 }
 
 void OfflinePageRequestHandler::DidReadForServing(
     scoped_refptr<net::IOBuffer> buf,
-    int result) {
-  if (result < 0 || !IsProcessingFileOrContentUrlIntent()) {
+    base::expected<base::ByteSize, net::Error> result) {
+  if (!result.has_value() || !IsProcessingFileOrContentUrlIntent()) {
     buf = nullptr;
-    NotifyReadRawDataComplete(result);
+    // TODO(hjanuschka): Update NotifyReadRawDataComplete to accept
+    // base::expected<base::ByteSize, net::Error> directly.
+    NotifyReadRawDataComplete(!result.has_value()
+                                  ? result.error()
+                                  : base::checked_cast<int>(result->InBytes()));
     return;
   }
 
-  // At this point, we have result >= 0 && IsProcessingFileOrContentUrlIntent()
-  // which means the read succeeds for processing the file:// or content:// URL
-  // intent. We need to compute the digest to ensure that the file:// or
-  // content:// we read is not modified since the time we received the intent,
-  // validated the data provided by file:// or content:// URL, and decided to
-  // turn it into the corresponding http/https URL and let
-  // OfflinePageRequestHandler handle it.
-  if (result > 0) {
+  // At this point, we have a successful read &&
+  // IsProcessingFileOrContentUrlIntent() which means the read succeeds for
+  // processing the file:// or content:// URL intent. We need to compute the
+  // digest to ensure that the file:// or content:// we read is not modified
+  // since the time we received the intent, validated the data provided by
+  // file:// or content:// URL, and decided to turn it into the corresponding
+  // http/https URL and let OfflinePageRequestHandler handle it.
+  if (result->is_positive()) {
+    int bytes_read = base::checked_cast<int>(result->InBytes());
     UpdateDigestOnBackground(
-        buf, result,
+        buf, result->InBytes(),
         base::BindOnce(&OfflinePageRequestHandler::NotifyReadRawDataComplete,
-                       weak_ptr_factory_.GetWeakPtr(), result));
+                       weak_ptr_factory_.GetWeakPtr(), bytes_read));
 
   } else {
-    // When |result| is 0 (net::OK), it indicates EOF. We need to finalize the
-    // hash to get the actual digest.
+    // When bytes read is 0, it indicates EOF. We need to finalize the hash
+    // to get the actual digest.
     FinalizeDigestOnBackground(base::BindOnce(
         &OfflinePageRequestHandler::DidComputeActualDigestForServing,
-        weak_ptr_factory_.GetWeakPtr(), result));
+        weak_ptr_factory_.GetWeakPtr(), 0));
   }
 }
 

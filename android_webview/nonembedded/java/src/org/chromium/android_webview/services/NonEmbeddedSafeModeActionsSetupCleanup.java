@@ -44,8 +44,10 @@ public final class NonEmbeddedSafeModeActionsSetupCleanup {
         final SafeModeAction[] registeredActions =
                 SafeModeController.getInstance().getRegisteredActions();
         if (registeredActions == null) {
-            Log.w(TAG,
-                    "Must registerActions() before calling executeNonEmbeddedActionsOnStateChange()");
+            Log.w(
+                    TAG,
+                    "Must registerActions() before calling"
+                        + " executeNonEmbeddedActionsOnStateChange()");
             return false;
         }
         // Activate the new actions that exist in our static list of webview process
@@ -53,13 +55,14 @@ public final class NonEmbeddedSafeModeActionsSetupCleanup {
         // Check to see if the old actions are in the list to
         // prevent activating twice.
         for (SafeModeAction currentAction : registeredActions) {
-            if (currentAction instanceof NonEmbeddedSafeModeAction) {
-                NonEmbeddedSafeModeAction action = (NonEmbeddedSafeModeAction) currentAction;
+            if (currentAction instanceof NonEmbeddedSafeModeAction action) {
                 boolean oldState = oldActions.contains(action.getId());
                 boolean newState = newActions.contains(action.getId());
                 if (newState && !oldState) {
+                    action.enable();
                     success &= action.onActivate();
                 } else if (!newState && oldState) {
+                    action.disable();
                     success &= action.onDeactivate();
                 }
             }

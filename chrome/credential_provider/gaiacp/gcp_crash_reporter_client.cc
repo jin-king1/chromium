@@ -11,7 +11,6 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/win/registry.h"
-#include "build/branding_buildflags.h"
 #include "chrome/credential_provider/gaiacp/gcp_crash_reporting_utils.h"
 
 namespace credential_provider {
@@ -21,11 +20,6 @@ GcpCrashReporterClient::~GcpCrashReporterClient() = default;
 base::FilePath GcpCrashReporterClient::GetPathForFileVersionInfo(
     const std::wstring& exe_path) {
   return base::FilePath(exe_path);
-}
-
-bool GcpCrashReporterClient::ShouldCreatePipeName(
-    const std::wstring& process_type) {
-  return true;
 }
 
 bool GcpCrashReporterClient::GetAlternativeCrashDumpLocation(
@@ -60,31 +54,8 @@ void GcpCrashReporterClient::GetProductNameAndVersion(
   }
 }
 
-bool GcpCrashReporterClient::ShouldShowRestartDialog(std::wstring* title,
-                                                     std::wstring* message,
-                                                     bool* is_rtl_locale) {
-  // There is no UX associated with GCPW, so no dialog should be shown.
-  return false;
-}
-
-bool GcpCrashReporterClient::AboutToRestart() {
-  // GCPW should never be restarted after a crash.
-  return false;
-}
-
-bool GcpCrashReporterClient::GetIsPerUserInstall() {
-  // GCPW can only be installed at system level.
-  return false;
-}
-
 bool GcpCrashReporterClient::GetShouldDumpLargerDumps() {
   return false;
-}
-
-int GcpCrashReporterClient::GetResultCodeRespawnFailed() {
-  // The restart dialog is never shown for GCPW.
-  NOTREACHED();
-  return 0;
 }
 
 bool GcpCrashReporterClient::GetCrashDumpLocation(std::wstring* crash_dir) {
@@ -107,7 +78,6 @@ bool GcpCrashReporterClient::EnableBreakpadForProcess(
     const std::string& process_type) {
   // This function is only called on Linux which the GCPW does not support.
   NOTREACHED();
-  return false;
 }
 
 }  // namespace credential_provider

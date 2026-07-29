@@ -36,6 +36,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_blob_property_bag.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_readable_writable_pair.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_arraybuffer_arraybufferview_blob_usvstring.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/fetch/blob_bytes_consumer.h"
@@ -44,6 +45,8 @@
 #include "third_party/blink/renderer/core/fileapi/file_reader_client.h"
 #include "third_party/blink/renderer/core/fileapi/file_reader_loader.h"
 #include "third_party/blink/renderer/core/frame/web_feature.h"
+#include "third_party/blink/renderer/core/streams/text_decoder_transformer.h"
+#include "third_party/blink/renderer/core/streams/transform_stream.h"
 #include "third_party/blink/renderer/core/url/dom_url.h"
 #include "third_party/blink/renderer/platform/bindings/exception_state.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
@@ -51,9 +54,26 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/heap/self_keep_alive.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
+#include "third_party/blink/renderer/platform/network/parsed_content_type.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
+#include "third_party/blink/renderer/platform/wtf/text/text_encoding.h"
 
 namespace blink {
+
+namespace {
+
+// http://dev.w3.org/2006/webapi/FileAPI/#constructorBlob
+bool IsValidBlobType(const String& type) {
+  for (unsigned i = 0; i < type.length(); ++i) {
+    UChar c = type[i];
+    if (c < 0x20 || c > 0x7E) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
 
 // TODO(https://crbug.com/989876): This is not used any more, refactor
 // PublicURLManager to deprecate this.
@@ -73,7 +93,7 @@ class BlobFileReaderClient : public GarbageCollected<BlobFileReaderClient>,
       const scoped_refptr<BlobDataHandle> blob_data_handle,
       const scoped_refptr<base::SingleThreadTaskRunner> task_runner,
       const FileReadType read_type,
-      ScriptPromiseResolver* resolver)
+      ScriptPromiseResolverBase* resolver)
       : loader_(MakeGarbageCollected<FileReaderLoader>(this,
                                                        std::move(task_runner))),
         resolver_(resolver),
@@ -98,10 +118,16 @@ class BlobFileReaderClient : public GarbageCollected<BlobFileReaderClient>,
   void DidFinishLoading(FileReaderData contents) override {
     if (read_type_ == FileReadType::kReadAsText) {
       String result = std::move(contents).AsText("UTF-8");
-      resolver_->Resolve(result);
+      resolver_->DowncastTo<IDLUSVString>()->Resolve(result);
     } else if (read_type_ == FileReadType::kReadAsArrayBuffer) {
       DOMArrayBuffer* result = std::move(contents).AsDOMArrayBuffer();
-      resolver_->Resolve(result);
+      resolver_->DowncastTo<DOMArrayBuffer>()->Resolve(result);
+    } else if (read_type_ == FileReadType::kReadAsBytes) {
+      DOMArrayBuffer* buffer = std::move(contents).AsDOMArrayBuffer();
+      DOMUint8Array* result =
+          DOMUint8Array::Create(buffer, /*byte_offset=*/0, buffer->ByteLength());
+      resolver_->DowncastTo<NotShared<DOMUint8Array>>()->Resolve(
+          NotShared(result));
     } else {
       NOTREACHED() << "Unknown ReadType supplied to BlobFileReaderClient";
     }
@@ -114,7 +140,7 @@ class BlobFileReaderClient : public GarbageCollected<BlobFileReaderClient>,
     loader_ = nullptr;
   }
   Member<FileReaderLoader> loader_;
-  Member<ScriptPromiseResolver> resolver_;
+  Member<ScriptPromiseResolverBase> resolver_;
   const FileReadType read_type_;
   SelfKeepAlive<BlobFileReaderClient> keep_alive_;
 };
@@ -130,7 +156,8 @@ Blob* Blob::Create(ExecutionContext* context,
                    const BlobPropertyBag* options) {
   DCHECK(options->hasType());
   DCHECK(options->hasEndings());
-  bool normalize_line_endings_to_native = (options->endings() == "native");
+  const bool normalize_line_endings_to_native =
+      (options->endings() == V8EndingType::Enum::kNative);
   if (normalize_line_endings_to_native)
     UseCounter::Count(context, WebFeature::kFileAPINativeLineEndings);
   UseCounter::Count(context, WebFeature::kCreateObjectBlob);
@@ -146,14 +173,10 @@ Blob* Blob::Create(ExecutionContext* context,
       BlobDataHandle::Create(std::move(blob_data), blob_size));
 }
 
-Blob* Blob::Create(const unsigned char* data,
-                   size_t size,
-                   const String& content_type) {
-  DCHECK(data);
-
+Blob* Blob::Create(base::span<const uint8_t> data, const String& content_type) {
   auto blob_data = std::make_unique<BlobData>();
   blob_data->SetContentType(content_type);
-  blob_data->AppendBytes(data, size);
+  blob_data->AppendBytes(data);
   uint64_t blob_size = blob_data->length();
 
   return MakeGarbageCollected<Blob>(
@@ -168,14 +191,12 @@ void Blob::PopulateBlobData(BlobData* blob_data,
     switch (item->GetContentType()) {
       case V8BlobPart::ContentType::kArrayBuffer: {
         DOMArrayBuffer* array_buffer = item->GetAsArrayBuffer();
-        blob_data->AppendBytes(array_buffer->Data(),
-                               array_buffer->ByteLength());
+        blob_data->AppendBytes(array_buffer->ByteSpan());
         break;
       }
       case V8BlobPart::ContentType::kArrayBufferView: {
         auto&& array_buffer_view = item->GetAsArrayBufferView();
-        blob_data->AppendBytes(array_buffer_view->BaseAddress(),
-                               array_buffer_view->byteLength());
+        blob_data->AppendBytes(array_buffer_view->ByteSpan());
         break;
       }
       case V8BlobPart::ContentType::kBlob: {
@@ -241,37 +262,82 @@ ReadableStream* Blob::stream(ScriptState* script_state) const {
   return body_buffer->Stream();
 }
 
-// Helper called by Blob::text() and arrayBuffer(). The operations only differ
-// by 1 line, depending on the read_type.
-static ScriptPromise ReadBlobHelper(
-    const scoped_refptr<BlobDataHandle>& blob_data_handle,
-    ScriptState* script_state,
-    FileReadType read_type) {
-  ScriptPromiseResolver* resolver =
-      MakeGarbageCollected<ScriptPromiseResolver>(script_state);
-  auto promise = resolver->Promise();
+ReadableStream* Blob::textStream(ScriptState* script_state,
+                                 ExceptionState& exception_state) const {
+  ReadableStream* body_stream = stream(script_state);
+  if (!body_stream) {
+    return nullptr;
+  }
 
+  auto* transformer = MakeGarbageCollected<TextDecoderTransformer>(
+      script_state, Utf8Encoding(), /*fatal=*/false, /*ignore_bom=*/false);
+  TransformStream* transform_stream =
+      TransformStream::Create(script_state, transformer, exception_state);
+  if (exception_state.HadException() || !transform_stream) {
+    return nullptr;
+  }
+
+  ReadableWritablePair* pair = ReadableWritablePair::Create();
+  pair->setReadable(transform_stream->readable());
+  pair->setWritable(transform_stream->writable());
+
+  ReadableStream* piped_stream =
+      body_stream->pipeThrough(script_state, pair, exception_state);
+  if (exception_state.HadException()) {
+    return nullptr;
+  }
+
+  return piped_stream;
+}
+
+ScriptPromise<IDLUSVString> Blob::text(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<IDLUSVString>>(script_state);
+  auto promise = resolver->Promise();
   MakeGarbageCollected<BlobFileReaderClient>(
-      blob_data_handle,
+      blob_data_handle_,
       ExecutionContext::From(script_state)
           ->GetTaskRunner(TaskType::kFileReading),
-      read_type, resolver);
-
+      FileReadType::kReadAsText, resolver);
   return promise;
 }
 
-blink::ScriptPromise Blob::text(ScriptState* script_state) {
-  auto read_type = FileReadType::kReadAsText;
-  return ReadBlobHelper(blob_data_handle_, script_state, read_type);
+ScriptPromise<DOMArrayBuffer> Blob::arrayBuffer(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<DOMArrayBuffer>>(script_state);
+  auto promise = resolver->Promise();
+  MakeGarbageCollected<BlobFileReaderClient>(
+      blob_data_handle_,
+      ExecutionContext::From(script_state)
+          ->GetTaskRunner(TaskType::kFileReading),
+      FileReadType::kReadAsArrayBuffer, resolver);
+  return promise;
 }
 
-blink::ScriptPromise Blob::arrayBuffer(ScriptState* script_state) {
-  auto read_type = FileReadType::kReadAsArrayBuffer;
-  return ReadBlobHelper(blob_data_handle_, script_state, read_type);
+ScriptPromise<NotShared<DOMUint8Array>> Blob::bytes(ScriptState* script_state) {
+  auto* resolver =
+      MakeGarbageCollected<ScriptPromiseResolver<NotShared<DOMUint8Array>>>(
+          script_state);
+  auto promise = resolver->Promise();
+  MakeGarbageCollected<BlobFileReaderClient>(
+      blob_data_handle_,
+      ExecutionContext::From(script_state)
+          ->GetTaskRunner(TaskType::kFileReading),
+      FileReadType::kReadAsBytes, resolver);
+  return promise;
+}
+
+scoped_refptr<BlobDataHandle> Blob::GetBlobDataHandleWithKnownSize() const {
+  if (!blob_data_handle_->IsSingleUnknownSizeFile()) {
+    return blob_data_handle_;
+  }
+  return BlobDataHandle::Create(blob_data_handle_->Uuid(),
+                                blob_data_handle_->GetType(), size(),
+                                blob_data_handle_->CloneBlobRemote());
 }
 
 void Blob::AppendTo(BlobData& blob_data) const {
-  blob_data.AppendBlob(blob_data_handle_, 0, blob_data_handle_->size());
+  blob_data.AppendBlob(blob_data_handle_, 0, size());
 }
 
 URLRegistry& Blob::Registry() const {
@@ -287,31 +353,22 @@ void Blob::CloneMojoBlob(mojo::PendingReceiver<mojom::blink::Blob> receiver) {
   blob_data_handle_->CloneBlobRemote(std::move(receiver));
 }
 
-mojo::PendingRemote<mojom::blink::Blob> Blob::AsMojoBlob() {
+mojo::PendingRemote<mojom::blink::Blob> Blob::AsMojoBlob() const {
   return blob_data_handle_->CloneBlobRemote();
 }
 
 // static
 String Blob::NormalizeType(const String& type) {
-  if (type.IsNull())
+  if (type.IsNull()) {
     return g_empty_string;
-  const size_t length = type.length();
-  if (length > 65535)
-    return g_empty_string;
-  if (type.Is8Bit()) {
-    const LChar* chars = type.Characters8();
-    for (size_t i = 0; i < length; ++i) {
-      if (chars[i] < 0x20 || chars[i] > 0x7e)
-        return g_empty_string;
-    }
-  } else {
-    const UChar* chars = type.Characters16();
-    for (size_t i = 0; i < length; ++i) {
-      if (chars[i] < 0x0020 || chars[i] > 0x007e)
-        return g_empty_string;
-    }
   }
-  return type.DeprecatedLower();
+  if (type.length() > 65535) {
+    return g_empty_string;
+  }
+  if (!IsValidBlobType(type)) {
+    return g_empty_string;
+  }
+  return type.ToAsciiLower();
 }
 
 }  // namespace blink

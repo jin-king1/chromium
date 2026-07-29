@@ -51,10 +51,6 @@ void ImageInputType::CountUsage() {
   CountUsageIfVisible(WebFeature::kInputTypeImage);
 }
 
-const AtomicString& ImageInputType::FormControlType() const {
-  return input_type_names::kImage;
-}
-
 bool ImageInputType::IsFormDataAppendable() const {
   return true;
 }
@@ -69,10 +65,8 @@ void ImageInputType::AppendToFormData(FormData& form_data) const {
     return;
   }
 
-  DEFINE_STATIC_LOCAL(String, dot_x_string, (".x"));
-  DEFINE_STATIC_LOCAL(String, dot_y_string, (".y"));
-  form_data.AppendFromElement(name + dot_x_string, click_location_.x());
-  form_data.AppendFromElement(name + dot_y_string, click_location_.y());
+  form_data.AppendFromElement(StrCat({name, ".x"}), click_location_.x());
+  form_data.AppendFromElement(StrCat({name, ".y"}), click_location_.y());
 }
 
 String ImageInputType::ResultForDialogSubmit() const {
@@ -105,8 +99,8 @@ void ImageInputType::HandleDOMActivateEvent(Event& event) {
   event.SetDefaultHandled();
 }
 
-ControlPart ImageInputType::AutoAppearance() const {
-  return kNoControlPart;
+AppearanceValue ImageInputType::AutoAppearance() const {
+  return AppearanceValue::kNone;
 }
 
 LayoutObject* ImageInputType::CreateLayoutObject(
@@ -120,8 +114,8 @@ LayoutObject* ImageInputType::CreateLayoutObject(
 
 void ImageInputType::AltAttributeChanged() {
   if (GetElement().UserAgentShadowRoot()) {
-    Element* text =
-        GetElement().UserAgentShadowRoot()->getElementById("alttext");
+    Element* text = GetElement().UserAgentShadowRoot()->getElementById(
+        AtomicString("alttext"));
     String value = GetElement().AltText();
     if (text && text->textContent() != value)
       text->setTextContent(GetElement().AltText());
@@ -129,8 +123,7 @@ void ImageInputType::AltAttributeChanged() {
 }
 
 void ImageInputType::SrcAttributeChanged() {
-  if (!GetElement().GetLayoutObject() &&
-      !RuntimeEnabledFeatures::LoadInputImageWithoutObjectEnabled()) {
+  if (!GetElement().GetExecutionContext()) {
     return;
   }
   GetElement().EnsureImageLoader().UpdateFromElement(
@@ -165,6 +158,10 @@ bool ImageInputType::IsEnumeratable() {
   return false;
 }
 
+bool ImageInputType::IsAutoDirectionalityFormAssociated() const {
+  return false;
+}
+
 bool ImageInputType::ShouldRespectHeightAndWidthAttributes() {
   return true;
 }
@@ -180,9 +177,7 @@ unsigned ImageInputType::Height() const {
     // If the image is available, use its height.
     HTMLImageLoader* image_loader = GetElement().ImageLoader();
     if (image_loader && image_loader->GetContent()) {
-      return image_loader->GetContent()
-          ->IntrinsicSize(kRespectImageOrientation)
-          .height();
+      return image_loader->DensityCorrectedNaturalSize(1).height();
     }
   }
 
@@ -190,8 +185,8 @@ unsigned ImageInputType::Height() const {
       &GetElement(), DocumentUpdateReason::kJavaScript);
 
   LayoutBox* box = GetElement().GetLayoutBox();
-  return box ? AdjustForAbsoluteZoom::AdjustInt(box->ContentHeight().ToInt(),
-                                                box)
+  return box ? AdjustForAbsoluteZoom::AdjustInt(
+                   box->PhysicalContentBoxRect().Height().ToInt(), box)
              : 0;
 }
 
@@ -206,9 +201,7 @@ unsigned ImageInputType::Width() const {
     // If the image is available, use its width.
     HTMLImageLoader* image_loader = GetElement().ImageLoader();
     if (image_loader && image_loader->GetContent()) {
-      return image_loader->GetContent()
-          ->IntrinsicSize(kRespectImageOrientation)
-          .width();
+      return image_loader->DensityCorrectedNaturalSize(1).width();
     }
   }
 
@@ -216,18 +209,14 @@ unsigned ImageInputType::Width() const {
       &GetElement(), DocumentUpdateReason::kJavaScript);
 
   LayoutBox* box = GetElement().GetLayoutBox();
-  return box ? AdjustForAbsoluteZoom::AdjustInt(box->ContentWidth().ToInt(),
-                                                box)
+  return box ? AdjustForAbsoluteZoom::AdjustInt(
+                   box->PhysicalContentBoxRect().Width().ToInt(), box)
              : 0;
 }
 
 bool ImageInputType::HasLegalLinkAttribute(const QualifiedName& name) const {
   return name == html_names::kSrcAttr ||
          BaseButtonInputType::HasLegalLinkAttribute(name);
-}
-
-const QualifiedName& ImageInputType::SubResourceAttributeName() const {
-  return html_names::kSrcAttr;
 }
 
 void ImageInputType::EnsureFallbackContent() {
@@ -241,6 +230,9 @@ void ImageInputType::SetUseFallbackContent() {
   if (use_fallback_content_)
     return;
   use_fallback_content_ = true;
+  if (!HasCreatedShadowSubtree()) {
+    return;
+  }
   if (GetElement().GetDocument().InStyleRecalc())
     return;
   if (ShadowRoot* root = GetElement().UserAgentShadowRoot())
@@ -252,6 +244,9 @@ void ImageInputType::EnsurePrimaryContent() {
   if (!use_fallback_content_)
     return;
   use_fallback_content_ = false;
+  if (!HasCreatedShadowSubtree()) {
+    return;
+  }
   if (ShadowRoot* root = GetElement().UserAgentShadowRoot())
     root->RemoveChildren();
   CreateShadowSubtree();
@@ -278,10 +273,12 @@ void ImageInputType::CreateShadowSubtree() {
 }
 
 void ImageInputType::AdjustStyle(ComputedStyleBuilder& builder) {
-  if (!use_fallback_content_)
+  if (!use_fallback_content_) {
+    builder.SetUAShadowHostData(nullptr);
     return;
+  }
 
-  HTMLImageFallbackHelper::CustomStyleForAltText(GetElement(), builder);
+  HTMLImageFallbackHelper::AdjustHostStyle(GetElement(), builder);
 }
 
 }  // namespace blink

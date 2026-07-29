@@ -5,21 +5,19 @@
 #ifndef CHROME_BROWSER_ASH_ARC_INPUT_OVERLAY_UI_ACTION_VIEW_LIST_ITEM_H_
 #define CHROME_BROWSER_ASH_ARC_INPUT_OVERLAY_UI_ACTION_VIEW_LIST_ITEM_H_
 
-#include "base/memory/raw_ptr.h"
-#include "ui/views/view.h"
+#include "chrome/browser/ash/arc/input_overlay/ui/action_edit_view.h"
+#include "ui/base/metadata/metadata_header_macros.h"
 
 namespace arc::input_overlay {
-
-class Action;
-class DisplayOverlayController;
 
 // ActionViewListItem shows in EditingList and is associated with each of
 // Action.
 // ----------------------------
 // | |Name tag|        |keys| |
 // ----------------------------
+class ActionViewListItem : public ActionEditView {
+  METADATA_HEADER(ActionViewListItem, ActionEditView)
 
-class ActionViewListItem : public views::View {
  public:
   ActionViewListItem(DisplayOverlayController* controller, Action* action);
   ActionViewListItem(const ActionViewListItem&) = delete;
@@ -27,14 +25,17 @@ class ActionViewListItem : public views::View {
   ~ActionViewListItem() override;
 
  private:
-  void Init();
+  friend class EditLabelTest;
 
-  // Set list item of different types.
-  void SetActionTapListItem(views::View* container);
-  void SetActionMoveListItem(views::View* container);
+  // ActionEditView:
+  void ClickCallback() override;
 
-  raw_ptr<DisplayOverlayController> controller_;
-  raw_ptr<Action> action_;
+  // views::View:
+  void OnMouseEntered(const ui::MouseEvent& event) override;
+  void OnMouseExited(const ui::MouseEvent& event) override;
+  bool OnKeyPressed(const ui::KeyEvent& event) override;
+  void OnFocus() override;
+  void OnBlur() override;
 };
 
 }  // namespace arc::input_overlay

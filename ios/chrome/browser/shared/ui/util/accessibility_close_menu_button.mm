@@ -7,10 +7,6 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 
-#if !defined(__has_feature) || !__has_feature(objc_arc)
-#error "This file requires ARC support."
-#endif
-
 @implementation AccessibilityCloseMenuButton
 
 - (instancetype)initWithFrame:(CGRect)frame {
@@ -31,9 +27,11 @@
   return self;
 }
 
-// If accessibilityActivate isn't overriden, VoiceOver isn't able to close the
+#pragma mark - UIAccessibilityAction
+
+// If accessibilityActivate isn't overridden, VoiceOver isn't able to close the
 // menu.
-// See crbbug.com/936850.
+// See crbug.com/936850.
 - (BOOL)accessibilityActivate {
   return [super accessibilityActivate];
 }

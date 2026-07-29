@@ -40,10 +40,6 @@ _DISABLED_TESTS = frozenset({
     # crbug.com/983326 - flaky.
     'system_health.memory_desktop/browse_accessibility:media:youtube',
 
-    # crbug.com/878390 - These stories are already covered by their 2018 or
-    # 2019 versions and will later be removed.
-    'system_health.memory_desktop/multitab:misc:typical24',
-
     # crbug.com/637230
     'system_health.memory_desktop/browse:news:cnn',
     # Permenently disabled from smoke test for being long-running.
@@ -54,9 +50,6 @@ _DISABLED_TESTS = frozenset({
 
     # crbug.com/885320
     'system_health.memory_desktop/browse:search:google:2020',
-
-    # crbug.com/893615
-    'system_health.memory_desktop/multitab:misc:typical24:2018',
 
     # crbug.com/903849
     'system_health.memory_mobile/browse:news:cnn:2018',
@@ -82,6 +75,20 @@ _DISABLED_TESTS = frozenset({
     # crbug.com/1442448
     'system_health.memory_desktop/load:media:facebook_feed:desktop:2020',
     'system_health.memory_desktop/load:games:miniclip:2018',
+
+    # crbug.com/418717796 - flaky
+    'system_health.memory_desktop/load:media:youtubelivingroom:2020',
+
+    # crbug.com/422824099
+    'system_health.memory_desktop/browse:news:nytimes:2020',
+    'system_health.memory_desktop/browse:tools:gmail-labelclick:2020',
+    'system_health.memory_desktop/load:games:lazors',
+    'system_health.memory_desktop/load:media:youtube:2018',
+    'system_health.memory_desktop/load:search:ebay:2018',
+    'system_health.memory_desktop/load:tools:gmail:2019',
+
+    # crbug.com/509294498, crashing on Linux dbg
+    'system_health.memory_desktop/load_accessibility:shopping:amazon:2018',
 
     # The following tests are disabled because they are disabled on the perf
     # waterfall (using tools/perf/expectations.config) on one platform or
@@ -123,7 +130,7 @@ class SystemHealthBenchmarkSmokeTest(unittest.TestCase):
 
 def _GenerateSmokeTestCase(benchmark_class, story_to_smoke_test):
 
-  # NOTE TO SHERIFFS: DO NOT DISABLE THIS TEST.
+  # NOTE TO GARDENERS: DO NOT DISABLE THIS TEST.
   #
   # This smoke test dynamically tests all system health user stories. So
   # disabling it for one failing or flaky benchmark would disable a much
@@ -158,7 +165,7 @@ def _GenerateSmokeTestCase(benchmark_class, story_to_smoke_test):
         self.skipTest('Test is explicitly disabled')
       single_page_benchmark = SinglePageBenchmark()
       return_code = single_page_benchmark.Run(options)
-      # TODO(crbug.com/1019139): Make 111 be the exit code that means
+      # TODO(crbug.com/40105219): Make 111 be the exit code that means
       # "no stories were run.".
       if return_code in (-1, 111):
         self.skipTest('The benchmark was not run.')
@@ -189,7 +196,6 @@ def _GenerateSmokeTestCase(benchmark_class, story_to_smoke_test):
 def GenerateBenchmarkOptions(output_dir, benchmark_cls):
   options = testing.GetRunOptions(
       output_dir=output_dir, benchmark_cls=benchmark_cls,
-      overrides={'run_full_story_set': True},
       environment=chromium_config.GetDefaultChromiumConfig())
   options.pageset_repeat = 1  # For smoke testing only run each page once.
   options.output_formats = ['histograms']

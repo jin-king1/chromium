@@ -1,4 +1,4 @@
-// Copyright 2023 The Chromium Authors
+// Copyright 2024 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -9,8 +9,12 @@
 #include "base/functional/callback.h"
 #include "chromeos/ash/components/osauth/public/auth_parts.h"
 #include "chromeos/ash/components/osauth/public/common_types.h"
+#include "components/account_id/account_id.h"
 
 namespace ash {
+
+class AuthAttemptConsumer;
+class AuthHubConnector;
 
 // Main entry point for ChromeOS local Authentication.
 class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_OSAUTH) AuthHub {
@@ -28,9 +32,22 @@ class COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_OSAUTH) AuthHub {
   // * Until ChromeOS multi-profile is made obsolette by Lacros
   //   AuthHub would need to go `kInSession`->`kLoginScreen`->`kInSession`
   //   when showing/hiding "Add user" screen.
+  // This method should not be called from other AuthHub callbacks
+  // to prevent reenterant loops.
   virtual void InitializeForMode(AuthHubMode target) = 0;
 
   virtual void EnsureInitialized(base::OnceClosure on_initialized) = 0;
+
+  virtual void StartAuthentication(AccountId accountId,
+                                   AuthPurpose purpose,
+                                   AuthAttemptConsumer* consumer) = 0;
+
+  // Cancel the current attempt, eventually leads to
+  // `AuthAttemptConsumer::OnUserAuthAttemptCancelled` being called, and the
+  // destruction of the UI.
+  virtual void CancelCurrentAttempt(AuthHubConnector* connector) = 0;
+
+  virtual void Shutdown() = 0;
 
   virtual ~AuthHub() = default;
 };

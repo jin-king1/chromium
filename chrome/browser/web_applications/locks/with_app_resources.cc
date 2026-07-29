@@ -11,6 +11,11 @@ namespace web_app {
 
 WithAppResources::~WithAppResources() = default;
 
+ExtensionsManager& WithAppResources::extensions_manager() {
+  CHECK(lock_manager_);
+  return lock_manager_->provider().extensions_manager();
+}
+
 WebAppRegistrar& WithAppResources::registrar() {
   CHECK(lock_manager_);
   return lock_manager_->provider().registrar_unsafe();
@@ -43,12 +48,15 @@ WebAppUiManager& WithAppResources::ui_manager() {
   CHECK(lock_manager_);
   return lock_manager_->provider().ui_manager();
 }
-WebAppOriginAssociationManager& WithAppResources::origin_association_manager() {
+WebAppIsolationDelegate& WithAppResources::isolation_delegate() {
   CHECK(lock_manager_);
-  return lock_manager_->provider().origin_association_manager();
+  return lock_manager_->provider().isolation_delegate();
 }
-WithAppResources::WithAppResources(
-    base::WeakPtr<WebAppLockManager> lock_manager)
-    : lock_manager_(std::move(lock_manager)) {}
+
+WithAppResources::WithAppResources() = default;
+
+void WithAppResources::GrantWithAppResources(WebAppLockManager& lock_manager) {
+  lock_manager_ = lock_manager.GetWeakPtr();
+}
 
 }  // namespace web_app

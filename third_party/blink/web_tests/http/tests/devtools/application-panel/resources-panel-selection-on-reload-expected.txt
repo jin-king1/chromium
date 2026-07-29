@@ -7,34 +7,38 @@ Application
     Presentation
     Protocol Handlers
     Icons
-  Service Workers
+    Window Controls Overlay
+  Service workers
   Storage
 Storage
-  Local Storage
-    http://127.0.0.1:8000/
-  Session Storage
-    http://127.0.0.1:8000/
+  Local storage
+    http://127.0.0.1:8000
+  Session storage
+    http://127.0.0.1:8000
+  Extension storage
   IndexedDB
-    Database1 - http://127.0.0.1:8000/
-  Web SQL
-    database-for-test
+    Database1
   Cookies
     http://127.0.0.1:8000
-  Private State Tokens
-  Interest Groups
-  Shared Storage
+  Private state tokens
+  Shared storage
     http://127.0.0.1:8000
-  Cache Storage
-Background Services
+  Cache storage
+  Storage buckets
+Background services
   Back/forward cache
-  Background Fetch
-  Background Sync
-  Bounce Tracking Mitigations
+  Background fetch
+  Background sync
+  Bounce tracking mitigations
   Notifications
-  Payment Handler
-  Periodic Background Sync
-  Push Messaging
+  Payment handler
+  Periodic background sync
+  Speculative loads
+    Rules
+    Speculations
+  Push messaging
   Reporting API
+    Crash Report Context
 Frames
   top
     inspected-page.html
@@ -48,33 +52,38 @@ Application
     Presentation
     Protocol Handlers
     Icons
-  Service Workers
+    Window Controls Overlay
+  Service workers
   Storage
 Storage
-  Local Storage
-    http://127.0.0.1:8000/
-  Session Storage
-    http://127.0.0.1:8000/
+  Local storage
+    http://127.0.0.1:8000
+  Session storage
+    http://127.0.0.1:8000
+  Extension storage
   IndexedDB
-    Database1 - http://127.0.0.1:8000/
-  Web SQL
+    Database1
   Cookies
     http://127.0.0.1:8000
-  Private State Tokens
-  Interest Groups
-  Shared Storage
+  Private state tokens
+  Shared storage
     http://127.0.0.1:8000
-  Cache Storage
-Background Services
+  Cache storage
+  Storage buckets
+Background services
   Back/forward cache
-  Background Fetch
-  Background Sync
-  Bounce Tracking Mitigations
+  Background fetch
+  Background sync
+  Bounce tracking mitigations
   Notifications
-  Payment Handler
-  Periodic Background Sync
-  Push Messaging
+  Payment handler
+  Periodic background sync
+  Speculative loads
+    Rules
+    Speculations
+  Push messaging
   Reporting API
+    Crash Report Context
 Frames
   top
     inspected-page.html

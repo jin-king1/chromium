@@ -10,7 +10,6 @@
 
 #include "base/functional/bind.h"
 #include "base/i18n/file_util_icu.h"
-#include "base/mac/scoped_nsobject.h"
 #include "base/no_destructor.h"
 #include "base/rand_util.h"
 #include "base/strings/string_util.h"
@@ -18,11 +17,12 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/uuid.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/visibility_timer_tab_helper.h"
 #include "chrome/browser/webshare/prepare_directory_task.h"
 #include "chrome/browser/webshare/prepare_subdirectory_task.h"
 #include "chrome/browser/webshare/share_service_impl.h"
 #include "chrome/browser/webshare/store_files_task.h"
+#include "components/tabs/public/tab_interface.h"
+#include "components/visibility_timer/visibility_timer_tab_helper.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/storage_partition.h"
@@ -78,13 +78,23 @@ void SharingServiceOperation::Share(
   if (profile->IsIncognitoProfile() && !shared_files_.empty()) {
     // Random number of seconds in the range [1.0, 2.0).
     double delay_seconds = 1.0 + 1.0 * base::RandDouble();
-    VisibilityTimerTabHelper::CreateForWebContents(web_contents_.get());
-    VisibilityTimerTabHelper::FromWebContents(web_contents_.get())
+    visibility_timer::VisibilityTimerTabHelper::CreateForWebContents(
+        web_contents_.get());
+    visibility_timer::VisibilityTimerTabHelper::FromWebContents(
+        web_contents_.get())
         ->PostTaskAfterVisibleDelay(
             FROM_HERE,
             base::BindOnce(std::move(callback_),
                            blink::mojom::ShareError::CANCELED),
             base::Seconds(delay_seconds));
+    return;
+  }
+
+  // If the tab is no longer active, return permission denied.
+  tabs::TabInterface* tab_interface =
+      tabs::TabInterface::MaybeGetFromContents(web_contents_.get());
+  if (tab_interface && !tab_interface->IsActivated()) {
+    std::move(callback_).Run(blink::mojom::ShareError::PERMISSION_DENIED);
     return;
   }
 
@@ -173,7 +183,7 @@ void SharingServiceOperation::OnShowSharePicker(
     blink::mojom::ShareError error) {
   if (file_paths_.size() > 0) {
     PrepareDirectoryTask::ScheduleSharedFileDeletion(std::move(file_paths_),
-                                                     base::Minutes(0));
+                                                     base::Seconds(60));
   }
   std::move(callback_).Run(error);
 }
@@ -192,7 +202,7 @@ void SharingServiceOperation::ShowSharePicker(
   }
 
   web_contents->GetRenderWidgetHostView()->ShowSharePicker(
-      title, text, url.spec(), file_paths_as_utf8, std::move(callback));
+      title, text, url, file_paths_as_utf8, std::move(callback));
 }
 
 // static
